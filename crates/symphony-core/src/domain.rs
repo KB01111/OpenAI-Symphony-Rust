@@ -355,7 +355,8 @@ impl ProviderKind {
                     "claude-sonnet-4-5".to_string(),
                     "claude-opus-4-1".to_string(),
                 ],
-                status_message: "Claude Code CLI (`claude -p --output-format stream-json`)".to_string(),
+                status_message: "Claude Code CLI (`claude -p --output-format stream-json`)"
+                    .to_string(),
             },
             Self::OpenCode => ProviderCapabilities {
                 provider: Self::OpenCode,
@@ -502,6 +503,7 @@ pub struct Task {
 }
 
 impl Task {
+    #[allow(clippy::too_many_arguments)]
     pub fn new_manual(
         project_id: String,
         identifier: String,
@@ -851,7 +853,9 @@ impl MergeReadinessReport {
             score -= 2;
             blockers.push("No file changes detected in branch.".to_string());
         } else {
-            evidence.push(format!("{changed_files_count} file(s) modified in worktree."));
+            evidence.push(format!(
+                "{changed_files_count} file(s) modified in worktree."
+            ));
         }
 
         let clamped = score.clamp(1, 5) as u8;

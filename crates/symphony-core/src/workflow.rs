@@ -66,8 +66,9 @@ impl WorkflowDefinition {
                 path_ref.display().to_string(),
             ));
         }
-        let content = std::fs::read_to_string(path_ref)
-            .map_err(|e| SymphonyError::MissingWorkflowFile(format!("{}: {e}", path_ref.display())))?;
+        let content = std::fs::read_to_string(path_ref).map_err(|e| {
+            SymphonyError::MissingWorkflowFile(format!("{}: {e}", path_ref.display()))
+        })?;
         Self::parse(&content, Some(path_ref.to_path_buf()))
     }
 }
@@ -138,7 +139,11 @@ impl Default for ServiceConfig {
             tracker_kind: "github".to_string(),
             tracker_provider: Map::new(),
             required_labels: Vec::new(),
-            active_states: vec!["Todo".to_string(), "In Progress".to_string(), "open".to_string()],
+            active_states: vec![
+                "Todo".to_string(),
+                "In Progress".to_string(),
+                "open".to_string(),
+            ],
             terminal_states: vec![
                 "Closed".to_string(),
                 "Cancelled".to_string(),
@@ -210,7 +215,15 @@ impl ServiceConfig {
                 }
             }
             // Also support flat fields like `tracker.repo`, `tracker.project_slug`, `tracker.api_key`
-            for flat_key in ["repo", "project_slug", "api_key", "token", "endpoint", "api_url", "assignee"] {
+            for flat_key in [
+                "repo",
+                "project_slug",
+                "api_key",
+                "token",
+                "endpoint",
+                "api_url",
+                "assignee",
+            ] {
                 if let Some(v) = tracker.get(flat_key) {
                     if !cfg.tracker_provider.contains_key(flat_key) {
                         cfg.tracker_provider
@@ -277,7 +290,10 @@ impl ServiceConfig {
         }
 
         if let Some(Value::Object(agent)) = root.get("agent") {
-            if let Some(v) = agent.get("max_concurrent_agents").and_then(parse_u64_flexible) {
+            if let Some(v) = agent
+                .get("max_concurrent_agents")
+                .and_then(parse_u64_flexible)
+            {
                 if v > 0 {
                     cfg.agent.max_concurrent_agents = v as u32;
                 }
@@ -287,7 +303,10 @@ impl ServiceConfig {
                     cfg.agent.max_turns = v as u32;
                 }
             }
-            if let Some(v) = agent.get("max_retry_backoff_ms").and_then(parse_u64_flexible) {
+            if let Some(v) = agent
+                .get("max_retry_backoff_ms")
+                .and_then(parse_u64_flexible)
+            {
                 if v > 0 {
                     cfg.agent.max_retry_backoff_ms = v;
                 }
@@ -456,7 +475,10 @@ pub fn expand_path_value(raw: &str, workflow_file: Option<&Path>) -> PathBuf {
 
     let path = if trimmed == "~" {
         dirs::home_dir().unwrap_or_else(std::env::temp_dir)
-    } else if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
+    } else if let Some(rest) = trimmed
+        .strip_prefix("~/")
+        .or_else(|| trimmed.strip_prefix("~\\"))
+    {
         dirs::home_dir()
             .unwrap_or_else(std::env::temp_dir)
             .join(rest)

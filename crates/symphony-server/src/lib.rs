@@ -74,15 +74,24 @@ pub fn build_router(
         .route("/api/v1/tasks/:id/cancel", post(cancel_task_handler))
         .route("/api/v1/tasks/:id/retry", post(retry_task_handler))
         .route("/api/v1/tasks/:id/events", get(list_task_events_handler))
-        .route("/api/v1/tasks/:id/attempts", get(list_task_attempts_handler))
+        .route(
+            "/api/v1/tasks/:id/attempts",
+            get(list_task_attempts_handler),
+        )
         .route(
             "/api/v1/tasks/:id/validations",
             get(list_task_validations_handler),
         )
         .route("/api/v1/approvals", get(list_approvals_handler))
-        .route("/api/v1/approvals/:id/decide", post(decide_approval_handler))
+        .route(
+            "/api/v1/approvals/:id/decide",
+            post(decide_approval_handler),
+        )
         .route("/api/v1/prs", get(list_prs_handler))
-        .route("/api/v1/prs/:id/approve-merge", post(approve_pr_merge_handler))
+        .route(
+            "/api/v1/prs/:id/approve-merge",
+            post(approve_pr_merge_handler),
+        )
         .route(
             "/api/v1/workflow",
             get(get_workflow_handler).put(update_workflow_handler),
@@ -94,7 +103,10 @@ pub fn build_router(
         )
         .route("/api/v1/providers", get(list_providers_handler))
         .route("/api/v1/credentials", post(set_credential_handler))
-        .route("/api/v1/diagnostics/export", get(export_diagnostics_handler))
+        .route(
+            "/api/v1/diagnostics/export",
+            get(export_diagnostics_handler),
+        )
         // SPEC.md Section 13.7.2: `/api/v1/<issue_identifier>` catch-all
         .route("/api/v1/:issue_identifier", get(issue_detail_handler))
         .layer(cors)
@@ -122,6 +134,7 @@ pub async fn start_http_server(
     Ok((local_addr, handle))
 }
 
+#[allow(clippy::result_large_err)]
 fn check_remote_auth(
     state: &ServerState,
     headers: &HeaderMap,
@@ -252,10 +265,7 @@ async fn sse_events_handler(State(state): State<ServerState>, headers: HeaderMap
         .into_response()
 }
 
-async fn pause_scheduler_handler(
-    State(state): State<ServerState>,
-    headers: HeaderMap,
-) -> Response {
+async fn pause_scheduler_handler(State(state): State<ServerState>, headers: HeaderMap) -> Response {
     if let Err(r) = check_remote_auth(&state, &headers) {
         return r;
     }
@@ -565,10 +575,7 @@ async fn list_task_validations_handler(
     }
 }
 
-async fn list_approvals_handler(
-    State(state): State<ServerState>,
-    headers: HeaderMap,
-) -> Response {
+async fn list_approvals_handler(State(state): State<ServerState>, headers: HeaderMap) -> Response {
     if let Err(r) = check_remote_auth(&state, &headers) {
         return r;
     }
@@ -635,10 +642,7 @@ async fn approve_pr_merge_handler(
     }
 }
 
-async fn get_workflow_handler(
-    State(state): State<ServerState>,
-    headers: HeaderMap,
-) -> Response {
+async fn get_workflow_handler(State(state): State<ServerState>, headers: HeaderMap) -> Response {
     if let Err(r) = check_remote_auth(&state, &headers) {
         return r;
     }
@@ -748,10 +752,7 @@ async fn preview_workflow_handler(
     }
 }
 
-async fn get_settings_handler(
-    State(state): State<ServerState>,
-    headers: HeaderMap,
-) -> Response {
+async fn get_settings_handler(State(state): State<ServerState>, headers: HeaderMap) -> Response {
     if let Err(r) = check_remote_auth(&state, &headers) {
         return r;
     }

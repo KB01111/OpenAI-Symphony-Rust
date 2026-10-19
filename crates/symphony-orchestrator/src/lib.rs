@@ -147,7 +147,8 @@ impl DynamicToolHandler for HostDynamicToolExecutor {
                         "contentItems": [{"type": "inputText", "text": output}]
                     })
                 } else {
-                    let msg = json!({"error": "GitHub tracker is not configured for this project"}).to_string();
+                    let msg = json!({"error": "GitHub tracker is not configured for this project"})
+                        .to_string();
                     json!({
                         "success": false,
                         "output": msg,
@@ -164,7 +165,8 @@ impl DynamicToolHandler for HostDynamicToolExecutor {
                         "contentItems": [{"type": "inputText", "text": output}]
                     })
                 } else {
-                    let msg = json!({"error": "Linear tracker is not configured for this project"}).to_string();
+                    let msg = json!({"error": "Linear tracker is not configured for this project"})
+                        .to_string();
                     json!({
                         "success": false,
                         "output": msg,
@@ -173,7 +175,8 @@ impl DynamicToolHandler for HostDynamicToolExecutor {
                 }
             }
             other => {
-                let msg = json!({"error": format!("Unsupported dynamic tool: {other}")}).to_string();
+                let msg =
+                    json!({"error": format!("Unsupported dynamic tool: {other}")}).to_string();
                 json!({
                     "success": false,
                     "output": msg,
@@ -510,7 +513,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         running_summaries.sort_by(|a, b| a.issue_identifier.cmp(&b.issue_identifier));
 
         let mut retrying: Vec<RetryEntry> = mem.retry_attempts.values().cloned().collect();
-        retrying.sort_by(|a, b| a.due_at.cmp(&b.due_at));
+        retrying.sort_by_key(|a| a.due_at);
 
         let counts = StateCounts {
             running: running_summaries.len(),
@@ -565,7 +568,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
     }
 
     /// Build `/api/v1/<issue_identifier>` detail response (SPEC.md Section 13.7.2)
-    pub async fn issue_detail(&self, issue_identifier: &str) -> SymphonyResult<IssueDetailResponse> {
+    pub async fn issue_detail(
+        &self,
+        issue_identifier: &str,
+    ) -> SymphonyResult<IssueDetailResponse> {
         let task = self
             .storage
             .get_task_by_identifier(issue_identifier)
@@ -602,7 +608,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
             },
             attempts: AttemptSummary {
                 restart_count: task.attempt_count.saturating_sub(1),
-                current_retry_attempt: retry.as_ref().map(|r| r.attempt).unwrap_or(task.attempt_count),
+                current_retry_attempt: retry
+                    .as_ref()
+                    .map(|r| r.attempt)
+                    .unwrap_or(task.attempt_count),
             },
             running,
             retry,
@@ -634,7 +643,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
             None,
             "project/registered",
             None,
-            format!("Registered project '{}' ({})", project.name, project.repo_path),
+            format!(
+                "Registered project '{}' ({})",
+                project.name, project.repo_path
+            ),
             None,
         )
         .await;
@@ -649,6 +661,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         self.storage.delete_project(id).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_manual_task(
         &self,
         project_id: String,
@@ -694,7 +707,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
             Some(task.provider),
             "task/created",
             None,
-            format!("Created task {}: {}", task.issue.identifier, task.issue.title),
+            format!(
+                "Created task {}: {}",
+                task.issue.identifier, task.issue.title
+            ),
             None,
         )
         .await;
@@ -705,7 +721,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 .storage
                 .get_task(&task.id)
                 .await?
-                .ok_or_else(|| SymphonyError::TaskNotFound(task.id));
+                .ok_or(SymphonyError::TaskNotFound(task.id));
         }
 
         Ok(task)
@@ -938,7 +954,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
         };
         let preview = render_workflow_prompt(&wf, &sample_issue, Some(1))?;
         let raw_content = match &wf.source_path {
-            Some(p) if p.exists() => std::fs::read_to_string(p).unwrap_or_else(|_| wf.prompt_template.clone()),
+            Some(p) if p.exists() => {
+                std::fs::read_to_string(p).unwrap_or_else(|_| wf.prompt_template.clone())
+            }
             _ => wf.prompt_template.clone(),
         };
         Ok((raw_content, cfg, preview))
@@ -1087,7 +1105,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     let root = PathBuf::from(&project.workspace_root);
                     let repo = PathBuf::from(&project.repo_path);
                     for issue in terminal_issues {
-                        let key = symphony_workspaces::workspace_key_for_identifier(&issue.identifier);
+                        let key =
+                            symphony_workspaces::workspace_key_for_identifier(&issue.identifier);
                         let ws_path = root.join(key);
                         if ws_path.exists() {
                             let _ = self
@@ -1154,7 +1173,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
                 if status_eligible
                     && task.issue.dispatchable
-                    && !task.issue.is_todo_blocked(&mem.active_config.terminal_states)
+                    && !task
+                        .issue
+                        .is_todo_blocked(&mem.active_config.terminal_states)
                     && !mem.claimed_issue_ids.contains(&task.issue.id)
                     && !mem.completed_issue_ids.contains(&task.issue.id)
                     && !mem.running.contains_key(&task.id)
@@ -1196,7 +1217,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
             {
                 let mem = self.memory.read().await;
                 for (task_id, handle) in &mem.running {
-                    let ref_time = handle.session.last_event_at.unwrap_or(handle.session.started_at);
+                    let ref_time = handle
+                        .session
+                        .last_event_at
+                        .unwrap_or(handle.session.started_at);
                     let elapsed_ms = (now - ref_time).num_milliseconds();
                     if elapsed_ms > stall_timeout_ms {
                         stalled_task_ids.push(task_id.clone());
@@ -1236,8 +1260,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
         for (task_id, project_id, issue_id) in running_snapshots {
             if let Ok(Some(project)) = self.storage.get_project(&project_id).await {
                 if let Some(tracker) = self.build_tracker_for_project(&project) {
-                    if let Ok(refreshed) =
-                        tracker.fetch_issue_states_by_ids(&[issue_id.clone()]).await
+                    if let Ok(refreshed) = tracker
+                        .fetch_issue_states_by_ids(std::slice::from_ref(&issue_id))
+                        .await
                     {
                         if let Some(issue) = refreshed.into_iter().next() {
                             if issue.is_in_states(&terminal_states) {
@@ -1408,7 +1433,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let orch = self.clone();
         let task_clone = task.clone();
         tokio::spawn(async move {
-            orch.run_worker_attempt(task_clone, project, cancel_rx).await;
+            orch.run_worker_attempt(task_clone, project, cancel_rx)
+                .await;
         });
 
         Ok(task)
@@ -1665,10 +1691,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
         // 5. Multi-turn execution loop (up to `agent.max_turns`, SPEC.md Section 7.1)
         let max_turns = config.agent.max_turns.max(1);
-        let turn_number = 1u32;
         let mut last_outcome = None;
 
-        while turn_number <= max_turns {
+        for turn_number in 1..=max_turns {
             if let Ok(cancel_reason) = cancel_rx.try_recv() {
                 let _ = agent_session.cancel().await;
                 self.finish_failed_attempt(
@@ -1711,9 +1736,13 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     task.current_thread_id = Some(outcome.thread_id.clone());
                     task.current_turn_id = Some(outcome.turn_id.clone());
                     task.current_session_id = Some(outcome.session_id.clone());
-                    task.input_tokens = task.input_tokens.saturating_add(outcome.usage.input_tokens);
-                    task.output_tokens = task.output_tokens.saturating_add(outcome.usage.output_tokens);
-                    task.total_tokens = task.total_tokens.saturating_add(outcome.usage.total_tokens);
+                    task.input_tokens =
+                        task.input_tokens.saturating_add(outcome.usage.input_tokens);
+                    task.output_tokens = task
+                        .output_tokens
+                        .saturating_add(outcome.usage.output_tokens);
+                    task.total_tokens =
+                        task.total_tokens.saturating_add(outcome.usage.total_tokens);
                     task.estimated_cost_usd +=
                         outcome.usage.estimate_cost_usd(task.model.as_deref());
                     let _ = self.storage.upsert_task(&task).await;
@@ -1741,9 +1770,14 @@ Please implement the requested changes cleanly in the current Git workspace, run
                         return;
                     }
 
+                    let continue_multi_turn = outcome
+                        .assistant_messages
+                        .iter()
+                        .any(|m| m.contains("[CONTINUE_TURN]"));
                     last_outcome = Some(outcome);
-                    // For local/manual tasks or single-turn completion, break after turn 1
-                    break;
+                    if !continue_multi_turn || turn_number >= max_turns {
+                        break;
+                    }
                 }
                 Err(err) => {
                     let _ = agent_session.stop().await;
@@ -1812,8 +1846,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
         let mut security_warnings = Vec::new();
         if diff_preview.contains("PRIVATE KEY") || diff_preview.contains("ghp_") {
-            security_warnings
-                .push("Potential credential or key pattern detected in workspace diff.".to_string());
+            security_warnings.push(
+                "Potential credential or key pattern detected in workspace diff.".to_string(),
+            );
         }
 
         let merge_readiness = MergeReadinessReport::evaluate(
@@ -1963,12 +1998,18 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 }
             }
             if let Some(ref usage) = ev.usage {
-                mem.codex_totals.input_tokens =
-                    mem.codex_totals.input_tokens.saturating_add(usage.input_tokens);
-                mem.codex_totals.output_tokens =
-                    mem.codex_totals.output_tokens.saturating_add(usage.output_tokens);
-                mem.codex_totals.total_tokens =
-                    mem.codex_totals.total_tokens.saturating_add(usage.total_tokens);
+                mem.codex_totals.input_tokens = mem
+                    .codex_totals
+                    .input_tokens
+                    .saturating_add(usage.input_tokens);
+                mem.codex_totals.output_tokens = mem
+                    .codex_totals
+                    .output_tokens
+                    .saturating_add(usage.output_tokens);
+                mem.codex_totals.total_tokens = mem
+                    .codex_totals
+                    .total_tokens
+                    .saturating_add(usage.total_tokens);
                 mem.codex_totals.estimated_cost_usd += usage.estimate_cost_usd(None);
             }
             if let Some(ref rl) = ev.rate_limits {
@@ -1984,10 +2025,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             provider: Some(provider),
             event_type: ev.event_type.clone(),
             phase: Some(RunAttemptPhase::StreamingTurn),
-            message: redact_secrets(
-                &ev.message.unwrap_or_else(|| ev.event_type.clone()),
-                &[],
-            ),
+            message: redact_secrets(&ev.message.unwrap_or_else(|| ev.event_type.clone()), &[]),
             payload: Some(ev.raw),
             timestamp: ev.timestamp,
         };
@@ -2127,6 +2165,213 @@ mod tests {
         assert_eq!(detail.validation_results.len(), 1);
         assert!(detail.validation_results[0].passed);
         assert!(detail.pull_request.is_some());
-        assert!(detail.pull_request.unwrap().merge_readiness.score >= 4);
+        let pr = detail.pull_request.unwrap();
+        assert!(pr.merge_readiness.score >= 4);
+        assert!(pr
+            .changed_files
+            .iter()
+            .any(|f| f.path.contains("SYMPHONY_TASK_NOTE.md")));
+
+        // Step 11: Human approves PR merge / completion
+        let approved_pr = orch.approve_pr_merge(&pr.id).await.unwrap();
+        assert!(approved_pr.human_approved);
+        let completed_task = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(completed_task.status, TaskStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_restart_persistence_and_crash_recovery_and_cancellation() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("symphony_test.db");
+        let repo_dir = temp.path().join("repo");
+        let ws_root = temp.path().join("workspaces");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::create_dir_all(&ws_root).unwrap();
+
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@symphony.local"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Symphony Test"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        std::fs::write(repo_dir.join("README.md"), "# Persistence Repo\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+
+        let task_id: String;
+        {
+            let storage = Storage::connect(&db_path).await.unwrap();
+            let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+            let orch = SymphonyOrchestrator::new(storage.clone(), None, secrets)
+                .await
+                .unwrap();
+
+            let project = Project {
+                id: "proj-persist".into(),
+                name: "Persistence Repo".into(),
+                repo_path: repo_dir.to_string_lossy().to_string(),
+                default_branch: "main".into(),
+                workspace_root: ws_root.to_string_lossy().to_string(),
+                workflow_path: None,
+                preferred_provider: ProviderKind::Simulated,
+                preferred_model: None,
+                tracker_kind: "manual".into(),
+                github_repo: None,
+                linear_project_slug: None,
+                required_labels: Vec::new(),
+                auto_dispatch: false,
+                max_concurrent_agents: 2,
+                validation_commands: Vec::new(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+            orch.create_project(project).await.unwrap();
+
+            let t = orch
+                .create_manual_task(
+                    "proj-persist".into(),
+                    Some("SYM-2".into()),
+                    "Test cancellation and crash recovery".into(),
+                    None,
+                    Some(2),
+                    Some(ProviderKind::Simulated),
+                    None,
+                    Vec::new(),
+                    false,
+                )
+                .await
+                .unwrap();
+            task_id = t.id.clone();
+
+            // Test cancellation transition
+            let cancelled = orch.cancel_task(&task_id, "user_cancelled").await.unwrap();
+            assert_eq!(cancelled.status, TaskStatus::Cancelled);
+
+            // Simulate a task left in Running state before unexpected process exit
+            let mut stale = cancelled;
+            stale.status = TaskStatus::Running;
+            storage.upsert_task(&stale).await.unwrap();
+        }
+
+        // Step 12: Re-open SQLite DB after restart and verify crash recovery + task history persistence
+        let storage2 = Storage::connect(&db_path).await.unwrap();
+        let secrets2 = SecretStore::new(&temp.path().join("vault")).unwrap();
+        let orch2 = SymphonyOrchestrator::new(storage2, None, secrets2)
+            .await
+            .unwrap();
+
+        let recovered = orch2.get_task(&task_id).await.unwrap();
+        assert_eq!(recovered.status, TaskStatus::Queued);
+        assert!(recovered
+            .last_error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Interrupted execution detected on startup recovery"));
+    }
+
+    #[tokio::test]
+    async fn test_codex_app_server_stdio_jsonrpc_protocol_fixture() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path().join("ws-codex");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        // Create a deterministic mock Codex App Server in Node.js speaking JSON-RPC 2.0 over stdio
+        let script_path = temp.path().join("mock_codex_server.js");
+        let script = r#"
+const readline = require('readline');
+const fs = require('fs');
+const path = require('path');
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  const msg = JSON.parse(line);
+  if (msg.method === 'initialize') {
+    process.stdout.write(JSON.stringify({ id: msg.id, result: { serverInfo: { name: 'codex-app-server', version: '0.147.0' } } }) + '\n');
+  } else if (msg.method === 'thread/start') {
+    process.stdout.write(JSON.stringify({ id: msg.id, result: { thread: { id: 'thread_test_1' } } }) + '\n');
+  } else if (msg.method === 'turn/start') {
+    fs.writeFileSync(path.join(process.cwd(), 'CODEX_OUTPUT.txt'), 'created by codex app-server\n');
+    process.stdout.write(JSON.stringify({ id: msg.id, result: { turn: { id: 'turn_test_1' } } }) + '\n');
+    process.stdout.write(JSON.stringify({ method: 'thread/tokenUsage/updated', params: { usage: { input_tokens: 320, output_tokens: 180, total_tokens: 500 } } }) + '\n');
+    process.stdout.write(JSON.stringify({ method: 'item/agentMessage/delta', params: { delta: 'Implemented CODEX_OUTPUT.txt' } }) + '\n');
+    process.stdout.write(JSON.stringify({ method: 'turn/completed', params: { turnId: 'turn_test_1' } }) + '\n');
+  }
+});
+"#;
+        std::fs::write(&script_path, script).unwrap();
+
+        let launch_cfg = AgentLaunchConfig {
+            provider: ProviderKind::Codex,
+            command: format!("node \"{}\"", script_path.display()),
+            model: Some("gpt-5-codex".into()),
+            workspace_path: ws.clone(),
+            issue_identifier: "SYM-10".into(),
+            issue_title: "Verify Codex JSON-RPC".into(),
+            task_id: "task-10".into(),
+            approval_policy: Value::String("never".into()),
+            thread_sandbox: Value::String("workspace-write".into()),
+            turn_sandbox_policy: None,
+            read_timeout_ms: 5_000,
+            turn_timeout_ms: 15_000,
+            extra_env: HashMap::new(),
+            dynamic_tools: Vec::new(),
+            require_human_approval_for_requests: false,
+        };
+
+        struct AutoApprove;
+        #[async_trait::async_trait]
+        impl ApprovalGate for AutoApprove {
+            async fn request_approval(
+                &self,
+                _req: ApprovalRequest,
+            ) -> SymphonyResult<ApprovalDecision> {
+                Ok(ApprovalDecision::AcceptForSession)
+            }
+        }
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+        let mut session = start_agent_session(
+            launch_cfg,
+            None,
+            None,
+            Arc::new(AutoApprove),
+            event_tx.clone(),
+        )
+        .await
+        .unwrap();
+
+        let outcome = session
+            .run_turn("Write CODEX_OUTPUT.txt", event_tx)
+            .await
+            .unwrap();
+        let _ = session.stop().await;
+
+        assert!(outcome.succeeded);
+        assert_eq!(outcome.session_id, "thread_test_1-turn_test_1");
+        assert_eq!(outcome.usage.total_tokens, 500);
+        assert!(ws.join("CODEX_OUTPUT.txt").exists());
+
+        let mut received_events = Vec::new();
+        while let Ok(ev) = event_rx.try_recv() {
+            received_events.push(ev);
+        }
+        assert!(!received_events.is_empty());
     }
 }

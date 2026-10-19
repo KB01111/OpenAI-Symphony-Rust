@@ -177,12 +177,11 @@ pub fn validate_workspace_path(
     // Check if the target itself is a symlink pointing outside
     if let Ok(meta) = std::fs::symlink_metadata(&abs_ws) {
         if meta.file_type().is_symlink() {
-            let resolved = std::fs::canonicalize(&abs_ws).map_err(|_| {
-                SymphonyError::SymlinkEscape {
+            let resolved =
+                std::fs::canonicalize(&abs_ws).map_err(|_| SymphonyError::SymlinkEscape {
                     workspace: abs_ws.display().to_string(),
                     root: canon_root.display().to_string(),
-                }
-            })?;
+                })?;
             let clean_resolved = strip_verbatim_prefix(resolved);
             if !clean_resolved.starts_with(&canon_root) {
                 return Err(SymphonyError::SymlinkEscape {
@@ -348,7 +347,9 @@ impl WorkspaceManager {
 
                 if !retry_out.status.success() {
                     return Err(SymphonyError::GitWorktreeError(
-                        String::from_utf8_lossy(&retry_out.stderr).trim().to_string(),
+                        String::from_utf8_lossy(&retry_out.stderr)
+                            .trim()
+                            .to_string(),
                     ));
                 }
             } else {
@@ -775,14 +776,7 @@ mod tests {
         };
 
         let allocated = mgr
-            .prepare_workspace(
-                "GH-101",
-                &ws_root,
-                Some(&repo_dir),
-                "main",
-                None,
-                &hooks,
-            )
+            .prepare_workspace("GH-101", &ws_root, Some(&repo_dir), "main", None, &hooks)
             .await
             .unwrap();
 
