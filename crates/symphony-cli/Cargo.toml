@@ -1,0 +1,26 @@
+[package]
+name = "symphony-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "symphony-cli"
+path = "src/main.rs"
+
+[dependencies]
+symphony-core = { path = "../symphony-core" }
+symphony-storage = { path = "../symphony-storage" }
+symphony-workspaces = { path = "../symphony-workspaces" }
+symphony-orchestrator = { path = "../symphony-orchestrator" }
+symphony-server = { path = "../symphony-server" }
+symphony-platform = { path = "../symphony-platform" }
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+uuid.workspace = true

@@ -1,0 +1,20 @@
+{
+  "name": "symphony-desktop-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.15.1",
+  "scripts": {
+    "dev:desktop": "pnpm --filter @symphony/desktop dev",
+    "build:desktop": "pnpm --filter @symphony/desktop build",
+    "dev:mobile": "pnpm --filter @symphony/mobile dev",
+    "build:mobile": "pnpm --filter @symphony/mobile build",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.8.2"
+  }
+}

@@ -1,0 +1,63 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/symphony-core",
+    "crates/symphony-storage",
+    "crates/symphony-workspaces",
+    "crates/symphony-trackers",
+    "crates/symphony-agents",
+    "crates/symphony-platform",
+    "crates/symphony-orchestrator",
+    "crates/symphony-server",
+    "crates/symphony-cli",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+authors = ["Symphony Desktop Contributors"]
+repository = "https://github.com/openai/symphony"
+
+[workspace.dependencies]
+tokio = { version = "1.43", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+sha2 = "0.10"
+hex = "0.4"
+regex = "1.11"
+liquid = "0.26"
+async-trait = "0.1"
+futures = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "macros", "migrate"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+axum = { version = "0.8", features = ["ws", "macros", "json"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+notify = "8.0"
+sysinfo = "0.33"
+dirs = "6.0"
+tempfile = "3.15"
+url = "2.5"
+rand = "0.8"
+base64 = "0.22"
+
+# Internal crates
+symphony-core = { path = "crates/symphony-core" }
+symphony-storage = { path = "crates/symphony-storage" }
+symphony-workspaces = { path = "crates/symphony-workspaces" }
+symphony-trackers = { path = "crates/symphony-trackers" }
+symphony-agents = { path = "crates/symphony-agents" }
+symphony-platform = { path = "crates/symphony-platform" }
+symphony-orchestrator = { path = "crates/symphony-orchestrator" }
+symphony-server = { path = "crates/symphony-server" }

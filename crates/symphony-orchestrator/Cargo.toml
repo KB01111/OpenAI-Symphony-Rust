@@ -1,0 +1,25 @@
+[package]
+name = "symphony-orchestrator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+symphony-core = { path = "../symphony-core" }
+symphony-storage = { path = "../symphony-storage" }
+symphony-workspaces = { path = "../symphony-workspaces" }
+symphony-trackers = { path = "../symphony-trackers" }
+symphony-agents = { path = "../symphony-agents" }
+symphony-platform = { path = "../symphony-platform" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+notify.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
