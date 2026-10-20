@@ -16,8 +16,8 @@ use serde::Serialize;
 use symphony_core::SymphonyError;
 use symphony_orchestrator::SymphonyOrchestrator;
 use symphony_platform::{
-    configure_windows_autostart, default_app_data_dir, windows_autostart_command, RuntimeDiscovery,
-    SecretStore, SingleInstanceGuard,
+    autostart_command, configure_windows_autostart, default_app_data_dir,
+    windows_autostart_command, RuntimeDiscovery, SecretStore, SingleInstanceGuard,
 };
 use symphony_server::{
     generate_access_token, start_http_server, RemoteAccessManager, ServerConfig, API_VERSION,
@@ -138,8 +138,11 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
     match configure_windows_autostart(enabled, &exe) {
         Ok(()) => Ok(cfg!(windows)),
         Err(err) => {
+            // Only an entry that launches this executable counts as enabled; a stale entry for
+            // another path is reported as unknown so the UI does not claim working autostart.
             let observed = match windows_autostart_command() {
-                Ok(Some(_)) => "enabled",
+                Ok(Some(command)) if command == autostart_command(&exe) => "enabled",
+                Ok(Some(_)) => "unknown",
                 Ok(None) => "disabled",
                 Err(_) => "unknown",
             };

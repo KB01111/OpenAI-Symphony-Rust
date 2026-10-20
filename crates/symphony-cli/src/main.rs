@@ -296,8 +296,9 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     // Settings saved before 2.0 carry the old default remote port, which is the local API's
-    // port (the desktop host migrates the same way).
-    if settings.remote_port == 4780 {
+    // default port. Migrate it only when it actually collides with the port this runtime bound,
+    // so a deliberately chosen 4780 (with the local API elsewhere) is left alone.
+    if settings.remote_port == 4780 && addr.port() == 4780 {
         settings.remote_port = symphony_core::domain::AppSettings::default().remote_port;
         if let Err(err) = orchestrator.storage().save_settings(&settings).await {
             tracing::warn!(error = %err, "Could not persist the migrated remote API port");

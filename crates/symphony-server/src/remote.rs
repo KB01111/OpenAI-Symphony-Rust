@@ -486,13 +486,15 @@ impl RemoteAccessManager {
     /// token stops working at once.
     pub async fn rotate_token(&self) -> Result<RemoteTokenIssued> {
         let mut inner = self.inner.lock().await;
+        // Load the settings first: once the new token is stored the caller must always receive
+        // it, so nothing that can fail runs after the vault write.
+        let settings = self.orchestrator.storage().get_settings().await?;
         let token = generate_access_token();
         self.orchestrator
             .secret_store()
             .set_secret(REMOTE_TOKEN_KEY, &token)?;
-        // The previous token stops working now, even if the settings cannot be loaded below.
+        // The previous token stops working now.
         self.set_token(&inner, Some(token.clone()));
-        let settings = self.orchestrator.storage().get_settings().await?;
         let status = self.apply_locked(&mut inner, &settings).await;
         info!("Remote access token rotated");
         Ok(RemoteTokenIssued { token, status })
@@ -501,13 +503,12 @@ impl RemoteAccessManager {
     /// Delete the token and stop the listener; remote clients are disconnected immediately.
     pub async fn revoke_token(&self) -> Result<RemoteAccessStatus> {
         let mut inner = self.inner.lock().await;
+        let settings = self.orchestrator.storage().get_settings().await?;
         self.orchestrator
             .secret_store()
             .delete_secret(REMOTE_TOKEN_KEY)?;
-        // Every remote request is rejected from here on, even if the settings cannot be loaded
-        // below (an absent token rejects all requests).
+        // Every remote request is rejected from here on (an absent token rejects all requests).
         self.set_token(&inner, None);
-        let settings = self.orchestrator.storage().get_settings().await?;
         let status = self.apply_locked(&mut inner, &settings).await;
         info!("Remote access token revoked");
         Ok(status)
