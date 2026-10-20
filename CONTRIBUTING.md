@@ -6,14 +6,24 @@ Thank you for contributing to **Symphony Desktop 1.0**. This guide covers the de
 
 ## Development Environment Setup (Windows 11 PowerShell)
 
+### Toolchain prerequisites
+
+| Tool | Version | Notes |
+| --- | --- | --- |
+| Node.js | `>= 22.13.0` | Hard requirement of pnpm 11 (`engines.node` in `package.json`). |
+| pnpm | `11.15.1` | Pinned by `packageManager` in the root `package.json`; this is the single source of truth used by CI. |
+| Rust | stable | Installed by `dtolnay/rust-toolchain@stable` in CI; `rustfmt` and `clippy` components are required. |
+
+If you use Corepack, run `corepack enable` once and the pinned pnpm version is applied automatically. Prefer the pinned version instead of installing another pnpm major locally: `pnpm-lock.yaml` and the `allowBuilds` build-script policy in `pnpm-workspace.yaml` are both maintained with pnpm 11 (pnpm 11 removed `onlyBuiltDependencies` in favour of `allowBuilds`).
+
 1. **Clone the repository**:
    ```powershell
    git clone https://github.com/KB01111/OpenAI-Symphony-Rust.git
    cd OpenAI-Symphony-Rust
    ```
-2. **Install Node.js workspace dependencies**:
+2. **Install Node.js workspace dependencies** (use `--frozen-lockfile` to reproduce CI exactly):
    ```powershell
-   pnpm install
+   pnpm install --frozen-lockfile
    ```
 3. **Verify the Rust workspace compiles**:
    ```powershell
@@ -30,8 +40,9 @@ Every pull request must pass the full verification suite cleanly before review:
 
 ```powershell
 cargo fmt --all -- --check
-cargo clippy --workspace -- -D warnings
-cargo test --workspace
+cargo check --workspace --locked
+cargo clippy --workspace --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
 ### 2. Frontend TypeScript Typechecking, Tests, and Production Builds
