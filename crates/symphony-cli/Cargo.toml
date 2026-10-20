@@ -23,3 +23,10 @@ serde_json.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

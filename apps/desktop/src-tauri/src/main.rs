@@ -428,7 +428,12 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let handle = app.handle().clone();
-            let data_dir = default_app_data_dir();
+            // Same override as `symphony-cli --data-dir` / `SYMPHONY_DATA_DIR`, so the desktop and
+            // the CLI agree on the data directory (and isolated native smoke tests are possible).
+            let data_dir = std::env::var_os("SYMPHONY_DATA_DIR")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(default_app_data_dir);
             std::fs::create_dir_all(&data_dir)?;
 
             let state = tauri::async_runtime::block_on(async {

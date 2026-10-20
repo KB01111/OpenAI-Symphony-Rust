@@ -67,9 +67,11 @@ jobs:
       - name: Check Rust workspace compilation
         run: cargo check --workspace --locked
 
-      - name: Run Clippy
-        run: cargo clippy --workspace --locked -- -D warnings
+      - name: Run Clippy (all targets, including tests)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # Includes the Windows-only native tests (owner-only DACLs, DPAPI vault, HKCU autostart:
+      # crates/symphony-platform/tests/windows_native.rs) and the CLI runtime lifecycle test.
       - name: Run Rust workspace unit & E2E tests
         run: cargo test --workspace --locked
 

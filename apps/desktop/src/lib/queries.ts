@@ -342,7 +342,14 @@ export function useSaveSettings() {
           await nativeHost.setAutostart(wanted);
           appliedAutostart = wanted;
         } catch (error) {
+          // Windows rejected the change (the host reads the registry back), so the entry is in
+          // the opposite state. Store that, so the switch never shows an autostart that is not
+          // registered, then report the failure.
           appliedAutostart = !wanted;
+          const reverted = await client
+            .saveSettings({ ...saved, start_background_runtime_on_login: !wanted })
+            .catch(() => null);
+          if (reverted) qc.setQueryData(qk.settings, reverted);
           throw error;
         }
       }
