@@ -117,10 +117,10 @@ fn assert_owner_only(path: &Path) {
         under_wine || sddl.starts_with("D:P"),
         "DACL must be protected: {sddl}"
     );
-    assert!(
-        sddl.contains(&user),
-        "current user must have access: {sddl}"
-    );
+    // SDDL renders well-known accounts as aliases: the built-in Administrator (RID 500, the
+    // GitHub-hosted runner account) appears as `LA` rather than its full SID.
+    let user_present = sddl.contains(&user) || (user.ends_with("-500") && sddl.contains(";;;LA)"));
+    assert!(user_present, "current user must have access: {sddl}");
     for broad in [";;;WD)", ";;;AU)", ";;;BU)", ";;;IU)", ";;;AN)"] {
         assert!(
             !sddl.contains(broad),
