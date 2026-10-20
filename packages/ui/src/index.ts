@@ -36,3 +36,4 @@ export { CodeBlock as SdkCodeBlock } from "@openai/apps-sdk-ui/components/CodeBl
 export { Markdown as SdkMarkdown } from "@openai/apps-sdk-ui/components/Markdown";
 export { Alert as SdkAlert } from "@openai/apps-sdk-ui/components/Alert";
 export { LoadingIndicator as SdkLoadingIndicator } from "@openai/apps-sdk-ui/components/Indicator";
+export { useDefaultLayout, type PanelImperativeHandle, type PanelSize } from "react-resizable-panels";

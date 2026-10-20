@@ -1,0 +1,380 @@
+/**
+ * TanStack Query bindings for the runtime API. Components never fetch directly; they use these
+ * hooks so caching, invalidation (driven by the event stream) and fallback polling are uniform.
+ */
+import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from "@tanstack/react-query";
+import { errorMessage, isTauri, nativeHost, type SymphonyApiError } from "@symphony/api-client";
+import type {
+  AppSettings,
+  ApprovalDecision,
+  ApprovalRequest,
+  CreateProjectRequest,
+  CreateTaskRequest,
+  ProjectUpdate,
+  Task,
+  TaskStatus
+} from "@symphony/shared-types";
+import { useNotify } from "@symphony/ui";
+import { useClient, useRuntime } from "../runtime/RuntimeProvider.js";
+import { qk } from "./queryKeys.js";
+import { useT } from "./i18n.js";
+
+type Opts<T> = Omit<UseQueryOptions<T, SymphonyApiError>, "queryKey" | "queryFn">;
+
+function usePoll(base?: number): number | false {
+  const { pollInterval, documentHidden } = useRuntime();
+  if (pollInterval === false) return base && !documentHidden ? base : false;
+  return pollInterval;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------------------------
+
+/** Orchestrator snapshot (counts, live sessions, hardware). Refreshed by events; hardware ticks every 15 s while visible. */
+export function useRuntimeState(opts?: Opts<Awaited<ReturnType<ReturnType<typeof useClient>["getState"]>>>) {
+  const client = useClient();
+  const refetchInterval = usePoll(15_000);
+  return useQuery({ queryKey: qk.state, queryFn: ({ signal }) => client.getState(signal), refetchInterval, ...opts });
+}
+
+export function useProjects() {
+  const client = useClient();
+  return useQuery({ queryKey: qk.projects, queryFn: ({ signal }) => client.listProjects(signal), staleTime: 30_000 });
+}
+
+export function useTasks(projectId?: string | null) {
+  const client = useClient();
+  const refetchInterval = usePoll();
+  return useQuery({
+    queryKey: qk.tasks(projectId),
+    queryFn: ({ signal }) => client.listTasks({ projectId }, signal),
+    refetchInterval
+  });
+}
+
+export function useTask(id: string | null | undefined) {
+  const client = useClient();
+  const refetchInterval = usePoll();
+  return useQuery({
+    queryKey: qk.task(id ?? ""),
+    queryFn: ({ signal }) => client.getTask(id!, signal),
+    enabled: Boolean(id),
+    refetchInterval
+  });
+}
+
+export function useTaskEventHistory(id: string | null | undefined) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.taskEvents(id ?? ""),
+    queryFn: ({ signal }) => client.listTaskEvents(id!, 500, signal),
+    enabled: Boolean(id),
+    staleTime: 10_000
+  });
+}
+
+export function useTaskAttempts(id: string | null | undefined) {
+  const client = useClient();
+  return useQuery({ queryKey: qk.taskAttempts(id ?? ""), queryFn: ({ signal }) => client.listTaskAttempts(id!, signal), enabled: Boolean(id) });
+}
+
+export function useTaskValidations(id: string | null | undefined) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.taskValidations(id ?? ""),
+    queryFn: ({ signal }) => client.listTaskValidations(id!, signal),
+    enabled: Boolean(id)
+  });
+}
+
+export function useTaskDiff(id: string | null | undefined) {
+  const client = useClient();
+  return useQuery({ queryKey: qk.taskDiff(id ?? ""), queryFn: ({ signal }) => client.getTaskDiff(id!, signal), enabled: Boolean(id), staleTime: 5_000 });
+}
+
+export function useApprovals(pendingOnly = true) {
+  const client = useClient();
+  const refetchInterval = usePoll();
+  return useQuery({
+    queryKey: qk.approvals(pendingOnly),
+    queryFn: ({ signal }) => client.listApprovals(pendingOnly, signal),
+    refetchInterval
+  });
+}
+
+export function usePullRequests(projectId?: string | null) {
+  const client = useClient();
+  return useQuery({ queryKey: qk.prs(projectId), queryFn: ({ signal }) => client.listPullRequests(projectId, signal) });
+}
+
+export function usePullRequest(id: string | null | undefined) {
+  const client = useClient();
+  return useQuery({ queryKey: qk.pr(id ?? ""), queryFn: ({ signal }) => client.getPullRequest(id!, signal), enabled: Boolean(id) });
+}
+
+export function useWorktrees() {
+  const client = useClient();
+  return useQuery({ queryKey: qk.worktrees, queryFn: ({ signal }) => client.listWorktrees(signal) });
+}
+
+export function useWorkflow() {
+  const client = useClient();
+  return useQuery({ queryKey: qk.workflow, queryFn: ({ signal }) => client.getWorkflow(signal), staleTime: Infinity });
+}
+
+export function useSettings() {
+  const client = useClient();
+  return useQuery({ queryKey: qk.settings, queryFn: ({ signal }) => client.getSettings(signal), staleTime: Infinity });
+}
+
+export function useProviders() {
+  const client = useClient();
+  return useQuery({ queryKey: qk.providers, queryFn: ({ signal }) => client.listProviders(false, signal), staleTime: 60_000 });
+}
+
+export function useCredentials() {
+  const client = useClient();
+  return useQuery({ queryKey: qk.credentials, queryFn: ({ signal }) => client.listCredentials(signal) });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mutations — every mutation reports failures through a toast and refreshes affected caches.
+// ---------------------------------------------------------------------------------------------
+
+function useFailureToast() {
+  const notify = useNotify();
+  const t = useT();
+  return (error: unknown) => notify("error", t.errors.generic, errorMessage(error));
+}
+
+function useTaskInvalidation() {
+  const qc = useQueryClient();
+  return (task?: Task) => {
+    void qc.invalidateQueries({ queryKey: qk.tasksAll });
+    void qc.invalidateQueries({ queryKey: qk.state });
+    void qc.invalidateQueries({ queryKey: qk.worktrees });
+    if (task) {
+      qc.setQueryData(qk.task(task.id), task);
+      void qc.invalidateQueries({ queryKey: qk.taskAttempts(task.id) });
+    }
+  };
+}
+
+export function useCreateProject() {
+  const client = useClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateProjectRequest) => client.createProject(input),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.projects })
+  });
+}
+
+export function useValidateRepository() {
+  const client = useClient();
+  return useMutation({ mutationFn: (path: string) => client.validateRepository(path) });
+}
+
+export function useUpdateProject() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: ({ id, update }: { id: string; update: ProjectUpdate }) => client.updateProject(id, update),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.projects }),
+    onError
+  });
+}
+
+export function useDeleteProject() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: (id: string) => client.deleteProject(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.projects });
+      void qc.invalidateQueries({ queryKey: qk.tasksAll });
+    },
+    onError
+  });
+}
+
+export function useCreateTask() {
+  const client = useClient();
+  const invalidate = useTaskInvalidation();
+  return useMutation({
+    mutationFn: (input: CreateTaskRequest) => client.createTask(input),
+    onSuccess: (task) => invalidate(task)
+  });
+}
+
+/**
+ * Manual status move. Optimistically moves the card (board drag-and-drop) and rolls back if the
+ * runtime's state machine rejects the transition; the runtime response is authoritative.
+ */
+export function useMoveTaskStatus() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const invalidate = useTaskInvalidation();
+  const onFailure = useFailureToast();
+  return useMutation({
+    mutationFn: ({ id, status }: { id: string; status: TaskStatus }) => client.moveTaskStatus(id, status),
+    onMutate: async ({ id, status }) => {
+      await qc.cancelQueries({ queryKey: qk.tasksAll });
+      const snapshots = qc.getQueriesData<Task[]>({ queryKey: qk.tasksAll });
+      qc.setQueriesData<Task[]>({ queryKey: qk.tasksAll }, (list) =>
+        list?.map((t) => (t.id === id ? { ...t, status } : t))
+      );
+      return { snapshots };
+    },
+    onError: (error, _vars, context) => {
+      context?.snapshots.forEach(([key, data]) => qc.setQueryData(key, data));
+      onFailure(error);
+    },
+    onSuccess: (task) => invalidate(task)
+  });
+}
+
+function useTaskAction(action: (id: string) => Promise<Task>) {
+  const invalidate = useTaskInvalidation();
+  const onError = useFailureToast();
+  return useMutation({ mutationFn: action, onSuccess: (task) => invalidate(task), onError });
+}
+
+export function useDispatchTask() {
+  const client = useClient();
+  return useTaskAction((id) => client.dispatchTask(id));
+}
+
+export function useRetryTask() {
+  const client = useClient();
+  return useTaskAction((id) => client.retryTask(id));
+}
+
+export function useCancelTask() {
+  const client = useClient();
+  return useTaskAction((id) => client.cancelTask(id));
+}
+
+export function useDecideApproval() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: ({ approval, decision }: { approval: ApprovalRequest; decision: ApprovalDecision }) =>
+      client.decideApproval(approval.id, decision),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: qk.approvalsAll });
+      void qc.invalidateQueries({ queryKey: qk.state });
+    },
+    onError
+  });
+}
+
+export function useApprovePullRequest() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: (id: string) => client.approvePullRequest(id),
+    onSuccess: (pr) => {
+      qc.setQueryData(qk.pr(pr.id), pr);
+      void qc.invalidateQueries({ queryKey: qk.prsAll });
+      void qc.invalidateQueries({ queryKey: qk.tasksAll });
+    },
+    onError
+  });
+}
+
+export function useSaveWorkflow() {
+  const client = useClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (raw: string) => client.saveWorkflow(raw),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.workflow })
+  });
+}
+
+/** Persist settings to the runtime and apply native side effects (login autostart). */
+export function useSaveSettings() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: async (next: AppSettings) => {
+      const previous = qc.getQueryData<AppSettings>(qk.settings);
+      const saved = await client.saveSettings(next);
+      if (isTauri() && previous?.start_background_runtime_on_login !== saved.start_background_runtime_on_login) {
+        await nativeHost.setAutostart(saved.start_background_runtime_on_login);
+      }
+      return saved;
+    },
+    onSuccess: (saved) => {
+      qc.setQueryData(qk.settings, saved);
+      void qc.invalidateQueries({ queryKey: qk.providers });
+    },
+    onError
+  });
+}
+
+export function useSaveCredential() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: ({ key, value }: { key: string; value: string }) => client.saveCredential(key, value),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.credentials });
+      void qc.invalidateQueries({ queryKey: qk.providers });
+    },
+    onError
+  });
+}
+
+export function useDeleteCredential() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: (key: string) => client.deleteCredential(key),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.credentials });
+      void qc.invalidateQueries({ queryKey: qk.providers });
+    },
+    onError
+  });
+}
+
+export function useSchedulerToggle() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: (paused: boolean) => client.setSchedulerPaused(paused),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.state }),
+    onError
+  });
+}
+
+export function useRefreshRuntime() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: () => client.refresh(),
+    onSuccess: () => void qc.invalidateQueries(),
+    onError
+  });
+}
+
+export function useRefreshProviders() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: () => client.listProviders(true),
+    onSuccess: (data) => qc.setQueryData(qk.providers, data),
+    onError
+  });
+}

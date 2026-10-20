@@ -1,26 +1,69 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { readRuntimeDiscovery } from "@symphony/api-client/node";
+
+/**
+ * Development-only runtime discovery for browser sessions (`pnpm dev`, Playwright): serves the
+ * local runtime's `runtime.json` endpoint + token at `/__symphony/runtime`. Not part of
+ * production builds — the packaged app discovers the runtime over Tauri IPC.
+ */
+function symphonyDevDiscovery(): Plugin {
+  return {
+    name: "symphony-dev-discovery",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use("/__symphony/runtime", (req, res) => {
+        const host = (req.headers.host ?? "").split(":")[0];
+        if (host !== "localhost" && host !== "127.0.0.1") {
+          res.statusCode = 403;
+          res.end();
+          return;
+        }
+        void readRuntimeDiscovery().then((record) => {
+          res.setHeader("Content-Type", "application/json");
+          res.setHeader("Cache-Control", "no-store");
+          if (!record) {
+            res.statusCode = 503;
+            res.end(JSON.stringify({ error: "No running Symphony runtime found (start symphony-cli)." }));
+            return;
+          }
+          res.end(JSON.stringify({ base_url: record.base_url, token: record.token }));
+        });
+      });
+    }
+  };
+}
 
 export default defineConfig({
-  plugins: [react(), ...(process.env.VITEST ? [] : [tailwindcss()])],
+  plugins: [react(), ...(process.env.VITEST ? [] : [tailwindcss(), symphonyDevDiscovery()])],
   clearScreen: false,
   server: {
     port: 1420,
-    strictPort: true
+    strictPort: true,
+    host: "127.0.0.1"
+  },
+  build: {
+    target: "es2022",
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("@codemirror") || id.includes("/codemirror/") || id.includes("@lezer")) return "editor";
+          if (id.includes("@fluentui") || id.includes("@griffel") || id.includes("tabster") || id.includes("keyborg")) return "fluent";
+          if (id.includes("@openai/apps-sdk-ui") || id.includes("react-markdown") || id.includes("shiki") || id.includes("micromark") || id.includes("mdast") || id.includes("hast")) return "apps-sdk";
+          return undefined;
+        }
+      }
+    }
   },
   test: {
     environment: "jsdom",
     globals: true,
-    setupFiles: ["./src/test-setup.ts"],
+    setupFiles: ["./src/test/setup.ts"],
     css: false,
-    deps: {
-      optimizer: {
-        web: {
-          enabled: true,
-          include: ["@fluentui/react-components", "lucide-react"]
-        }
-      }
-    }
+    include: ["src/**/*.test.{ts,tsx}"],
+    server: { deps: { inline: ["@openai/apps-sdk-ui"] } }
   }
 });
