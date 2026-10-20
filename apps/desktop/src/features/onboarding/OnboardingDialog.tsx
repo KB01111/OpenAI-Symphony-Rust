@@ -24,7 +24,6 @@ export default function OnboardingDialog() {
   const providers = useProviders();
   const projects = useProjects();
   const save = useSaveSettings();
-  const addProjectOpen = useUiStore((s) => s.addProjectOpen);
   const setAddProjectOpen = useUiStore((s) => s.setAddProjectOpen);
   const [step, setStep] = useState<Step>("welcome");
   const index = STEPS.indexOf(step);
@@ -49,8 +48,9 @@ export default function OnboardingDialog() {
   const installedAgents = detected.filter((p) => p.provider !== "simulated");
 
   return (
-    // Hidden (not unmounted) while the Add repository dialog is on top, so progress is kept.
-    <Dialog open={!addProjectOpen} modalType="alert">
+    // The Add repository dialog opens on top of this one (nested Fluent dialogs), so progress
+    // through the steps is kept while the user registers a repository.
+    <Dialog open modalType="alert">
       <DialogSurface aria-describedby={undefined} className="max-w-xl">
         <DialogBody>
           <DialogTitle>
