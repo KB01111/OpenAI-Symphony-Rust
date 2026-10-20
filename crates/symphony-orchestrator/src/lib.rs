@@ -1532,9 +1532,18 @@ Please implement the requested changes cleanly in the current Git workspace, run
         const ALIASES: [&str; 3] = ["GITHUB_TOKEN", "GH_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
         ALIASES
             .iter()
-            .find_map(|key| self.secret_store.get_secret(key))
-            .or_else(|| ALIASES.iter().find_map(|key| std::env::var(key).ok()))
-            .filter(|token| !token.trim().is_empty())
+            .find_map(|key| {
+                self.secret_store
+                    .get_secret(key)
+                    .filter(|token| !token.trim().is_empty())
+            })
+            .or_else(|| {
+                ALIASES.iter().find_map(|key| {
+                    std::env::var(key)
+                        .ok()
+                        .filter(|token| !token.trim().is_empty())
+                })
+            })
     }
 
     /// Provider API keys stored in the vault, passed to agent subprocesses explicitly so they work
