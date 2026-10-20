@@ -97,7 +97,7 @@ mod tests {
         i3.priority = Some(2);
         i3.created_at = Some(Utc.with_ymd_and_hms(2026, 1, 3, 0, 0, 0).unwrap());
 
-        let mut list = vec![i1.clone(), i3.clone(), i2.clone()];
+        let mut list = [i1.clone(), i3.clone(), i2.clone()];
         list.sort_by(|a, b| a.cmp_dispatch_order(b));
         assert_eq!(list[0].identifier, "GH-20");
         assert_eq!(list[1].identifier, "GH-05");

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use ts_rs::TS;
 
 use crate::domain::Issue;
 use crate::error::{SymphonyError, SymphonyResult};
@@ -17,6 +18,9 @@ pub struct WorkflowDefinition {
     pub config: Map<String, Value>,
     pub prompt_template: String,
     pub source_path: Option<PathBuf>,
+    /// Original document text (front matter + body) so editors can round-trip the full file.
+    #[serde(default)]
+    pub raw_source: String,
 }
 
 impl WorkflowDefinition {
@@ -32,6 +36,7 @@ impl WorkflowDefinition {
                     config,
                     prompt_template: body.trim().to_string(),
                     source_path,
+                    raw_source: raw.to_string(),
                 });
             } else if let Some(yaml_str) = rest.strip_suffix("\n---") {
                 let config = parse_yaml_front_matter(yaml_str)?;
@@ -39,6 +44,7 @@ impl WorkflowDefinition {
                     config,
                     prompt_template: String::new(),
                     source_path,
+                    raw_source: raw.to_string(),
                 });
             } else {
                 return Err(SymphonyError::WorkflowParseError(
@@ -55,6 +61,7 @@ impl WorkflowDefinition {
             config: Map::new(),
             prompt_template: normalized.trim().to_string(),
             source_path,
+            raw_source: raw.to_string(),
         })
     }
 
@@ -89,7 +96,7 @@ fn parse_yaml_front_matter(yaml_str: &str) -> SymphonyResult<Map<String, Value>>
 }
 
 /// Typed view over `WorkflowDefinition.config` (SPEC.md Section 5.3 & Section 6)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceConfig {
     pub tracker_kind: String,
     pub tracker_provider: Map<String, Value>,
@@ -97,6 +104,7 @@ pub struct ServiceConfig {
     pub active_states: Vec<String>,
     pub terminal_states: Vec<String>,
     pub polling_interval_ms: u64,
+    #[ts(type = "string")]
     pub workspace_root: PathBuf,
     pub hooks: HooksConfig,
     pub agent: AgentConfig,
@@ -104,7 +112,7 @@ pub struct ServiceConfig {
     pub server_port: Option<u16>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct HooksConfig {
     pub after_create: Option<String>,
     pub before_run: Option<String>,
@@ -113,7 +121,7 @@ pub struct HooksConfig {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct AgentConfig {
     pub max_concurrent_agents: u32,
     pub max_turns: u32,
@@ -121,7 +129,7 @@ pub struct AgentConfig {
     pub max_concurrent_agents_by_state: HashMap<String, u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct CodexConfig {
     pub command: String,
     pub approval_policy: Value,
@@ -190,6 +198,26 @@ impl Default for ServiceConfig {
 }
 
 impl ServiceConfig {
+    /// Copy of the configuration that is safe to return over the API or print:
+    /// tracker credential values (`token`, `api_key`, `secret`, `password`) are masked.
+    pub fn redacted_for_display(&self) -> Self {
+        let mut copy = self.clone();
+        for (key, value) in copy.tracker_provider.iter_mut() {
+            let lower = key.to_lowercase();
+            let sensitive = ["token", "api_key", "apikey", "secret", "password"]
+                .iter()
+                .any(|needle| lower.contains(needle));
+            if sensitive {
+                if let Value::String(s) = value {
+                    if !s.is_empty() {
+                        *value = Value::String("[redacted]".to_string());
+                    }
+                }
+            }
+        }
+        copy
+    }
+
     /// Extract typed `ServiceConfig` from a `WorkflowDefinition` (SPEC.md Section 5.3)
     pub fn from_workflow(wf: &WorkflowDefinition) -> SymphonyResult<Self> {
         let mut cfg = Self::default();

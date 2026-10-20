@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Symphony Desktop",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "identifier": "com.openai.symphony.desktop",
   "build": {
     "beforeDevCommand": "pnpm --filter @symphony/desktop dev",
@@ -13,17 +13,39 @@
     "windows": [
       {
         "label": "main",
-        "title": "Symphony Desktop — AI Coding Orchestration Platform",
-        "width": 1480,
-        "height": 920,
-        "minWidth": 1080,
-        "minHeight": 700,
+        "title": "Symphony Desktop",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 640,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "center": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob:",
+        "font-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:*",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'none'",
+        "frame-ancestors": "'none'"
+      },
+      "devCsp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'unsafe-inline'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob:",
+        "font-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* ws://localhost:*",
+        "object-src": "'none'"
+      },
+      "freezePrototype": true
     }
   },
   "bundle": {

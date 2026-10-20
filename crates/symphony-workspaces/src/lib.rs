@@ -21,6 +21,43 @@ pub const SECRET_ENV_VARS_TO_STRIP: &[&str] = &[
     "SYMPHONY_REMOTE_TOKEN",
 ];
 
+const MAX_UNTRACKED_DIFF_FILES: usize = 200;
+
+async fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn count_text_lines(path: &Path) -> u32 {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() && meta.len() <= 2 * 1024 * 1024 => std::fs::read(path)
+            .map(|bytes| bytes.iter().filter(|b| **b == b'\n').count() as u32)
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn truncate_utf8(mut text: String, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text, false);
+    }
+    let mut cut = max_bytes;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    text.truncate(cut);
+    (text, true)
+}
+
 /// Compute deterministic, collision-resistant workspace directory key from `issue.identifier` (SPEC.md Section 4.2).
 /// - Replaces any character outside `[A-Za-z0-9._-]` with `_`.
 /// - If sanitization altered the identifier, appends `--<16-char SHA-256 hex prefix>`.
@@ -402,7 +439,8 @@ impl WorkspaceManager {
         }
     }
 
-    /// Inspect modified/added/deleted files in the workspace worktree.
+    /// Inspect modified/added/deleted files in the workspace worktree, including untracked files,
+    /// with real line counts from `git diff --numstat HEAD`.
     pub async fn inspect_changed_files(
         &self,
         workspace_path: &Path,
@@ -410,67 +448,106 @@ impl WorkspaceManager {
         if !workspace_path.exists() {
             return Ok(Vec::new());
         }
-        let status_out = Command::new("git")
-            .arg("-C")
-            .arg(workspace_path)
-            .arg("status")
-            .arg("--porcelain")
-            .output()
-            .await;
-
-        let Ok(out) = status_out else {
+        let Some(status) = git_stdout(
+            workspace_path,
+            &["status", "--porcelain", "--untracked-files=all"],
+        )
+        .await
+        else {
             return Ok(Vec::new());
         };
-        if !out.status.success() {
-            return Ok(Vec::new());
+        let numstat = git_stdout(workspace_path, &["diff", "--numstat", "HEAD"])
+            .await
+            .unwrap_or_default();
+        let mut counts = std::collections::HashMap::new();
+        for line in numstat.lines() {
+            let mut parts = line.splitn(3, '\t');
+            let (Some(add), Some(del), Some(path)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            counts.insert(
+                path.trim().to_string(),
+                (
+                    add.parse::<u32>().unwrap_or(0),
+                    del.parse::<u32>().unwrap_or(0),
+                ),
+            );
         }
 
         let mut files = Vec::new();
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
+        for line in status.lines() {
             if line.len() < 4 {
                 continue;
             }
             let code = line[..2].trim().to_string();
-            let path = line[3..].trim().to_string();
+            let raw_path = line[3..].trim();
+            // Renames are reported as `old -> new`; the new path is what exists on disk.
+            let path = raw_path
+                .rsplit_once(" -> ")
+                .map(|(_, new)| new)
+                .unwrap_or(raw_path)
+                .trim_matches('"')
+                .to_string();
             let status = match code.as_str() {
-                "M" | "MM" => "modified",
+                "M" | "MM" | "AM" => "modified",
                 "A" | "??" => "added",
                 "D" => "deleted",
-                "R" => "renamed",
+                c if c.starts_with('R') => "renamed",
                 _ => "changed",
             }
             .to_string();
-
+            let (additions, deletions) = match counts.get(&path) {
+                Some(&(a, d)) => (a, d),
+                None if code == "??" => (count_text_lines(&workspace_path.join(&path)), 0),
+                None => (0, 0),
+            };
             files.push(ChangedFileSummary {
                 path,
                 status,
-                additions: 1,
-                deletions: 0,
+                additions,
+                deletions,
             });
         }
         Ok(files)
     }
 
-    /// Get unified diff preview of the workspace.
+    /// Get unified diff preview of the workspace (tracked changes plus untracked files), capped at 32 KB.
     pub async fn get_diff_preview(&self, workspace_path: &Path) -> SymphonyResult<String> {
-        if !workspace_path.exists() {
-            return Ok(String::new());
-        }
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(workspace_path)
-            .arg("diff")
-            .arg("HEAD")
-            .output()
-            .await;
+        Ok(self.collect_diff(workspace_path, 32_000).await.0)
+    }
 
-        match out {
-            Ok(o) if o.status.success() => {
-                let s = String::from_utf8_lossy(&o.stdout).to_string();
-                Ok(s.chars().take(32_000).collect())
-            }
-            _ => Ok(String::new()),
+    /// Unified diff of tracked changes against `HEAD` followed by diffs for untracked files.
+    /// Returns the diff (truncated on a UTF-8 boundary to `max_bytes`) and whether truncation occurred.
+    pub async fn collect_diff(&self, workspace_path: &Path, max_bytes: usize) -> (String, bool) {
+        if !workspace_path.exists() {
+            return (String::new(), false);
         }
+        let mut diff = git_stdout(workspace_path, &["diff", "HEAD"])
+            .await
+            .unwrap_or_default();
+        let untracked = git_stdout(
+            workspace_path,
+            &["ls-files", "--others", "--exclude-standard"],
+        )
+        .await
+        .unwrap_or_default();
+        for path in untracked.lines().take(MAX_UNTRACKED_DIFF_FILES) {
+            if diff.len() >= max_bytes {
+                break;
+            }
+            // `git diff --no-index` exits with 1 when files differ, so read stdout regardless of status.
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(workspace_path)
+                .args(["diff", "--no-index", "--", "/dev/null", path])
+                .output()
+                .await;
+            if let Ok(o) = out {
+                diff.push_str(&String::from_utf8_lossy(&o.stdout));
+            }
+        }
+        truncate_utf8(diff, max_bytes)
     }
 
     /// Safely remove a workspace directory and detach its Git worktree registration.

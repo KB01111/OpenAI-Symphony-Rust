@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use symphony_core::{HardwareSnapshot, ResourcePolicy, SymphonyError, SymphonyResult};
 use sysinfo::System;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Windows 11 Power Status via `kernel32!GetSystemPowerStatus`.
 #[derive(Debug, Clone, Copy)]
@@ -367,7 +367,7 @@ pub fn configure_windows_autostart(enable: bool, exe_path: &Path) -> SymphonyRes
                 ])
                 .status()?;
             if !status.success() {
-                warn!("Failed to set Windows HKCU Run auto-start entry");
+                tracing::warn!("Failed to set Windows HKCU Run auto-start entry");
             }
         } else {
             let _ = Command::new("reg")
@@ -380,6 +380,61 @@ pub fn configure_windows_autostart(enable: bool, exe_path: &Path) -> SymphonyRes
         let _ = (enable, exe_path);
     }
     Ok(())
+}
+
+/// Runtime endpoint discovery record written by the process that owns the orchestration runtime.
+///
+/// Stored at `<data_dir>/runtime.json` with owner-only permissions so local clients (the desktop
+/// webview via Tauri IPC, the Vite dev server, integration tests) can find the API port — which
+/// may be an ephemeral fallback — and its per-launch access token.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RuntimeDiscovery {
+    pub base_url: String,
+    pub token: String,
+    pub pid: u32,
+    pub api_version: u32,
+    pub owner: String,
+}
+
+impl RuntimeDiscovery {
+    pub fn file_path(data_dir: &Path) -> PathBuf {
+        data_dir.join("runtime.json")
+    }
+
+    /// Persist the record, readable only by the current user.
+    pub fn write(&self, data_dir: &Path) -> SymphonyResult<PathBuf> {
+        std::fs::create_dir_all(data_dir)?;
+        let path = Self::file_path(data_dir);
+        let tmp = path.with_extension("json.tmp");
+        {
+            let mut opts = OpenOptions::new();
+            opts.create(true).write(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut f = opts.open(&tmp)?;
+            f.write_all(
+                serde_json::to_string_pretty(self)
+                    .map_err(|e| SymphonyError::JsonError(e.to_string()))?
+                    .as_bytes(),
+            )?;
+        }
+        std::fs::rename(&tmp, &path)?;
+        Ok(path)
+    }
+
+    /// Read a discovery record whose owning process is still alive.
+    pub fn read_live(data_dir: &Path) -> Option<Self> {
+        let raw = std::fs::read_to_string(Self::file_path(data_dir)).ok()?;
+        let record: Self = serde_json::from_str(&raw).ok()?;
+        is_process_alive(record.pid).then_some(record)
+    }
+
+    pub fn remove(data_dir: &Path) {
+        let _ = std::fs::remove_file(Self::file_path(data_dir));
+    }
 }
 
 /// Default application data directory (`%LOCALAPPDATA%\SymphonyDesktop` on Windows).

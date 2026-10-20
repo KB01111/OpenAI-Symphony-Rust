@@ -94,6 +94,9 @@ pub enum SymphonyError {
 
     #[error("io_error: {0}")]
     IoError(String),
+
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 impl SymphonyError {
@@ -129,6 +132,7 @@ impl SymphonyError {
             Self::StorageError(_) => "storage_error",
             Self::Unauthorized(_) => "unauthorized",
             Self::IoError(_) => "io_error",
+            Self::Conflict(_) => "conflict",
         }
     }
 }

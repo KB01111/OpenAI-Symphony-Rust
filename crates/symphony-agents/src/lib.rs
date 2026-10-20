@@ -19,6 +19,9 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 
+pub mod detection;
+pub use detection::{detect_provider_status, detect_provider_statuses, find_on_path};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLaunchConfig {
     pub provider: ProviderKind,
@@ -138,7 +141,8 @@ pub async fn start_agent_session(
             Ok(Box::new(session))
         }
         ProviderKind::Simulated => {
-            let session = SimulatedAgentSession::new(config, existing_thread_id);
+            let session = SimulatedAgentSession::new(config, existing_thread_id)
+                .with_approval_gate(approval_gate);
             Ok(Box::new(session))
         }
     }
@@ -1187,12 +1191,22 @@ impl AgentSession for OpenCodeSession {
     }
 }
 
-/// Deterministic Simulated Agent Provider for E2E & Automated Acceptance Testing
+/// Deterministic Simulated Agent Provider for E2E & Automated Acceptance Testing.
+///
+/// Emits the same structured item events as the Codex App Server (`item/agentMessage`,
+/// `item/commandExecution`, `item/fileChange`, `turn/completed`) so the desktop timeline can be
+/// exercised end-to-end without paid models. Prompt markers control behaviour:
+/// - `SIMULATE_FAILURE` fails the turn.
+/// - `SIMULATE_APPROVAL` raises a command-execution approval through the host approval gate and
+///   waits for the operator's decision.
+///
+/// `SYMPHONY_SIMULATED_STEP_MS` (default 150) sets the delay between streamed items.
 pub struct SimulatedAgentSession {
     config: AgentLaunchConfig,
     thread_id: String,
     turn_counter: u32,
     cancel_tx: Option<oneshot::Sender<()>>,
+    approval_gate: Option<Arc<dyn ApprovalGate>>,
 }
 
 impl SimulatedAgentSession {
@@ -1203,6 +1217,72 @@ impl SimulatedAgentSession {
                 .unwrap_or_else(|| format!("thread-sim-{}", uuid::Uuid::new_v4())),
             turn_counter: 0,
             cancel_tx: None,
+            approval_gate: None,
+        }
+    }
+
+    pub fn with_approval_gate(mut self, gate: Arc<dyn ApprovalGate>) -> Self {
+        self.approval_gate = Some(gate);
+        self
+    }
+
+    fn step_delay() -> Duration {
+        let ms = std::env::var("SYMPHONY_SIMULATED_STEP_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(150);
+        Duration::from_millis(ms)
+    }
+
+    fn stream_event(
+        &self,
+        event_type: &str,
+        session_id: &str,
+        turn_id: &str,
+        message: String,
+        usage: Option<TokenUsage>,
+        raw: Value,
+    ) -> AgentStreamEvent {
+        AgentStreamEvent {
+            event_type: event_type.into(),
+            timestamp: Utc::now(),
+            session_id: Some(session_id.to_string()),
+            thread_id: Some(self.thread_id.clone()),
+            turn_id: Some(turn_id.to_string()),
+            pid: Some(std::process::id()),
+            message: Some(message),
+            usage,
+            rate_limits: None,
+            raw,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn outcome(
+        &self,
+        turn_id: String,
+        session_id: String,
+        succeeded: bool,
+        cancelled: bool,
+        error: Option<(&str, String)>,
+        usage: TokenUsage,
+        messages: Vec<String>,
+    ) -> TurnExecutionOutcome {
+        TurnExecutionOutcome {
+            thread_id: self.thread_id.clone(),
+            turn_id,
+            session_id,
+            succeeded,
+            cancelled,
+            error_code: error.as_ref().map(|(code, _)| code.to_string()),
+            error_message: error.map(|(_, msg)| msg),
+            usage,
+            rate_limits: if succeeded {
+                Some(json!({ "requests_remaining": 999 }))
+            } else {
+                None
+            },
+            assistant_messages: messages,
         }
     }
 }
@@ -1235,59 +1315,148 @@ impl AgentSession for SimulatedAgentSession {
         let session_id = format!("{}-{}", self.thread_id, turn_id);
         let (tx, mut rx) = oneshot::channel();
         self.cancel_tx = Some(tx);
+        let delay = Self::step_delay();
 
         let _ = event_tx
-            .send(AgentStreamEvent {
-                event_type: "session_started".into(),
-                timestamp: Utc::now(),
-                session_id: Some(session_id.clone()),
-                thread_id: Some(self.thread_id.clone()),
-                turn_id: Some(turn_id.clone()),
-                pid: Some(std::process::id()),
-                message: Some(format!(
+            .send(self.stream_event(
+                "session_started",
+                &session_id,
+                &turn_id,
+                format!(
                     "Simulated agent started turn for {}",
                     self.config.issue_identifier
-                )),
-                usage: None,
-                rate_limits: None,
-                raw: json!({ "prompt_len": prompt.len() }),
-            })
+                ),
+                None,
+                json!({ "prompt_len": prompt.len() }),
+            ))
             .await;
 
         if prompt.contains("SIMULATE_FAILURE") {
-            return Ok(TurnExecutionOutcome {
-                thread_id: self.thread_id.clone(),
+            return Ok(self.outcome(
                 turn_id,
                 session_id,
-                succeeded: false,
-                cancelled: false,
-                error_code: Some("simulated_error".into()),
-                error_message: Some("Simulated turn failure triggered by prompt".into()),
-                usage: TokenUsage {
+                false,
+                false,
+                Some((
+                    "simulated_error",
+                    "Simulated turn failure triggered by prompt".into(),
+                )),
+                TokenUsage {
                     input_tokens: 120,
                     output_tokens: 40,
                     total_tokens: 160,
                 },
-                rate_limits: None,
-                assistant_messages: vec!["Encountered simulated failure.".into()],
-            });
+                vec!["Encountered simulated failure.".into()],
+            ));
         }
 
-        if rx.try_recv().is_ok() {
-            return Ok(TurnExecutionOutcome {
-                thread_id: self.thread_id.clone(),
-                turn_id,
-                session_id,
-                succeeded: false,
-                cancelled: true,
-                error_code: Some("cancelled".into()),
-                error_message: Some("Cancelled".into()),
-                usage: TokenUsage::default(),
-                rate_limits: None,
-                assistant_messages: Vec::new(),
-            });
+        macro_rules! pause_or_cancel {
+            () => {
+                tokio::time::sleep(delay).await;
+                if rx.try_recv().is_ok() {
+                    return Ok(self.outcome(
+                        turn_id,
+                        session_id,
+                        false,
+                        true,
+                        Some(("cancelled", "Cancelled".into())),
+                        TokenUsage::default(),
+                        Vec::new(),
+                    ));
+                }
+            };
         }
 
+        pause_or_cancel!();
+        let plan = format!(
+            "Planning changes for **{}**: inspect the workspace, apply the change, then validate.",
+            self.config.issue_title
+        );
+        let _ = event_tx
+            .send(self.stream_event(
+                "item/agentMessage",
+                &session_id,
+                &turn_id,
+                plan.clone(),
+                Some(TokenUsage {
+                    input_tokens: 180,
+                    output_tokens: 60,
+                    total_tokens: 240,
+                }),
+                json!({ "item": { "type": "agentMessage", "text": plan } }),
+            ))
+            .await;
+
+        pause_or_cancel!();
+        let _ = event_tx
+            .send(self.stream_event(
+                "item/commandExecution",
+                &session_id,
+                &turn_id,
+                "Ran `git status --short`".into(),
+                None,
+                json!({ "item": {
+                    "type": "commandExecution",
+                    "command": "git status --short",
+                    "cwd": self.config.workspace_path.to_string_lossy(),
+                    "status": "completed",
+                    "exitCode": 0,
+                    "aggregatedOutput": ""
+                } }),
+            ))
+            .await;
+
+        if prompt.contains("SIMULATE_APPROVAL") {
+            if let Some(gate) = self.approval_gate.clone() {
+                let command = "cargo test --workspace".to_string();
+                let request = ApprovalRequest {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    task_id: self.config.task_id.clone(),
+                    issue_identifier: self.config.issue_identifier.clone(),
+                    session_id: session_id.clone(),
+                    provider: ProviderKind::Simulated,
+                    kind: "command_execution".into(),
+                    title: "Run validation command".into(),
+                    description: "The simulated agent wants to run the workspace test suite."
+                        .into(),
+                    command_or_diff: Some(command.clone()),
+                    status: ApprovalStatus::Pending,
+                    created_at: Utc::now(),
+                    resolved_at: None,
+                    decision: None,
+                };
+                let decision = gate.request_approval(request).await?;
+                let decision_label = match decision {
+                    ApprovalDecision::Accept => "accept",
+                    ApprovalDecision::AcceptForSession => "accept_for_session",
+                    ApprovalDecision::Decline => "decline",
+                    ApprovalDecision::Cancel => "cancel",
+                };
+                let _ = event_tx
+                    .send(self.stream_event(
+                        "item/commandExecution/approvalResolved",
+                        &session_id,
+                        &turn_id,
+                        format!("Operator decision for `{command}`: {decision_label}"),
+                        None,
+                        json!({ "command": command, "decision": decision_label }),
+                    ))
+                    .await;
+                if decision == ApprovalDecision::Cancel {
+                    return Ok(self.outcome(
+                        turn_id,
+                        session_id,
+                        false,
+                        true,
+                        Some(("approval_cancelled", "Operator aborted the turn".into())),
+                        TokenUsage::default(),
+                        Vec::new(),
+                    ));
+                }
+            }
+        }
+
+        pause_or_cancel!();
         // Write a deterministic change in the isolated workspace so git diff & validation inspect real changes
         let marker_file = self.config.workspace_path.join("SYMPHONY_TASK_NOTE.md");
         let content = format!(
@@ -1296,8 +1465,23 @@ impl AgentSession for SimulatedAgentSession {
             self.config.issue_title,
             Utc::now().to_rfc3339()
         );
-        let _ = tokio::fs::write(&marker_file, content).await;
+        let _ = tokio::fs::write(&marker_file, &content).await;
+        let _ = event_tx
+            .send(self.stream_event(
+                "item/fileChange",
+                &session_id,
+                &turn_id,
+                "Created `SYMPHONY_TASK_NOTE.md`".into(),
+                None,
+                json!({ "item": {
+                    "type": "fileChange",
+                    "status": "completed",
+                    "changes": [{ "path": "SYMPHONY_TASK_NOTE.md", "kind": "add", "diff": content }]
+                } }),
+            ))
+            .await;
 
+        pause_or_cancel!();
         let usage = TokenUsage {
             input_tokens: 450,
             output_tokens: 210,
@@ -1311,33 +1495,26 @@ impl AgentSession for SimulatedAgentSession {
             self.config.workspace_path.display()
         );
 
-        let _ = event_tx
-            .send(AgentStreamEvent {
-                event_type: "turn/completed".into(),
-                timestamp: Utc::now(),
-                session_id: Some(session_id.clone()),
-                thread_id: Some(self.thread_id.clone()),
-                turn_id: Some(turn_id.clone()),
-                pid: Some(std::process::id()),
-                message: Some(summary_msg.clone()),
-                usage: Some(usage),
-                rate_limits: Some(json!({ "requests_remaining": 999 })),
-                raw: json!({ "status": "completed", "usage": usage }),
-            })
-            .await;
+        let mut completed = self.stream_event(
+            "turn/completed",
+            &session_id,
+            &turn_id,
+            summary_msg.clone(),
+            Some(usage),
+            json!({ "status": "completed", "usage": usage }),
+        );
+        completed.rate_limits = Some(json!({ "requests_remaining": 999 }));
+        let _ = event_tx.send(completed).await;
 
-        Ok(TurnExecutionOutcome {
-            thread_id: self.thread_id.clone(),
+        Ok(self.outcome(
             turn_id,
             session_id,
-            succeeded: true,
-            cancelled: false,
-            error_code: None,
-            error_message: None,
+            true,
+            false,
+            None,
             usage,
-            rate_limits: Some(json!({ "requests_remaining": 999 })),
-            assistant_messages: vec![summary_msg],
-        })
+            vec![summary_msg],
+        ))
     }
 
     async fn cancel(&mut self) -> Result<()> {

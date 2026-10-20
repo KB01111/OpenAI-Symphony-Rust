@@ -51,6 +51,8 @@ tempfile = "3.15"
 url = "2.5"
 rand = "0.8"
 base64 = "0.22"
+ts-rs = { version = "12", features = ["chrono-impl", "serde-json-impl", "no-serde-warnings"] }
+subtle = "2.6"
 
 # Internal crates
 symphony-core = { path = "crates/symphony-core" }
