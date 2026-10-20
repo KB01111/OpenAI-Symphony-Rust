@@ -1,0 +1,224 @@
+/*
+ * Symphony Design System — the single token source.
+ *
+ * Every library reads these variables:
+ *   - Tailwind utilities (bg-surface, text-muted-foreground, border-border, …) via `@theme inline`
+ *   - shadcn primitives via the shadcn semantic names (--card, --popover, --primary, --ring, …)
+ *   - Fluent UI v9 via `fluentThemes.ts`, whose theme values are `var(--…)` references
+ *   - OpenAI Apps SDK UI via the shared `data-theme` attribute set by `applyDocumentTheme`
+ *
+ * Theme is selected by `<html data-theme="dark|light">`; density by `<html data-density>`.
+ * Feature components must use these tokens instead of raw colours.
+ */
+@import "tw-animate-css";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root,
+:root[data-theme="light"] {
+  --background: #f5f6f8;
+  --foreground: #16181d;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-sunken: #eef0f3;
+  --surface-hover: #f0f2f5;
+  --surface-selected: #e7eefc;
+  --border: #e0e3e8;
+  --border-strong: #c9ced6;
+  --muted: #eef0f3;
+  --muted-foreground: #5a6170;
+  --subtle-foreground: #7b8291;
+  --accent: #2563eb;
+  --accent-hover: #1d4fd7;
+  --accent-foreground: #ffffff;
+  --accent-subtle: rgb(37 99 235 / 0.1);
+  --destructive: #c62a32;
+  --destructive-subtle: rgb(198 42 50 / 0.1);
+  --warning: #a35f00;
+  --warning-subtle: rgb(214 129 0 / 0.14);
+  --success: #18794e;
+  --success-subtle: rgb(24 121 78 / 0.12);
+  --info: #0b69c7;
+  --info-subtle: rgb(11 105 199 / 0.1);
+  --ring: #2563eb;
+  --overlay: rgb(15 17 21 / 0.4);
+  --shadow-elevated: 0 8px 24px rgb(15 17 21 / 0.12), 0 1px 3px rgb(15 17 21 / 0.08);
+  --code-background: #f3f4f6;
+  --diff-add: rgb(24 121 78 / 0.12);
+  --diff-remove: rgb(198 42 50 / 0.1);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --background: #0f1012;
+  --foreground: #e5e7eb;
+  --surface: #151619;
+  --surface-raised: #1b1d21;
+  --surface-sunken: #0c0d0f;
+  --surface-hover: #22252a;
+  --surface-selected: #1b2740;
+  --border: #272a30;
+  --border-strong: #363a42;
+  --muted: #1e2024;
+  --muted-foreground: #9ca1ab;
+  --subtle-foreground: #737985;
+  --accent: #5b8def;
+  --accent-hover: #74a0f5;
+  --accent-foreground: #0b1020;
+  --accent-subtle: rgb(91 141 239 / 0.16);
+  --destructive: #f0626a;
+  --destructive-subtle: rgb(240 98 106 / 0.14);
+  --warning: #e3a43c;
+  --warning-subtle: rgb(227 164 60 / 0.14);
+  --success: #4cc38a;
+  --success-subtle: rgb(76 195 138 / 0.14);
+  --info: #5fa8f5;
+  --info-subtle: rgb(95 168 245 / 0.14);
+  --ring: #74a0f5;
+  --overlay: rgb(0 0 0 / 0.55);
+  --shadow-elevated: 0 12px 32px rgb(0 0 0 / 0.45), 0 1px 2px rgb(0 0 0 / 0.4);
+  --code-background: #111215;
+  --diff-add: rgb(76 195 138 / 0.13);
+  --diff-remove: rgb(240 98 106 / 0.13);
+  color-scheme: dark;
+}
+
+:root {
+  /* shadcn semantic aliases (kept in sync with Symphony tokens) */
+  --card: var(--surface);
+  --card-foreground: var(--foreground);
+  --popover: var(--surface-raised);
+  --popover-foreground: var(--foreground);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-foreground);
+  --secondary: var(--muted);
+  --secondary-foreground: var(--foreground);
+  --input: var(--border-strong);
+
+  --font-sans: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", ui-monospace, monospace;
+
+  --radius: 6px;
+
+  /* Density: compact (default, IDE-like) */
+  --density-row: 28px;
+  --density-control: 28px;
+  --density-gap: 8px;
+  --density-pad: 12px;
+  --density-font: 13px;
+}
+
+:root[data-density="comfortable"] {
+  --density-row: 36px;
+  --density-control: 32px;
+  --density-gap: 12px;
+  --density-pad: 16px;
+  --density-font: 14px;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-selected: var(--surface-selected);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-destructive: var(--destructive);
+  --color-destructive-subtle: var(--destructive-subtle);
+  --color-warning: var(--warning);
+  --color-warning-subtle: var(--warning-subtle);
+  --color-success: var(--success);
+  --color-success-subtle: var(--success-subtle);
+  --color-info: var(--info);
+  --color-info-subtle: var(--info-subtle);
+  --color-ring: var(--ring);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-input: var(--input);
+  --color-code: var(--code-background);
+  --color-diff-add: var(--diff-add);
+  --color-diff-remove: var(--diff-remove);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-display: var(--font-display);
+
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+
+  --spacing-row: var(--density-row);
+  --spacing-control: var(--density-control);
+  --shadow-elevated: var(--shadow-elevated);
+}
+
+@layer base {
+  html,
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: var(--density-font);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--font-mono);
+  }
+
+  ::selection {
+    background: var(--accent-subtle);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion="full"]) *,
+  :root:not([data-motion="full"]) *::before,
+  :root:not([data-motion="full"]) *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
