@@ -90,6 +90,25 @@ apps/desktop/src/
 Routes: `/overview`, `/projects[/:projectId]`, `/tasks`, `/runs`, `/runs/:taskId`, `/worktrees`,
 `/reviews[/:reviewId]`, `/workflow`, `/providers`, `/settings`. The last route is restored on launch.
 
+The app uses a data router (`createHashRouter`; tests use `createMemoryRouter`), which lets a view block
+navigation while it holds unsaved edits (`useBlocker` in Workflow Studio). Every feature view is a lazily
+loaded chunk; the CodeMirror editor is a separate lazy chunk loaded only by Workflow Studio.
+
+### Feature views
+
+| View | Highlights |
+| --- | --- |
+| Overview | Metrics from the snapshot/tasks, live sessions, pending approvals (decide inline), persisted + live activity. |
+| Projects | Repository list/detail/edit, guided Add repository (native folder picker in Tauri, runtime validation, checkout-root resolution), delete with confirmation (409 while running). |
+| Tasks | 9-column Kanban (dnd-kit, keyboard + menu moves validated by the shared state machine before any request) and a data table; New task dialog (`auto_start`). |
+| Agent runs | One row per task by precedence (live > approval > retrying > queued > recent finished), grouping by status/provider/project, capability-gated actions. |
+| Live execution | Three resizable panels: context, live timeline (concise/technical), changes/validation/usage/PR. |
+| Worktrees | Worktree table with dirty state, diff viewer, "Open in Explorer" only in the embedded desktop host; no delete action. |
+| Pull requests | Evidence-backed readiness (1–5), blockers, diff with review comments; "Record human approval" is a separate confirmed action and never merges. |
+| Workflow Studio | CodeMirror 6 (Markdown + YAML front matter), debounced runtime validation with located diagnostics, effective config, prompt preview, Ctrl+S, revert, external-change detection, unsaved-changes guard. |
+| Providers / Settings | Real detection (install, version, auth source) and vault-backed credentials; settings validated client-side as a mirror of the runtime. |
+| Onboarding | First-run dialog (welcome, detected agents, register repository, finish) persisted as `onboarding_completed`. |
+
 ## 6. Shell
 
 - **Command bar** (below the native title bar — native decorations are kept for reliable drag, snap,
@@ -110,6 +129,8 @@ Ctrl+J activity drawer · Ctrl+I inspector.
 
 - Server data only in TanStack Query; event stream drives invalidation (`runtime/invalidation.ts`)
   with per-type targeting so streaming agent output does not refetch lists.
-- Presentation state only in `uiStore` (persisted with guarded `localStorage`); nothing durable.
+- Presentation state only in `uiStore` (persisted with guarded `localStorage`); nothing durable. Theme and
+  locale are the exception that is mirrored to runtime settings (`PreferencesBridge`): the runtime value is
+  adopted on load and later UI changes are written back.
 - Mutations disable their triggers while pending; approval decisions and dispatches cannot be submitted twice.
 - Optimistic updates only for status moves, with snapshot rollback on rejection.

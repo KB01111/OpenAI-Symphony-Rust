@@ -73,6 +73,17 @@ Reduced motion: when the OS requests it (or `motion="reduced"`), CSS animations 
 neutralised globally by `tokens.css`. Components avoid JavaScript animation loops.
 
 Density: **compact** (default, IDE-like: 28 px rows, 13 px text) and **comfortable** (36 px rows, 14 px text).
+The density font is applied to `<body>`, not `<html>`: the root font size stays at 16 px so `rem`-based
+spacing (Tailwind, Apps SDK) matches Fluent's px-based controls. Tailwind's `text-sm`/`text-xs` and Fluent's
+`fontSizeBase300`/`fontSizeBase200` all resolve to `--density-font`/`--density-font-xs`, so body and caption
+text are the same size whichever library renders them.
+
+### Cascade layers
+
+Apps SDK UI ships component CSS in `@layer components`. Each app imports its global stylesheet **first**
+(`main.tsx`) and that stylesheet starts with `@layer theme, base, components, utilities;`, so the layer order
+is fixed before any library CSS is injected. Otherwise `components` can be ordered below Tailwind's preflight
+(`base`) and Apps SDK buttons lose their padding, radius and colours.
 
 ## 3. Component ownership
 
@@ -109,6 +120,7 @@ Apps SDK UI is used as a **component library only**; nothing depends on ChatGPT 
 | Component | Purpose |
 | --- | --- |
 | `AiApprovalBanner` | Shows a pending command/file-change approval with the four runtime decisions (approve once, approve for session, decline, abort turn). Locks itself while a decision is in flight to prevent duplicate submissions. |
+| `ConfirmDialog` (feedback) | Fluent alert dialog for destructive actions. Fires `onConfirm` once per opening (a second click in the same frame is ignored) and stays locked while `pending`. |
 | `AiEventStreamCard` | One timeline entry. Uses `formatAgentEvent` to render agent messages (Markdown), command executions (code + exit code + output), file changes (paths + diffs), tool calls, approvals, errors and lifecycle events. Concise vs technical mode (event types, raw JSON-RPC payload). Memoized per event so streaming never re-renders existing entries. |
 | `MergeReadinessCard` | Evidence-backed 1–5 score with CI / validation / conflicts / security / reviewed comments breakdown, blockers and evidence. Approval is a separate explicit action and never merges. |
 | `TaskStatusBadge`, `PhaseBadge`, `ProviderBadge` | Localized status chips; active phases shimmer (static under reduced motion). |

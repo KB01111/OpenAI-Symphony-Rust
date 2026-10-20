@@ -66,15 +66,25 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   `EventSource` query parameters.
 - **CORS allowlist**: only the Tauri webview origins and the local dev servers are allowed (no `*`).
 - **Remote access** (mobile companion / Lumen) is disabled by default. When `remote_api_enabled` is set, the
-  desktop host starts a second listener on `remote_bind_address:remote_port` only if `SYMPHONY_REMOTE_TOKEN`
-  (≥ 16 characters) exists in the credential vault. Terminate TLS in front of it.
+  desktop host starts a second listener on `remote_bind_address:remote_port` (default `127.0.0.1:47821`)
+  only if `SYMPHONY_REMOTE_TOKEN` (≥ 16 characters) exists in the credential vault, and never on the local
+  API's port. Terminate TLS in front of it. The mobile companion keeps its token in `sessionStorage` unless
+  the user explicitly opts in to remembering it on the device.
+- **Development discovery** (`/__symphony/runtime`, Vite dev server only, never in builds) answers only
+  same-origin requests with a loopback `Host`, so other local web pages cannot read the token.
 - **Credential API allowlist**: only `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `LINEAR_API_KEY`,
   `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` can be stored; values are never returned (`GET /credentials`
-  lists key names only). Only provider API keys are exported to the runtime environment.
+  lists key names only). Provider API keys are passed to agent subprocesses explicitly from the vault
+  (`AgentLaunchConfig.extra_env`); tracker tokens never reach agents and are used only by host-side tools.
 - **Workflow writes** go only to the active `WORKFLOW.md` (or the runtime's data directory); clients cannot
   choose a path. Invalid documents are rejected before writing.
-- **Redaction**: workflow configuration returned by the API masks tracker `token`/`api_key`/`secret` values;
-  task diffs and diagnostics are passed through `redact_secrets` with the vault's values.
+- **Redaction**: workflow configuration returned by the API masks credential-like tracker values
+  (`token`, `api_key`, `secret`, `password`, `credential`, `authorization`) at any nesting depth; task diffs
+  and diagnostics are passed through `redact_secrets` with the vault's values. The raw `WORKFLOW.md` source
+  is returned unmodified to authenticated clients so it can be edited; keep credentials out of it and use
+  `$VAR` references (resolved only inside the runtime).
+- **Bounded diff reads**: worktree diffs are read with a byte budget per `git` invocation (the child is
+  stopped when the budget is used), so a large untracked file cannot exhaust runtime memory.
 
 ## 5. Desktop Host (Tauri 2)
 
@@ -85,5 +95,10 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   `get_local_api_config`, `open_task_workspace` (opens only a task worktree that validates inside its
   project's workspace root), `pick_repository_folder`, `set_autostart` and `exit_application`. There is no
   shell, filesystem or arbitrary command bridge.
-- **Single authoritative scheduler**: desktop and CLI share the `symphony-runtime.lock` in the data
-  directory; a second process attaches to the running runtime instead of starting another scheduler.
+- **Single authoritative scheduler**: desktop and CLI share `symphony-runtime.lock` in the data directory.
+  Ownership is an exclusive OS file lock held for the process lifetime (atomic across processes, released
+  by the OS on crash); a second process attaches to the running runtime instead of starting a scheduler.
+- **Discovery file**: `<data_dir>/runtime.json` (endpoint + token) is written via a fresh temp file created
+  with owner-only permissions (`0600`) on Unix. On Windows it relies on the data directory's ACL; the
+  default `%LOCALAPPDATA%\symphony-desktop` is private to the user. **Known limitation:** an explicit
+  owner-only DACL is not yet applied, so do not point `--data-dir` at a shared folder.
