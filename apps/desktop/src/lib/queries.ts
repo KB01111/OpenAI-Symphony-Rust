@@ -307,11 +307,13 @@ export function useSaveWorkflow() {
 }
 
 /**
- * Login-autostart value the native host last applied in this session; `null` until the first
- * change. Compared instead of the cached settings so a failed native update is retried by the
- * next settings save even though the runtime already stored the new value.
+ * Login-autostart value the native host last applied in this session: `null` until the first
+ * change, `"unknown"` after a failure whose outcome could not be read back. Compared instead of
+ * the cached settings so a failed native update is retried by the next settings save even though
+ * the runtime already stored a value (`"unknown"` never equals a wanted value, so it always
+ * retries).
  */
-let appliedAutostart: boolean | null = null;
+let appliedAutostart: boolean | null | "unknown" = null;
 
 /** Registry state reported with a failed `set_autostart` (`autostart_state=<state>; …`). */
 export function observedAutostart(error: unknown): boolean | null {
@@ -349,14 +351,16 @@ export function useSaveSettings() {
           await nativeHost.setAutostart(wanted);
           appliedAutostart = wanted;
         } catch (error) {
-          // The host reports the registry state it observed after the failure. Store a known
-          // state, so the switch never shows an autostart that is not registered; when the state
-          // is unknown, persist nothing and retry on the next save.
+          // The host reports the registry state it observed after the failure. Store that state
+          // so the switch never shows an autostart that is not registered. When it is unknown,
+          // restore the last confirmed value (the one before this change) and mark the native
+          // state unknown so the next save retries.
           const observed = observedAutostart(error);
-          appliedAutostart = observed;
-          if (observed !== null && observed !== wanted) {
+          appliedAutostart = observed ?? "unknown";
+          const restore = observed ?? !wanted;
+          if (restore !== wanted) {
             const reverted = await client
-              .saveSettings({ ...saved, start_background_runtime_on_login: observed })
+              .saveSettings({ ...saved, start_background_runtime_on_login: restore })
               .catch(() => null);
             if (reverted) qc.setQueryData(qk.settings, reverted);
             // The revert itself failed: refetch rather than keep showing the rejected value.

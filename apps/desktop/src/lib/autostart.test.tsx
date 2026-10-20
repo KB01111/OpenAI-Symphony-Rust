@@ -54,6 +54,46 @@ describe("login autostart", () => {
   });
 });
 
+describe("login autostart with an unknown outcome", () => {
+  it("restores the last confirmed value and retries on the next save", async () => {
+    let stored = settings({ start_background_runtime_on_login: false });
+    const runtime = createMockRuntime({
+      "GET /settings": () => stored,
+      "PUT /settings": ({ body }) => (stored = body as typeof stored)
+    });
+    const calls: unknown[] = [];
+    let fail = true;
+    installHost(async (cmd, args) => {
+      if (cmd === "set_autostart") {
+        calls.push(args);
+        if (fail) throw new Error("autostart_state=unknown; read-back failed");
+      }
+      return null;
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    queryClient.setQueryData(qk.settings, stored);
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <AppProviders queryClient={queryClient} client={runtime.client}>
+        {children}
+      </AppProviders>
+    );
+    const { result } = renderHook(() => useSaveSettings(), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({ ...stored, start_background_runtime_on_login: true }).catch(() => undefined);
+    });
+    // Not confirmed: the saved value goes back to the last confirmed one.
+    expect(stored.start_background_runtime_on_login).toBe(false);
+
+    // A later, unrelated save retries the native call even though the value did not change.
+    fail = false;
+    await act(async () => {
+      await result.current.mutateAsync({ ...stored, polling_interval_ms: 5000 });
+    });
+    expect(calls).toHaveLength(2);
+  });
+});
+
 describe("observedAutostart", () => {
   it("only trusts a state the host actually observed", () => {
     expect(observedAutostart(new Error("autostart_state=enabled; failed"))).toBe(true);
