@@ -2,20 +2,27 @@ name: Symphony Desktop CI
 
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/**", "fix/**"]
   pull_request:
     branches: [main]
 
+# Supersede in-flight runs for the same ref so PR feedback always reflects HEAD.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
   windows-verify:
     name: Windows 11 (Rust + Desktop + Mobile Web)
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -24,29 +31,47 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
         with:
-          version: 10
+          shared-key: windows-verify
+
+      # pnpm is pinned by the "packageManager" field in the root package.json
+      # (pnpm@11.15.1). Do not pass "version" here: duplicating the version in
+      # the workflow is what made CI fail with "Multiple versions of pnpm
+      # specified" (action pin 10 vs packageManager 11.x).
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
+      - name: Print toolchain versions
+        shell: pwsh
+        run: |
+          node --version
+          pnpm --version
+          rustc --version
+          cargo --version
+
+      # --frozen-lockfile makes dependency resolution reproducible: the build
+      # must match the committed pnpm-lock.yaml exactly.
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile=false
+        run: pnpm install --frozen-lockfile
 
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
+      - name: Check Rust workspace compilation
+        run: cargo check --workspace --locked
+
       - name: Run Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --locked -- -D warnings
 
       - name: Run Rust workspace unit & E2E tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Run Frontend TypeScript typecheck
         run: pnpm typecheck
@@ -60,28 +85,37 @@ jobs:
   macos-ios-companion:
     name: macOS (iOS Companion Validation)
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
+      # Same source of truth as the Windows job: the root package.json
+      # "packageManager" field.
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Print toolchain versions
+        run: |
+          node --version
+          pnpm --version
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile=false
+        run: pnpm install --frozen-lockfile
 
-      - name: Typecheck & build shared + iOS companion bundle
+      - name: Typecheck shared, UI and companion packages
         run: |
           pnpm --filter @symphony/shared-types typecheck
           pnpm --filter @symphony/api-client typecheck
           pnpm --filter @symphony/ui typecheck
           pnpm --filter @symphony/mobile typecheck
-          pnpm --filter @symphony/mobile build
+
+      - name: Build iOS companion bundle
+        run: pnpm --filter @symphony/mobile build
