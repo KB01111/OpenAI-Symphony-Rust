@@ -701,3 +701,35 @@ async fn remote_access_endpoints_report_unavailable_without_a_manager() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
 }
+
+#[tokio::test]
+async fn stopping_the_listener_closes_idle_keep_alive_connections() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let h = harness().await;
+    let (base, token) = h.start().await;
+    let addr = base.trim_start_matches("http://").to_string();
+
+    // One request on a raw keep-alive connection, response fully read.
+    let mut conn = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let request = format!(
+        "GET /api/v1/health HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nConnection: keep-alive\r\n\r\n"
+    );
+    conn.write_all(request.as_bytes()).await.unwrap();
+    let mut buf = vec![0u8; 4096];
+    let n = conn.read(&mut buf).await.unwrap();
+    assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+
+    // Revoking stops the listener; the graceful shutdown closes the idle connection right away
+    // (well before the 3 s abort fallback in `stop`).
+    let started = std::time::Instant::now();
+    h.remote.revoke_token().await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the listener must shut down gracefully, not via the abort fallback"
+    );
+    let read = tokio::time::timeout(Duration::from_secs(2), conn.read(&mut buf)).await;
+    assert!(
+        matches!(read, Ok(Ok(0)) | Ok(Err(_))),
+        "the keep-alive connection must be closed when the listener stops"
+    );
+}

@@ -268,6 +268,9 @@ struct Running {
     spec: ListenSpec,
     addr: SocketAddr,
     handle: tokio::task::JoinHandle<()>,
+    /// Starts axum's graceful shutdown, which closes idle keep-alive connections and waits for
+    /// in-flight requests.
+    shutdown: tokio::sync::oneshot::Sender<()>,
     /// This listener's own copy of the token. axum serves each connection on a task of its own,
     /// so aborting `handle` alone would leave open connections (keep-alive, event streams)
     /// served; clearing this slot when the listener stops rejects their requests and ends their
@@ -413,12 +416,13 @@ impl RemoteAccessManager {
                 } else {
                     Self::stop(inner).await;
                     match self.bind(&spec, token.clone()).await {
-                        Ok((addr, handle, slot)) => {
+                        Ok((addr, handle, shutdown, slot)) => {
                             info!(address = %addr, "Remote companion listener started");
                             inner.running = Some(Running {
                                 spec,
                                 addr,
                                 handle,
+                                shutdown,
                                 slot,
                             });
                             inner.state = RemoteListenerState::Running;
@@ -448,7 +452,12 @@ impl RemoteAccessManager {
         &self,
         spec: &ListenSpec,
         token: Option<String>,
-    ) -> std::io::Result<(SocketAddr, tokio::task::JoinHandle<()>, TokenSlot)> {
+    ) -> std::io::Result<(
+        SocketAddr,
+        tokio::task::JoinHandle<()>,
+        tokio::sync::oneshot::Sender<()>,
+        TokenSlot,
+    )> {
         let slot = TokenSlot::new(token);
         let config = ServerConfig {
             bind_host: spec.host.clone(),
@@ -463,21 +472,32 @@ impl RemoteAccessManager {
         let host = spec.host.trim_start_matches('[').trim_end_matches(']');
         let listener = tokio::net::TcpListener::bind((host, spec.port)).await?;
         let addr = listener.local_addr()?;
+        let (shutdown, signal) = tokio::sync::oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
-            if let Err(err) = axum::serve(listener, router).await {
+            let served = axum::serve(listener, router).with_graceful_shutdown(async move {
+                let _ = signal.await;
+            });
+            if let Err(err) = served.await {
                 tracing::error!(error = %err, "Remote companion listener terminated with error");
             }
         });
-        Ok((addr, handle, slot))
+        Ok((addr, handle, shutdown, slot))
     }
 
-    /// Stop the listener. Open connections are cut off too: their token is cleared, so further
-    /// requests are rejected and event streams end.
+    /// Stop the listener and close its connections: the token is cleared first (requests on
+    /// open connections are rejected and event streams end), then a graceful shutdown closes
+    /// the connections; anything still open after a short grace period is aborted.
     async fn stop(inner: &mut Inner) {
-        if let Some(running) = inner.running.take() {
+        if let Some(mut running) = inner.running.take() {
             running.slot.set(None);
-            running.handle.abort();
-            let _ = running.handle.await;
+            let _ = running.shutdown.send(());
+            if tokio::time::timeout(std::time::Duration::from_secs(3), &mut running.handle)
+                .await
+                .is_err()
+            {
+                running.handle.abort();
+                let _ = running.handle.await;
+            }
             info!(address = %running.addr, "Remote companion listener stopped");
         }
     }
