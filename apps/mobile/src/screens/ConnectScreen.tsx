@@ -29,7 +29,8 @@ export const ConnectScreen: React.FC<ConnectScreenProps> = ({ initial, rejected,
     if (busy) return;
     const normalized = normalizeBaseUrl(url);
     if (!normalized.ok) {
-      setUrlError(normalized.problem === "empty" ? m.urlEmpty : normalized.problem === "unsupported_scheme" ? m.urlScheme : m.urlInvalid);
+      const messages = { empty: m.urlEmpty, unsupported_scheme: m.urlScheme, insecure_scheme: m.urlInsecure, invalid: m.urlInvalid };
+      setUrlError(messages[normalized.problem]);
       return;
     }
     setUrlError(null);

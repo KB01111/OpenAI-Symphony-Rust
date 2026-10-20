@@ -8,7 +8,8 @@ export type SettingsField =
   | "high_memory_threshold_percent"
   | "high_cpu_threshold_percent"
   | "remote_bind_address"
-  | "remote_port";
+  | "remote_port"
+  | "remote_allowed_origins";
 
 export type SettingsErrors = Partial<Record<SettingsField, string>>;
 
@@ -42,6 +43,10 @@ export function validateSettings(s: AppSettings, v: SettingsMessages["validation
   }
 
   if (!s.remote_bind_address.trim()) errors.remote_bind_address = v.bind;
+  // The runtime only binds the remote listener to loopback; exposure goes through a TLS proxy.
+  else if (!isLoopback(s.remote_bind_address)) errors.remote_bind_address = v.bindLoopback;
+  const badOrigin = (s.remote_allowed_origins ?? []).find((origin) => !isValidRemoteOrigin(origin));
+  if (badOrigin !== undefined) errors.remote_allowed_origins = formatMessage(v.origin, { origin: badOrigin });
   if (!isInt(s.remote_port)) errors.remote_port = v.integer;
   else if (s.remote_port < 1 || s.remote_port > 65535) errors.remote_port = v.port;
   // The desktop host refuses to start the remote listener on the local API's port.
@@ -56,6 +61,8 @@ export function serverErrorFields(message: string): SettingsField[] {
   if (message.includes("max_concurrent_on_ac")) return ["max_concurrent_on_ac"];
   if (message.includes("polling_interval_ms")) return ["polling_interval_ms"];
   if (message.includes("remote_port")) return ["remote_port"];
+  if (message.includes("remote_bind_address")) return ["remote_bind_address"];
+  if (message.includes("origin")) return ["remote_allowed_origins"];
   if (message.includes("thresholds")) return ["high_memory_threshold_percent", "high_cpu_threshold_percent"];
   return [];
 }
@@ -63,7 +70,33 @@ export function serverErrorFields(message: string): SettingsField[] {
 /** Bind addresses that keep the remote listener on this machine. */
 export function isLoopback(address: string): boolean {
   const a = address.trim().toLowerCase();
-  return a === "localhost" || a === "::1" || a === "[::1]" || a.startsWith("127.");
+  return a === "localhost" || a === "::1" || a === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(a);
+}
+
+/**
+ * Client-side mirror of `validate_remote_origin` (`crates/symphony-server/src/remote.rs`): a bare
+ * `https://` origin, `http://` only for loopback hosts, or the companion app's `tauri://localhost`.
+ */
+export function isValidRemoteOrigin(origin: string): boolean {
+  if (origin === "tauri://localhost") return true;
+  if (origin.includes("*")) return false;
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (url.origin !== origin) return false;
+  if (url.protocol === "https:") return true;
+  return url.protocol === "http:" && isLoopback(url.hostname);
+}
+
+/** One origin per line (or comma separated), blanks dropped. */
+export function parseOrigins(text: string): string[] {
+  return text
+    .split(/[\n,]/)
+    .map((o) => o.trim())
+    .filter((o) => o.length > 0);
 }
 
 export function formatBytes(bytes: number, locale: string): string {

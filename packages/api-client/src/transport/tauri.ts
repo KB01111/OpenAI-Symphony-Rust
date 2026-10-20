@@ -9,6 +9,8 @@ export interface LocalApiConfig {
   token: string;
   api_version: number;
   mode: "embedded" | "attached";
+  /** Why the host could not publish `runtime.json` (CLI tools cannot attach), if it failed. */
+  discovery_error?: string | null;
 }
 
 interface TauriInternals {
@@ -36,7 +38,10 @@ export const nativeHost = {
   openTaskWorkspace: (taskId: string) => invoke<string>("open_task_workspace", { taskId }),
   /** Native folder picker; resolves `null` when cancelled. */
   pickRepositoryFolder: () => invoke<string | null>("pick_repository_folder"),
-  /** Returns whether autostart is supported on this platform. */
+  /**
+   * Returns whether autostart is supported on this platform. Rejects when Windows refused or did
+   * not persist the registry change, so callers never report an entry that does not exist.
+   */
   setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),
   exitApplication: () => invoke<void>("exit_application")
 };

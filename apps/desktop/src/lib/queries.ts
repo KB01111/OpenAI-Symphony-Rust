@@ -348,7 +348,11 @@ export function useSaveSettings() {
       }
       return saved;
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.providers }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.providers });
+      // The runtime applies remote-access changes to the running listener on save.
+      void qc.invalidateQueries({ queryKey: qk.remoteAccess });
+    },
     onError
   });
 }

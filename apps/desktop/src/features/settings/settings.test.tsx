@@ -1,7 +1,11 @@
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import type { RemoteAccessStatus } from "@symphony/shared-types";
 import { settings } from "../../test/fixtures.js";
+import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
 import { settingsMessages } from "./messages.js";
-import { isLoopback, portOf, serverErrorFields, validateSettings } from "./validation.js";
+import { RemoteSection } from "./sections.js";
+import { isLoopback, isValidRemoteOrigin, parseOrigins, portOf, serverErrorFields, validateSettings } from "./validation.js";
 
 const v = settingsMessages.en.validation;
 
@@ -37,5 +41,83 @@ describe("settings validation (mirror of the runtime's validate_settings)", () =
     expect(serverErrorFields("invalid_settings: remote_port must be between 1 and 65535")).toEqual(["remote_port"]);
     expect(isLoopback("127.0.0.1")).toBe(true);
     expect(isLoopback("0.0.0.0")).toBe(false);
+  });
+});
+
+describe("remote access validation (mirror of validate_remote_settings)", () => {
+  it("requires a loopback bind address", () => {
+    expect(validateSettings(settings({ remote_bind_address: "0.0.0.0" }), v)).toHaveProperty("remote_bind_address", v.bindLoopback);
+    expect(validateSettings(settings({ remote_bind_address: "192.168.1.20" }), v)).toHaveProperty("remote_bind_address");
+    expect(validateSettings(settings({ remote_bind_address: "::1" }), v)).toEqual({});
+    expect(isLoopback("127.0.0.1.evil.example")).toBe(false);
+  });
+
+  it("accepts only bare https origins (http for localhost) and never wildcards", () => {
+    for (const ok of ["https://companion.example.com", "https://c.example.com:8443", "http://localhost:1421", "tauri://localhost"]) {
+      expect(isValidRemoteOrigin(ok)).toBe(true);
+    }
+    for (const bad of ["*", "https://*.example.com", "http://192.168.1.5", "https://example.com/", "https://example.com/app", "null"]) {
+      expect(isValidRemoteOrigin(bad)).toBe(false);
+    }
+    expect(validateSettings(settings({ remote_allowed_origins: ["*"] }), v)).toHaveProperty("remote_allowed_origins");
+    expect(parseOrigins(" https://a.example.com\n\nhttps://b.example.com, ")).toEqual(["https://a.example.com", "https://b.example.com"]);
+    expect(serverErrorFields("invalid_settings: '*': wildcard origins are not allowed")).toEqual(["remote_allowed_origins"]);
+  });
+});
+
+function remoteStatus(overrides: Partial<RemoteAccessStatus> = {}): RemoteAccessStatus {
+  return {
+    enabled: true,
+    bind_address: "127.0.0.1",
+    port: 47821,
+    allowed_origins: [],
+    token_configured: false,
+    state: "token_missing",
+    listening_on: null,
+    error: null,
+    ...overrides
+  };
+}
+
+describe("RemoteSection", () => {
+  const m = settingsMessages.en.remote;
+
+  it("issues a token once, then shows the running listener without echoing the token", async () => {
+    let status = remoteStatus();
+    const runtime = createMockRuntime({
+      "GET /remote-access": () => status,
+      "POST /remote-access/token": () => {
+        status = remoteStatus({ token_configured: true, state: "running", listening_on: "127.0.0.1:47821" });
+        return { token: "f".repeat(64), status };
+      }
+    });
+    renderWithProviders(<RemoteSection draft={settings({ remote_api_enabled: true })} errors={{}} update={() => {}} />, { runtime });
+
+    expect(await screen.findByText(m.states.token_missing!)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: m.generate }));
+    expect(await screen.findByDisplayValue("f".repeat(64))).toBeInTheDocument();
+    expect(screen.getByText(m.states.running!)).toBeInTheDocument();
+
+    // Dismissing removes the only copy from the page.
+    fireEvent.click(screen.getByRole("button", { name: m.done }));
+    expect(screen.queryByDisplayValue("f".repeat(64))).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: m.rotate })).toBeInTheDocument();
+  });
+
+  it("asks before revoking and reports a failed listener", async () => {
+    let status = remoteStatus({ token_configured: true, state: "failed", error: "Could not listen on 127.0.0.1:47821: address in use" });
+    const runtime = createMockRuntime({
+      "GET /remote-access": () => status,
+      "DELETE /remote-access/token": () => (status = remoteStatus({ state: "token_missing" }))
+    });
+    renderWithProviders(<RemoteSection draft={settings({ remote_api_enabled: true })} errors={{}} update={() => {}} />, { runtime });
+
+    expect(await screen.findByText(/address in use/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: m.revoke }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(runtime.calls.some((c) => c.method === "DELETE")).toBe(false);
+    fireEvent.click(within(dialog).getByRole("button", { name: m.revoke }));
+    await waitFor(() => expect(runtime.calls.some((c) => c.method === "DELETE" && c.path === "/remote-access/token")).toBe(true));
+    expect(await screen.findByText(m.states.token_missing!)).toBeInTheDocument();
   });
 });

@@ -13,6 +13,12 @@ export interface RuntimeEndpoint {
 export const DEV_DISCOVERY_PATH = "/__symphony/runtime";
 
 /**
+ * Header the dev-server route requires. Navigations cannot send it and cross-origin scripts need
+ * a CORS preflight for it, so only same-origin scripts can read the discovery record.
+ */
+export const DEV_DISCOVERY_HEADER = "X-Symphony-Discovery";
+
+/**
  * Discover the local runtime endpoint:
  * 1. Desktop host IPC (`get_local_api_config`) — handles ephemeral fallback ports and the
  *    per-launch token.
@@ -29,7 +35,7 @@ export async function discoverRuntimeEndpoint(fetchImpl: typeof fetch = fetch): 
       mode: cfg.mode
     };
   }
-  const response = await fetchImpl(DEV_DISCOVERY_PATH, { cache: "no-store" });
+  const response = await fetchImpl(DEV_DISCOVERY_PATH, { cache: "no-store", headers: { [DEV_DISCOVERY_HEADER]: "1" } });
   if (!response.ok) {
     throw new Error(`Runtime discovery failed (HTTP ${response.status})`);
   }

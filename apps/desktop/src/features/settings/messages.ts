@@ -81,15 +81,42 @@ export const settingsMessages = defineMessages({
       manage: "Manage providers"
     },
     remote: {
-      intro: "Optional authenticated listener for the Symphony Remote companion.",
+      intro: "Optional listener for the Symphony Remote companion. It has its own access token and can only monitor tasks, create, dispatch, cancel and retry them, decide agent approvals and pause the scheduler.",
       enabled: "Enable remote API",
       bind: "Bind address",
-      bindHint: "127.0.0.1 keeps the listener local. Any other address exposes it on your network.",
+      bindHint: "Loopback only (127.0.0.1, ::1 or localhost). Reach it from other devices through a TLS reverse proxy or an encrypted tunnel.",
       port: "Port",
-      warningTitle: "Remote access requirements",
+      origins: "Allowed browser origins",
+      originsHint: "One per line, e.g. https://companion.example.com. The companion app is always allowed. Wildcards are not accepted.",
+      warningTitle: "Before you expose remote access",
       warning:
-        "The remote listener only starts when a SYMPHONY_REMOTE_TOKEN of at least 16 characters is stored in the runtime credential vault. It serves plain HTTP: put a TLS-terminating reverse proxy in front of it before exposing it beyond this machine. Changes apply the next time the runtime starts.",
-      exposed: "This address is reachable from other devices on your network."
+        "The listener speaks plain HTTP on this machine. Put a reverse proxy or tunnel that terminates TLS in front of it; requests the proxy marks as plain HTTP are refused. Credentials, settings, WORKFLOW.md, diagnostics and project administration are never available remotely.",
+      applyHint: "Saved changes are applied to the running listener immediately.",
+      status: "Listener status",
+      statusLoadError: "Could not load the remote listener status",
+      listeningOn: "Listening on {address}",
+      states: {
+        disabled: "Off",
+        token_missing: "Waiting for an access token",
+        running: "Running",
+        failed: "Not running",
+        unavailable: "Not managed by this runtime"
+      } as Record<string, string>,
+      token: "Remote access token",
+      tokenConfigured: "A token is configured. It cannot be displayed again; rotate it to issue a new one.",
+      tokenMissing: "No token yet. Generate one and enter it in the companion app.",
+      generate: "Generate token",
+      rotate: "Rotate token",
+      revoke: "Revoke token",
+      rotateTitle: "Rotate the remote access token?",
+      rotateDescription: "Companion devices using the current token are disconnected immediately and must be given the new token.",
+      revokeTitle: "Revoke remote access?",
+      revokeDescription: "The token is deleted and the remote listener stops. Companion devices are disconnected immediately.",
+      issuedTitle: "Copy the new token now",
+      issuedBody: "This is the only time it is shown. Enter it in the companion app together with the HTTPS address of your proxy or tunnel.",
+      copy: "Copy token",
+      done: "I have copied it",
+      tokenFailed: "Could not update the remote access token"
     },
     integrations: {
       intro: "Tracker tokens used by host-side tools (GitHub Issues, Linear). Agents never receive these values.",
@@ -135,7 +162,10 @@ export const settingsMessages = defineMessages({
       exitTitle: "Exit Symphony?",
       exitDescription:
         "Closes the window and stops the background runtime. Running agents are interrupted and resume only when Symphony starts again.",
-      exitConfirm: "Exit"
+      exitConfirm: "Exit",
+      discoveryErrorTitle: "CLI tools cannot attach to this runtime",
+      discoveryError:
+        "The desktop host could not publish its owner-only discovery file, so symphony-cli and other local tools cannot find this runtime. The app itself keeps working. Details: {error}"
     },
     validation: {
       number: "Enter a number.",
@@ -146,6 +176,8 @@ export const settingsMessages = defineMessages({
       threshold: "Must be between 10 and 100.",
       port: "Must be a TCP port between 1 and 65535.",
       bind: "Enter a bind address.",
+      bindLoopback: "Use a loopback address (127.0.0.1, ::1 or localhost).",
+      origin: "{origin} is not allowed. Use a bare https:// origin (http:// only for localhost).",
       portInUse: "This is the local API's port ({port}); choose a different remote port."
     }
   },
@@ -229,15 +261,42 @@ export const settingsMessages = defineMessages({
       manage: "Hantera leverantörer"
     },
     remote: {
-      intro: "Valfri autentiserad lyssnare för följeappen Symphony Remote.",
+      intro: "Valfri lyssnare för följeappen Symphony Remote. Den har en egen åtkomsttoken och kan bara övervaka uppgifter, skapa, starta, avbryta och försöka igen, besluta om agentgodkännanden och pausa schemaläggaren.",
       enabled: "Aktivera fjärr-API",
       bind: "Bindningsadress",
-      bindHint: "127.0.0.1 håller lyssnaren lokal. Alla andra adresser exponerar den i ditt nätverk.",
+      bindHint: "Endast loopback (127.0.0.1, ::1 eller localhost). Nå den från andra enheter via en omvänd proxy med TLS eller en krypterad tunnel.",
       port: "Port",
-      warningTitle: "Krav för fjärråtkomst",
+      origins: "Tillåtna webbläsarursprung",
+      originsHint: "Ett per rad, t.ex. https://companion.example.com. Följeappen är alltid tillåten. Jokertecken accepteras inte.",
+      warningTitle: "Innan du exponerar fjärråtkomst",
       warning:
-        "Fjärrlyssnaren startar bara när en SYMPHONY_REMOTE_TOKEN på minst 16 tecken finns i körtidens valv. Den använder okrypterad HTTP: placera en omvänd proxy med TLS framför den innan den exponeras utanför datorn. Ändringar gäller nästa gång körtiden startar.",
-      exposed: "Adressen kan nås från andra enheter i ditt nätverk."
+        "Lyssnaren använder okrypterad HTTP på den här datorn. Placera en omvänd proxy eller tunnel som avslutar TLS framför den; förfrågningar som proxyn markerar som okrypterad HTTP avvisas. Autentiseringsuppgifter, inställningar, WORKFLOW.md, diagnostik och projektadministration är aldrig tillgängliga på distans.",
+      applyHint: "Sparade ändringar tillämpas direkt på den körande lyssnaren.",
+      status: "Lyssnarens status",
+      statusLoadError: "Det gick inte att läsa in fjärrlyssnarens status",
+      listeningOn: "Lyssnar på {address}",
+      states: {
+        disabled: "Av",
+        token_missing: "Väntar på en åtkomsttoken",
+        running: "Körs",
+        failed: "Körs inte",
+        unavailable: "Hanteras inte av den här körtiden"
+      } as Record<string, string>,
+      token: "Åtkomsttoken för fjärråtkomst",
+      tokenConfigured: "En token är konfigurerad. Den kan inte visas igen; rotera den för att utfärda en ny.",
+      tokenMissing: "Ingen token ännu. Generera en och ange den i följeappen.",
+      generate: "Generera token",
+      rotate: "Rotera token",
+      revoke: "Återkalla token",
+      rotateTitle: "Rotera åtkomsttoken för fjärråtkomst?",
+      rotateDescription: "Följeenheter som använder den nuvarande token kopplas från direkt och måste få den nya token.",
+      revokeTitle: "Återkalla fjärråtkomst?",
+      revokeDescription: "Token raderas och fjärrlyssnaren stoppas. Följeenheter kopplas från direkt.",
+      issuedTitle: "Kopiera den nya token nu",
+      issuedBody: "Det här är enda gången den visas. Ange den i följeappen tillsammans med HTTPS-adressen till din proxy eller tunnel.",
+      copy: "Kopiera token",
+      done: "Jag har kopierat den",
+      tokenFailed: "Det gick inte att uppdatera åtkomsttoken för fjärråtkomst"
     },
     integrations: {
       intro: "Spårartoken som används av verktyg på värden (GitHub Issues, Linear). Agenter får aldrig dessa värden.",
@@ -283,7 +342,10 @@ export const settingsMessages = defineMessages({
       exitTitle: "Avsluta Symphony?",
       exitDescription:
         "Stänger fönstret och stoppar bakgrundskörtiden. Körande agenter avbryts och återupptas först när Symphony startar igen.",
-      exitConfirm: "Avsluta"
+      exitConfirm: "Avsluta",
+      discoveryErrorTitle: "CLI-verktyg kan inte ansluta till den här körtiden",
+      discoveryError:
+        "Skrivbordsvärden kunde inte publicera sin identifieringsfil (endast för ägaren), så symphony-cli och andra lokala verktyg hittar inte den här körtiden. Själva appen fungerar som vanligt. Detaljer: {error}"
     },
     validation: {
       number: "Ange ett tal.",
@@ -294,6 +356,8 @@ export const settingsMessages = defineMessages({
       threshold: "Måste vara mellan 10 och 100.",
       port: "Måste vara en TCP-port mellan 1 och 65535.",
       bind: "Ange en bindningsadress.",
+      bindLoopback: "Använd en loopback-adress (127.0.0.1, ::1 eller localhost).",
+      origin: "{origin} är inte tillåtet. Använd ett rent https://-ursprung (http:// bara för localhost).",
       portInUse: "Det här är det lokala API:ets port ({port}); välj en annan fjärrport."
     }
   }
