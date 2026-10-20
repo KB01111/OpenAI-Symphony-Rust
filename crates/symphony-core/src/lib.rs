@@ -43,7 +43,8 @@ mod tests {
                 "token": "ghp_top",
                 "oauth": { "access_token": "nested-secret", "scope": "repo" },
                 "credentials": { "user": "bot", "pass": "p" },
-                "headers": [{ "authorization": "Bearer x" }]
+                "headers": [{ "authorization": "Bearer x" }],
+            "api-key": "hyphenated-secret"
             })
             .as_object()
             .unwrap()
@@ -51,7 +52,13 @@ mod tests {
             ..Default::default()
         };
         let shown = serde_json::to_string(&cfg.redacted_for_display().tracker_provider).unwrap();
-        for secret in ["ghp_top", "nested-secret", "\"bot\"", "Bearer x"] {
+        for secret in [
+            "ghp_top",
+            "nested-secret",
+            "\"bot\"",
+            "Bearer x",
+            "hyphenated-secret",
+        ] {
             assert!(!shown.contains(secret), "{secret} leaked in {shown}");
         }
         assert!(shown.contains("acme/app"));

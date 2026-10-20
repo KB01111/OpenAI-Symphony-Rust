@@ -20,7 +20,7 @@ import { useApprovals, useDecideApproval, useTaskEventHistory } from "../../lib/
 import { useEventStore } from "../../runtime/eventStore.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { executionMessages } from "./messages.js";
-import { buildTaskTimeline, countByKind, filterByKinds, newSince, toggleKind } from "./timeline.js";
+import { buildTaskTimeline, countByKind, filterByKinds, toggleKind } from "./timeline.js";
 
 /** Pending approvals for one task, pinned above the timeline. One decision in flight per approval. */
 const TaskApprovals: React.FC<{ taskId: string }> = ({ taskId }) => {
@@ -51,6 +51,18 @@ const TaskApprovals: React.FC<{ taskId: string }> = ({ taskId }) => {
     },
     [decide]
   );
+  if (approvals.isError && !approvals.data) {
+    // Pending approvals could not be loaded: say so instead of silently showing none.
+    return (
+      <ErrorState
+        className="m-2 shrink-0"
+        intent="warning"
+        title={m.timeline.approvalsFailed}
+        message={approvals.error.message}
+        onRetry={() => void approvals.refetch()}
+      />
+    );
+  }
   if (list.length === 0) return null;
   return (
     <section aria-label={m.timeline.approvals} className="max-h-[45%] shrink-0 space-y-2 overflow-auto border-b border-border p-2">
@@ -84,12 +96,14 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
   const all = useMemo(() => buildTaskTimeline(task.id, history.data, live), [task.id, history.data, live]);
   const counts = useMemo(() => countByKind(all), [all]);
   const visible = useMemo(() => filterByKinds(all, hidden), [all, hidden]);
-  const visibleCount = useRef(visible.length);
-  visibleCount.current = visible.length;
+  // The pause baseline is a position in the unfiltered timeline, so changing kind filters while
+  // paused neither invents nor hides "new" events.
+  const allCount = useRef(all.length);
+  allCount.current = all.length;
 
   const onFollowChange = useCallback((next: boolean) => {
     setFollowing(next);
-    setPausedAt(next ? null : visibleCount.current);
+    setPausedAt(next ? null : allCount.current);
   }, []);
   const jumpToLatest = useCallback(() => {
     // Remounting the list restores tail-following and scrolls to the newest event.
@@ -102,7 +116,10 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
   const getKey = useCallback((e: AgentEvent) => e.id, []);
 
   const chips = EVENT_KINDS.filter((k) => counts[k] > 0 || hidden.has(k));
-  const unseen = newSince(visible.length, pausedAt);
+  const unseen = useMemo(
+    () => (pausedAt === null ? 0 : filterByKinds(all.slice(pausedAt), hidden).length),
+    [all, hidden, pausedAt]
+  );
   const active = isActivePhase(task.current_phase);
 
   return (

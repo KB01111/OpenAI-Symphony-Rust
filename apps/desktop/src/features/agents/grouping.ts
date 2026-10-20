@@ -112,11 +112,20 @@ function fromTask(task: Task, segment: AgentSegment, pending: number): AgentRow 
     attempt: task.attempt_count || null,
     dueAt: task.next_retry_at,
     error: task.last_error,
-    finishedAt: task.completed_at ?? (FINISHED_SEGMENTS.includes(segment) ? task.updated_at : null)
+    finishedAt: finishedTime(task, segment)
   };
 }
 
 const time = (iso: string | null | undefined) => (iso ? new Date(iso).getTime() : 0);
+
+/**
+ * When a finished row ended. `completed_at` is only trusted for completed/review rows: a retried
+ * task keeps the `completed_at` of an earlier run, so failures and cancellations use `updated_at`.
+ */
+function finishedTime(task: Task, segment: AgentSegment): string | null {
+  if (segment === "completed") return task.completed_at ?? task.updated_at;
+  return FINISHED_SEGMENTS.includes(segment) ? task.updated_at : null;
+}
 
 /** Build one row per task across all segments. */
 export function buildAgentRows(input: AgentGroupingInput): AgentRow[] {
@@ -220,7 +229,8 @@ export function buildAgentRows(input: AgentGroupingInput): AgentRow[] {
   // 5-7. Recently failed / cancelled / completed.
   for (const t of tasks) {
     if (seen.has(t.id)) continue;
-    const finished = time(t.completed_at ?? t.updated_at);
+    const done = t.status === "completed" || t.status === "human_review";
+    const finished = time(done ? (t.completed_at ?? t.updated_at) : t.updated_at);
     if (now - finished > window) continue;
     if (t.status === "failed") push(fromTask(t, "failed", 0));
     else if (t.status === "cancelled") push(fromTask(t, "cancelled", 0));

@@ -4,7 +4,8 @@
  *
  * Requires a built CLI: `cargo build -p symphony-cli` (done automatically when missing).
  */
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -45,7 +46,8 @@ const eventFor = (taskId: string, type: string) =>
 
 beforeAll(async () => {
   if (!existsSync(cliPath)) {
-    execFileSync("cargo", ["build", "-p", "symphony-cli"], { cwd: repoRoot, stdio: "inherit" });
+    // Async so the (possibly minutes-long) build does not block the Vitest worker's RPC.
+    await promisify(execFile)("cargo", ["build", "-p", "symphony-cli"], { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 });
   }
   tmp = mkdtempSync(join(tmpdir(), "symphony-it-"));
   dataDir = join(tmp, "data");
@@ -64,10 +66,22 @@ beforeAll(async () => {
   });
 }, 240_000);
 
-afterAll(() => {
+afterAll(async () => {
   stream?.stop();
-  runtime?.kill();
-  if (tmp) rmSync(tmp, { recursive: true, force: true });
+  if (runtime && runtime.exitCode === null && runtime.signalCode === null) {
+    // Wait for the process to exit: Windows keeps its files (SQLite, lock) busy until then.
+    const exited = new Promise<void>((resolve) => runtime.once("exit", () => resolve()));
+    runtime.kill();
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 10_000))]);
+  }
+  if (tmp) {
+    try {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (error) {
+      // Leftover temp files must not fail the suite; the OS cleans the temp dir.
+      console.warn(`could not remove ${tmp}:`, error);
+    }
+  }
 });
 
 describe("Symphony runtime contract (real Axum router)", () => {

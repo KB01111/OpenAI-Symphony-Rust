@@ -7,9 +7,10 @@ import { shellMessages } from "./messages.js";
 
 /** Renders children only once the runtime client is discovered; otherwise a startup state. */
 export const RuntimeGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { phase, error, retry } = useRuntime();
+  const { phase, error, retry, client } = useRuntime();
   const m = useMessages(shellMessages);
-  if (phase === "ready") return <>{children}</>;
+  // Children (and every hook using `useClient`) only render with a live client.
+  if (phase === "ready" && client) return <>{children}</>;
   return (
     <main className="flex h-full items-center justify-center bg-background p-6">
       <div className="w-full max-w-md space-y-4 text-center">

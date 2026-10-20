@@ -46,15 +46,16 @@ const EventFeed: React.FC<{ events: AgentEvent[]; showIdentifier?: boolean; empt
   );
 };
 
-function useFocusedTaskEvents(kinds: ReadonlyArray<AgentEventKind>): AgentEvent[] | null {
+function useFocusedTaskEvents(kinds: ReadonlyArray<AgentEventKind>) {
   const taskId = useFocusedTaskId();
   const history = useTaskEventHistory(taskId);
   const live = useEventStore((s) => s.events);
-  return useMemo(() => {
+  const events = useMemo(() => {
     if (!taskId) return null;
     const merged = mergeEventHistory(history.data, live.filter((e) => e.task_id === taskId));
     return merged.filter((e) => kinds.includes(formatAgentEvent(e).kind));
   }, [taskId, history.data, live, kinds]);
+  return { events, history };
 }
 
 const AGENT_KINDS: AgentEventKind[] = ["message", "reasoning", "file_change", "tool_call", "error"];
@@ -76,7 +77,8 @@ const ApprovalsTab: React.FC = () => {
     );
   };
   if (approvals.isLoading) return <LoadingRows className="p-2" rows={3} />;
-  if (approvals.isError) {
+  // A failed background refresh keeps showing the cached list; only block when nothing loaded.
+  if (approvals.isError && !approvals.data) {
     // Never show "no approvals" when the list could not be fetched: requests may be waiting.
     return <ErrorState className="m-2" title={m.drawer.loadFailed} message={errorMessage(approvals.error)} onRetry={() => void approvals.refetch()} retryLabel={t.common.retry} />;
   }
@@ -108,7 +110,7 @@ const ValidationsTab: React.FC = () => {
   const validations = useTaskValidations(taskId);
   if (!taskId) return <AiEmptyView className="m-2" title={m.drawer.selectTask} />;
   if (validations.isLoading) return <LoadingRows className="p-2" rows={3} />;
-  if (validations.isError) {
+  if (validations.isError && !validations.data) {
     return <ErrorState className="m-2" title={m.drawer.loadFailed} message={errorMessage(validations.error)} onRetry={() => void validations.refetch()} retryLabel={t.common.retry} />;
   }
   const list = validations.data ?? [];
@@ -120,7 +122,7 @@ const ValidationsTab: React.FC = () => {
           <div className="flex items-center gap-2 text-xs">
             <span className={v.passed ? "text-success" : "text-destructive"}>{v.passed ? m.drawer.passed : m.drawer.failed}</span>
             <code className="flex-1 truncate font-mono text-foreground">{v.command}</code>
-            <span className="tabular-nums text-muted-foreground">{v.duration_ms} ms · exit {v.exit_code}</span>
+            <span className="tabular-nums text-muted-foreground">{formatMessage(m.drawer.validationMeta, { ms: v.duration_ms, code: v.exit_code })}</span>
           </div>
           {v.stdout || v.stderr ? <SdkCodeBlock language="text">{[v.stdout, v.stderr].filter(Boolean).join("\n")}</SdkCodeBlock> : null}
         </li>
@@ -184,8 +186,14 @@ const ProblemsTab: React.FC = () => {
 
 const FocusedFeed: React.FC<{ kinds: ReadonlyArray<AgentEventKind>; emptyTitle: string }> = ({ kinds, emptyTitle }) => {
   const m = useMessages(shellMessages);
-  const events = useFocusedTaskEvents(kinds);
+  const t = useT();
+  const { events, history } = useFocusedTaskEvents(kinds);
   if (events === null) return <AiEmptyView className="m-2" title={m.drawer.selectTask} />;
+  // History not loaded (yet, or failed): never present that as "no events".
+  if (!history.data && history.isLoading && events.length === 0) return <LoadingRows className="p-2" rows={3} />;
+  if (!history.data && history.isError && events.length === 0) {
+    return <ErrorState className="m-2" title={m.drawer.loadFailed} message={errorMessage(history.error)} onRetry={() => void history.refetch()} retryLabel={t.common.retry} />;
+  }
   return <EventFeed events={events} emptyTitle={emptyTitle} />;
 };
 

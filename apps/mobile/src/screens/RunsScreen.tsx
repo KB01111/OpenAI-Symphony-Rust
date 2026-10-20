@@ -23,7 +23,8 @@ const SessionEvents: React.FC<{ taskId: string }> = ({ taskId }) => {
   const events = useTaskEvents(taskId, true);
   if (events.isLoading) return <LoadingRows rows={3} label={t.common.loading} />;
   if (events.isError) return <ErrorState title={m.loadEventsFailed} message={events.error.message} onRetry={() => void events.refetch()} retryLabel={t.common.retry} />;
-  const list = (events.data ?? []).slice(-20);
+  // The runtime returns newest first; show the latest 20 in chronological order.
+  const list = [...(events.data ?? [])].reverse();
   if (list.length === 0) return <p className="text-xs text-muted-foreground">{m.noEvents}</p>;
   return (
     <ol className="space-y-0.5" aria-label={t.mobile.events}>

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ApprovalDecision, ApprovalRequest } from "@symphony/shared-types";
+import type { ApprovalDecision, ApprovalRequest, CreateTaskRequest } from "@symphony/shared-types";
 import { mobileKeys } from "../liveData.js";
 import { useSession } from "../session.js";
 
@@ -20,7 +20,7 @@ export function usePendingApprovals() {
 
 export function useTaskEvents(taskId: string, enabled: boolean) {
   const { client } = useSession();
-  return useQuery({ queryKey: mobileKeys.taskEvents(taskId), queryFn: ({ signal }) => client.listTaskEvents(taskId, 50, signal), enabled });
+  return useQuery({ queryKey: mobileKeys.taskEvents(taskId), queryFn: ({ signal }) => client.listTaskEvents(taskId, 20, signal), enabled });
 }
 
 export function useDecideApproval() {
@@ -37,6 +37,29 @@ export function useCancelTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (taskId: string) => client.cancelTask(taskId),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: mobileKeys.all })
+  });
+}
+
+export function useProjects() {
+  const { client } = useSession();
+  return useQuery({ queryKey: mobileKeys.projects, queryFn: ({ signal }) => client.listProjects(signal), staleTime: 60_000 });
+}
+
+export function useCreateTask() {
+  const { client } = useSession();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateTaskRequest) => client.createTask(input),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: mobileKeys.all })
+  });
+}
+
+export function useDispatchTask() {
+  const { client } = useSession();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => client.dispatchTask(taskId),
     onSettled: () => queryClient.invalidateQueries({ queryKey: mobileKeys.all })
   });
 }

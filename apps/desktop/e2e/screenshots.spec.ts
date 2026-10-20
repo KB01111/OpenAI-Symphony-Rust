@@ -22,6 +22,7 @@ interface Task {
 
 let runningTask: Task;
 let reviewId: string | null = null;
+let reviewTitle = "";
 
 async function waitUntil(check: () => Promise<boolean>, timeoutMs = 45_000) {
   const deadline = Date.now() + timeoutMs;
@@ -50,8 +51,10 @@ test.beforeAll(async () => {
   await create("Speed up provider detection", "Cache version probes between refreshes.", false, 1);
   runningTask = await create("Run the full test suite before merging", "Execute cargo test. SIMULATE_APPROVAL", true, 1);
   await waitUntil(async () => (await api<{ task_id: string }[]>("GET", "/approvals?only_pending=true")).some((a) => a.task_id === runningTask.id));
-  const reviews = await api<{ id: string }[]>("GET", "/prs");
-  reviewId = reviews[0]?.id ?? null;
+  const reviews = await api<{ id: string; title: string }[]>("GET", "/prs");
+  if (!reviews[0]) throw new Error("the finished simulated run did not produce a PR review");
+  reviewId = reviews[0].id;
+  reviewTitle = reviews[0].title;
 });
 
 async function shoot(page: Page, name: string, route: string, theme: "light" | "dark", ready: (page: Page) => Promise<void>) {
@@ -63,11 +66,11 @@ async function shoot(page: Page, name: string, route: string, theme: "light" | "
 }
 
 const VIEWS: [string, () => string, (page: Page) => Promise<void>][] = [
-  ["overview", () => "/overview", (p) => expect(p.getByText("Live agent sessions").or(p.getByRole("main")).first()).toBeVisible()],
+  ["overview", () => "/overview", (p) => expect(p.getByText("Live agent activity")).toBeVisible()],
   ["projects", () => "/projects", (p) => expect(p.getByRole("main").getByText("E2E fixture").first()).toBeVisible()],
   ["task-board", () => "/tasks", (p) => expect(p.getByText("Speed up provider detection").first()).toBeVisible()],
   ["agent-execution", () => `/runs/${runningTask.id}`, (p) => expect(p.getByRole("button", { name: "Approve once" }).first()).toBeVisible()],
-  ["pr-review", () => (reviewId ? `/reviews/${reviewId}` : "/reviews"), (p) => expect(p.getByRole("main")).toBeVisible()],
+  ["pr-review", () => `/reviews/${reviewId}`, (p) => expect(p.getByRole("main").getByText(reviewTitle).first()).toBeVisible()],
   ["workflow-studio", () => "/workflow", (p) => expect(p.getByText("Workflow is valid").or(p.getByText("Workflow has errors")).first()).toBeVisible()],
   ["settings", () => "/settings", (p) => expect(p.getByRole("main").getByRole("heading").first()).toBeVisible()]
 ];

@@ -39,6 +39,7 @@ export const overviewMessages = defineMessages({
       open: "Open execution for {identifier}"
     },
     approvals: {
+      loadFailed: "Pending approvals could not be loaded",
       title: "Pending approvals",
       empty: "No approvals are waiting",
       openTask: "Open task"
@@ -92,6 +93,7 @@ export const overviewMessages = defineMessages({
       open: "Öppna körning för {identifier}"
     },
     approvals: {
+      loadFailed: "Väntande godkännanden kunde inte läsas in",
       title: "Väntande godkännanden",
       empty: "Inga godkännanden väntar",
       openTask: "Öppna uppgift"

@@ -459,18 +459,55 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     mem.active_config = cfg;
                     mem.active_workflow_path = Some(path.to_path_buf());
                     mem.workflow_error = None;
+                    drop(mem);
                     info!(path = %path.display(), "Reloaded WORKFLOW.md configuration");
+                    // Lets clients refresh the document (e.g. Workflow Studio's external-change notice).
+                    self.emit_event(
+                        None,
+                        None,
+                        None,
+                        None,
+                        "workflow/reloaded",
+                        None,
+                        format!("Reloaded workflow from {}", path.display()),
+                        None,
+                    )
+                    .await;
                 }
                 Err(err) => {
                     warn!(error = %err, "Invalid WORKFLOW.md config on reload; keeping last known good configuration");
                     let mut mem = self.memory.write().await;
                     mem.workflow_error = Some(err.to_string());
+                    drop(mem);
+                    self.emit_event(
+                        None,
+                        None,
+                        None,
+                        None,
+                        "workflow/reload_failed",
+                        None,
+                        err.to_string(),
+                        None,
+                    )
+                    .await;
                 }
             },
             Err(err) => {
                 warn!(error = %err, "Failed to parse WORKFLOW.md on reload; keeping last known good configuration");
                 let mut mem = self.memory.write().await;
                 mem.workflow_error = Some(err.to_string());
+                drop(mem);
+                self.emit_event(
+                    None,
+                    None,
+                    None,
+                    None,
+                    "workflow/reload_failed",
+                    None,
+                    err.to_string(),
+                    None,
+                )
+                .await;
             }
         }
     }
@@ -905,13 +942,16 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 errors.push("The directory is not a Git repository (git rev-parse failed).".into());
             }
         }
+        // Workflow presence is checked at the checkout root the project will actually use.
+        let has_workflow_file =
+            is_directory && PathBuf::from(&resolved_path).join("WORKFLOW.md").is_file();
         RepositoryValidation {
             repo_path: resolved_path,
             exists,
             is_directory,
             is_git_repository,
             current_branch,
-            has_workflow_file: is_directory && path.join("WORKFLOW.md").is_file(),
+            has_workflow_file,
             suggested_name: path.file_name().map(|n| n.to_string_lossy().to_string()),
             errors,
         }
@@ -1387,7 +1427,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .filter(|p| p.is_file())
             .and_then(|p| std::fs::read_to_string(p).ok())
             .unwrap_or_else(|| wf.raw_source.clone());
-        let validation = Self::validate_workflow_text(&raw_markdown, None, None, None, None);
+        let validation =
+            Self::validate_workflow_text(&raw_markdown, path.clone(), None, None, None, None);
         WorkflowDocument {
             path: path.map(|p| p.to_string_lossy().to_string()),
             raw_markdown,
@@ -1399,8 +1440,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
     }
 
     /// Parse, validate, and render a workflow document without persisting it.
+    /// `source_path` is the file the text would be saved to; relative paths in the config
+    /// (e.g. `workspace.root`) are resolved against it exactly as they are after saving.
     pub fn validate_workflow_text(
         raw: &str,
+        source_path: Option<PathBuf>,
         sample_identifier: Option<String>,
         sample_title: Option<String>,
         sample_description: Option<String>,
@@ -1414,7 +1458,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             rendered_prompt: None,
             path: None,
         };
-        let wf = match WorkflowDefinition::parse(raw, None) {
+        let wf = match WorkflowDefinition::parse(raw, source_path) {
             Ok(w) => w,
             Err(e) => return fail(e),
         };
@@ -1473,7 +1517,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let wf = WorkflowDefinition::parse(raw_content, Some(path.clone()))?;
         let cfg = ServiceConfig::from_workflow(&wf)?;
         cfg.validate_for_dispatch()?;
-        let validation = Self::validate_workflow_text(raw_content, None, None, None, None);
+        let validation =
+            Self::validate_workflow_text(raw_content, Some(path.clone()), None, None, None, None);
         if !validation.valid {
             return Err(SymphonyError::TemplateRenderError(
                 validation.error.unwrap_or_default(),
@@ -1526,23 +1571,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
     // Tracker Synchronization & Reconciliation Loop (SPEC.md Sections 8 & 16)
     // =========================================================================
 
-    /// GitHub token for host-side tracker calls: every alias the credential API accepts, from the
-    /// vault first, then the process environment.
+    /// GitHub token for host-side tracker calls against api.github.com: every vault alias first,
+    /// then the environment, skipping empty values. `GITHUB_ENTERPRISE_TOKEN` is deliberately not
+    /// used: the tracker talks to the public API, and an Enterprise token must not be sent there.
     fn github_token(&self) -> Option<String> {
-        const ALIASES: [&str; 3] = ["GITHUB_TOKEN", "GH_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
+        const ALIASES: [&str; 2] = ["GITHUB_TOKEN", "GH_TOKEN"];
+        let usable = |v: String| (!v.trim().is_empty()).then_some(v);
         ALIASES
             .iter()
-            .find_map(|key| {
-                self.secret_store
-                    .get_secret(key)
-                    .filter(|token| !token.trim().is_empty())
-            })
+            .find_map(|key| self.secret_store.get_vault_secret(key).and_then(usable))
             .or_else(|| {
-                ALIASES.iter().find_map(|key| {
-                    std::env::var(key)
-                        .ok()
-                        .filter(|token| !token.trim().is_empty())
-                })
+                ALIASES
+                    .iter()
+                    .find_map(|key| std::env::var(key).ok().and_then(usable))
             })
     }
 
@@ -2264,15 +2305,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         for turn_number in 1..=max_turns {
             if let Ok(cancel_reason) = cancel_rx.try_recv() {
                 let _ = agent_session.cancel().await;
-                // Same final state `cancel_task` writes, so the two writers cannot disagree.
-                self.finish_unsuccessful_attempt(
-                    &mut task,
-                    &mut attempt_record,
-                    TaskStatus::Cancelled,
-                    RunAttemptPhase::CanceledByReconciliation,
-                    format!("Cancelled: {cancel_reason}"),
-                )
-                .await;
+                self.finish_externally_stopped_attempt(&mut attempt_record, &cancel_reason)
+                    .await;
                 return;
             }
 
@@ -2285,13 +2319,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
             attempt_record.phase = RunAttemptPhase::StreamingTurn;
             attempt_record.turn_count = turn_number;
             let _ = self.storage.upsert_run_attempt(&attempt_record).await;
-            if task.current_phase != Some(RunAttemptPhase::StreamingTurn) {
-                task.current_phase = Some(RunAttemptPhase::StreamingTurn);
-                let _ = self.storage.upsert_task(&task).await;
-            }
-            if let Some(handle) = self.memory.write().await.running.get_mut(&task.id) {
-                handle.session.phase = RunAttemptPhase::StreamingTurn;
-                handle.session.turn_count = turn_number;
+            {
+                // Holding the memory lock while writing means `cancel_task` (which removes the
+                // running handle before persisting `Cancelled`) either sees this write first or
+                // makes it a no-op, so a stale `Running` row can never overwrite a cancellation.
+                let mut mem = self.memory.write().await;
+                if let Some(handle) = mem.running.get_mut(&task.id) {
+                    handle.session.phase = RunAttemptPhase::StreamingTurn;
+                    handle.session.turn_count = turn_number;
+                    if task.current_phase != Some(RunAttemptPhase::StreamingTurn) {
+                        task.current_phase = Some(RunAttemptPhase::StreamingTurn);
+                        let _ = self.storage.upsert_task(&task).await;
+                    }
+                }
             }
 
             let outcome_res = tokio::select! {
@@ -2299,13 +2339,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 cancel_res = &mut cancel_rx => {
                     let _ = agent_session.cancel().await;
                     let reason = cancel_res.unwrap_or_else(|_| "cancelled".to_string());
-                    self.finish_unsuccessful_attempt(
-                        &mut task,
-                        &mut attempt_record,
-                        TaskStatus::Cancelled,
-                        RunAttemptPhase::CanceledByReconciliation,
-                        reason,
-                    ).await;
+                    self.finish_externally_stopped_attempt(&mut attempt_record, &reason).await;
                     return;
                 }
             };
@@ -2392,6 +2426,16 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
 
         let _ = agent_session.stop().await;
+
+        // The agent has stopped streaming; hooks and validations follow.
+        {
+            let mut mem = self.memory.write().await;
+            if let Some(handle) = mem.running.get_mut(&task.id) {
+                handle.session.phase = RunAttemptPhase::Finishing;
+                task.current_phase = Some(RunAttemptPhase::Finishing);
+                let _ = self.storage.upsert_task(&task).await;
+            }
+        }
 
         // 6. Run `after_run` lifecycle hook (failure logged and ignored per SPEC.md)
         if let Some(ref after_script) = config.hooks.after_run {
@@ -2538,6 +2582,34 @@ Please implement the requested changes cleanly in the current Git workspace, run
             error_msg,
         )
         .await;
+    }
+
+    /// Finalize an attempt that was stopped from outside the worker (`cancel_task`, stall
+    /// detection, tracker reconciliation). The stopping side owns the task's status, events and
+    /// retry scheduling, so only the attempt record and runtime totals are written here — the
+    /// worker's stale task copy is never persisted over the newer state.
+    async fn finish_externally_stopped_attempt(
+        &self,
+        attempt_record: &mut RunAttempt,
+        reason: &str,
+    ) {
+        self.expire_pending_approvals(&attempt_record.task_id).await;
+        let now = Utc::now();
+        let elapsed = (now - attempt_record.started_at).num_milliseconds().max(0) as f64 / 1000.0;
+        attempt_record.phase = if reason == "stall_timeout" {
+            RunAttemptPhase::Stalled
+        } else {
+            RunAttemptPhase::CanceledByReconciliation
+        };
+        attempt_record.error = Some(format!("Stopped: {reason}"));
+        attempt_record.finished_at = Some(now);
+        let _ = self.storage.upsert_run_attempt(attempt_record).await;
+        let mut mem = self.memory.write().await;
+        mem.codex_totals.seconds_running += elapsed;
+        // Release the issue claim (e.g. after a stall) unless a newer attempt already runs it.
+        if !mem.running.contains_key(&attempt_record.task_id) {
+            mem.claimed_issue_ids.remove(&attempt_record.issue_id);
+        }
     }
 
     /// End an attempt that did not succeed: `Failed` (eligible for retry) or `Cancelled` (the

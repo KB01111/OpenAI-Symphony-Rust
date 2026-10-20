@@ -24,7 +24,7 @@ import { formatMessage, type CreateTaskRequest, type ProviderKind } from "@symph
 import { LoadingRows, useNotify } from "@symphony/ui";
 import { paths } from "../../app/routes.js";
 import { useMessages, useT } from "../../lib/i18n.js";
-import { useCreateTask, useProjects } from "../../lib/queries.js";
+import { useCreateTask, useProjects, useProviders } from "../../lib/queries.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { ProviderModelFields } from "../projects/ProviderModelFields.js";
 import { taskMessages } from "./messages.js";
@@ -62,6 +62,11 @@ export default function NewTaskDialog() {
     (projectId === null ? (projectList.find((p) => p.id === activeProjectId) ?? projectList[0]) : undefined);
   const provider: ProviderKind = providerOverride ?? project?.preferred_provider ?? "codex";
   const fallbackModel = project && provider === project.preferred_provider ? project.preferred_model : null;
+  // The model shown as the placeholder is the one submitted when the field is left blank, so an
+  // overridden provider never inherits the project's model for a different provider.
+  const providerStatuses = useProviders();
+  const placeholderModel =
+    fallbackModel ?? providerStatuses.data?.find((p) => p.provider === provider)?.default_model ?? null;
 
   const titleError = submitted && !title.trim() ? m.dialog.titleRequired : undefined;
   const projectError = submitted && !project ? m.dialog.projectRequired : undefined;
@@ -80,7 +85,7 @@ export default function NewTaskDialog() {
       identifier: identifier.trim() || null,
       priority,
       provider,
-      model: model.trim() || null,
+      model: model.trim() || placeholderModel,
       labels: parseLabels(labels),
       auto_start: autoStart
     };

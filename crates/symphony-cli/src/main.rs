@@ -209,11 +209,13 @@ async fn main() -> anyhow::Result<()> {
         .config
         .and_then(|c| c.server_port);
     let port = cli.port.or(configured_port).unwrap_or(4780);
-    let token = cli
-        .token
-        .clone()
-        .filter(|t| t.len() >= 16)
-        .unwrap_or_else(generate_access_token);
+    // A supplied token is used as-is; a too-short one is a configuration error rather than being
+    // silently replaced (clients configured with it could never authenticate).
+    let token = match cli.token.clone() {
+        Some(t) if t.len() >= 16 => t,
+        Some(_) => anyhow::bail!("--token / SYMPHONY_API_TOKEN must be at least 16 characters"),
+        None => generate_access_token(),
+    };
     let mut allowed_origins = default_local_origins();
     allowed_origins.extend(cli.allow_origins.iter().cloned());
     let is_loopback = cli.host == "127.0.0.1" || cli.host == "localhost" || cli.host == "::1";

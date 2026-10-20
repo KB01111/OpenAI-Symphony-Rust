@@ -118,6 +118,10 @@ const PendingApprovals: React.FC = () => {
     setPending((p) => ({ ...p, [approval.id]: decision }));
     decide.mutate({ approval, decision }, { onSettled: () => setPending(({ [approval.id]: _done, ...rest }) => rest) });
   };
+  if (approvals.isLoading) return <LoadingRows className="p-3" rows={2} />;
+  if (approvals.isError && !approvals.data) {
+    return <ErrorState className="m-3" title={m.approvals.loadFailed} message={approvals.error.message} onRetry={() => void approvals.refetch()} />;
+  }
   if (list.length === 0) {
     return <AiEmptyView className="m-3 min-h-28" icon={<ShieldQuestion className="size-6 text-muted-foreground" aria-hidden />} title={m.approvals.empty} />;
   }
@@ -225,7 +229,7 @@ export default function OverviewPage() {
             <MetricTile
               label={m.metrics.approvals}
               icon={<ShieldQuestion className="size-3.5" aria-hidden />}
-              value={approvals.data?.length ?? 0}
+              value={approvals.data ? approvals.data.length : "—"}
               tone={(approvals.data?.length ?? 0) > 0 ? "warning" : "neutral"}
               onClick={() => useUiStore.getState().setDrawerTab("approvals")}
             />

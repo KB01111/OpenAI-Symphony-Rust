@@ -306,24 +306,34 @@ export function useSaveWorkflow() {
   });
 }
 
-/** Persist settings to the runtime and apply native side effects (login autostart). */
+/** A full settings object, or an update applied to the latest saved settings when the write runs. */
+export type SettingsChange = AppSettings | ((latest: AppSettings) => AppSettings);
+
+/**
+ * Persist settings to the runtime and apply native side effects (login autostart).
+ * Writes are serialized (`scope`), and functional changes are applied to the latest cached
+ * settings at execution time, so a preference write cannot replace a newer save with a stale
+ * snapshot.
+ */
 export function useSaveSettings() {
   const client = useClient();
   const qc = useQueryClient();
   const onError = useFailureToast();
   return useMutation({
-    mutationFn: async (next: AppSettings) => {
+    scope: { id: "settings" },
+    mutationFn: async (change: SettingsChange) => {
       const previous = qc.getQueryData<AppSettings>(qk.settings);
+      const next = typeof change === "function" ? (previous ? change(previous) : null) : change;
+      if (!next) throw new Error("Settings are not loaded yet");
       const saved = await client.saveSettings(next);
+      // The runtime has stored the change: reflect it before any native side effect can fail.
+      qc.setQueryData(qk.settings, saved);
       if (isTauri() && previous?.start_background_runtime_on_login !== saved.start_background_runtime_on_login) {
         await nativeHost.setAutostart(saved.start_background_runtime_on_login);
       }
       return saved;
     },
-    onSuccess: (saved) => {
-      qc.setQueryData(qk.settings, saved);
-      void qc.invalidateQueries({ queryKey: qk.providers });
-    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.providers }),
     onError
   });
 }

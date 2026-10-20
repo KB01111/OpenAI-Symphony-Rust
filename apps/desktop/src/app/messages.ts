@@ -80,6 +80,7 @@ export const shellMessages = defineMessages({
       problemWorkflow: "Workflow configuration error: {error}",
       problemStream: "Live event stream is not connected — data is refreshed by polling.",
       loadFailed: "Could not load this panel",
+      validationMeta: "{ms} ms · exit code {code}",
       problemQuery: "Could not load {resource}: {error}",
       problemProvider: "{provider} is not installed",
       openTask: "Open task",
@@ -89,6 +90,7 @@ export const shellMessages = defineMessages({
       failed: "failed"
     },
     inspector: {
+      ci: "CI checks",
       label: "Inspector",
       empty: "Nothing selected",
       emptyDetail: "Select a task, project, worktree, or pull request to inspect it.",
@@ -218,6 +220,7 @@ export const shellMessages = defineMessages({
       problemWorkflow: "Fel i arbetsflödeskonfigurationen: {error}",
       problemStream: "Händelseströmmen är inte ansluten — data uppdateras genom avsökning.",
       loadFailed: "Panelen kunde inte läsas in",
+      validationMeta: "{ms} ms · slutkod {code}",
       problemQuery: "Kunde inte läsa in {resource}: {error}",
       problemProvider: "{provider} är inte installerad",
       openTask: "Öppna uppgift",
@@ -227,6 +230,7 @@ export const shellMessages = defineMessages({
       failed: "misslyckad"
     },
     inspector: {
+      ci: "CI-kontroller",
       label: "Inspektör",
       empty: "Inget valt",
       emptyDetail: "Välj en uppgift, ett projekt, ett arbetsträd eller en pull request för att inspektera.",

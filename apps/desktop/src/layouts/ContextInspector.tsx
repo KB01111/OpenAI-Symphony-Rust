@@ -179,7 +179,7 @@ const ReviewInspector: React.FC<{ id: string }> = ({ id }) => {
       <KeyValueList
         items={[
           { label: m.inspector.branch, value: `${r.branch_name} → ${r.base_branch}`, mono: true },
-          { label: "CI", value: r.ci_status },
+          { label: m.inspector.ci, value: r.ci_status },
           { label: m.inspector.status, value: `${r.merge_readiness.score}/5 · ${r.merge_readiness.label}` }
         ]}
       />

@@ -61,7 +61,8 @@ export function validateProjectForm(form: ProjectFormState): ProjectFormErrors {
   if (!form.name.trim()) errors.name = true;
   if (!form.defaultBranch.trim()) errors.defaultBranch = true;
   if (!Number.isInteger(form.maxAgents) || form.maxAgents < 1 || form.maxAgents > 32) errors.maxAgents = true;
-  if (form.trackerKind === "github" && form.githubRepo.trim() && !GITHUB_REPO.test(form.githubRepo.trim())) errors.githubRepo = true;
+  // The GitHub tracker needs a repository to import issues from.
+  if (form.trackerKind === "github" && !GITHUB_REPO.test(form.githubRepo.trim())) errors.githubRepo = true;
   return errors;
 }
 

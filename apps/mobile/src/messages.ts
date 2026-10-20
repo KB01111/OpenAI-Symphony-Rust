@@ -77,7 +77,15 @@ export const mobileMessages = defineMessages({
     cancelRequested: "Cancellation requested",
     cancelFailed: "Could not cancel the run",
     waitingToRetry: "Waiting to retry",
-    retryAttempt: "Attempt {attempt}"
+    retryAttempt: "Attempt {attempt}",
+    // Task creation / dispatch
+    noProjects: "Register a repository in Symphony Desktop before creating tasks.",
+    titleRequired: "A title is required.",
+    taskCreated: "{identifier} created",
+    taskCreateFailed: "Task not created",
+    startTask: "Start",
+    taskStarted: "{identifier} started",
+    taskStartFailed: "Could not start the task"
   },
   sv: {
     tabOverview: "Översikt",
@@ -149,7 +157,14 @@ export const mobileMessages = defineMessages({
     cancelRequested: "Avbrott begärt",
     cancelFailed: "Kunde inte avbryta körningen",
     waitingToRetry: "Väntar på nytt försök",
-    retryAttempt: "Försök {attempt}"
+    retryAttempt: "Försök {attempt}",
+    noProjects: "Registrera ett repository i Symphony Desktop innan du skapar uppgifter.",
+    titleRequired: "En titel krävs.",
+    taskCreated: "{identifier} skapad",
+    taskCreateFailed: "Uppgiften skapades inte",
+    startTask: "Starta",
+    taskStarted: "{identifier} startad",
+    taskStartFailed: "Kunde inte starta uppgiften"
   }
 });
 

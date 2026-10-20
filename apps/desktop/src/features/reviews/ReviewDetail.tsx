@@ -243,7 +243,9 @@ export const ReviewDetail: React.FC<{
   const m = useMessages(reviewMessages);
   const navigate = useNavigate();
   const detail = usePullRequest(id);
-  const review = detail.data ?? fallback;
+  // The list entry only stands in while the detail request is in flight; a failed request shows
+  // its error (with retry) instead of possibly stale list data.
+  const review = detail.data ?? (detail.isError ? undefined : fallback);
 
   if (!review) {
     if (detail.isLoading) return <LoadingRows className="p-4" rows={8} />;

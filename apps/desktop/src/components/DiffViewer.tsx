@@ -10,23 +10,32 @@ export interface DiffFile {
   deletions: number;
 }
 
-/** Split a unified diff (git format) into per-file sections. */
+const HEADER_PREFIXES = ["--- ", "+++ ", "index ", "new file mode", "deleted file mode", "similarity index", "rename from", "rename to", "old mode", "new mode", "Binary files"];
+
+/**
+ * Split a unified diff (git format) into per-file sections. File headers are only recognized
+ * before a file's first hunk, so content lines such as `+++ x` (an added line starting `++`)
+ * inside a hunk are kept as content.
+ */
 export function parseUnifiedDiff(diff: string): DiffFile[] {
   const files: DiffFile[] = [];
   let current: DiffFile | null = null;
+  let inHunk = false;
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
       const match = /diff --git a\/(.+?) b\/(.+)$/.exec(line);
       current = { path: match?.[2] ?? line.slice(11), lines: [], additions: 0, deletions: 0 };
       files.push(current);
+      inHunk = false;
       continue;
     }
     if (!current) continue;
-    if (line.startsWith("+++ ") || line.startsWith("--- ") || line.startsWith("index ") || line.startsWith("new file mode") || line.startsWith("deleted file mode")) {
+    if (!inHunk && HEADER_PREFIXES.some((prefix) => line.startsWith(prefix))) {
       if (line.startsWith("+++ ") && line !== "+++ /dev/null") current.path = line.replace(/^\+\+\+ (b\/)?/, "");
       continue;
     }
-    if (line.startsWith("+")) current.additions += 1;
+    if (line.startsWith("@@")) inHunk = true;
+    else if (line.startsWith("+")) current.additions += 1;
     else if (line.startsWith("-")) current.deletions += 1;
     current.lines.push(line);
   }

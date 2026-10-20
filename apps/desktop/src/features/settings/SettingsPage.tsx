@@ -1,12 +1,10 @@
 import { useCallback, useMemo, useState } from "react";
 import { Button, MessageBar, MessageBarBody, MessageBarTitle, Spinner } from "@fluentui/react-components";
 import { RotateCcw, Save } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage, type AppSettings, type Locale } from "@symphony/shared-types";
 import { ErrorState, LoadingRows, PageHeader, SdkBadge, cn, useDesign, useNotify, type ThemeMode } from "@symphony/ui";
 import { useMessages } from "../../lib/i18n.js";
-import { qk } from "../../lib/queryKeys.js";
 import { useSaveSettings, useSettings } from "../../lib/queries.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { settingsMessages } from "./messages.js";
@@ -23,7 +21,8 @@ import {
   sectionDomId,
   type SectionId
 } from "./sections.js";
-import { serverErrorFields, validateSettings, type SettingsErrors, type SettingsField } from "./validation.js";
+import { portOf, serverErrorFields, validateSettings, type SettingsErrors, type SettingsField } from "./validation.js";
+import { useRuntime } from "../../runtime/RuntimeProvider.js";
 
 /** Fields edited through the draft form (theme/locale persist immediately; others are not edited here). */
 type EditableSettings = Pick<
@@ -69,11 +68,9 @@ function sameEditable(a: AppSettings, b: AppSettings): boolean {
 export default function SettingsPage() {
   const m = useMessages(settingsMessages);
   const notify = useNotify();
-  const qc = useQueryClient();
   const { reducedMotion } = useDesign();
   const settings = useSettings();
   const save = useSaveSettings();
-  const prefSave = useSaveSettings();
   const themeMode = useUiStore((s) => s.themeMode);
   const locale = useUiStore((s) => s.locale);
   const density = useUiStore((s) => s.density);
@@ -96,7 +93,12 @@ export default function SettingsPage() {
     [base, resetSaveError]
   );
 
-  const clientErrors = useMemo<SettingsErrors>(() => (current ? validateSettings(current, m.validation) : {}), [current, m.validation]);
+  const { client } = useRuntime();
+  const localApiPort = portOf(client?.connection.baseUrl);
+  const clientErrors = useMemo<SettingsErrors>(
+    () => (current ? validateSettings(current, m.validation, localApiPort) : {}),
+    [current, m.validation, localApiPort]
+  );
   const serverMessage = save.isError ? errorMessage(save.error) : null;
   const errors = useMemo<SettingsErrors>(() => {
     if (!serverMessage) return clientErrors;
@@ -109,10 +111,13 @@ export default function SettingsPage() {
 
   const onSave = () => {
     if (!draft || !base || !dirty || errorCount > 0 || save.isPending) return;
-    const latest = qc.getQueryData<AppSettings>(qk.settings) ?? base;
-    const ui = useUiStore.getState();
+    const edits = editable(draft);
+    // Applied to the latest saved settings when the (serialized) write runs.
     save.mutate(
-      { ...latest, ...editable(draft), theme: ui.themeMode, locale: ui.locale },
+      (latest) => {
+        const ui = useUiStore.getState();
+        return { ...latest, ...edits, theme: ui.themeMode, locale: ui.locale };
+      },
       {
         onSuccess: () => {
           setDraft(null);
@@ -127,21 +132,12 @@ export default function SettingsPage() {
     setDraft(null);
   };
 
-  /** Theme and language apply at once and are persisted without touching the unsaved draft. */
-  const persistPreferences = () => {
-    const latest = qc.getQueryData<AppSettings>(qk.settings);
-    if (!latest) return;
-    const ui = useUiStore.getState();
-    prefSave.mutate({ ...latest, theme: ui.themeMode, locale: ui.locale });
-  };
-  const onTheme = (mode: ThemeMode) => {
-    setThemeMode(mode);
-    persistPreferences();
-  };
-  const onLocale = (next: Locale) => {
-    setLocale(next);
-    persistPreferences();
-  };
+  /**
+   * Theme and language apply at once without touching the unsaved draft; `PreferencesBridge`
+   * persists them (one serialized write path for preferences).
+   */
+  const onTheme = (mode: ThemeMode) => setThemeMode(mode);
+  const onLocale = (next: Locale) => setLocale(next);
 
   const goTo = (id: SectionId) => {
     setActive(id);

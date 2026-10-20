@@ -145,7 +145,8 @@ export const settingsMessages = defineMessages({
       maxBattery: "Must be between 0 and the AC limit ({max}).",
       threshold: "Must be between 10 and 100.",
       port: "Must be a TCP port between 1 and 65535.",
-      bind: "Enter a bind address."
+      bind: "Enter a bind address.",
+      portInUse: "This is the local API's port ({port}); choose a different remote port."
     }
   },
   sv: {
@@ -292,7 +293,8 @@ export const settingsMessages = defineMessages({
       maxBattery: "Måste vara mellan 0 och gränsen för nätström ({max}).",
       threshold: "Måste vara mellan 10 och 100.",
       port: "Måste vara en TCP-port mellan 1 och 65535.",
-      bind: "Ange en bindningsadress."
+      bind: "Ange en bindningsadress.",
+      portInUse: "Det här är det lokala API:ets port ({port}); välj en annan fjärrport."
     }
   }
 });

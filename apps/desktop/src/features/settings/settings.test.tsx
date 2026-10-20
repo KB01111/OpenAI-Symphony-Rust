@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { settings } from "../../test/fixtures.js";
 import { settingsMessages } from "./messages.js";
-import { isLoopback, serverErrorFields, validateSettings } from "./validation.js";
+import { isLoopback, portOf, serverErrorFields, validateSettings } from "./validation.js";
 
 const v = settingsMessages.en.validation;
 
@@ -25,6 +25,12 @@ describe("settings validation (mirror of the runtime's validate_settings)", () =
     expect(Object.keys(errors).sort()).toEqual(
       ["high_cpu_threshold_percent", "max_concurrent_on_battery", "polling_interval_ms", "remote_bind_address", "remote_port"].sort()
     );
+  });
+
+  it("rejects a remote port equal to the local API port", () => {
+    expect(validateSettings(settings({ remote_port: 4780 }), v, 4780)).toHaveProperty("remote_port");
+    expect(validateSettings(settings({ remote_port: 47821 }), v, 4780)).toEqual({});
+    expect(portOf("http://127.0.0.1:4780")).toBe(4780);
   });
 
   it("maps runtime errors to fields and recognises loopback binds", () => {

@@ -14,14 +14,12 @@ export const ApprovalsScreen: React.FC = () => {
   const onDecide = (approval: ApprovalRequest, decision: ApprovalDecision) => {
     if (pending[approval.id]) return; // one decision per approval
     setPending((p) => ({ ...p, [approval.id]: decision }));
-    decide.mutate(
-      { approval, decision },
-      {
-        onSuccess: () => notify("success", m.decisionSent),
-        onError: (error) => notify("error", m.decisionFailed, error.message),
-        onSettled: () => setPending(({ [approval.id]: _done, ...rest }) => rest)
-      }
-    );
+    // Per-call promise: each concurrent decision settles (and unlocks its banner) independently.
+    decide
+      .mutateAsync({ approval, decision })
+      .then(() => notify("success", m.decisionSent))
+      .catch((error: Error) => notify("error", m.decisionFailed, error.message))
+      .finally(() => setPending(({ [approval.id]: _done, ...rest }) => rest));
   };
 
   if (approvals.isLoading) return <LoadingRows rows={3} label={t.common.loading} />;

@@ -9,6 +9,7 @@ export const mobileKeys = {
   state: ["symphony", "state"] as const,
   tasks: ["symphony", "tasks"] as const,
   approvals: ["symphony", "approvals"] as const,
+  projects: ["symphony", "projects"] as const,
   taskEvents: (taskId: string) => ["symphony", "task-events", taskId] as const
 };
 

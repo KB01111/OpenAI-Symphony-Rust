@@ -296,6 +296,12 @@ impl SecretStore {
         Ok(())
     }
 
+    /// Value stored in the vault only (no environment fallback).
+    pub fn get_vault_secret(&self, key: &str) -> Option<String> {
+        let guard = self.cache.lock().expect("secret cache mutex");
+        guard.get(key).filter(|v| !v.is_empty()).cloned()
+    }
+
     pub fn get_secret(&self, key: &str) -> Option<String> {
         let guard = self.cache.lock().expect("secret cache mutex");
         if let Some(v) = guard.get(key) {

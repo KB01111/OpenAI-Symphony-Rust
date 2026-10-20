@@ -958,9 +958,15 @@ async fn update_workflow_handler(
 
 /// Validates and renders unsaved workflow text. Always `200`; invalid documents are reported
 /// through `valid: false` + `error` so editors can show inline diagnostics.
-async fn preview_workflow_handler(Json(req): Json<PreviewWorkflowRequest>) -> Response {
+async fn preview_workflow_handler(
+    State(state): State<ServerState>,
+    Json(req): Json<PreviewWorkflowRequest>,
+) -> Response {
+    // Parse against the file the document would be saved to, so relative paths resolve the same.
+    let target = state.orchestrator.workflow_target_path().await;
     Json(SymphonyOrchestrator::validate_workflow_text(
         &req.raw_markdown,
+        target,
         req.sample_identifier,
         req.sample_title,
         req.sample_description,

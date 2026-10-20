@@ -647,7 +647,8 @@ pub fn compute_backoff_delay_ms(
     raw.min(max_retry_backoff_ms)
 }
 fn is_sensitive_key(key: &str) -> bool {
-    let lower = key.to_lowercase();
+    // `api-key`, `Api-Key` and `api_key` are treated alike.
+    let lower = key.to_lowercase().replace('-', "_");
     [
         "token",
         "api_key",

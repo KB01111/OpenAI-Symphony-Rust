@@ -59,7 +59,8 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
 - **Local-only default**: the embedded runtime binds `127.0.0.1` (port 4780, or an ephemeral fallback).
 - **Authentication on every route**: all `/api/v1/*` routes except `health` and `runtime` require
   `Authorization: Bearer <token>`. The desktop host and `symphony-cli` generate a random 256-bit token per
-  launch; it is handed to the webview over Tauri IPC (or published in the owner-only
+  launch (`symphony-cli --token` / `SYMPHONY_API_TOKEN` may supply one instead, but it is rejected if it is
+  shorter than 16 characters); it is handed to the webview over Tauri IPC (or published in the owner-only
   `<data_dir>/runtime.json` for local tools) and is never logged or printed. Tokens are compared in
   constant time (`subtle`).
 - **No tokens in URLs**: the event stream uses `fetch` streaming with the `Authorization` header instead of
@@ -76,6 +77,8 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` can be stored; values are never returned (`GET /credentials`
   lists key names only). Provider API keys are passed to agent subprocesses explicitly from the vault
   (`AgentLaunchConfig.extra_env`); tracker tokens never reach agents and are used only by host-side tools.
+  The host-side GitHub tools read `GITHUB_TOKEN`/`GH_TOKEN` from the vault first and then the environment;
+  GitHub Enterprise tokens are never sent to the public `api.github.com` endpoint.
 - **Workflow writes** go only to the active `WORKFLOW.md` (or the runtime's data directory); clients cannot
   choose a path. Invalid documents are rejected before writing.
 - **Redaction**: workflow configuration returned by the API masks credential-like tracker values

@@ -116,6 +116,8 @@ export const RuntimeProvider: React.FC<RuntimeProviderProps> = ({ children, clie
         // The runtime restarted with a new per-launch token: discover it again instead of
         // staying on a client every request of which is rejected.
         if (status === "unauthorized" && !injected) {
+          // Close the gate first so nothing renders against a missing client.
+          setPhase("discovering");
           setClient(null);
           setAttempt((a) => a + 1);
         }

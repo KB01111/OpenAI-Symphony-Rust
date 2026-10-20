@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useRefreshRuntime } from "../lib/queries.js";
 import { useUiStore } from "../store/uiStore.js";
 
 function isEditable(target: EventTarget | null): boolean {
@@ -15,7 +15,8 @@ function isEditable(target: EventTarget | null): boolean {
  * Plain typing in inputs/editors is never intercepted except for Ctrl+K.
  */
 export function useGlobalShortcuts(): void {
-  const qc = useQueryClient();
+  // Same action as the refresh button: queue a runtime poll/reconcile tick, then refetch.
+  const { mutate: refresh, isPending: refreshing } = useRefreshRuntime();
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
@@ -41,7 +42,7 @@ export function useGlobalShortcuts(): void {
         case "r":
           if (e.shiftKey) return;
           e.preventDefault();
-          void qc.invalidateQueries();
+          if (!refreshing) refresh();
           break;
         case "b":
           e.preventDefault();
@@ -59,5 +60,5 @@ export function useGlobalShortcuts(): void {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [qc]);
+  }, [refresh, refreshing]);
 }

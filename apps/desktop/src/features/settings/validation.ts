@@ -20,7 +20,7 @@ function isInt(n: number): boolean {
  * Client-side mirror of `validate_settings` in `crates/symphony-server/src/lib.rs`. The runtime
  * re-validates every save and remains authoritative; this only blocks obviously invalid input.
  */
-export function validateSettings(s: AppSettings, v: SettingsMessages["validation"]): SettingsErrors {
+export function validateSettings(s: AppSettings, v: SettingsMessages["validation"], localApiPort?: number | null): SettingsErrors {
   const errors: SettingsErrors = {};
   const p = s.resource_policy;
 
@@ -44,6 +44,8 @@ export function validateSettings(s: AppSettings, v: SettingsMessages["validation
   if (!s.remote_bind_address.trim()) errors.remote_bind_address = v.bind;
   if (!isInt(s.remote_port)) errors.remote_port = v.integer;
   else if (s.remote_port < 1 || s.remote_port > 65535) errors.remote_port = v.port;
+  // The desktop host refuses to start the remote listener on the local API's port.
+  else if (localApiPort && s.remote_port === localApiPort) errors.remote_port = formatMessage(v.portInUse, { port: localApiPort });
 
   return errors;
 }
@@ -70,4 +72,15 @@ export function formatBytes(bytes: number, locale: string): string {
   if (bytes < 1024) return fmt(bytes, "B");
   if (bytes < 1024 * 1024) return fmt(bytes / 1024, "KB");
   return fmt(bytes / (1024 * 1024), "MB");
+}
+
+/** Port of the runtime's local API from its base URL (`http://127.0.0.1:4780`), if any. */
+export function portOf(baseUrl: string | null | undefined): number | null {
+  if (!baseUrl) return null;
+  try {
+    const url = new URL(baseUrl);
+    return url.port ? Number(url.port) : null;
+  } catch {
+    return null;
+  }
 }

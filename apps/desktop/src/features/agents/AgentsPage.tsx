@@ -282,7 +282,11 @@ export default function AgentsPage() {
   const onCancel = useCallback((row: AgentRow) => setCancelTarget(row), []);
 
   const loading = (state.isLoading && !state.data) || (tasks.isLoading && !tasks.data);
-  const failure = (state.isError && !state.data ? state.error : null) ?? (tasks.isError && !tasks.data ? tasks.error : null);
+  // Approvals decide which rows wait for a decision, so a failed approvals load is a failure too.
+  const failure =
+    (state.isError && !state.data ? state.error : null) ??
+    (tasks.isError && !tasks.data ? tasks.error : null) ??
+    (approvals.isError && !approvals.data ? approvals.error : null);
 
   let body: React.ReactNode;
   if (failure) {
@@ -294,6 +298,7 @@ export default function AgentsPage() {
           onRetry={() => {
             void state.refetch();
             void tasks.refetch();
+            void approvals.refetch();
           }}
         />
       </div>

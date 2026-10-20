@@ -1,39 +1,51 @@
 import { useEffect, useRef } from "react";
-import { isLocale } from "@symphony/shared-types";
+import { isLocale, type Locale } from "@symphony/shared-types";
 import { useSaveSettings, useSettings } from "../lib/queries.js";
+import type { ThemeMode } from "@symphony/ui";
 import { useUiStore } from "../store/uiStore.js";
 
+type Prefs = { theme: string; locale: string };
+
 /**
- * Two-way sync of theme/locale between the local store and runtime settings.
- * - On load, adopt the runtime's persisted values (the local store only makes startup instant).
- * - Afterwards, a theme/language change made anywhere in the UI (command bar, palette, settings)
- *   is written back, so it survives the next launch instead of being reverted on startup.
+ * Two-way sync of theme/locale between the local store and runtime settings, tracking which side
+ * changed:
+ * - a change that arrives from the runtime (startup, or another save) is adopted by the UI;
+ * - a change made in the UI (command bar, palette, settings) is written to the runtime as a
+ *   functional update on the latest settings, serialized with other settings writes.
+ * A failed write is not retried automatically (the error is toasted); the next change retries.
  */
 export function PreferencesBridge(): null {
   const settings = useSettings();
-  const save = useSaveSettings();
-  const applied = useRef(false);
+  const { mutate } = useSaveSettings();
   const themeMode = useUiStore((s) => s.themeMode);
   const locale = useUiStore((s) => s.locale);
   const setThemeMode = useUiStore((s) => s.setThemeMode);
   const setLocale = useUiStore((s) => s.setLocale);
+  // Last values both sides agreed on; `null` until runtime settings have loaded.
+  const synced = useRef<Prefs | null>(null);
 
-  const { mutate, isPending } = save;
+  const serverTheme = settings.data?.theme;
+  const serverLocale = settings.data?.locale;
+
+  // Runtime → UI
   useEffect(() => {
-    const current = settings.data;
-    if (!current) return;
-    if (!applied.current) {
-      // First load: adopt the runtime values; the store update re-runs this effect with them.
-      applied.current = true;
-      const { theme, locale: savedLocale } = current;
-      if (theme === "dark" || theme === "light" || theme === "system") setThemeMode(theme);
-      if (isLocale(savedLocale)) setLocale(savedLocale);
-      return;
-    }
-    if (isPending) return;
-    if (current.theme === themeMode && current.locale === locale) return;
-    mutate({ ...current, theme: themeMode, locale });
-  }, [settings.data, themeMode, locale, setThemeMode, setLocale, mutate, isPending]);
+    if (serverTheme === undefined || serverLocale === undefined) return;
+    const last = synced.current;
+    if (last && last.theme === serverTheme && last.locale === serverLocale) return;
+    synced.current = { theme: serverTheme, locale: serverLocale };
+    if (serverTheme === "dark" || serverTheme === "light" || serverTheme === "system") setThemeMode(serverTheme);
+    if (isLocale(serverLocale)) setLocale(serverLocale);
+  }, [serverTheme, serverLocale, setThemeMode, setLocale]);
+
+  // UI → runtime (runs only when the local store changes)
+  useEffect(() => {
+    const last = synced.current;
+    if (!last || (last.theme === themeMode && last.locale === locale)) return;
+    synced.current = { theme: themeMode, locale };
+    const theme: ThemeMode = themeMode;
+    const nextLocale: Locale = locale;
+    mutate((latest) => ({ ...latest, theme, locale: nextLocale }));
+  }, [themeMode, locale, mutate]);
 
   return null;
 }

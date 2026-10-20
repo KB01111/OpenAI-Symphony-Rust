@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo } from "react";
 import { Button, Toolbar, ToolbarRadioButton, ToolbarRadioGroup } from "@fluentui/react-components";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage } from "@symphony/shared-types";
@@ -26,8 +26,16 @@ export default function TasksPage() {
   const setAddProjectOpen = useUiStore((s) => s.setAddProjectOpen);
 
   const projects = useProjects();
-  const tasks = useTasks(activeProjectId);
   const projectList = useMemo(() => projects.data ?? [], [projects.data]);
+  // A persisted selection whose project was removed falls back to all projects (matching the
+  // toolbar), and is cleared once the project list confirms it no longer exists.
+  const selectionExists = activeProjectId !== null && projectList.some((p) => p.id === activeProjectId);
+  const effectiveProjectId = projects.data ? (selectionExists ? activeProjectId : null) : activeProjectId;
+  const setActiveProject = useUiStore((s) => s.setActiveProject);
+  useEffect(() => {
+    if (projects.data && activeProjectId !== null && !selectionExists) setActiveProject(null);
+  }, [projects.data, activeProjectId, selectionExists, setActiveProject]);
+  const tasks = useTasks(effectiveProjectId);
   const allTasks = useMemo(() => tasks.data ?? [], [tasks.data]);
   const visible = useMemo(() => filterTasks(allTasks, filters), [allTasks, filters]);
   const activeProject = projectList.find((p) => p.id === activeProjectId);

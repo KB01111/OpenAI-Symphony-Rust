@@ -41,6 +41,14 @@ const ProjectEditForm: React.FC<{ project: Project }> = ({ project }) => {
   const errors = validateProjectForm(form);
   const dirty = isDirty(project, form);
 
+  // Another client (or a sync) updated this project: rebase a clean form onto the new values so a
+  // later save cannot PATCH stale fields over them. Unsaved edits are kept.
+  const [baseUpdatedAt, setBaseUpdatedAt] = useState(project.updated_at);
+  if (project.updated_at !== baseUpdatedAt) {
+    setBaseUpdatedAt(project.updated_at);
+    if (!dirty) setForm(projectToForm(project));
+  }
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     setShowErrors(true);

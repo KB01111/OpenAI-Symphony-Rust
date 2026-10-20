@@ -115,6 +115,7 @@ export const executionMessages = defineMessages({
     },
     timeline: {
       filters: "Event kinds",
+      approvalsFailed: "Pending approvals could not be loaded",
       kinds: enKinds,
       kindCount: "{label} ({count})",
       showAll: "Show all",
@@ -252,6 +253,7 @@ export const executionMessages = defineMessages({
     },
     timeline: {
       filters: "Händelsetyper",
+      approvalsFailed: "Väntande godkännanden kunde inte läsas in",
       kinds: svKinds,
       kindCount: "{label} ({count})",
       showAll: "Visa alla",

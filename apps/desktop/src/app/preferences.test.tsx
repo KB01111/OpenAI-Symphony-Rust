@@ -27,4 +27,33 @@ describe("PreferencesBridge", () => {
     await waitFor(() => expect(runtime.calls.filter((c) => c.method === "PUT")).toHaveLength(1));
     expect(runtime.calls.find((c) => c.method === "PUT")!.body).toMatchObject({ theme: "dark", locale: "sv" });
   });
+
+  it("does not retry a failed save in a loop and adopts later runtime changes", async () => {
+    let puts = 0;
+    let stored = settings({ theme: "light", locale: "en" });
+    const runtime = createMockRuntime({
+      "GET /settings": () => stored,
+      "PUT /settings": () => {
+        puts += 1;
+        return { status: 500, body: { error: { code: "internal", message: "internal: disk full" } } };
+      }
+    });
+    act(() => {
+      useUiStore.getState().setThemeMode("light");
+      useUiStore.getState().setLocale("en");
+    });
+    const { queryClient } = renderWithProviders(<PreferencesBridge />, { runtime });
+    await waitFor(() => expect(queryClient.getQueryData(["settings"])).toBeTruthy());
+    act(() => useUiStore.getState().setThemeMode("dark"));
+    await waitFor(() => expect(puts).toBe(1));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(puts).toBe(1);
+
+    // Another client saves settings: the UI adopts the runtime value instead of writing back.
+    stored = settings({ theme: "system", locale: "sv" });
+    await act(() => queryClient.invalidateQueries());
+    await waitFor(() => expect(useUiStore.getState().themeMode).toBe("system"));
+    expect(useUiStore.getState().locale).toBe("sv");
+    expect(puts).toBe(1);
+  });
 });
