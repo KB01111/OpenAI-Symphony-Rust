@@ -62,7 +62,7 @@ const LiveSessions: React.FC = () => {
         <thead className="sticky top-0 bg-surface text-xs text-muted-foreground">
           <tr className="border-b border-border text-start">
             {[m.live.task, m.live.project, m.live.provider, m.live.phase, m.live.operation, m.live.duration, m.live.tokens, m.live.lastActivity].map((h) => (
-              <th key={h} scope="col" className="h-8 px-3 text-start font-medium">
+              <th key={h} scope="col" className="h-8 whitespace-nowrap px-3 text-start font-medium">
                 {h}
               </th>
             ))}
@@ -80,7 +80,7 @@ const LiveSessions: React.FC = () => {
               }}
               className="h-row cursor-pointer border-b border-border last:border-0 hover:bg-surface-hover"
             >
-              <td className="px-3 font-mono text-xs font-medium text-foreground">{s.issue_identifier}</td>
+              <td className="whitespace-nowrap px-3 font-mono text-xs font-medium text-foreground">{s.issue_identifier}</td>
               <td className="max-w-40 truncate px-3 text-muted-foreground">{projectName.get(s.project_id) ?? "—"}</td>
               <td className="px-3">
                 <ProviderBadge provider={s.provider} model={s.model} />
@@ -91,7 +91,7 @@ const LiveSessions: React.FC = () => {
               <td className="max-w-72 truncate px-3 text-foreground">
                 <StreamingText>{s.last_message || s.last_event || "…"}</StreamingText>
               </td>
-              <td className="px-3 text-muted-foreground">
+              <td className="whitespace-nowrap px-3 text-muted-foreground">
                 <Duration since={s.started_at} />
               </td>
               <td className="px-3 tabular-nums text-muted-foreground">{formatTokens(s.tokens.total_tokens, locale)}</td>

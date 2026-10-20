@@ -2264,9 +2264,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
         for turn_number in 1..=max_turns {
             if let Ok(cancel_reason) = cancel_rx.try_recv() {
                 let _ = agent_session.cancel().await;
-                self.finish_failed_attempt(
+                // Same final state `cancel_task` writes, so the two writers cannot disagree.
+                self.finish_unsuccessful_attempt(
                     &mut task,
                     &mut attempt_record,
+                    TaskStatus::Cancelled,
                     RunAttemptPhase::CanceledByReconciliation,
                     format!("Cancelled: {cancel_reason}"),
                 )
@@ -2283,15 +2285,24 @@ Please implement the requested changes cleanly in the current Git workspace, run
             attempt_record.phase = RunAttemptPhase::StreamingTurn;
             attempt_record.turn_count = turn_number;
             let _ = self.storage.upsert_run_attempt(&attempt_record).await;
+            if task.current_phase != Some(RunAttemptPhase::StreamingTurn) {
+                task.current_phase = Some(RunAttemptPhase::StreamingTurn);
+                let _ = self.storage.upsert_task(&task).await;
+            }
+            if let Some(handle) = self.memory.write().await.running.get_mut(&task.id) {
+                handle.session.phase = RunAttemptPhase::StreamingTurn;
+                handle.session.turn_count = turn_number;
+            }
 
             let outcome_res = tokio::select! {
                 res = agent_session.run_turn(&prompt, stream_tx.clone()) => res,
                 cancel_res = &mut cancel_rx => {
                     let _ = agent_session.cancel().await;
                     let reason = cancel_res.unwrap_or_else(|_| "cancelled".to_string());
-                    self.finish_failed_attempt(
+                    self.finish_unsuccessful_attempt(
                         &mut task,
                         &mut attempt_record,
+                        TaskStatus::Cancelled,
                         RunAttemptPhase::CanceledByReconciliation,
                         reason,
                     ).await;

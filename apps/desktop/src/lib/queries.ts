@@ -42,7 +42,7 @@ export function useRuntimeState(opts?: Opts<Awaited<ReturnType<ReturnType<typeof
 export function useRecentEvents(limit = 100) {
   const client = useClient();
   return useQuery({
-    queryKey: qk.recentEvents,
+    queryKey: [...qk.recentEvents, limit],
     queryFn: ({ signal }) => client.listRecentEvents(limit, signal),
     staleTime: 60_000
   });

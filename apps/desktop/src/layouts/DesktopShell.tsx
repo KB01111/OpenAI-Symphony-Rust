@@ -63,9 +63,9 @@ export const DesktopShell: React.FC = () => {
   }, [location.pathname, setLastRoute]);
 
   return (
-    <div className="grid h-full grid-rows-[auto_minmax(0,1fr)_auto] bg-background text-foreground">
+    <div className="grid h-full grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-background text-foreground">
       <CommandBar />
-      <div className="flex min-h-0">
+      <div className="flex min-h-0 min-w-0">
         <Sidebar />
         <ResizablePanelGroup orientation="horizontal" id="symphony-shell-h" {...horizontal} className="min-w-0 flex-1">
           <ResizablePanel id="workspace" minSize="40">

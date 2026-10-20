@@ -34,6 +34,10 @@ const sharedOverrides: Partial<Theme> = {
   fontFamilyBase: "var(--font-sans)",
   fontFamilyMonospace: "var(--font-mono)",
   fontFamilyNumeric: "var(--font-sans)",
+  // Body and caption sizes follow the density setting (13/12 px compact, 14/12 px comfortable),
+  // matching Tailwind's text-sm/text-xs, so Fluent controls and feature markup line up.
+  fontSizeBase300: "var(--density-font)",
+  fontSizeBase200: "var(--density-font-xs)",
   colorNeutralBackground1: "var(--surface)",
   colorNeutralBackground1Hover: "var(--surface-hover)",
   colorNeutralBackground1Pressed: "var(--surface-selected)",

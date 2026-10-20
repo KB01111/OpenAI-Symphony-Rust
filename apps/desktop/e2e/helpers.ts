@@ -31,6 +31,14 @@ export async function prepareRuntime(overrides: Record<string, unknown> = {}) {
 }
 
 export async function openApp(page: Page, route = "/overview", opts: { theme?: "dark" | "light"; locale?: "en" | "sv" } = {}) {
+  // Runtime settings are the persisted source of truth for theme/locale (the UI adopts them on
+  // load), so set both the runtime and the local store.
+  const settings = await api<Record<string, unknown>>("GET", "/settings");
+  const theme = opts.theme ?? "dark";
+  const locale = opts.locale ?? "en";
+  if (settings.theme !== theme || settings.locale !== locale) {
+    await api("PUT", "/settings", { ...settings, theme, locale });
+  }
   await page.addInitScript(
     ([theme, locale]) => {
       try {

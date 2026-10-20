@@ -59,7 +59,7 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } }],
   webServer: [
     {
-      command: `"${cli}" --data-dir "${dataDir}" --port ${runtimePort}`,
+      command: `"${cli}" --data-dir "${dataDir}" --port ${runtimePort} --allow-origin http://127.0.0.1:${uiPort}`,
       cwd: process.env.SYMPHONY_E2E_DIR,
       url: `http://127.0.0.1:${runtimePort}/api/v1/health`,
       env: { SYMPHONY_SIMULATED_STEP_MS: "250", RUST_LOG: "warn" },

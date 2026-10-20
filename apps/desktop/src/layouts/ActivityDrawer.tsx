@@ -19,7 +19,7 @@ import {
 import { shellMessages } from "../app/messages.js";
 import { paths } from "../app/routes.js";
 import { useMessages, useT } from "../lib/i18n.js";
-import { useApprovals, useDecideApproval, useProviders, useRuntimeState, useTaskEventHistory, useTaskValidations, useTasks } from "../lib/queries.js";
+import { useApprovals, useDecideApproval, useProviders, useRecentEvents, useRuntimeState, useTaskEventHistory, useTaskValidations, useTasks } from "../lib/queries.js";
 import { mergeEventHistory, useEventStore } from "../runtime/eventStore.js";
 import { useRuntime } from "../runtime/RuntimeProvider.js";
 import { useFocusedTaskId } from "../hooks/useFocusedTaskId.js";
@@ -196,7 +196,10 @@ export const ActivityDrawer: React.FC<{ collapsed: boolean; onToggle: () => void
   const setTab = useUiStore((s) => s.setDrawerTab);
   const logMode = useUiStore((s) => s.logMode);
   const setLogMode = useUiStore((s) => s.setLogMode);
-  const events = useEventStore((s) => s.events);
+  const live = useEventStore((s) => s.events);
+  // Persisted history (survives reloads) merged with the live stream, deduplicated by id.
+  const history = useRecentEvents(200);
+  const events = useMemo(() => mergeEventHistory(history.data, live), [history.data, live]);
   const approvals = useApprovals(true);
   const pending = approvals.data?.length ?? 0;
 

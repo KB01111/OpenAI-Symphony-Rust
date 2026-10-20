@@ -1,0 +1,46 @@
+name: Desktop UI E2E (Playwright)
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ui-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    name: Playwright against real runtime (simulated agent)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ui-e2e
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build runtime CLI
+        run: cargo build -p symphony-cli --locked
+      - name: API client integration tests (real Axum router)
+        run: pnpm --filter @symphony/api-client test
+      - name: Install Chromium
+        run: pnpm --filter @symphony/desktop exec playwright install --with-deps chromium
+      - name: Run E2E
+        run: pnpm --filter @symphony/desktop e2e
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: docs/screenshots/
+          retention-days: 14

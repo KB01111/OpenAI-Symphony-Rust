@@ -1,0 +1,34 @@
+{
+  "measured_at": "2026-10-20T12:47:19.333Z",
+  "environment": "headless Chromium (Playwright), Vite dev server, simulated agent",
+  "initial_load_to_live_ms": 4390,
+  "navigation_timing": {
+    "dom_content_loaded_ms": 3384,
+    "load_ms": 3418
+  },
+  "first_visit_navigation_ms": {
+    "Projects": 367,
+    "Tasks": 345,
+    "Agent runs": 245,
+    "Worktrees": 194,
+    "Pull requests": 332,
+    "Workflow Studio": 218,
+    "Providers": 380,
+    "Settings": 369,
+    "Overview": 406
+  },
+  "idle_10s": {
+    "script_ms": 428,
+    "layout_ms": 19,
+    "task_ms": 599,
+    "js_heap_used_mb": 59.1
+  },
+  "streaming_3_agents": {
+    "wall_ms": 1957,
+    "script_ms": 481,
+    "long_tasks": 5,
+    "longest_task_ms": 73,
+    "js_heap_used_mb": 67.6,
+    "dom_nodes": 5857
+  }
+}

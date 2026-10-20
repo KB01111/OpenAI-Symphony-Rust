@@ -18,8 +18,10 @@ function ResizablePanelGroup({
   )
 }
 
-function ResizablePanel({ ...props }: ResizablePrimitive.PanelProps) {
-  return <ResizablePrimitive.Panel data-slot="resizable-panel" {...props} />
+function ResizablePanel({ className, ...props }: ResizablePrimitive.PanelProps) {
+  // min-w-0/min-h-0: wide content (e.g. a Kanban board) scrolls inside the panel instead of
+  // stretching the panel group and the window.
+  return <ResizablePrimitive.Panel data-slot="resizable-panel" className={cn("min-h-0 min-w-0", className)} {...props} />
 }
 
 function ResizableHandle({

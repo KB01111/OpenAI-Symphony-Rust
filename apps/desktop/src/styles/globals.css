@@ -1,3 +1,6 @@
+/* Lock the cascade-layer order before any library CSS declares its own layers. */
+@layer theme, base, components, utilities;
+
 @import "tailwindcss";
 @import "@openai/apps-sdk-ui/css";
 @import "../../../../packages/ui/src/tokens/tokens.css";

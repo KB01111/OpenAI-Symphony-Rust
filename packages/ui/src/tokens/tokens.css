@@ -108,6 +108,7 @@
   --density-gap: 8px;
   --density-pad: 12px;
   --density-font: 13px;
+  --density-font-xs: 12px;
 }
 
 :root[data-density="comfortable"] {
@@ -116,9 +117,15 @@
   --density-gap: 12px;
   --density-pad: 16px;
   --density-font: 14px;
+  --density-font-xs: 12px;
 }
 
 @theme inline {
+  /* text-sm is the body size and text-xs the caption size of the active density. */
+  --text-sm: var(--density-font);
+  --text-sm--line-height: 1.4;
+  --text-xs: var(--density-font-xs);
+  --text-xs--line-height: 1.35;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-surface: var(--surface);
@@ -172,11 +179,16 @@
 }
 
 @layer base {
+  /* The root font size stays at the browser default so rem-based spacing matches Fluent's px
+     controls; density changes the body text size instead. */
   html,
   body {
     background: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
+  }
+
+  body {
     font-size: var(--density-font);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
