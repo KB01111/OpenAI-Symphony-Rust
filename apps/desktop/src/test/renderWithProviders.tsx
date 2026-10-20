@@ -5,7 +5,7 @@
  */
 import React from "react";
 import { render, type RenderResult } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { QueryClient } from "@tanstack/react-query";
 import { SymphonyClient } from "@symphony/api-client";
 import { AppProviders } from "../app/AppProviders.js";
@@ -67,13 +67,11 @@ export function renderWithProviders(
   { runtime, route = "/", path = "*" }: { runtime: MockRuntime; route?: string; path?: string }
 ): RenderResult & { queryClient: QueryClient } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  // A data router (like the app's) so views using `useBlocker` work under test.
+  const router = createMemoryRouter([{ path, element: ui }], { initialEntries: [route] });
   const result = render(
     <AppProviders client={runtime.client} queryClient={queryClient}>
-      <MemoryRouter initialEntries={[route]}>
-        <Routes>
-          <Route path={path} element={ui} />
-        </Routes>
-      </MemoryRouter>
+      <RouterProvider router={router} />
     </AppProviders>
   );
   return { ...result, queryClient };

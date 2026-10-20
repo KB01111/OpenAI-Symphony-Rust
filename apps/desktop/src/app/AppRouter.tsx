@@ -1,5 +1,5 @@
 import React, { Suspense, lazy } from "react";
-import { HashRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, RouterProvider, Routes, createHashRouter, useLocation } from "react-router-dom";
 import { LoadingRows } from "@symphony/ui";
 import { DesktopShell } from "../layouts/DesktopShell.js";
 import { ErrorBoundary } from "../components/ErrorBoundary.js";
@@ -59,9 +59,11 @@ export const AppRoutes: React.FC = () => (
   </Routes>
 );
 
-/** Hash routing works identically under `tauri://localhost`, the dev server and E2E tests. */
-export const AppRouter: React.FC = () => (
-  <HashRouter>
-    <AppRoutes />
-  </HashRouter>
-);
+/**
+ * Hash routing works identically under `tauri://localhost`, the dev server and E2E tests. A data
+ * router is used so views can block navigation while they hold unsaved edits (`useBlocker`).
+ */
+export const AppRouter: React.FC = () => {
+  const [router] = React.useState(() => createHashRouter([{ path: "*", element: <AppRoutes /> }]));
+  return <RouterProvider router={router} />;
+};
