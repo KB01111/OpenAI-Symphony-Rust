@@ -1,6 +1,6 @@
 {
   "name": "symphony-desktop-workspace",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "packageManager": "pnpm@11.15.1",
   "engines": {
@@ -12,6 +12,7 @@
     "build:desktop": "pnpm --filter @symphony/desktop build",
     "dev:mobile": "pnpm --filter @symphony/mobile dev",
     "build:mobile": "pnpm --filter @symphony/mobile build",
+    "generate:api": "node scripts/generate-api.mjs",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",

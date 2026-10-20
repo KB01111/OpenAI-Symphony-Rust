@@ -36,6 +36,36 @@ mod tests {
     }
 
     #[test]
+    fn test_redaction_masks_nested_tracker_credentials() {
+        let cfg = ServiceConfig {
+            tracker_provider: serde_json::json!({
+                "repo": "acme/app",
+                "token": "ghp_top",
+                "oauth": { "access_token": "nested-secret", "scope": "repo" },
+                "credentials": { "user": "bot", "pass": "p" },
+                "headers": [{ "authorization": "Bearer x" }],
+            "api-key": "hyphenated-secret"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            ..Default::default()
+        };
+        let shown = serde_json::to_string(&cfg.redacted_for_display().tracker_provider).unwrap();
+        for secret in [
+            "ghp_top",
+            "nested-secret",
+            "\"bot\"",
+            "Bearer x",
+            "hyphenated-secret",
+        ] {
+            assert!(!shown.contains(secret), "{secret} leaked in {shown}");
+        }
+        assert!(shown.contains("acme/app"));
+        assert!(shown.contains("\"scope\":\"repo\""));
+    }
+
+    #[test]
     fn test_strict_template_rendering() {
         let wf = WorkflowDefinition::parse(
             "---\ntracker:\n  kind: github\n---\nTask {{ issue.identifier }} (attempt={{ attempt }}): {{ issue.title }}",
@@ -97,7 +127,7 @@ mod tests {
         i3.priority = Some(2);
         i3.created_at = Some(Utc.with_ymd_and_hms(2026, 1, 3, 0, 0, 0).unwrap());
 
-        let mut list = vec![i1.clone(), i3.clone(), i2.clone()];
+        let mut list = [i1.clone(), i3.clone(), i2.clone()];
         list.sort_by(|a, b| a.cmp_dispatch_order(b));
         assert_eq!(list[0].identifier, "GH-20");
         assert_eq!(list[1].identifier, "GH-05");

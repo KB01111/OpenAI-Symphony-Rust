@@ -21,6 +21,79 @@ pub const SECRET_ENV_VARS_TO_STRIP: &[&str] = &[
     "SYMPHONY_REMOTE_TOKEN",
 ];
 
+const MAX_UNTRACKED_DIFF_FILES: usize = 200;
+
+async fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Run git and read at most `limit` bytes of stdout without buffering the rest; the child is
+/// killed once the budget is exhausted. Returns the bytes read and whether output was cut off.
+/// Non-zero exit codes are accepted (`git diff --no-index` exits 1 when files differ).
+async fn git_stdout_bounded(cwd: &Path, args: &[&str], limit: usize) -> (Vec<u8>, bool) {
+    use tokio::io::AsyncReadExt;
+    let child = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn();
+    let Ok(mut child) = child else {
+        return (Vec::new(), false);
+    };
+    let Some(stdout) = child.stdout.take() else {
+        return (Vec::new(), false);
+    };
+    let mut buf = Vec::new();
+    let read = stdout.take(limit as u64 + 1).read_to_end(&mut buf).await;
+    let overflow = read.is_ok() && buf.len() > limit;
+    if overflow {
+        buf.truncate(limit);
+        let _ = child.start_kill();
+    }
+    let _ = child.wait().await;
+    (buf, overflow)
+}
+
+/// Split NUL-terminated git output (`-z`) into raw, unquoted paths/records.
+fn split_nul(output: &str) -> impl Iterator<Item = &str> {
+    output.split('\0').filter(|s| !s.is_empty())
+}
+
+fn count_text_lines(path: &Path) -> u32 {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() && meta.len() <= 2 * 1024 * 1024 => std::fs::read(path)
+            .map(|bytes| bytes.iter().filter(|b| **b == b'\n').count() as u32)
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn truncate_utf8(mut text: String, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text, false);
+    }
+    let mut cut = max_bytes;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    text.truncate(cut);
+    (text, true)
+}
+
 /// Compute deterministic, collision-resistant workspace directory key from `issue.identifier` (SPEC.md Section 4.2).
 /// - Replaces any character outside `[A-Za-z0-9._-]` with `_`.
 /// - If sanitization altered the identifier, appends `--<16-char SHA-256 hex prefix>`.
@@ -402,7 +475,8 @@ impl WorkspaceManager {
         }
     }
 
-    /// Inspect modified/added/deleted files in the workspace worktree.
+    /// Inspect modified/added/deleted files in the workspace worktree, including untracked files,
+    /// with real line counts from `git diff --numstat HEAD`.
     pub async fn inspect_changed_files(
         &self,
         workspace_path: &Path,
@@ -410,67 +484,121 @@ impl WorkspaceManager {
         if !workspace_path.exists() {
             return Ok(Vec::new());
         }
-        let status_out = Command::new("git")
-            .arg("-C")
-            .arg(workspace_path)
-            .arg("status")
-            .arg("--porcelain")
-            .output()
-            .await;
-
-        let Ok(out) = status_out else {
+        // `-z` output is NUL-separated and never C-quoted, so paths with spaces, quotes or
+        // non-ASCII characters are taken verbatim.
+        let Some(status) = git_stdout(
+            workspace_path,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        )
+        .await
+        else {
             return Ok(Vec::new());
         };
-        if !out.status.success() {
-            return Ok(Vec::new());
+        let numstat = git_stdout(workspace_path, &["diff", "--numstat", "-z", "HEAD"])
+            .await
+            .unwrap_or_default();
+        let mut counts = std::collections::HashMap::new();
+        let mut records = split_nul(&numstat);
+        while let Some(record) = records.next() {
+            let mut parts = record.splitn(3, '\t');
+            let (Some(add), Some(del), Some(path)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            // Renames: `add\tdel\t` followed by the old and new path as separate records.
+            let path = if path.is_empty() {
+                let _old = records.next();
+                records.next().unwrap_or_default()
+            } else {
+                path
+            };
+            counts.insert(
+                path.to_string(),
+                (
+                    add.parse::<u32>().unwrap_or(0),
+                    del.parse::<u32>().unwrap_or(0),
+                ),
+            );
         }
 
         let mut files = Vec::new();
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            if line.len() < 4 {
+        let mut entries = split_nul(&status);
+        while let Some(entry) = entries.next() {
+            if entry.len() < 4 {
                 continue;
             }
-            let code = line[..2].trim().to_string();
-            let path = line[3..].trim().to_string();
+            let code = entry[..2].trim().to_string();
+            // Renames/copies list the new path first, then the original path as its own record.
+            if code.starts_with('R') || code.starts_with('C') {
+                let _original = entries.next();
+            }
+            let path = entry[3..].to_string();
             let status = match code.as_str() {
-                "M" | "MM" => "modified",
+                "M" | "MM" | "AM" => "modified",
                 "A" | "??" => "added",
                 "D" => "deleted",
-                "R" => "renamed",
+                c if c.starts_with('R') => "renamed",
                 _ => "changed",
             }
             .to_string();
-
+            let (additions, deletions) = match counts.get(&path) {
+                Some(&(a, d)) => (a, d),
+                None if code == "??" => (count_text_lines(&workspace_path.join(&path)), 0),
+                None => (0, 0),
+            };
             files.push(ChangedFileSummary {
                 path,
                 status,
-                additions: 1,
-                deletions: 0,
+                additions,
+                deletions,
             });
         }
         Ok(files)
     }
 
-    /// Get unified diff preview of the workspace.
+    /// Get unified diff preview of the workspace (tracked changes plus untracked files), capped at 32 KB.
     pub async fn get_diff_preview(&self, workspace_path: &Path) -> SymphonyResult<String> {
-        if !workspace_path.exists() {
-            return Ok(String::new());
-        }
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(workspace_path)
-            .arg("diff")
-            .arg("HEAD")
-            .output()
-            .await;
+        Ok(self.collect_diff(workspace_path, 32_000).await.0)
+    }
 
-        match out {
-            Ok(o) if o.status.success() => {
-                let s = String::from_utf8_lossy(&o.stdout).to_string();
-                Ok(s.chars().take(32_000).collect())
-            }
-            _ => Ok(String::new()),
+    /// Unified diff of tracked changes against `HEAD` followed by diffs for untracked files.
+    /// Returns the diff (truncated on a UTF-8 boundary to `max_bytes`) and whether truncation occurred.
+    pub async fn collect_diff(&self, workspace_path: &Path, max_bytes: usize) -> (String, bool) {
+        if !workspace_path.exists() {
+            return (String::new(), false);
         }
+        let (tracked, mut truncated) =
+            git_stdout_bounded(workspace_path, &["diff", "HEAD"], max_bytes).await;
+        let mut diff = String::from_utf8_lossy(&tracked).into_owned();
+        let untracked = git_stdout(
+            workspace_path,
+            &["ls-files", "-z", "--others", "--exclude-standard"],
+        )
+        .await
+        .unwrap_or_default();
+        let paths: Vec<&str> = split_nul(&untracked).collect();
+        for (index, path) in paths.iter().enumerate() {
+            if truncated || diff.len() >= max_bytes {
+                truncated = true;
+                break;
+            }
+            if index >= MAX_UNTRACKED_DIFF_FILES {
+                // Remaining untracked files are omitted, so the diff is incomplete.
+                truncated = true;
+                break;
+            }
+            let budget = max_bytes - diff.len();
+            let (bytes, cut) = git_stdout_bounded(
+                workspace_path,
+                &["diff", "--no-index", "--", "/dev/null", path],
+                budget,
+            )
+            .await;
+            diff.push_str(&String::from_utf8_lossy(&bytes));
+            truncated |= cut;
+        }
+        let (diff, cut) = truncate_utf8(diff, max_bytes);
+        (diff, truncated || cut)
     }
 
     /// Safely remove a workspace directory and detach its Git worktree registration.
@@ -791,6 +919,39 @@ mod tests {
         let changed = mgr.inspect_changed_files(&allocated.path).await.unwrap();
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].path, "feature.txt");
+        assert_eq!((changed[0].additions, changed[0].deletions), (1, 0));
+
+        // Tracked modifications report real line counts and both kinds show up in the diff.
+        std::fs::write(
+            allocated.path.join("README.md"),
+            "# Renamed Repo\nline two\n",
+        )
+        .unwrap();
+        let mut changed = mgr.inspect_changed_files(&allocated.path).await.unwrap();
+        changed.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(changed.len(), 2);
+        assert_eq!(changed[0].path, "README.md");
+        assert_eq!((changed[0].additions, changed[0].deletions), (2, 1));
+
+        let (diff, truncated) = mgr.collect_diff(&allocated.path, 64_000).await;
+        assert!(!truncated);
+        assert!(diff.contains("+# Renamed Repo"));
+        assert!(diff.contains("-# Test Repo"));
+        assert!(diff.contains("feature.txt"));
+        assert!(diff.contains("+hello world"));
+
+        let (short, truncated) = mgr.collect_diff(&allocated.path, 40).await;
+        assert!(truncated);
+        assert!(short.len() <= 40);
+
+        // Paths that git would C-quote (non-ASCII, spaces) are parsed verbatim via `-z`.
+        std::fs::write(allocated.path.join("café notes.txt"), "bonjour\n").unwrap();
+        let changed = mgr.inspect_changed_files(&allocated.path).await.unwrap();
+        assert!(changed
+            .iter()
+            .any(|f| f.path == "café notes.txt" && f.additions == 1));
+        let (diff, _) = mgr.collect_diff(&allocated.path, 64_000).await;
+        assert!(diff.contains("+bonjour"));
 
         // Refuses non-forced cleanup on dirty worktree
         assert!(mgr

@@ -1,0 +1,432 @@
+import React, { useCallback, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Button, Dropdown, Option, Tab, TabList, Tooltip } from "@fluentui/react-components";
+import { MonitorPlay, Play, RotateCcw, Square } from "lucide-react";
+import { ALL_PROVIDERS, formatMessage, isActivePhase, type ProviderCapabilities, type ProviderKind } from "@symphony/shared-types";
+import {
+  AiEmptyView,
+  ConfirmDialog,
+  Duration,
+  ErrorState,
+  LoadingRows,
+  PageHeader,
+  PhaseBadge,
+  ProviderBadge,
+  SdkBadge,
+  StreamingText,
+  TaskStatusBadge,
+  TimeAgo,
+  VirtualList,
+  cn,
+  formatCurrency,
+  formatTokens,
+  useNow
+} from "@symphony/ui";
+import { paths } from "../../app/routes.js";
+import { useLocale, useMessages, useT } from "../../lib/i18n.js";
+import {
+  useApprovals,
+  useCancelTask,
+  useDispatchTask,
+  useProjects,
+  useProviders,
+  useRetryTask,
+  useRuntimeState,
+  useTasks
+} from "../../lib/queries.js";
+import { useUiStore } from "../../store/uiStore.js";
+import {
+  AGENT_GROUP_BY,
+  AGENT_SEGMENTS,
+  FINISHED_SEGMENTS,
+  buildAgentRows,
+  groupAgentRows,
+  groupRowsBy,
+  rowActions,
+  type AgentGroupBy,
+  type AgentRow,
+  type AgentSegment
+} from "./grouping.js";
+import { agentsMessages } from "./messages.js";
+
+type SegmentFilter = AgentSegment | "all";
+
+type ListItem = { kind: "header"; id: string; label: string; count: number } | { kind: "row"; id: string; row: AgentRow };
+
+interface RowProps {
+  row: AgentRow;
+  projectName: string | null;
+  capabilities: ProviderCapabilities | undefined;
+  selected: boolean;
+  busy: boolean;
+  onSelect: (row: AgentRow) => void;
+  onOpen: (row: AgentRow) => void;
+  onDispatch: (row: AgentRow) => void;
+  onRetry: (row: AgentRow) => void;
+  onCancel: (row: AgentRow) => void;
+}
+
+const AgentRunRow = React.memo(function AgentRunRow({
+  row,
+  projectName,
+  capabilities,
+  selected,
+  busy,
+  onSelect,
+  onOpen,
+  onDispatch,
+  onRetry,
+  onCancel
+}: RowProps) {
+  const m = useMessages(agentsMessages);
+  const locale = useLocale();
+  const allowed = rowActions(row, capabilities);
+  const finished = FINISHED_SEGMENTS.includes(row.segment);
+  const iconButton = (label: string, icon: React.ReactElement, onClick: () => void, primary = false) => (
+    <Tooltip content={label} relationship="label">
+      <Button
+        size="small"
+        appearance={primary ? "primary" : "subtle"}
+        icon={icon}
+        disabled={busy}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+      />
+    </Tooltip>
+  );
+
+  return (
+    <div
+      role="group"
+      aria-label={`${row.identifier} ${row.title ?? ""}`.trim()}
+      aria-current={selected ? "true" : undefined}
+      tabIndex={0}
+      onClick={() => onSelect(row)}
+      onDoubleClick={() => onOpen(row)}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter") {
+          e.preventDefault();
+          onOpen(row);
+        } else if (e.key === " ") {
+          e.preventDefault();
+          onSelect(row);
+        }
+      }}
+      className={cn(
+        "flex cursor-default items-start gap-3 border-b border-border px-4 py-2 outline-none hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:ring-1 focus-visible:ring-accent",
+        selected && "bg-surface-selected"
+      )}
+    >
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <span className="font-mono text-xs text-muted-foreground">{row.identifier}</span>
+          <span className="min-w-0 max-w-[32rem] truncate text-sm font-medium text-foreground" title={row.title ?? undefined}>
+            {row.title ?? m.row.unknownTitle}
+          </span>
+          {row.status ? <TaskStatusBadge status={row.status} /> : null}
+          {row.phase && (row.live || !finished) ? <PhaseBadge phase={row.phase} /> : null}
+          {row.provider ? <ProviderBadge provider={row.provider} model={row.model} /> : null}
+          {row.pendingApprovals > 0 ? (
+            <SdkBadge variant="soft" color="warning" size="sm" pill>
+              {formatMessage(m.row.pendingApprovals, { count: row.pendingApprovals })}
+            </SdkBadge>
+          ) : null}
+        </div>
+        <dl className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+          <div className="flex gap-1">
+            <dt className="sr-only">{m.groupBy.project}</dt>
+            <dd className="truncate">{projectName ?? m.row.unknownProject}</dd>
+          </div>
+          {row.live || row.durationSeconds > 0 ? (
+            <div className="flex gap-1">
+              <dt className="sr-only">{m.row.duration}</dt>
+              <dd>{row.live && row.startedAt ? <Duration since={row.startedAt} /> : <Duration seconds={row.durationSeconds} />}</dd>
+            </div>
+          ) : null}
+          {row.totalTokens > 0 ? (
+            <div className="flex gap-1">
+              <dt className="sr-only">{m.row.tokensLabel}</dt>
+              <dd className="tabular-nums">{formatMessage(m.row.tokens, { count: formatTokens(row.totalTokens, locale) })}</dd>
+            </div>
+          ) : null}
+          {row.costUsd !== null && row.costUsd > 0 ? (
+            <div className="flex gap-1">
+              <dt className="sr-only">{m.row.cost}</dt>
+              <dd className="tabular-nums">{formatCurrency(row.costUsd, locale)}</dd>
+            </div>
+          ) : null}
+          {row.turnCount !== null ? (
+            <div className="flex gap-1">
+              <dt className="sr-only">{m.row.turnsLabel}</dt>
+              <dd className="tabular-nums">{formatMessage(m.row.turns, { count: row.turnCount })}</dd>
+            </div>
+          ) : null}
+          {row.attempt ? (
+            <div className="flex gap-1">
+              <dt className="sr-only">{m.row.attemptLabel}</dt>
+              <dd className="tabular-nums">{formatMessage(m.row.attempt, { number: row.attempt })}</dd>
+            </div>
+          ) : null}
+          {row.segment === "retrying" && row.dueAt ? (
+            <div className="flex gap-1 text-warning">
+              <dt>{m.row.retryDue}</dt>
+              <dd>
+                <time dateTime={row.dueAt}>{new Date(row.dueAt).toLocaleTimeString(locale)}</time>
+              </dd>
+            </div>
+          ) : null}
+          {row.live && row.lastEventAt ? (
+            <div className="flex gap-1">
+              <dt>{m.row.lastEvent}</dt>
+              <dd>
+                <TimeAgo iso={row.lastEventAt} />
+              </dd>
+            </div>
+          ) : null}
+          {finished && row.finishedAt ? (
+            <div className="flex gap-1">
+              <dt>{m.row.finished}</dt>
+              <dd>
+                <TimeAgo iso={row.finishedAt} />
+              </dd>
+            </div>
+          ) : null}
+        </dl>
+        {row.live ? (
+          <p className="truncate text-xs text-foreground" title={row.operation ?? undefined}>
+            <span className="sr-only">{m.row.operation}: </span>
+            {row.operation ? <StreamingText active={isActivePhase(row.phase)}>{row.operation}</StreamingText> : <span className="text-subtle-foreground">{m.row.idle}</span>}
+          </p>
+        ) : row.error && (row.segment === "failed" || row.segment === "retrying") ? (
+          <p className="truncate text-xs text-destructive" title={row.error}>
+            <span className="sr-only">{m.row.error}: </span>
+            {row.error}
+          </p>
+        ) : null}
+      </div>
+      <div role="toolbar" aria-label={formatMessage(m.actions.label, { identifier: row.identifier })} className="flex shrink-0 items-center gap-0.5">
+        {allowed.dispatch ? iconButton(m.actions.dispatch, <Play className="size-4" />, () => onDispatch(row), true) : null}
+        {allowed.retry ? iconButton(m.actions.retry, <RotateCcw className="size-4" />, () => onRetry(row)) : null}
+        {allowed.cancel ? iconButton(m.actions.cancel, <Square className="size-4" />, () => onCancel(row)) : null}
+        {iconButton(m.actions.openExecution, <MonitorPlay className="size-4" />, () => onOpen(row))}
+      </div>
+    </div>
+  );
+});
+
+/** Agent Runs control center (`/runs`): live sessions, retry queue, queued and recently finished runs. */
+export default function AgentsPage() {
+  const m = useMessages(agentsMessages);
+  const t = useT();
+  const navigate = useNavigate();
+  const now = useNow();
+  const state = useRuntimeState();
+  const tasks = useTasks();
+  const approvals = useApprovals(true);
+  const projects = useProjects();
+  const providers = useProviders();
+  const inspector = useUiStore((s) => s.inspector);
+  const inspect = useUiStore((s) => s.inspect);
+  const dispatch = useDispatchTask();
+  const retry = useRetryTask();
+  const cancel = useCancelTask();
+
+  const [filter, setFilter] = useState<SegmentFilter>("all");
+  const [groupBy, setGroupBy] = useState<AgentGroupBy>("status");
+  const [cancelTarget, setCancelTarget] = useState<AgentRow | null>(null);
+
+  const rows = useMemo(
+    () => buildAgentRows({ snapshot: state.data, tasks: tasks.data, approvals: approvals.data, projects: projects.data, now }),
+    [state.data, tasks.data, approvals.data, projects.data, now]
+  );
+  const counts = useMemo(() => {
+    const groups = groupAgentRows(rows);
+    return Object.fromEntries(AGENT_SEGMENTS.map((s) => [s, groups[s].length])) as Record<AgentSegment, number>;
+  }, [rows]);
+  const projectNames = useMemo(() => new Map((projects.data ?? []).map((p) => [p.id, p.name])), [projects.data]);
+  const capabilities = useMemo(
+    () => new Map<ProviderKind, ProviderCapabilities>((providers.data ?? []).map((p) => [p.provider, p.capabilities])),
+    [providers.data]
+  );
+
+  const items = useMemo<ListItem[]>(() => {
+    const visible = filter === "all" ? rows : rows.filter((r) => r.segment === filter);
+    const groups = groupRowsBy(visible, groupBy, { providerOrder: ALL_PROVIDERS, projectNames });
+    const label = (key: string | null) =>
+      groupBy === "status"
+        ? m.segments[key as AgentSegment]
+        : groupBy === "provider"
+          ? key
+            ? (t.provider[key as ProviderKind] ?? key)
+            : m.unknownProvider
+          : key
+            ? (projectNames.get(key) ?? m.row.unknownProject)
+            : m.row.unknownProject;
+    return groups.flatMap((g) => [
+      { kind: "header" as const, id: `h:${g.key ?? "none"}`, label: label(g.key), count: g.rows.length },
+      ...g.rows.map((row) => ({ kind: "row" as const, id: row.taskId, row }))
+    ]);
+  }, [rows, filter, groupBy, projectNames, m, t]);
+
+  const pendingTaskId =
+    (dispatch.isPending && dispatch.variables) || (retry.isPending && retry.variables) || (cancel.isPending && cancel.variables) || null;
+  const selectedTaskId = inspector?.kind === "task" ? inspector.id : null;
+
+  const onSelect = useCallback((row: AgentRow) => inspect({ kind: "task", id: row.taskId }), [inspect]);
+  const onOpen = useCallback((row: AgentRow) => navigate(paths.run(row.taskId)), [navigate]);
+  const onDispatch = useCallback((row: AgentRow) => !dispatch.isPending && dispatch.mutate(row.taskId), [dispatch]);
+  const onRetry = useCallback((row: AgentRow) => !retry.isPending && retry.mutate(row.taskId), [retry]);
+  const onCancel = useCallback((row: AgentRow) => setCancelTarget(row), []);
+
+  const loading = (state.isLoading && !state.data) || (tasks.isLoading && !tasks.data);
+  // Approvals decide which rows wait for a decision, so a failed approvals load is a failure too.
+  const failure =
+    (state.isError && !state.data ? state.error : null) ??
+    (tasks.isError && !tasks.data ? tasks.error : null) ??
+    (approvals.isError && !approvals.data ? approvals.error : null);
+
+  let body: React.ReactNode;
+  if (failure) {
+    body = (
+      <div className="p-4">
+        <ErrorState
+          title={m.loadFailed}
+          message={failure.message}
+          onRetry={() => {
+            void state.refetch();
+            void tasks.refetch();
+            void approvals.refetch();
+          }}
+        />
+      </div>
+    );
+  } else if (loading) {
+    body = (
+      <div className="p-4">
+        <LoadingRows rows={6} label={t.common.loading} />
+      </div>
+    );
+  } else if (rows.length === 0) {
+    body = (
+      <div className="p-4">
+        <AiEmptyView
+          title={m.empty.title}
+          description={m.empty.description}
+          action={
+            <Button size="small" appearance="primary" onClick={() => navigate(paths.tasks())}>
+              {m.empty.cta}
+            </Button>
+          }
+        />
+      </div>
+    );
+  } else if (items.length === 0) {
+    body = (
+      <div className="p-4">
+        <AiEmptyView title={m.empty.filtered} />
+      </div>
+    );
+  } else {
+    body = (
+      <VirtualList<ListItem>
+        items={items}
+        getKey={(item) => item.id}
+        estimateSize={72}
+        className="h-full"
+        ariaLabel={m.list}
+        renderItem={(item) =>
+          item.kind === "header" ? (
+            <h2 className="flex h-8 items-center gap-2 border-b border-border bg-surface-sunken px-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <span className="truncate">{item.label}</span>
+              <span className="font-normal normal-case tabular-nums text-subtle-foreground">
+                {formatMessage(m.groupCount, { count: item.count })}
+              </span>
+            </h2>
+          ) : (
+            <AgentRunRow
+              row={item.row}
+              projectName={item.row.projectId ? (projectNames.get(item.row.projectId) ?? null) : null}
+              capabilities={item.row.provider ? capabilities.get(item.row.provider) : undefined}
+              selected={selectedTaskId === item.row.taskId}
+              busy={pendingTaskId === item.row.taskId}
+              onSelect={onSelect}
+              onOpen={onOpen}
+              onDispatch={onDispatch}
+              onRetry={onRetry}
+              onCancel={onCancel}
+            />
+          )
+        }
+      />
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <PageHeader
+        title={m.title}
+        description={formatMessage(m.description, {
+          running: counts.running,
+          approval: counts.approval,
+          retrying: counts.retrying,
+          queued: counts.queued
+        })}
+      />
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface px-2 py-1">
+        <TabList
+          size="small"
+          selectedValue={filter}
+          onTabSelect={(_, d) => setFilter(d.value as SegmentFilter)}
+          aria-label={m.segmentTabs}
+          className="min-w-0 flex-1 flex-wrap"
+        >
+          <Tab value="all">
+            {m.all} <span className="tabular-nums text-subtle-foreground">{rows.length}</span>
+          </Tab>
+          {AGENT_SEGMENTS.map((s) => (
+            <Tab key={s} value={s}>
+              {m.segments[s]} <span className="tabular-nums text-subtle-foreground">{counts[s]}</span>
+            </Tab>
+          ))}
+        </TabList>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span id="agents-group-by">{m.groupByLabel}</span>
+          <Dropdown
+            size="small"
+            className="!min-w-0 w-32"
+            aria-labelledby="agents-group-by"
+            value={m.groupBy[groupBy]}
+            selectedOptions={[groupBy]}
+            onOptionSelect={(_, d) => d.optionValue && setGroupBy(d.optionValue as AgentGroupBy)}
+          >
+            {AGENT_GROUP_BY.map((g) => (
+              <Option key={g} value={g}>
+                {m.groupBy[g]}
+              </Option>
+            ))}
+          </Dropdown>
+        </div>
+      </div>
+      {FINISHED_SEGMENTS.includes(filter as AgentSegment) ? (
+        <p className="shrink-0 border-b border-border bg-surface px-4 py-1 text-xs text-muted-foreground">{m.recentHint}</p>
+      ) : null}
+      <div className="min-h-0 flex-1 bg-background">{body}</div>
+      <ConfirmDialog
+        open={cancelTarget !== null}
+        title={formatMessage(m.cancelDialog.title, { identifier: cancelTarget?.identifier ?? "" })}
+        description={m.cancelDialog.description}
+        confirmLabel={m.cancelDialog.confirm}
+        destructive
+        pending={cancel.isPending}
+        onOpenChange={(open) => !open && setCancelTarget(null)}
+        onConfirm={() => {
+          if (!cancelTarget || cancel.isPending) return;
+          cancel.mutate(cancelTarget.taskId, { onSettled: () => setCancelTarget(null) });
+        }}
+      />
+    </div>
+  );
+}

@@ -1,0 +1,54 @@
+import { describe, expect, it } from "vitest";
+import type { AgentEvent } from "@symphony/shared-types";
+import { buildTaskTimeline, countByKind, eventKind, filterByKinds, newSince, toggleKind } from "./timeline.js";
+
+function ev(id: string, second: number, overrides: Partial<AgentEvent> = {}): AgentEvent {
+  return {
+    id,
+    task_id: "t1",
+    issue_identifier: "SYM-1",
+    session_id: "s1",
+    provider: "simulated",
+    event_type: "task/updated",
+    phase: null,
+    message: `event ${id}`,
+    payload: null,
+    timestamp: `2026-10-20T10:00:${String(second).padStart(2, "0")}Z`,
+    ...overrides
+  };
+}
+
+const command = (id: string, second: number) =>
+  ev(id, second, { event_type: "item/commandExecution/completed", payload: { item: { type: "commandExecution", command: "ls", exitCode: 0 } } });
+
+describe("execution timeline", () => {
+  it("merges newest-first history with live events, oldest first, without duplicates", () => {
+    const history = [ev("e3", 3), ev("e1", 1)];
+    const live = [ev("e2", 2), ev("e3", 3), ev("other", 4, { task_id: "t2" })];
+    const merged = buildTaskTimeline("t1", history, live);
+    expect(merged.map((e) => e.id)).toEqual(["e1", "e2", "e3"]);
+  });
+
+  it("ignores history entries for other tasks and handles missing history", () => {
+    expect(buildTaskTimeline("t1", undefined, [ev("a", 1)]).map((e) => e.id)).toEqual(["a"]);
+    expect(buildTaskTimeline("t1", [ev("x", 1, { task_id: "t9" })], []).length).toBe(0);
+  });
+
+  it("classifies, counts and filters events by kind", () => {
+    const events = [ev("a", 1), command("b", 2), command("c", 3)];
+    expect(eventKind(events[1]!)).toBe("command");
+    const counts = countByKind(events);
+    expect(counts.command).toBe(2);
+    expect(counts.lifecycle).toBe(1);
+    expect(counts.message).toBe(0);
+    const hidden = toggleKind(new Set(), "command");
+    expect(filterByKinds(events, hidden).map((e) => e.id)).toEqual(["a"]);
+    expect(filterByKinds(events, toggleKind(hidden, "command"))).toBe(events);
+  });
+
+  it("counts events that arrived after following paused", () => {
+    expect(newSince(10, null)).toBe(0);
+    expect(newSince(12, 10)).toBe(2);
+    expect(newSince(5, 10)).toBe(0);
+  });
+});

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use symphony_core::{HardwareSnapshot, ResourcePolicy, SymphonyError, SymphonyResult};
 use sysinfo::System;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Windows 11 Power Status via `kernel32!GetSystemPowerStatus`.
 #[derive(Debug, Clone, Copy)]
@@ -188,51 +188,61 @@ impl HardwareMonitor {
 pub struct SingleInstanceGuard {
     lock_path: PathBuf,
     pid: u32,
+    /// Holds the OS-level exclusive lock for as long as the guard lives; the OS releases it when
+    /// the process exits, so a crashed owner never leaves a stale lock behind.
+    _file: File,
 }
 
 impl SingleInstanceGuard {
+    /// Become the single runtime owner of `runtime_dir`. Acquisition is atomic across processes
+    /// (exclusive advisory file lock), so a CLI and a desktop host starting concurrently cannot
+    /// both own the same data directory.
     pub fn acquire(runtime_dir: &Path) -> SymphonyResult<Self> {
         std::fs::create_dir_all(runtime_dir)?;
         let lock_path = runtime_dir.join("symphony-runtime.lock");
         let current_pid = std::process::id();
 
-        if lock_path.exists() {
-            if let Ok(mut f) = File::open(&lock_path) {
-                let mut contents = String::new();
-                if f.read_to_string(&mut contents).is_ok() {
-                    if let Ok(existing_pid) = contents.trim().parse::<u32>() {
-                        if existing_pid != current_pid && is_process_alive(existing_pid) {
-                            return Err(SymphonyError::InvalidConfig(format!(
-                                "Symphony background runtime is already running (PID {existing_pid})"
-                            )));
-                        }
-                    }
-                }
-            }
-        }
-
         let mut file = OpenOptions::new()
             .create(true)
+            .truncate(false)
+            .read(true)
             .write(true)
-            .truncate(true)
             .open(&lock_path)?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let mut contents = String::new();
+                let owner = File::open(&lock_path)
+                    .and_then(|mut f| f.read_to_string(&mut contents))
+                    .ok()
+                    .and_then(|_| contents.trim().parse::<u32>().ok());
+                return Err(SymphonyError::InvalidConfig(match owner {
+                    Some(pid) => {
+                        format!("Symphony background runtime is already running (PID {pid})")
+                    }
+                    None => "Symphony background runtime is already running".to_string(),
+                }));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+        }
+        file.set_len(0)?;
         write!(file, "{current_pid}")?;
+        file.flush()?;
         info!(pid = current_pid, lock = %lock_path.display(), "Acquired single-instance runtime lock");
 
         Ok(Self {
             lock_path,
             pid: current_pid,
+            _file: file,
         })
     }
 
     pub fn pid(&self) -> u32 {
         self.pid
     }
-}
 
-impl Drop for SingleInstanceGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.lock_path);
+    pub fn lock_path(&self) -> &Path {
+        &self.lock_path
     }
 }
 
@@ -284,6 +294,12 @@ impl SecretStore {
         std::fs::write(&self.vault_path, encoded)?;
         debug!(key = key, "Updated credential in secure secret store");
         Ok(())
+    }
+
+    /// Value stored in the vault only (no environment fallback).
+    pub fn get_vault_secret(&self, key: &str) -> Option<String> {
+        let guard = self.cache.lock().expect("secret cache mutex");
+        guard.get(key).filter(|v| !v.is_empty()).cloned()
     }
 
     pub fn get_secret(&self, key: &str) -> Option<String> {
@@ -367,7 +383,7 @@ pub fn configure_windows_autostart(enable: bool, exe_path: &Path) -> SymphonyRes
                 ])
                 .status()?;
             if !status.success() {
-                warn!("Failed to set Windows HKCU Run auto-start entry");
+                tracing::warn!("Failed to set Windows HKCU Run auto-start entry");
             }
         } else {
             let _ = Command::new("reg")
@@ -380,6 +396,64 @@ pub fn configure_windows_autostart(enable: bool, exe_path: &Path) -> SymphonyRes
         let _ = (enable, exe_path);
     }
     Ok(())
+}
+
+/// Runtime endpoint discovery record written by the process that owns the orchestration runtime.
+///
+/// Stored at `<data_dir>/runtime.json` with owner-only permissions so local clients (the desktop
+/// webview via Tauri IPC, the Vite dev server, integration tests) can find the API port — which
+/// may be an ephemeral fallback — and its per-launch access token.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RuntimeDiscovery {
+    pub base_url: String,
+    pub token: String,
+    pub pid: u32,
+    pub api_version: u32,
+    pub owner: String,
+}
+
+impl RuntimeDiscovery {
+    pub fn file_path(data_dir: &Path) -> PathBuf {
+        data_dir.join("runtime.json")
+    }
+
+    /// Persist the record, readable only by the current user.
+    pub fn write(&self, data_dir: &Path) -> SymphonyResult<PathBuf> {
+        std::fs::create_dir_all(data_dir)?;
+        let path = Self::file_path(data_dir);
+        // A fresh, process-unique temp file created with `create_new` always gets the restrictive
+        // mode below; a pre-existing file with broader permissions is never reused.
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        {
+            let mut opts = OpenOptions::new();
+            opts.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut f = opts.open(&tmp)?;
+            f.write_all(
+                serde_json::to_string_pretty(self)
+                    .map_err(|e| SymphonyError::JsonError(e.to_string()))?
+                    .as_bytes(),
+            )?;
+        }
+        std::fs::rename(&tmp, &path)?;
+        Ok(path)
+    }
+
+    /// Read a discovery record whose owning process is still alive.
+    pub fn read_live(data_dir: &Path) -> Option<Self> {
+        let raw = std::fs::read_to_string(Self::file_path(data_dir)).ok()?;
+        let record: Self = serde_json::from_str(&raw).ok()?;
+        is_process_alive(record.pid).then_some(record)
+    }
+
+    pub fn remove(data_dir: &Path) {
+        let _ = std::fs::remove_file(Self::file_path(data_dir));
+    }
 }
 
 /// Default application data directory (`%LOCALAPPDATA%\SymphonyDesktop` on Windows).
@@ -428,6 +502,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let guard = SingleInstanceGuard::acquire(dir.path()).unwrap();
         assert_eq!(guard.pid(), std::process::id());
+        // A second owner is rejected while the first guard holds the lock.
+        assert!(SingleInstanceGuard::acquire(dir.path()).is_err());
         drop(guard);
         let guard2 = SingleInstanceGuard::acquire(dir.path()).unwrap();
         assert_eq!(guard2.pid(), std::process::id());

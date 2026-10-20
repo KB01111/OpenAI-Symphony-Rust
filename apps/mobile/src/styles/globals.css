@@ -1,5 +1,17 @@
+/* Lock the cascade-layer order before any library CSS declares its own layers. */
+@layer theme, base, components, utilities;
+
 @import "tailwindcss";
 @import "@openai/apps-sdk-ui/css";
-@source "../../node_modules/@openai/apps-sdk-ui";
-@source "../../../../node_modules/@openai/apps-sdk-ui";
+@import "../../../../packages/ui/src/tokens/tokens.css";
+
 @source "../../../../packages/ui/src";
+@source "../../node_modules/@openai/apps-sdk-ui";
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+}

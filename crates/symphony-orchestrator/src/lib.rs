@@ -8,28 +8,37 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use symphony_agents::{
-    detect_all_providers, start_agent_session, AgentLaunchConfig, AgentStreamEvent, ApprovalGate,
-    DynamicToolHandler,
+    detect_provider_statuses, start_agent_session, AgentLaunchConfig, AgentStreamEvent,
+    ApprovalGate, DynamicToolHandler,
 };
 use symphony_core::{
     compute_backoff_delay_ms, redact_secrets, render_continuation_prompt, render_workflow_prompt,
     sort_candidate_issues, AgentEvent, ApprovalDecision, ApprovalRequest, ApprovalStatus,
     CodexTotals, HardwareSnapshot, Issue, LiveSession, MergeReadinessReport,
-    OrchestratorStateSnapshot, Project, ProviderCapabilities, ProviderKind, PullRequestReview,
-    RetryEntry, RunAttempt, RunAttemptPhase, RunningSessionSummary, ServiceConfig, StateCounts,
-    SymphonyError, SymphonyResult, Task, TaskStatus, TokenUsage, ValidationResult,
-    WorkflowDefinition,
+    OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus, PullRequestReview,
+    RepositoryValidation, RetryEntry, RunAttempt, RunAttemptPhase, RunningSessionSummary,
+    ServiceConfig, StateCounts, SymphonyError, SymphonyResult, Task, TaskDiff, TaskStatus,
+    TokenUsage, ValidationResult, WorkflowDefinition, WorktreeInfo,
 };
 use symphony_platform::{HardwareMonitor, SecretStore};
+
+/// Provider API keys that agent subprocesses may receive from the credential vault.
+pub const PROVIDER_CREDENTIAL_ENV_KEYS: &[&str] = &["OPENAI_API_KEY", "ANTHROPIC_API_KEY"];
 use symphony_storage::Storage;
 use symphony_trackers::{GitHubTracker, LinearTracker, TrackerAdapter};
 use symphony_workspaces::WorkspaceManager;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 use tracing::{debug, info, warn};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
+/// How long provider detection results are reused before re-probing CLIs.
+const PROVIDER_CACHE_TTL_SECS: i64 = 60;
+/// Maximum diff size returned by `task_diff` (the UI renders it lazily).
+const TASK_DIFF_MAX_BYTES: usize = 512 * 1024;
+
 /// SPEC.md Section 13.7.2 `/api/v1/<issue_identifier>` response contract
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct IssueDetailResponse {
     pub issue_identifier: String,
     pub issue_id: String,
@@ -46,27 +55,70 @@ pub struct IssueDetailResponse {
     pub validation_results: Vec<ValidationResult>,
     pub pull_request: Option<PullRequestReview>,
     pub tracked: HashMap<String, Value>,
+    pub task: Task,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkspaceInfo {
     pub path: Option<String>,
     pub branch_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AttemptSummary {
     pub restart_count: u32,
     pub current_retry_attempt: u32,
 }
 
 /// SPEC.md Section 13.7.2 `POST /api/v1/refresh` response contract
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RefreshResponse {
     pub queued: bool,
     pub coalesced: bool,
     pub requested_at: DateTime<Utc>,
     pub operations: Vec<String>,
+}
+
+/// Workflow document as served to editors (`GET /api/v1/workflow`).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct WorkflowDocument {
+    /// File the document is loaded from and saved to, if any.
+    pub path: Option<String>,
+    pub raw_markdown: String,
+    pub valid: bool,
+    pub error: Option<String>,
+    /// Parsed configuration with tracker credentials redacted.
+    pub config: Option<ServiceConfig>,
+    pub rendered_preview: Option<String>,
+}
+
+/// Result of previewing or saving a workflow document.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct WorkflowValidation {
+    pub valid: bool,
+    pub error_code: Option<String>,
+    pub error: Option<String>,
+    pub config: Option<ServiceConfig>,
+    pub rendered_prompt: Option<String>,
+    pub path: Option<String>,
+}
+
+/// Partial project update (`PATCH /api/v1/projects/{id}`). Absent fields are left unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct ProjectUpdate {
+    pub name: Option<String>,
+    pub default_branch: Option<String>,
+    pub preferred_provider: Option<ProviderKind>,
+    pub preferred_model: Option<String>,
+    pub tracker_kind: Option<String>,
+    pub github_repo: Option<String>,
+    pub linear_project_slug: Option<String>,
+    pub required_labels: Option<Vec<String>>,
+    pub auto_dispatch: Option<bool>,
+    #[schema(minimum = 1, maximum = 32)]
+    pub max_concurrent_agents: Option<u32>,
+    pub validation_commands: Option<Vec<String>>,
 }
 
 struct ActiveWorkerHandle {
@@ -87,6 +139,9 @@ struct OrchestratorRuntimeMemory {
     pub active_config: ServiceConfig,
     pub workflow_error: Option<String>,
     pub pending_approvals: HashMap<String, oneshot::Sender<ApprovalDecision>>,
+    pub provider_cache: Option<(DateTime<Utc>, Vec<ProviderStatus>)>,
+    /// Where the workflow is saved when no `WORKFLOW.md` was loaded at startup.
+    pub workflow_fallback_path: Option<PathBuf>,
 }
 
 struct OrchestratorApprovalGate {
@@ -269,6 +324,8 @@ impl SymphonyOrchestrator {
             active_config,
             workflow_error,
             pending_approvals: HashMap::new(),
+            provider_cache: None,
+            workflow_fallback_path: None,
         }));
 
         Ok(Self {
@@ -401,18 +458,55 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     mem.active_config = cfg;
                     mem.active_workflow_path = Some(path.to_path_buf());
                     mem.workflow_error = None;
+                    drop(mem);
                     info!(path = %path.display(), "Reloaded WORKFLOW.md configuration");
+                    // Lets clients refresh the document (e.g. Workflow Studio's external-change notice).
+                    self.emit_event(
+                        None,
+                        None,
+                        None,
+                        None,
+                        "workflow/reloaded",
+                        None,
+                        format!("Reloaded workflow from {}", path.display()),
+                        Some(json!({ "path": path.display().to_string() })),
+                    )
+                    .await;
                 }
                 Err(err) => {
                     warn!(error = %err, "Invalid WORKFLOW.md config on reload; keeping last known good configuration");
                     let mut mem = self.memory.write().await;
                     mem.workflow_error = Some(err.to_string());
+                    drop(mem);
+                    self.emit_event(
+                        None,
+                        None,
+                        None,
+                        None,
+                        "workflow/reload_failed",
+                        None,
+                        err.to_string(),
+                        Some(json!({ "error": err.to_string() })),
+                    )
+                    .await;
                 }
             },
             Err(err) => {
                 warn!(error = %err, "Failed to parse WORKFLOW.md on reload; keeping last known good configuration");
                 let mut mem = self.memory.write().await;
                 mem.workflow_error = Some(err.to_string());
+                drop(mem);
+                self.emit_event(
+                    None,
+                    None,
+                    None,
+                    None,
+                    "workflow/reload_failed",
+                    None,
+                    err.to_string(),
+                    Some(json!({ "error": err.to_string() })),
+                )
+                .await;
             }
         }
     }
@@ -471,11 +565,42 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .snapshot(&settings.resource_policy, configured_max)
     }
 
-    pub fn detect_providers(&self) -> Vec<ProviderCapabilities> {
-        detect_all_providers()
-            .into_iter()
-            .map(|p| p.provider.default_capabilities())
-            .collect()
+    /// Detect installed provider CLIs, their versions, and credential presence.
+    /// Results are cached for `PROVIDER_CACHE_TTL_SECS` to avoid spawning CLIs on every request.
+    pub async fn provider_statuses(&self, force_refresh: bool) -> Vec<ProviderStatus> {
+        if !force_refresh {
+            let mem = self.memory.read().await;
+            if let Some((at, cached)) = &mem.provider_cache {
+                if (Utc::now() - *at).num_seconds() < PROVIDER_CACHE_TTL_SECS {
+                    return cached.clone();
+                }
+            }
+        }
+        let settings = self.storage.get_settings().await.unwrap_or_default();
+        let vault_keys = self.secret_store.list_configured_keys();
+        let statuses = detect_provider_statuses(&vault_keys, |kind| {
+            settings
+                .provider_default_models
+                .get(&kind)
+                .cloned()
+                .or_else(|| {
+                    (kind == settings.default_provider && !settings.default_model.is_empty())
+                        .then(|| settings.default_model.clone())
+                })
+        })
+        .await;
+        self.memory.write().await.provider_cache = Some((Utc::now(), statuses.clone()));
+        statuses
+    }
+
+    /// Drop cached provider detection (e.g. after credentials or settings change).
+    pub async fn invalidate_provider_cache(&self) {
+        self.memory.write().await.provider_cache = None;
+    }
+
+    /// Configure where the workflow is saved when no `WORKFLOW.md` path is active.
+    pub async fn set_workflow_fallback_path(&self, path: PathBuf) {
+        self.memory.write().await.workflow_fallback_path = Some(path);
     }
 
     /// Build the authoritative `/api/v1/state` snapshot (SPEC.md Section 13.7.2)
@@ -620,6 +745,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             validation_results,
             pull_request,
             tracked: HashMap::new(),
+            task,
         })
     }
 
@@ -658,7 +784,176 @@ Please implement the requested changes cleanly in the current Git workspace, run
     }
 
     pub async fn delete_project(&self, id: &str) -> SymphonyResult<()> {
-        self.storage.delete_project(id).await
+        let project = self
+            .storage
+            .get_project(id)
+            .await?
+            .ok_or_else(|| SymphonyError::ProjectNotFound(id.to_string()))?;
+        let running = {
+            let mem = self.memory.read().await;
+            mem.running
+                .values()
+                .any(|h| h.session.project_id == project.id)
+        };
+        if running {
+            return Err(SymphonyError::Conflict(format!(
+                "Project '{}' has running agent sessions; cancel them before removing the project",
+                project.name
+            )));
+        }
+        self.storage.delete_project(id).await?;
+        self.emit_event(
+            None,
+            None,
+            None,
+            None,
+            "project/removed",
+            None,
+            format!("Removed project '{}'", project.name),
+            None,
+        )
+        .await;
+        Ok(())
+    }
+
+    /// Apply a partial update to a registered project.
+    pub async fn update_project(&self, id: &str, update: ProjectUpdate) -> SymphonyResult<Project> {
+        let mut project = self
+            .storage
+            .get_project(id)
+            .await?
+            .ok_or_else(|| SymphonyError::ProjectNotFound(id.to_string()))?;
+        if let Some(name) = update.name {
+            if name.trim().is_empty() {
+                return Err(SymphonyError::InvalidConfig(
+                    "project name must not be empty".into(),
+                ));
+            }
+            project.name = name.trim().to_string();
+        }
+        if let Some(branch) = update.default_branch {
+            if branch.trim().is_empty() {
+                return Err(SymphonyError::InvalidConfig(
+                    "default_branch must not be empty".into(),
+                ));
+            }
+            project.default_branch = branch.trim().to_string();
+        }
+        if let Some(p) = update.preferred_provider {
+            project.preferred_provider = p;
+        }
+        if let Some(m) = update.preferred_model {
+            project.preferred_model = Some(m).filter(|v| !v.trim().is_empty());
+        }
+        if let Some(k) = update.tracker_kind {
+            project.tracker_kind = k;
+        }
+        if let Some(r) = update.github_repo {
+            project.github_repo = Some(r).filter(|v| !v.trim().is_empty());
+        }
+        if let Some(l) = update.linear_project_slug {
+            project.linear_project_slug = Some(l).filter(|v| !v.trim().is_empty());
+        }
+        if let Some(labels) = update.required_labels {
+            project.required_labels = labels;
+        }
+        if let Some(auto) = update.auto_dispatch {
+            project.auto_dispatch = auto;
+        }
+        if let Some(max) = update.max_concurrent_agents {
+            if max == 0 || max > 32 {
+                return Err(SymphonyError::InvalidConfig(
+                    "max_concurrent_agents must be between 1 and 32".into(),
+                ));
+            }
+            project.max_concurrent_agents = max;
+        }
+        if let Some(cmds) = update.validation_commands {
+            project.validation_commands = cmds
+                .into_iter()
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty())
+                .collect();
+        }
+        project.updated_at = Utc::now();
+        self.storage.upsert_project(&project).await?;
+        self.emit_event(
+            None,
+            None,
+            None,
+            None,
+            "project/updated",
+            None,
+            format!("Updated project '{}'", project.name),
+            None,
+        )
+        .await;
+        Ok(project)
+    }
+
+    /// Inspect a local path before registering it as a project repository.
+    pub async fn validate_repository(&self, repo_path: &str) -> RepositoryValidation {
+        let path = PathBuf::from(repo_path.trim());
+        let mut errors = Vec::new();
+        let exists = !repo_path.trim().is_empty() && path.exists();
+        let is_directory = exists && path.is_dir();
+        if repo_path.trim().is_empty() {
+            errors.push("Repository path is required.".to_string());
+        } else if !exists {
+            errors.push("The selected path does not exist.".to_string());
+        } else if !is_directory {
+            errors.push("The selected path is not a directory.".to_string());
+        }
+        let mut is_git_repository = false;
+        let mut current_branch = None;
+        let mut resolved_path = repo_path.trim().to_string();
+        if is_directory {
+            // Resolve the checkout root: a subdirectory of a repository is inside the work tree,
+            // but worktrees are created from the root (which holds `.git`).
+            let out = tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args(["rev-parse", "--show-toplevel"])
+                .output()
+                .await;
+            if let Ok(o) = &out {
+                let top = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if o.status.success() && !top.is_empty() {
+                    is_git_repository = true;
+                    resolved_path = PathBuf::from(&top).to_string_lossy().into_owned();
+                }
+            }
+            if is_git_repository {
+                if let Ok(o) = tokio::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&path)
+                    .args(["symbolic-ref", "--short", "HEAD"])
+                    .output()
+                    .await
+                {
+                    if o.status.success() {
+                        current_branch =
+                            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                                .filter(|b| !b.is_empty());
+                    }
+                }
+            } else {
+                errors.push("The directory is not a Git repository (git rev-parse failed).".into());
+            }
+        }
+        // Workflow presence is checked at the checkout root the project will actually use.
+        let has_workflow_file =
+            is_directory && PathBuf::from(&resolved_path).join("WORKFLOW.md").is_file();
+        RepositoryValidation {
+            repo_path: resolved_path,
+            exists,
+            is_directory,
+            is_git_repository,
+            current_branch,
+            has_workflow_file,
+            suggested_name: path.file_name().map(|n| n.to_string_lossy().to_string()),
+            errors,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -740,6 +1035,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
     pub async fn transition_task(&self, task_id: &str, next: TaskStatus) -> SymphonyResult<Task> {
         let mut task = self.get_task(task_id).await?;
+        if next == TaskStatus::Running && task.status != TaskStatus::Running {
+            return Err(SymphonyError::InvalidStateTransition {
+                from: task.status.as_str().to_string(),
+                to: "running (use dispatch to start an agent)".to_string(),
+            });
+        }
+        let is_active = self.memory.read().await.running.contains_key(task_id);
+        if is_active && next != TaskStatus::Running {
+            return Err(SymphonyError::Conflict(format!(
+                "Task {} has an active agent session; cancel it before changing status",
+                task.issue.identifier
+            )));
+        }
         task.transition_to(next)?;
         self.storage.upsert_task(&task).await?;
 
@@ -766,6 +1074,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
     }
 
     pub async fn cancel_task(&self, task_id: &str, reason: &str) -> SymphonyResult<Task> {
+        let current = self.get_task(task_id).await?;
+        current.status.validate_transition(TaskStatus::Cancelled)?;
         let cancel_tx = {
             let mut mem = self.memory.write().await;
             mem.retry_attempts.remove(task_id);
@@ -774,6 +1084,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         if let Some(tx) = cancel_tx {
             let _ = tx.send(reason.to_string());
         }
+
+        self.expire_pending_approvals(task_id).await;
 
         let mut task = self.get_task(task_id).await?;
         task.status = TaskStatus::Cancelled;
@@ -805,6 +1117,13 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
     pub async fn retry_task(&self, task_id: &str) -> SymphonyResult<Task> {
         let mut task = self.get_task(task_id).await?;
+        if self.memory.read().await.running.contains_key(task_id) {
+            return Err(SymphonyError::Conflict(format!(
+                "Task {} is already running",
+                task.issue.identifier
+            )));
+        }
+        task.status.validate_transition(TaskStatus::Queued)?;
         task.status = TaskStatus::Queued;
         task.last_error = None;
         task.next_retry_at = None;
@@ -823,6 +1142,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .into_iter()
             .find(|a| a.id == approval_id)
             .ok_or_else(|| SymphonyError::NotFound(format!("Approval {approval_id} not found")))?;
+        if req.status != ApprovalStatus::Pending {
+            return Err(SymphonyError::Conflict(format!(
+                "Approval {approval_id} was already resolved"
+            )));
+        }
 
         req.decision = Some(decision);
         req.resolved_at = Some(Utc::now());
@@ -858,6 +1182,35 @@ Please implement the requested changes cleanly in the current Git workspace, run
         Ok(req)
     }
 
+    /// Mark approvals still pending for a task as cancelled (its run ended without a decision), so
+    /// they never linger as actionable in the UI.
+    async fn expire_pending_approvals(&self, task_id: &str) {
+        let Ok(pending) = self.storage.list_approvals(true).await else {
+            return;
+        };
+        for mut req in pending.into_iter().filter(|a| a.task_id == task_id) {
+            {
+                let mut mem = self.memory.write().await;
+                mem.pending_approvals.remove(&req.id);
+            }
+            req.status = ApprovalStatus::Cancelled;
+            req.decision = Some(ApprovalDecision::Cancel);
+            req.resolved_at = Some(Utc::now());
+            let _ = self.storage.upsert_approval(&req).await;
+            self.emit_event(
+                Some(req.task_id.clone()),
+                Some(req.issue_identifier.clone()),
+                Some(req.session_id.clone()),
+                Some(req.provider),
+                "approval/expired",
+                None,
+                format!("Approval '{}' expired because the run ended", req.title),
+                None,
+            )
+            .await;
+        }
+    }
+
     pub async fn list_approvals(&self, only_pending: bool) -> SymphonyResult<Vec<ApprovalRequest>> {
         self.storage.list_approvals(only_pending).await
     }
@@ -888,6 +1241,120 @@ Please implement the requested changes cleanly in the current Git workspace, run
         self.storage.list_pr_reviews(project_id).await
     }
 
+    pub async fn get_pr_review(&self, review_id: &str) -> SymphonyResult<PullRequestReview> {
+        self.storage
+            .get_pr_review(review_id)
+            .await?
+            .ok_or_else(|| SymphonyError::NotFound(format!("PR review {review_id} not found")))
+    }
+
+    /// Git worktrees allocated for tasks, with on-disk and dirty status.
+    pub async fn list_worktrees(&self) -> SymphonyResult<Vec<WorktreeInfo>> {
+        let tasks = self.storage.list_tasks(None).await?;
+        let projects: HashMap<String, Project> = self
+            .storage
+            .list_projects()
+            .await?
+            .into_iter()
+            .map(|p| (p.id.clone(), p))
+            .collect();
+        let active: HashMap<String, String> = {
+            let mem = self.memory.read().await;
+            mem.running
+                .iter()
+                .map(|(id, h)| (id.clone(), h.session.session_id.clone()))
+                .collect()
+        };
+        let mut out = Vec::new();
+        for task in tasks {
+            let Some(ws) = task.workspace_path.clone().filter(|p| !p.is_empty()) else {
+                continue;
+            };
+            let path = PathBuf::from(&ws);
+            let exists = path.is_dir();
+            let dirty = exists && self.workspaces.is_worktree_dirty(&path).await;
+            let project = projects.get(&task.project_id);
+            out.push(WorktreeInfo {
+                task_id: task.id.clone(),
+                project_id: task.project_id.clone(),
+                project_name: project.map(|p| p.name.clone()),
+                repo_path: project.map(|p| p.repo_path.clone()),
+                issue_identifier: task.issue.identifier.clone(),
+                issue_title: task.issue.title.clone(),
+                task_status: task.status,
+                provider: task.provider,
+                workspace_path: ws,
+                branch_name: task.branch_name.clone(),
+                exists,
+                dirty,
+                active_session_id: active.get(&task.id).cloned(),
+                last_activity_at: task.updated_at,
+            });
+        }
+        out.sort_by_key(|w| std::cmp::Reverse(w.last_activity_at));
+        Ok(out)
+    }
+
+    /// Validated workspace path for a task: it must lie inside its project's workspace root.
+    pub async fn task_workspace_path(&self, task_id: &str) -> SymphonyResult<PathBuf> {
+        let task = self.get_task(task_id).await?;
+        let project = self
+            .storage
+            .get_project(&task.project_id)
+            .await?
+            .ok_or_else(|| SymphonyError::ProjectNotFound(task.project_id.clone()))?;
+        let ws = task
+            .workspace_path
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| SymphonyError::NotFound(format!("Task {task_id} has no workspace")))?;
+        symphony_workspaces::validate_workspace_path(
+            Path::new(&ws),
+            Path::new(&project.workspace_root),
+        )
+    }
+
+    /// Changed files and unified diff of a task's worktree.
+    pub async fn task_diff(&self, task_id: &str) -> SymphonyResult<TaskDiff> {
+        let task = self.get_task(task_id).await?;
+        let validated = match self.task_workspace_path(task_id).await {
+            Ok(p) => Some(p),
+            Err(SymphonyError::NotFound(_)) => None,
+            Err(e)
+                if task.workspace_path.is_some()
+                    && !Path::new(task.workspace_path.as_deref().unwrap_or_default()).exists() =>
+            {
+                debug!(error = %e, "workspace no longer on disk");
+                None
+            }
+            Err(e) => return Err(e),
+        };
+        let Some(path) = validated else {
+            return Ok(TaskDiff {
+                task_id: task.id,
+                workspace_path: task.workspace_path,
+                branch_name: task.branch_name,
+                exists: false,
+                changed_files: Vec::new(),
+                diff: String::new(),
+                truncated: false,
+            });
+        };
+        let changed_files = self.workspaces.inspect_changed_files(&path).await?;
+        let (diff, truncated) = self
+            .workspaces
+            .collect_diff(&path, TASK_DIFF_MAX_BYTES)
+            .await;
+        Ok(TaskDiff {
+            task_id: task.id,
+            workspace_path: Some(path.to_string_lossy().to_string()),
+            branch_name: task.branch_name,
+            exists: true,
+            changed_files,
+            diff: redact_secrets(&diff, &self.secret_store.all_secret_values()),
+            truncated,
+        })
+    }
+
     /// Explicitly approve a Pull Request review for human merge completion (Section 4.F)
     pub async fn approve_pr_merge(&self, review_id: &str) -> SymphonyResult<PullRequestReview> {
         let mut review = self
@@ -895,52 +1362,119 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .get_pr_review(review_id)
             .await?
             .ok_or_else(|| SymphonyError::NotFound(format!("PR review {review_id} not found")))?;
-
-        review.human_approved = true;
-        review.state = "approved_for_merge".to_string();
-        review.updated_at = Utc::now();
-        self.storage.upsert_pr_review(&review).await?;
+        // Idempotent and retry-safe: a repeated call (e.g. after the task write failed) still
+        // completes the task, but approval is recorded and announced only once.
+        let newly_approved = !review.human_approved;
+        if newly_approved {
+            review.human_approved = true;
+            review.state = "approved_for_merge".to_string();
+            review.updated_at = Utc::now();
+            self.storage.upsert_pr_review(&review).await?;
+        }
 
         if let Ok(mut task) = self.get_task(&review.task_id).await {
-            task.status = TaskStatus::Completed;
-            task.completed_at = Some(Utc::now());
-            task.updated_at = Utc::now();
-            self.storage.upsert_task(&task).await?;
-
-            self.emit_event(
-                Some(task.id),
-                Some(task.issue.identifier),
-                None,
-                Some(task.provider),
-                "pr/human_approved",
-                Some(RunAttemptPhase::Succeeded),
-                format!("Human approved PR #{} ({})", review.pr_number, review.title),
-                None,
-            )
-            .await;
+            // Only a task waiting for human review is completed by an approval; a task that was
+            // re-dispatched, cancelled or already completed keeps its state.
+            let completes_task = task.status == TaskStatus::HumanReview;
+            if completes_task {
+                task.status = TaskStatus::Completed;
+                task.completed_at = Some(Utc::now());
+                task.updated_at = Utc::now();
+                self.storage.upsert_task(&task).await?;
+            }
+            if newly_approved || completes_task {
+                self.emit_event(
+                    Some(task.id),
+                    Some(task.issue.identifier),
+                    None,
+                    Some(task.provider),
+                    "pr/human_approved",
+                    Some(RunAttemptPhase::Succeeded),
+                    format!("Human approved PR #{} ({})", review.pr_number, review.title),
+                    None,
+                )
+                .await;
+            }
         }
 
         Ok(review)
     }
 
-    pub async fn get_workflow_document(
-        &self,
-        custom_path: Option<&Path>,
-    ) -> SymphonyResult<(String, ServiceConfig, String)> {
-        let wf = match custom_path {
-            Some(p) if p.exists() => WorkflowDefinition::load_from_path(p)?,
-            _ => self.memory.read().await.active_workflow.clone(),
+    /// Path the workflow document is saved to: the active `WORKFLOW.md`, else the configured fallback.
+    pub async fn workflow_target_path(&self) -> Option<PathBuf> {
+        let mem = self.memory.read().await;
+        mem.active_workflow_path
+            .clone()
+            .or_else(|| mem.workflow_fallback_path.clone())
+    }
+
+    /// Currently active workflow source (full front matter + body), its path, and parsed config.
+    pub async fn get_workflow_document(&self) -> WorkflowDocument {
+        let (wf, path, error) = {
+            let mem = self.memory.read().await;
+            (
+                mem.active_workflow.clone(),
+                mem.active_workflow_path
+                    .clone()
+                    .or_else(|| mem.workflow_fallback_path.clone()),
+                mem.workflow_error.clone(),
+            )
         };
-        let cfg = ServiceConfig::from_workflow(&wf)?;
+        // Prefer the on-disk text so an invalid edit made outside the app is still visible.
+        let raw_markdown = path
+            .as_ref()
+            .filter(|p| p.is_file())
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_else(|| wf.raw_source.clone());
+        let validation =
+            Self::validate_workflow_text(&raw_markdown, path.clone(), None, None, None, None);
+        WorkflowDocument {
+            path: path.map(|p| p.to_string_lossy().to_string()),
+            raw_markdown,
+            valid: validation.valid && error.is_none(),
+            error: validation.error.or(error),
+            config: validation.config,
+            rendered_preview: validation.rendered_prompt,
+        }
+    }
+
+    /// Parse, validate, and render a workflow document without persisting it.
+    /// `source_path` is the file the text would be saved to; relative paths in the config
+    /// (e.g. `workspace.root`) are resolved against it exactly as they are after saving.
+    pub fn validate_workflow_text(
+        raw: &str,
+        source_path: Option<PathBuf>,
+        sample_identifier: Option<String>,
+        sample_title: Option<String>,
+        sample_description: Option<String>,
+        attempt: Option<u32>,
+    ) -> WorkflowValidation {
+        let fail = |e: SymphonyError| WorkflowValidation {
+            valid: false,
+            error_code: Some(e.code().to_string()),
+            error: Some(e.to_string()),
+            config: None,
+            rendered_prompt: None,
+            path: None,
+        };
+        let wf = match WorkflowDefinition::parse(raw, source_path) {
+            Ok(w) => w,
+            Err(e) => return fail(e),
+        };
+        let cfg = match ServiceConfig::from_workflow(&wf) {
+            Ok(c) => c,
+            Err(e) => return fail(e),
+        };
         let sample_issue = Issue {
             id: "sample-1".into(),
             native_ref: None,
-            identifier: "SYM-101".into(),
-            title: "Add resilient retry backoff to worker pool".into(),
-            description: Some(
+            identifier: sample_identifier.unwrap_or_else(|| "SYM-101".into()),
+            title: sample_title
+                .unwrap_or_else(|| "Add resilient retry backoff to worker pool".into()),
+            description: Some(sample_description.unwrap_or_else(|| {
                 "Ensure exponential backoff caps at max_retry_backoff_ms and emits structured telemetry."
-                    .into(),
-            ),
+                    .into()
+            })),
             priority: Some(1),
             state: "Todo".into(),
             branch_name: Some("symphony/sym-101".into()),
@@ -952,51 +1486,126 @@ Please implement the requested changes cleanly in the current Git workspace, run
             created_at: Some(Utc::now()),
             updated_at: Some(Utc::now()),
         };
-        let preview = render_workflow_prompt(&wf, &sample_issue, Some(1))?;
-        let raw_content = match &wf.source_path {
-            Some(p) if p.exists() => {
-                std::fs::read_to_string(p).unwrap_or_else(|_| wf.prompt_template.clone())
-            }
-            _ => wf.prompt_template.clone(),
-        };
-        Ok((raw_content, cfg, preview))
+        match render_workflow_prompt(&wf, &sample_issue, attempt.or(Some(1))) {
+            Ok(rendered) => WorkflowValidation {
+                valid: true,
+                error_code: None,
+                error: None,
+                config: Some(cfg.redacted_for_display()),
+                rendered_prompt: Some(rendered),
+                path: None,
+            },
+            Err(e) => WorkflowValidation {
+                config: Some(cfg.redacted_for_display()),
+                ..fail(e)
+            },
+        }
     }
 
+    /// Validate and persist the workflow document to the active workflow path (or fallback).
+    /// Invalid documents are rejected and never written.
     pub async fn save_workflow_document(
         &self,
-        path: &Path,
         raw_content: &str,
-    ) -> SymphonyResult<ServiceConfig> {
-        let wf = WorkflowDefinition::parse(raw_content, Some(path.to_path_buf()))?;
+    ) -> SymphonyResult<WorkflowValidation> {
+        let path = self.workflow_target_path().await.ok_or_else(|| {
+            SymphonyError::InvalidConfig(
+                "No workflow file location is configured for this runtime".to_string(),
+            )
+        })?;
+        let wf = WorkflowDefinition::parse(raw_content, Some(path.clone()))?;
         let cfg = ServiceConfig::from_workflow(&wf)?;
         cfg.validate_for_dispatch()?;
+        let validation =
+            Self::validate_workflow_text(raw_content, Some(path.clone()), None, None, None, None);
+        if !validation.valid {
+            return Err(SymphonyError::TemplateRenderError(
+                validation.error.unwrap_or_default(),
+            ));
+        }
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
         }
-        std::fs::write(path, raw_content)?;
+        std::fs::write(&path, raw_content)?;
 
-        let mut mem = self.memory.write().await;
-        mem.active_workflow = wf;
-        mem.active_config = cfg.clone();
-        mem.active_workflow_path = Some(path.to_path_buf());
-        mem.workflow_error = None;
-        Ok(cfg)
+        let was_watched = {
+            let mut mem = self.memory.write().await;
+            let was_watched = mem.active_workflow_path.is_some();
+            mem.active_workflow = wf;
+            mem.active_config = cfg;
+            mem.active_workflow_path = Some(path.clone());
+            mem.workflow_error = None;
+            was_watched
+        };
+        if !was_watched {
+            // First save to the fallback location: start watching it so later external edits
+            // reload the configuration like a workflow that existed at startup.
+            let orch = self.clone();
+            let watched = path.clone();
+            tokio::spawn(async move {
+                let _ = orch.watch_workflow_file(watched).await;
+            });
+        }
+        self.emit_event(
+            None,
+            None,
+            None,
+            None,
+            "workflow/saved",
+            None,
+            format!("Saved workflow to {}", path.display()),
+            Some(json!({ "path": path.display().to_string() })),
+        )
+        .await;
+        Ok(WorkflowValidation {
+            path: Some(path.to_string_lossy().to_string()),
+            ..validation
+        })
     }
 
     // =========================================================================
     // Tracker Synchronization & Reconciliation Loop (SPEC.md Sections 8 & 16)
     // =========================================================================
 
+    /// GitHub token for host-side tracker calls against api.github.com: every vault alias first,
+    /// then the environment, skipping empty values. `GITHUB_ENTERPRISE_TOKEN` is deliberately not
+    /// used: the tracker talks to the public API, and an Enterprise token must not be sent there.
+    fn github_token(&self) -> Option<String> {
+        const ALIASES: [&str; 2] = ["GITHUB_TOKEN", "GH_TOKEN"];
+        let usable = |v: String| (!v.trim().is_empty()).then_some(v);
+        ALIASES
+            .iter()
+            .find_map(|key| self.secret_store.get_vault_secret(key).and_then(usable))
+            .or_else(|| {
+                ALIASES
+                    .iter()
+                    .find_map(|key| std::env::var(key).ok().and_then(usable))
+            })
+    }
+
+    /// Provider API keys stored in the vault, passed to agent subprocesses explicitly so they work
+    /// after a restart without exporting them into the runtime's own environment. Tracker tokens
+    /// are never included (they stay host-side for dynamic tools).
+    fn provider_env_from_vault(&self) -> HashMap<String, String> {
+        PROVIDER_CREDENTIAL_ENV_KEYS
+            .iter()
+            .filter_map(|key| {
+                self.secret_store
+                    .get_secret(key)
+                    .filter(|v| !v.trim().is_empty())
+                    .map(|v| ((*key).to_string(), v))
+            })
+            .collect()
+    }
+
     fn build_tracker_for_project(&self, project: &Project) -> Option<Box<dyn TrackerAdapter>> {
         match project.tracker_kind.to_lowercase().as_str() {
             "github" => {
                 let repo = project.github_repo.clone()?;
-                let token = self
-                    .secret_store
-                    .get_secret("GITHUB_TOKEN")
-                    .or_else(|| std::env::var("GITHUB_TOKEN").ok())
-                    .or_else(|| std::env::var("GH_TOKEN").ok());
+                let token = self.github_token();
                 Some(Box::new(GitHubTracker::new(None, repo, token, None)))
             }
             "linear" => {
@@ -1380,6 +1989,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
             if mem.running.contains_key(&task.id) {
                 return Ok(task);
             }
+            if !task.status.can_transition_to(TaskStatus::Running) {
+                return Err(SymphonyError::InvalidStateTransition {
+                    from: task.status.as_str().to_string(),
+                    to: TaskStatus::Running.as_str().to_string(),
+                });
+            }
             mem.claimed_issue_ids.insert(task.issue.id.clone());
             mem.retry_attempts.remove(&task.id);
         }
@@ -1588,14 +2203,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let gh_tracker = if project.tracker_kind.eq_ignore_ascii_case("github") {
             project.github_repo.as_ref().map(|repo| {
                 dynamic_tools.push(GitHubTracker::dynamic_tool_spec());
-                GitHubTracker::new(
-                    None,
-                    repo.clone(),
-                    self.secret_store
-                        .get_secret("GITHUB_TOKEN")
-                        .or_else(|| std::env::var("GITHUB_TOKEN").ok()),
-                    None,
-                )
+                GitHubTracker::new(None, repo.clone(), self.github_token(), None)
             })
         } else {
             None
@@ -1643,7 +2251,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             turn_sandbox_policy: config.codex.turn_sandbox_policy.clone(),
             read_timeout_ms: config.codex.read_timeout_ms,
             turn_timeout_ms: config.codex.turn_timeout_ms,
-            extra_env: HashMap::new(),
+            extra_env: self.provider_env_from_vault(),
             dynamic_tools,
             require_human_approval_for_requests: config.codex.approval_policy != json!("never"),
         };
@@ -1696,13 +2304,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         for turn_number in 1..=max_turns {
             if let Ok(cancel_reason) = cancel_rx.try_recv() {
                 let _ = agent_session.cancel().await;
-                self.finish_failed_attempt(
-                    &mut task,
-                    &mut attempt_record,
-                    RunAttemptPhase::CanceledByReconciliation,
-                    format!("Cancelled: {cancel_reason}"),
-                )
-                .await;
+                self.finish_externally_stopped_attempt(&mut attempt_record, &cancel_reason)
+                    .await;
                 return;
             }
 
@@ -1715,18 +2318,27 @@ Please implement the requested changes cleanly in the current Git workspace, run
             attempt_record.phase = RunAttemptPhase::StreamingTurn;
             attempt_record.turn_count = turn_number;
             let _ = self.storage.upsert_run_attempt(&attempt_record).await;
+            {
+                // Holding the memory lock while writing means `cancel_task` (which removes the
+                // running handle before persisting `Cancelled`) either sees this write first or
+                // makes it a no-op, so a stale `Running` row can never overwrite a cancellation.
+                let mut mem = self.memory.write().await;
+                if let Some(handle) = mem.running.get_mut(&task.id) {
+                    handle.session.phase = RunAttemptPhase::StreamingTurn;
+                    handle.session.turn_count = turn_number;
+                    if task.current_phase != Some(RunAttemptPhase::StreamingTurn) {
+                        task.current_phase = Some(RunAttemptPhase::StreamingTurn);
+                        let _ = self.storage.upsert_task(&task).await;
+                    }
+                }
+            }
 
             let outcome_res = tokio::select! {
                 res = agent_session.run_turn(&prompt, stream_tx.clone()) => res,
                 cancel_res = &mut cancel_rx => {
                     let _ = agent_session.cancel().await;
                     let reason = cancel_res.unwrap_or_else(|_| "cancelled".to_string());
-                    self.finish_failed_attempt(
-                        &mut task,
-                        &mut attempt_record,
-                        RunAttemptPhase::CanceledByReconciliation,
-                        reason,
-                    ).await;
+                    self.finish_externally_stopped_attempt(&mut attempt_record, &reason).await;
                     return;
                 }
             };
@@ -1755,6 +2367,21 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     attempt_record.total_tokens += outcome.usage.total_tokens;
                     let _ = self.storage.upsert_run_attempt(&attempt_record).await;
 
+                    if outcome.cancelled {
+                        let _ = agent_session.stop().await;
+                        let reason = outcome
+                            .error_message
+                            .unwrap_or_else(|| "Turn aborted by operator".to_string());
+                        self.finish_unsuccessful_attempt(
+                            &mut task,
+                            &mut attempt_record,
+                            TaskStatus::Cancelled,
+                            RunAttemptPhase::CanceledByReconciliation,
+                            reason,
+                        )
+                        .await;
+                        return;
+                    }
                     if !outcome.succeeded {
                         let _ = agent_session.stop().await;
                         let err_msg = outcome
@@ -1798,6 +2425,16 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
 
         let _ = agent_session.stop().await;
+
+        // The agent has stopped streaming; hooks and validations follow.
+        {
+            let mut mem = self.memory.write().await;
+            if let Some(handle) = mem.running.get_mut(&task.id) {
+                handle.session.phase = RunAttemptPhase::Finishing;
+                task.current_phase = Some(RunAttemptPhase::Finishing);
+                let _ = self.storage.upsert_task(&task).await;
+            }
+        }
 
         // 6. Run `after_run` lifecycle hook (failure logged and ignored per SPEC.md)
         if let Some(ref after_script) = config.hooks.after_run {
@@ -1936,12 +2573,62 @@ Please implement the requested changes cleanly in the current Git workspace, run
         phase: RunAttemptPhase,
         error_msg: String,
     ) {
+        self.finish_unsuccessful_attempt(
+            task,
+            attempt_record,
+            TaskStatus::Failed,
+            phase,
+            error_msg,
+        )
+        .await;
+    }
+
+    /// Finalize an attempt that was stopped from outside the worker (`cancel_task`, stall
+    /// detection, tracker reconciliation). The stopping side owns the task's status, events and
+    /// retry scheduling, so only the attempt record and runtime totals are written here — the
+    /// worker's stale task copy is never persisted over the newer state.
+    async fn finish_externally_stopped_attempt(
+        &self,
+        attempt_record: &mut RunAttempt,
+        reason: &str,
+    ) {
+        self.expire_pending_approvals(&attempt_record.task_id).await;
+        let now = Utc::now();
+        let elapsed = (now - attempt_record.started_at).num_milliseconds().max(0) as f64 / 1000.0;
+        attempt_record.phase = if reason == "stall_timeout" {
+            RunAttemptPhase::Stalled
+        } else {
+            RunAttemptPhase::CanceledByReconciliation
+        };
+        attempt_record.error = Some(format!("Stopped: {reason}"));
+        attempt_record.finished_at = Some(now);
+        let _ = self.storage.upsert_run_attempt(attempt_record).await;
+        let mut mem = self.memory.write().await;
+        mem.codex_totals.seconds_running += elapsed;
+        // Release the issue claim (e.g. after a stall) unless a newer attempt already runs it.
+        if !mem.running.contains_key(&attempt_record.task_id) {
+            mem.claimed_issue_ids.remove(&attempt_record.issue_id);
+        }
+    }
+
+    /// End an attempt that did not succeed: `Failed` (eligible for retry) or `Cancelled` (the
+    /// operator aborted the turn, e.g. via the "abort turn" approval decision).
+    async fn finish_unsuccessful_attempt(
+        &self,
+        task: &mut Task,
+        attempt_record: &mut RunAttempt,
+        status: TaskStatus,
+        phase: RunAttemptPhase,
+        error_msg: String,
+    ) {
+        self.expire_pending_approvals(&task.id).await;
         let now = Utc::now();
         let elapsed = (now - attempt_record.started_at).num_milliseconds().max(0) as f64 / 1000.0;
         task.duration_seconds += elapsed;
-        task.status = TaskStatus::Failed;
+        task.status = status;
         task.current_phase = Some(phase);
         task.last_error = Some(error_msg.clone());
+        task.current_session_id = None;
         task.updated_at = now;
         let _ = self.storage.upsert_task(task).await;
 
@@ -1962,9 +2649,17 @@ Please implement the requested changes cleanly in the current Git workspace, run
             Some(task.issue.identifier.clone()),
             attempt_record.session_id.clone(),
             Some(task.provider),
-            "attempt/failed",
+            if status == TaskStatus::Cancelled {
+                "task/cancelled"
+            } else {
+                "attempt/failed"
+            },
             Some(phase),
-            format!("Task {} failed: {}", task.issue.identifier, error_msg),
+            if status == TaskStatus::Cancelled {
+                format!("Task {} cancelled: {}", task.issue.identifier, error_msg)
+            } else {
+                format!("Task {} failed: {}", task.issue.identifier, error_msg)
+            },
             None,
         )
         .await;

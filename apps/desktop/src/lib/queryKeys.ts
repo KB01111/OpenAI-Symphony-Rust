@@ -1,0 +1,25 @@
+/** TanStack Query keys for runtime resources. */
+export const qk = {
+  state: ["state"] as const,
+  projects: ["projects"] as const,
+  tasks: (projectId?: string | null) => ["tasks", projectId ?? "all"] as const,
+  tasksAll: ["tasks"] as const,
+  task: (id: string) => ["task", id] as const,
+  taskAny: ["task"] as const,
+  taskEvents: (id: string) => ["task-events", id] as const,
+  taskAttempts: (id: string) => ["task-attempts", id] as const,
+  taskValidations: (id: string) => ["task-validations", id] as const,
+  taskDiff: (id: string) => ["task-diff", id] as const,
+  approvals: (pendingOnly: boolean) => ["approvals", pendingOnly] as const,
+  approvalsAll: ["approvals"] as const,
+  prs: (projectId?: string | null) => ["prs", projectId ?? "all"] as const,
+  prsAll: ["prs"] as const,
+  pr: (id: string) => ["pr", id] as const,
+  worktrees: ["worktrees"] as const,
+  workflow: ["workflow"] as const,
+  settings: ["settings"] as const,
+  providers: ["providers"] as const,
+  credentials: ["credentials"] as const,
+  runtime: ["runtime"] as const,
+  recentEvents: ["recent-events"] as const
+};

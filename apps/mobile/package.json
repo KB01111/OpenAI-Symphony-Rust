@@ -1,6 +1,6 @@
 {
   "name": "@symphony/mobile",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "test": "node --eval \"console.log('mobile companion ok')\""
+    "test": "vitest run"
   },
   "dependencies": {
     "@fluentui/react-components": "^9.61.0",
@@ -28,6 +28,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "tailwindcss": "^4.0.17",
     "typescript": "^5.8.2",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "vitest": "^3.2.7"
   }
 }

@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+utoipa.workspace = true
+utoipa-axum.workspace = true
 symphony-core = { path = "../symphony-core" }
 symphony-storage = { path = "../symphony-storage" }
 symphony-workspaces = { path = "../symphony-workspaces" }
@@ -21,3 +23,11 @@ futures.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+subtle.workspace = true
+rand.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower.workspace = true
+http-body-util = "0.1"

@@ -1,35 +1,18 @@
+/* Lock the cascade-layer order before any library CSS declares its own layers. */
+@layer theme, base, components, utilities;
+
 @import "tailwindcss";
 @import "@openai/apps-sdk-ui/css";
-@source "../../node_modules/@openai/apps-sdk-ui";
-@source "../../../../node_modules/@openai/apps-sdk-ui";
-@source "../../../../packages/ui/src";
+@import "../../../../packages/ui/src/tokens/tokens.css";
 
-:root {
-  --symphony-radius-sm: 6px;
-  --symphony-radius-md: 8px;
-  --symphony-radius-lg: 12px;
-  --symphony-font-sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
-  --symphony-font-mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-}
+@source "../../../../packages/ui/src";
+@source "../../node_modules/@openai/apps-sdk-ui";
 
 html,
 body,
-#root,
-.symphony-fluent-root {
+#root {
   height: 100%;
   width: 100%;
   margin: 0;
-  padding: 0;
-  font-family: var(--symphony-font-sans);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
+  overflow: hidden;
 }
