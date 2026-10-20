@@ -3,12 +3,15 @@ name: API contract
 # The Rust handlers are the source of truth for the HTTP API. This workflow proves that:
 #   1. the committed OpenAPI document, task state machine and Hey API client are regenerated
 #      from the current Rust code (`pnpm generate:api` leaves no diff), and
-#   2. the OpenAPI document has no breaking changes against the base branch, unless the pull
-#      request is labelled `api-breaking-change` (then `API_VERSION` must be bumped).
+#   2. the API versioning policy holds against the base branch (scripts/api-contract-policy.mjs):
+#      a breaking OpenAPI change needs BOTH the `api-breaking-change` label AND an `API_VERSION`
+#      above the base branch's; `API_VERSION` never decreases; non-breaking changes need neither.
 
 on:
   pull_request:
     branches: [main]
+    # Re-evaluate when the `api-breaking-change` label is added or removed.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
   workflow_dispatch:
@@ -48,6 +51,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Contract invariants (operation ids, auth, required fields, path parameters)
         run: cargo test -p symphony-server --test openapi_contract --test state_machine_contract --locked
+      - name: Versioning policy tests (invalid breaking-change scenarios are rejected)
+        run: pnpm test:scripts
       - name: Regenerate OpenAPI document, state machine and Hey API client
         run: pnpm generate:api
       - name: Fail on uncommitted generated changes
@@ -57,9 +62,14 @@ jobs:
             echo "::error::Generated API contracts are stale. Run 'pnpm generate:api' and commit the result."
             exit 1
           fi
+      - name: Regeneration is deterministic (second run leaves no diff)
+        run: |
+          pnpm generate:api
+          git add -N openapi packages/shared-types/src/generated
+          git diff --exit-code -- openapi packages/shared-types/src/generated
 
   breaking:
-    name: No breaking API changes
+    name: API versioning policy
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -73,7 +83,14 @@ jobs:
           persist-credentials: false
           ref: ${{ github.base_ref }}
           path: base
-          sparse-checkout: openapi
+          sparse-checkout: |
+            openapi
+            crates/symphony-server/src/lib.rs
+            scripts/api-contract-policy.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
       - name: Install oasdiff (pinned, checksum verified)
         run: |
           archive="oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
@@ -81,21 +98,29 @@ jobs:
             "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/${archive}"
           echo "${OASDIFF_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" oasdiff
-      - name: Compare against the base branch
-        env:
-          ALLOW_BREAKING: ${{ contains(github.event.pull_request.labels.*.name, 'api-breaking-change') }}
+      - name: Detect breaking changes against the base branch
         run: |
           base="base/openapi/symphony-api.json"
           head="head/openapi/symphony-api.json"
-          # The head document is pull-request controlled: never follow external $refs (SSRF).
           if [ ! -f "$base" ]; then
+            echo "[]" > "$RUNNER_TEMP/breaking.json"
             echo "The base branch has no OpenAPI document yet; nothing to compare."
             exit 0
           fi
+          # The head document is pull-request controlled: never follow external $refs (SSRF).
           "$RUNNER_TEMP/oasdiff" changelog "$base" "$head" --allow-external-refs=false --format markdown >> "$GITHUB_STEP_SUMMARY" || true
-          if [ "$ALLOW_BREAKING" = "true" ]; then
-            echo "::warning::Breaking changes allowed by the 'api-breaking-change' label; bump API_VERSION in crates/symphony-server."
-            "$RUNNER_TEMP/oasdiff" breaking "$base" "$head" --allow-external-refs=false
-          else
-            "$RUNNER_TEMP/oasdiff" breaking "$base" "$head" --allow-external-refs=false --fail-on ERR
-          fi
+          # A failure here (e.g. an unparsable document) fails the job; it is never read as "no changes".
+          "$RUNNER_TEMP/oasdiff" breaking "$base" "$head" --allow-external-refs=false --format json > "$RUNNER_TEMP/breaking.json"
+          "$RUNNER_TEMP/oasdiff" breaking "$base" "$head" --allow-external-refs=false || true
+      - name: Enforce label + API_VERSION bump for breaking changes
+        env:
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'api-breaking-change') }}
+        run: |
+          # Prefer the base branch's copy of the policy so a pull request cannot relax its own check.
+          policy="base/scripts/api-contract-policy.mjs"
+          [ -f "$policy" ] || policy="head/scripts/api-contract-policy.mjs"
+          node "$policy" \
+            --changes "$RUNNER_TEMP/breaking.json" \
+            --base-source base/crates/symphony-server/src/lib.rs \
+            --head-source head/crates/symphony-server/src/lib.rs \
+            --labelled "$LABELLED"

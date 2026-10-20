@@ -6,7 +6,8 @@
  *   3. packages/shared-types/src/generated/openapi/     (Hey API: types, SDK, fetch client)
  *
  * Usage: `pnpm generate:api` (works on Windows, macOS and Linux).
- * CI runs the same command and fails when the committed files differ.
+ * CI runs the same command and fails when the committed files differ. Cargo runs with `--locked`
+ * so generation always uses the committed Cargo.lock (and the exactly pinned utoipa versions).
  */
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -25,7 +26,7 @@ function run(command, args, env = {}) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-run("cargo", ["test", "-p", "symphony-server", "--test", "openapi_contract", "--test", "state_machine_contract"], {
+run("cargo", ["test", "--locked", "-p", "symphony-server", "--test", "openapi_contract", "--test", "state_machine_contract"], {
   UPDATE_OPENAPI: "1",
   UPDATE_STATE_MACHINE: "1"
 });

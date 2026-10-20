@@ -1,0 +1,4 @@
+# Generated API contracts are written with LF on every OS; check them out with LF too so
+# `pnpm generate:api` leaves no diff on Windows (core.autocrlf) and the CI staleness check is stable.
+openapi/*.json text eol=lf
+packages/shared-types/src/generated/** text eol=lf
