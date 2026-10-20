@@ -79,10 +79,11 @@ from them through the OpenAPI document, so no renaming/migration was needed. `Ap
 | --- | --- | --- |
 | Desktop (embedded) | `get_local_api_config` IPC returns the bound port (4780 or an ephemeral fallback) and the per-launch token | Bearer header |
 | Desktop (attached) | Host reads `<data_dir>/runtime.json` of the owning runtime and returns it via IPC | Bearer header |
-| Browser dev / E2E | Vite dev-only route `/__symphony/runtime` reads `runtime.json` (loopback Host only) | Bearer header |
-| Mobile / remote | Configured URL + token (token in `sessionStorage` unless the user opts to remember it) | Bearer header |
+| Browser dev / E2E | Vite dev-only route `/__symphony/runtime` reads `runtime.json` (loopback Host, `X-Symphony-Discovery` header, same origin only) | Bearer header |
+| Mobile / remote | Configured `https://` URL (plain `http://` only for loopback) + the remote access token issued in Settings → Remote access (kept in `sessionStorage` unless the user opts to remember it) | Bearer header (remote listener, restricted scope) |
 
-`runtime.json` is written with owner-only permissions by whichever process owns the data directory
+`runtime.json` is written with owner-only permissions (Unix `0600`, Windows protected DACL for the user and
+`SYSTEM`) by whichever process owns the data directory
 (guarded by the shared `symphony-runtime.lock`, which enforces a single scheduler per data directory).
 
 ## 4. Streaming

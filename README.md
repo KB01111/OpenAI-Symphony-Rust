@@ -31,7 +31,8 @@ Symphony Desktop is a local-first autonomous coding orchestration platform inspi
   - Adjusts max concurrent coding agents dynamically for AC power (default 2), battery power (default 1), and memory/CPU pressure.
   - Persistent background runtime with Windows system tray integration (`Close to Tray`, `Minimize`, `Stop Orchestrator`, `Exit Completely`) and single-instance lock protection.
 - **Lumen-Ready API & iOS Companion Foundation (`symphony-server`, `apps/mobile`)**:
-  - Versioned Axum HTTP/SSE API (`/api/v1/*`) compatible with the Symphony specification (`/api/v1/state`, `/api/v1/{issue_identifier}`, `/api/v1/refresh`) plus desktop/mobile endpoints. Every route except `health`/`runtime` requires a Bearer token (random per launch locally; `SYMPHONY_REMOTE_TOKEN` for the optional remote listener), CORS is restricted to the desktop webview and dev origins.
+  - Versioned Axum HTTP/SSE API (`/api/v1/*`) compatible with the Symphony specification (`/api/v1/state`, `/api/v1/{issue_identifier}`, `/api/v1/refresh`) plus desktop/mobile endpoints. Every route except `health`/`runtime` requires a Bearer token (random per launch locally), CORS is restricted to explicit origins, and credentials are stored in an OS-protected vault (DPAPI on Windows).
+  - Optional remote companion listener (off by default): its own runtime-generated token (rotate/revoke in Settings → Remote access), a restricted operation set (no credentials, settings, workflow or administration), loopback-only binding behind a TLS reverse proxy or tunnel, and live reconfiguration.
 
 ---
 
@@ -72,29 +73,30 @@ OpenAI-Symphony-Rust/
 ### Prerequisites
 
 - **Rust**: Stable toolchain (`1.90+`, MSVC target `x86_64-pc-windows-msvc`)
-- **Node.js**: `v22+` or `v24+`
-- **pnpm**: `v10+` or `v11+`
+- **Node.js**: `>= 22.13.0`
+- **pnpm**: `11.15.1` (pinned by `packageManager`; use Corepack)
 - **Git**: `2.40+` (for Git worktree isolation)
 - **Codex CLI** *(optional for live Codex runs)*: `@openai/codex` (`codex app-server`)
 
 ### 1. Install Frontend Dependencies
 
 ```powershell
-pnpm install
+pnpm install --frozen-lockfile
 ```
 
 ### 2. Build and Verify the Rust Workspace
 
 ```powershell
-cargo check --workspace
-cargo test --workspace
-cargo clippy --workspace -- -D warnings
 cargo fmt --all -- --check
+cargo check --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
-### 3. Typecheck, Test, and Build the Frontend & Companion Apps
+### 3. Regenerate Contracts, Typecheck, Test, and Build the Frontend & Companion Apps
 
 ```powershell
+pnpm generate:api
 pnpm typecheck
 pnpm test
 pnpm build
@@ -111,8 +113,12 @@ cargo run -p symphony-cli -- validate .\WORKFLOW.md
 # with the endpoint, in <data_dir>\runtime.json (owner-only); it is never printed.
 cargo run -p symphony-cli -- .\WORKFLOW.md
 
-# Isolated data directory (separate database, vault and runtime lock)
+# Isolated data directory (separate database, vault and runtime lock). The desktop host honours the
+# same SYMPHONY_DATA_DIR environment variable.
 cargo run -p symphony-cli -- --data-dir .\.symphony-dev
+
+# Move an unreadable credential vault aside explicitly (it is never replaced silently)
+cargo run -p symphony-cli -- --quarantine-credential-vault
 ```
 
 ### 5. Launch Symphony Desktop (Development Mode)
@@ -141,6 +147,8 @@ pnpm --filter @symphony/desktop e2e
 - [docs/DESIGN_SYSTEM.md](./docs/DESIGN_SYSTEM.md) — Tokens, providers and component ownership.
 - [docs/UI_OVERHAUL_AUDIT.md](./docs/UI_OVERHAUL_AUDIT.md) — Pre-2.0 audit (P0–P3 findings).
 - [docs/UI_IMPLEMENTATION_REPORT.md](./docs/UI_IMPLEMENTATION_REPORT.md) — 2.0 implementation report and evidence.
+- [docs/POST_MERGE_STABILIZATION.md](./docs/POST_MERGE_STABILIZATION.md) — Post-merge security/reliability findings, fixes and verification.
+- [docs/WINDOWS_NATIVE_SMOKE_TEST.md](./docs/WINDOWS_NATIVE_SMOKE_TEST.md) — Automated and manual native Windows 11 validation.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Detailed architecture, Symphony `SPEC.md` compliance, and component design.
 - [SECURITY.md](./SECURITY.md) — Threat model, workspace isolation invariants, credential handling, and sandboxing.
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — Development standards, testing matrix, and PR workflow.

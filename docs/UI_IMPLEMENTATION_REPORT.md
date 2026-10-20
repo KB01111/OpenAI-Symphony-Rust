@@ -93,6 +93,9 @@ measurement in this branch; where something could not be verified here, it says 
 - CSP (`default-src 'self'`, loopback-only `connect-src`, `object-src 'none'`, `frame-ancestors 'none'`),
   `freezePrototype`.
 - Optional remote listener only with a vault `SYMPHONY_REMOTE_TOKEN` (≥16 chars), never on the local port.
+  *Superseded by the post-merge stabilization: the remote token is now generated, rotated and revoked by the
+  runtime, the listener is scoped, loopback-only and reconfigured live — see
+  [`POST_MERGE_STABILIZATION.md`](./POST_MERGE_STABILIZATION.md).*
 
 ## 6. Design decisions
 
@@ -159,7 +162,8 @@ Board at the 960×640 minimum window size.
   compilation and bundling only, not runtime behaviour, which still needs a manual check on Windows 11.
 - **iOS**: the mobile companion is a web app validated by typecheck/build/unit tests (and the existing macOS
   CI job); no native iOS packaging was attempted or claimed.
-- **Windows ACL on `runtime.json`**: relies on the per-user data directory; no explicit owner-only DACL yet.
+- **Windows ACL on `runtime.json`**: ~~relies on the per-user data directory~~ — fixed after the merge: an
+  explicit protected owner-only DACL is applied at creation (see `POST_MERGE_STABILIZATION.md`).
 - **Hardware telemetry** never probes the GPU (by design, to avoid waking a discrete GPU); GPU metrics are
   therefore not shown.
 - **Provider pause**: no provider supports mid-turn pause, so the action is not offered.
