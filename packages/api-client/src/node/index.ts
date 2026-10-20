@@ -2,7 +2,7 @@
  * Node-only helpers (Vite dev-server discovery plugin, integration tests). Not part of the
  * browser entry point because it uses the filesystem.
  */
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -42,8 +42,9 @@ function processAlive(pid: number): boolean {
  */
 async function isPrivateToCurrentUser(path: string): Promise<boolean> {
   if (process.platform === "win32" || typeof process.getuid !== "function") return true;
-  const info = await stat(path);
-  return info.uid === process.getuid() && (info.mode & 0o077) === 0;
+  // `lstat`: a symlink is never trusted, even one pointing at a private file.
+  const info = await lstat(path);
+  return info.isFile() && info.uid === process.getuid() && (info.mode & 0o077) === 0;
 }
 
 /** Read `<dataDir>/runtime.json` if it is private to this user and its owning process is alive. */

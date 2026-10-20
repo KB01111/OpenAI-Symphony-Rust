@@ -52,7 +52,12 @@ describe("normalizeBaseUrl", () => {
   it("drops a saved insecure URL from an older companion", () => {
     const b = backends();
     b.local.data.set(STORAGE_KEYS.baseUrl, "http://192.168.1.20:47821");
+    b.local.data.set(STORAGE_KEYS.token, "legacy-token");
+    b.session.data.set(STORAGE_KEYS.token, "session-token");
     expect(loadConnection(b.all)).toBeNull();
+    expect(b.local.data.has(STORAGE_KEYS.token)).toBe(false);
+    expect(b.session.data.has(STORAGE_KEYS.token)).toBe(false);
+    expect(b.local.data.has(STORAGE_KEYS.baseUrl)).toBe(false);
   });
 });
 

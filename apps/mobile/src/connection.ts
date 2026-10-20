@@ -135,8 +135,13 @@ export function loadConnection(backends: StorageBackends): ConnectionSettings | 
   }
   if (legacyHost !== null) safeRemove(local, STORAGE_KEYS.legacyHost);
   if (!baseUrl) return null;
-  // A URL saved by an older companion may be plain http:// to another device; never reuse it.
-  if (!normalizeBaseUrl(baseUrl).ok) return null;
+  // A URL saved by an older companion may be plain http:// to another device; never reuse it,
+  // and do not leave the token that went with it on the device either.
+  if (!normalizeBaseUrl(baseUrl).ok) {
+    forgetToken(backends);
+    safeRemove(local, STORAGE_KEYS.baseUrl);
+    return null;
+  }
 
   const remember = safeGet(local, STORAGE_KEYS.remember) === "true";
   const token = remember ? safeGet(local, STORAGE_KEYS.token) : safeGet(session, STORAGE_KEYS.token);

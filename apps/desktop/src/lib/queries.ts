@@ -313,6 +313,13 @@ export function useSaveWorkflow() {
  */
 let appliedAutostart: boolean | null = null;
 
+/** Registry state reported with a failed `set_autostart` (`autostart_state=<state>; …`). */
+export function observedAutostart(error: unknown): boolean | null {
+  const match = /autostart_state=(enabled|disabled|unknown)/.exec(String(error));
+  if (!match || match[1] === "unknown") return null;
+  return match[1] === "enabled";
+}
+
 /** A full settings object, or an update applied to the latest saved settings when the write runs. */
 export type SettingsChange = AppSettings | ((latest: AppSettings) => AppSettings);
 
@@ -342,14 +349,17 @@ export function useSaveSettings() {
           await nativeHost.setAutostart(wanted);
           appliedAutostart = wanted;
         } catch (error) {
-          // Windows rejected the change (the host reads the registry back), so the entry is in
-          // the opposite state. Store that, so the switch never shows an autostart that is not
-          // registered, then report the failure.
-          appliedAutostart = !wanted;
-          const reverted = await client
-            .saveSettings({ ...saved, start_background_runtime_on_login: !wanted })
-            .catch(() => null);
-          if (reverted) qc.setQueryData(qk.settings, reverted);
+          // The host reports the registry state it observed after the failure. Store a known
+          // state, so the switch never shows an autostart that is not registered; when the state
+          // is unknown, persist nothing and retry on the next save.
+          const observed = observedAutostart(error);
+          appliedAutostart = observed;
+          if (observed !== null && observed !== wanted) {
+            const reverted = await client
+              .saveSettings({ ...saved, start_background_runtime_on_login: observed })
+              .catch(() => null);
+            if (reverted) qc.setQueryData(qk.settings, reverted);
+          }
           throw error;
         }
       }

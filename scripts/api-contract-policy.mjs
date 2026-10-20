@@ -24,11 +24,15 @@ import { fileURLToPath } from "node:url";
 /** oasdiff severity of a breaking change (`level` 3 = ERR, 2 = WARN, 1 = INFO). */
 export const OASDIFF_ERR = 3;
 
-/** Extract `API_VERSION` from the server crate's source; throws when it cannot be found. */
+/**
+ * Extract `API_VERSION` from the server crate's source; throws when it is missing or ambiguous.
+ * Comments are removed first, so a commented-out declaration can never satisfy the policy.
+ */
 export function readApiVersion(rustSource) {
-  const match = /pub\s+const\s+API_VERSION\s*:\s*u32\s*=\s*(\d+)\s*;/.exec(rustSource);
-  if (!match) throw new Error("pub const API_VERSION: u32 = <n>; not found");
-  return Number(match[1]);
+  const code = rustSource.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  const matches = [...code.matchAll(/^\s*pub\s+const\s+API_VERSION\s*:\s*u32\s*=\s*(\d+)\s*;/gm)];
+  if (matches.length !== 1) throw new Error(`expected exactly one "pub const API_VERSION: u32 = <n>;" (found ${matches.length})`);
+  return Number(matches[0][1]);
 }
 
 /** Breaking findings (level ERR) from `oasdiff breaking --format json` output. */

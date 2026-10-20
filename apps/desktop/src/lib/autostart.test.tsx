@@ -5,7 +5,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { AppProviders } from "../app/AppProviders.js";
 import { settings } from "../test/fixtures.js";
 import { createMockRuntime } from "../test/renderWithProviders.js";
-import { useSaveSettings } from "./queries.js";
+import { observedAutostart, useSaveSettings } from "./queries.js";
 import { qk } from "./queryKeys.js";
 
 type Internals = { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -26,7 +26,9 @@ describe("login autostart", () => {
       "PUT /settings": ({ body }) => (stored = body as typeof stored)
     });
     installHost(async (cmd) => {
-      if (cmd === "set_autostart") throw new Error("Windows rejected writing of the autostart entry: Access is denied.");
+      if (cmd === "set_autostart") {
+        throw new Error("autostart_state=disabled; Windows rejected writing of the autostart entry: Access is denied.");
+      }
       return null;
     });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -49,5 +51,14 @@ describe("login autostart", () => {
     expect(queryClient.getQueryData<typeof stored>(qk.settings)?.start_background_runtime_on_login).toBe(false);
     const puts = runtime.calls.filter((c) => c.method === "PUT");
     expect(puts.map((c) => (c.body as typeof stored).start_background_runtime_on_login)).toEqual([true, false]);
+  });
+});
+
+describe("observedAutostart", () => {
+  it("only trusts a state the host actually observed", () => {
+    expect(observedAutostart(new Error("autostart_state=enabled; failed"))).toBe(true);
+    expect(observedAutostart("autostart_state=disabled; failed")).toBe(false);
+    expect(observedAutostart(new Error("autostart_state=unknown; read-back failed"))).toBeNull();
+    expect(observedAutostart(new Error("unrelated"))).toBeNull();
   });
 });

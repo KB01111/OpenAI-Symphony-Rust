@@ -165,10 +165,15 @@ impl SecretStore {
         if !path.exists() {
             return Ok(None);
         }
-        let target = app_data_dir.join(format!(
-            "{VAULT_FILE}.corrupt-{}",
-            chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
-        ));
+        // Never overwrite an earlier quarantined vault: pick a name that does not exist yet.
+        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+        let target = (0u32..)
+            .map(|n| match n {
+                0 => app_data_dir.join(format!("{VAULT_FILE}.corrupt-{stamp}")),
+                n => app_data_dir.join(format!("{VAULT_FILE}.corrupt-{stamp}-{n}")),
+            })
+            .find(|candidate| !candidate.exists())
+            .expect("an unused quarantine name exists");
         std::fs::rename(&path, &target)?;
         warn!(moved_to = %target.display(), "Moved unreadable credential vault aside");
         Ok(Some(target))
@@ -745,6 +750,19 @@ mod tests {
         assert!(!path.exists());
         let store = SecretStore::new(dir.path()).unwrap();
         assert!(store.list_configured_keys().is_empty());
+    }
+
+    #[test]
+    fn repeated_quarantine_keeps_every_old_vault() {
+        let dir = tempdir().unwrap();
+        let path = SecretStore::vault_path(dir.path());
+        std::fs::write(&path, b"first").unwrap();
+        let first = SecretStore::quarantine_vault(dir.path()).unwrap().unwrap();
+        std::fs::write(&path, b"second").unwrap();
+        let second = SecretStore::quarantine_vault(dir.path()).unwrap().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(first).unwrap(), b"first");
+        assert_eq!(std::fs::read(second).unwrap(), b"second");
     }
 
     #[test]

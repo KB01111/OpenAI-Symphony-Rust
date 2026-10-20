@@ -271,6 +271,29 @@ async fn sensitive_endpoints_are_forbidden_to_remote_clients() {
         let body: Value = resp.json().await.unwrap();
         assert_eq!(body["error"]["code"], "forbidden_scope", "{method} {path}");
     }
+    // The single-segment `/{issue_identifier}` alias never captures another route's path: a
+    // path registered for other methods answers 405, and the alias only ever reads issue detail.
+    for path in [
+        "/refresh",
+        "/settings",
+        "/credentials",
+        "/workflow",
+        "/worktrees",
+        "/providers",
+    ] {
+        let resp = h
+            .http
+            .get(format!("{base}/api/v1{path}"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status() == 403 || resp.status() == 405,
+            "GET {path} must not be served remotely (got {})",
+            resp.status()
+        );
+    }
     // Without a token the answer is 401, not a scope hint.
     let resp = h
         .http

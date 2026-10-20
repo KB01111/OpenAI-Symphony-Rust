@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it } from "vitest";
 import type { RemoteAccessStatus } from "@symphony/shared-types";
 import { settings } from "../../test/fixtures.js";
@@ -81,6 +82,25 @@ function remoteStatus(overrides: Partial<RemoteAccessStatus> = {}): RemoteAccess
 
 describe("RemoteSection", () => {
   const m = settingsMessages.en.remote;
+
+  it("shows the draft's origins again after a reset", async () => {
+    const runtime = createMockRuntime({ "GET /remote-access": () => remoteStatus() });
+    const Harness = () => {
+      const [draft, setDraft] = useState(settings({ remote_allowed_origins: ["https://old.example.com"] }));
+      return (
+        <>
+          <button type="button" onClick={() => setDraft(settings({ remote_allowed_origins: [] }))}>
+            reset-draft
+          </button>
+          <RemoteSection draft={draft} errors={{}} update={(fn) => setDraft(fn)} />
+        </>
+      );
+    };
+    renderWithProviders(<Harness />, { runtime });
+    expect(await screen.findByDisplayValue("https://old.example.com")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "reset-draft" }));
+    await waitFor(() => expect(screen.queryByDisplayValue("https://old.example.com")).not.toBeInTheDocument());
+  });
 
   it("issues a token once, then shows the running listener without echoing the token", async () => {
     let status = remoteStatus();

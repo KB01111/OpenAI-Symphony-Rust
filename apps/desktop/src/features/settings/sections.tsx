@@ -468,7 +468,14 @@ const RemoteTokenControls: React.FC = () => {
 
 export const RemoteSection: React.FC<FormSectionProps> = ({ draft, errors, update }) => {
   const m = useMessages(settingsMessages);
-  const [originsText, setOriginsText] = useState(() => (draft.remote_allowed_origins ?? []).join("\n"));
+  const origins = draft.remote_allowed_origins ?? [];
+  const [originsText, setOriginsText] = useState(() => origins.join("\n"));
+  // Keep the text in sync when the draft changes from outside (Reset, a save, a refetch), while
+  // preserving the user's own formatting (blank lines, commas) as long as it parses to the draft.
+  const parsedText = parseOrigins(originsText);
+  if (parsedText.length !== origins.length || parsedText.some((o, i) => o !== origins[i])) {
+    setOriginsText(origins.join("\n"));
+  }
   return (
     <SettingsSection id="remote" intro={m.remote.intro}>
       <MessageBar intent={draft.remote_api_enabled ? "warning" : "info"} layout="multiline">

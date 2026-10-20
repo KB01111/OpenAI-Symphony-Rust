@@ -73,6 +73,11 @@ test("only ERR-level oasdiff findings count as breaking", () => {
 test("API_VERSION is read from the server crate", () => {
   assert.equal(readApiVersion("/// doc\npub const API_VERSION: u32 = 7;\n"), 7);
   assert.throws(() => readApiVersion("const OTHER: u32 = 1;"));
+  // Commented-out declarations never count.
+  assert.equal(readApiVersion("// pub const API_VERSION: u32 = 9;\npub const API_VERSION: u32 = 2;"), 2);
+  assert.throws(() => readApiVersion("/* pub const API_VERSION: u32 = 9; */"));
+  assert.throws(() => readApiVersion("// pub const API_VERSION: u32 = 9;"));
+  assert.throws(() => readApiVersion("pub const API_VERSION: u32 = 2;\npub const API_VERSION: u32 = 3;"));
   const current = readFileSync(join(here, "../crates/symphony-server/src/lib.rs"), "utf8");
   assert.ok(readApiVersion(current) >= 2);
 });

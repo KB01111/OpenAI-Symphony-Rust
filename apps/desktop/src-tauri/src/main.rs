@@ -16,8 +16,8 @@ use serde::Serialize;
 use symphony_core::SymphonyError;
 use symphony_orchestrator::SymphonyOrchestrator;
 use symphony_platform::{
-    configure_windows_autostart, default_app_data_dir, RuntimeDiscovery, SecretStore,
-    SingleInstanceGuard,
+    configure_windows_autostart, default_app_data_dir, windows_autostart_command, RuntimeDiscovery,
+    SecretStore, SingleInstanceGuard,
 };
 use symphony_server::{
     generate_access_token, start_http_server, RemoteAccessManager, ServerConfig, API_VERSION,
@@ -130,10 +130,22 @@ async fn pick_repository_folder(app: AppHandle) -> Option<String> {
 /// rejects (or that does not persist) is returned as an error, so the UI never reports success
 /// for an entry that does not exist.
 #[tauri::command]
+///
+/// On failure the error starts with `autostart_state=<enabled|disabled|unknown>;`: the state the
+/// registry was observed in afterwards, so the UI records reality instead of guessing.
 fn set_autostart(enabled: bool) -> Result<bool, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    configure_windows_autostart(enabled, &exe).map_err(|e| e.to_string())?;
-    Ok(cfg!(windows))
+    match configure_windows_autostart(enabled, &exe) {
+        Ok(()) => Ok(cfg!(windows)),
+        Err(err) => {
+            let observed = match windows_autostart_command() {
+                Ok(Some(_)) => "enabled",
+                Ok(None) => "disabled",
+                Err(_) => "unknown",
+            };
+            Err(format!("autostart_state={observed}; {err}"))
+        }
+    }
 }
 
 /// Stop the runtime and exit, bypassing close-to-tray.
