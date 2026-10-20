@@ -4740,7 +4740,6 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "dirs 6.0.0",
  "serde_json",
  "symphony-core",
  "symphony-orchestrator",
@@ -4779,7 +4778,6 @@ name = "symphony-desktop"
 version = "2.0.0"
 dependencies = [
  "anyhow",
- "dirs 6.0.0",
  "serde",
  "serde_json",
  "symphony-core",
@@ -4797,6 +4795,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4830,6 +4829,8 @@ dependencies = [
  "chrono",
  "dirs 6.0.0",
  "hex",
+ "libc",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
@@ -4837,6 +4838,8 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tracing",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -4849,6 +4852,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "rand 0.8.8",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "subtle",
@@ -4863,6 +4867,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "url",
  "utoipa",
  "utoipa-axum",
  "uuid",

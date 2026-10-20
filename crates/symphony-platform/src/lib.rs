@@ -1,12 +1,16 @@
 use chrono::Utc;
-use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use symphony_core::{HardwareSnapshot, ResourcePolicy, SymphonyError, SymphonyResult};
 use sysinfo::System;
-use tracing::{debug, info};
+use tracing::info;
+
+pub mod secure_fs;
+mod vault;
+
+pub use vault::{SealedBlob, SecretStore, VaultProtector};
 
 /// Windows 11 Power Status via `kernel32!GetSystemPowerStatus`.
 #[derive(Debug, Clone, Copy)]
@@ -254,148 +258,172 @@ pub fn is_process_alive(pid: u32) -> bool {
     sys.process(sys_pid).is_some()
 }
 
-/// Secure Secret Store that persists sensitive tokens outside SQLite in an OS user-scoped vault file
-/// with restricted permissions and obfuscation, or reads from environment variables.
-/// Never stores raw secrets in the SQLite database (Section 11 & 15).
-#[derive(Clone)]
-pub struct SecretStore {
-    vault_path: PathBuf,
-    cache: Arc<Mutex<HashMap<String, String>>>,
+/// Name of the per-user autostart value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+pub const AUTOSTART_VALUE_NAME: &str = "SymphonyDesktopRuntime";
+
+/// Command line registered for autostart: the quoted executable plus `--background`.
+pub fn autostart_command(exe_path: &Path) -> String {
+    format!("\"{}\" --background", exe_path.display())
 }
 
-impl SecretStore {
-    pub fn new(app_data_dir: &Path) -> SymphonyResult<Self> {
-        std::fs::create_dir_all(app_data_dir)?;
-        let vault_path = app_data_dir.join("credentials.vault");
-        let mut cache = HashMap::new();
-
-        if vault_path.exists() {
-            if let Ok(raw) = std::fs::read_to_string(&vault_path) {
-                if let Ok(decoded) = Self::decode_vault(&raw) {
-                    cache = decoded;
-                }
-            }
-        }
-
-        Ok(Self {
-            vault_path,
-            cache: Arc::new(Mutex::new(cache)),
-        })
-    }
-
-    pub fn set_secret(&self, key: &str, value: &str) -> SymphonyResult<()> {
-        let mut guard = self.cache.lock().expect("secret cache mutex");
-        if value.trim().is_empty() {
-            guard.remove(key);
-        } else {
-            guard.insert(key.to_string(), value.trim().to_string());
-        }
-        let encoded = Self::encode_vault(&guard)?;
-        std::fs::write(&self.vault_path, encoded)?;
-        debug!(key = key, "Updated credential in secure secret store");
-        Ok(())
-    }
-
-    /// Value stored in the vault only (no environment fallback).
-    pub fn get_vault_secret(&self, key: &str) -> Option<String> {
-        let guard = self.cache.lock().expect("secret cache mutex");
-        guard.get(key).filter(|v| !v.is_empty()).cloned()
-    }
-
-    pub fn get_secret(&self, key: &str) -> Option<String> {
-        let guard = self.cache.lock().expect("secret cache mutex");
-        if let Some(v) = guard.get(key) {
-            if !v.is_empty() {
-                return Some(v.clone());
-            }
-        }
-        std::env::var(key).ok().filter(|s| !s.is_empty())
-    }
-
-    pub fn delete_secret(&self, key: &str) -> SymphonyResult<()> {
-        self.set_secret(key, "")
-    }
-
-    pub fn list_configured_keys(&self) -> Vec<String> {
-        let guard = self.cache.lock().expect("secret cache mutex");
-        guard.keys().cloned().collect()
-    }
-
-    pub fn all_secret_values(&self) -> Vec<String> {
-        let guard = self.cache.lock().expect("secret cache mutex");
-        guard.values().cloned().collect()
-    }
-
-    fn encode_vault(map: &HashMap<String, String>) -> SymphonyResult<String> {
-        use base64::Engine;
-        let json =
-            serde_json::to_vec(map).map_err(|e| SymphonyError::StorageError(e.to_string()))?;
-        let key_bytes = Self::machine_key();
-        let xored: Vec<u8> = json
-            .iter()
-            .enumerate()
-            .map(|(i, b)| b ^ key_bytes[i % key_bytes.len()])
-            .collect();
-        Ok(base64::engine::general_purpose::STANDARD.encode(xored))
-    }
-
-    fn decode_vault(encoded: &str) -> SymphonyResult<HashMap<String, String>> {
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded.trim())
-            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
-        let key_bytes = Self::machine_key();
-        let unxored: Vec<u8> = bytes
-            .iter()
-            .enumerate()
-            .map(|(i, b)| b ^ key_bytes[i % key_bytes.len()])
-            .collect();
-        serde_json::from_slice(&unxored).map_err(|e| SymphonyError::StorageError(e.to_string()))
-    }
-
-    fn machine_key() -> Vec<u8> {
-        use sha2::{Digest, Sha256};
-        let user = std::env::var("USERNAME")
-            .or_else(|_| std::env::var("USER"))
-            .unwrap_or_else(|_| "symphony-local-user".to_string());
-        let host = std::env::var("COMPUTERNAME")
-            .or_else(|_| std::env::var("HOSTNAME"))
-            .unwrap_or_else(|_| "symphony-windows-host".to_string());
-        let mut hasher = Sha256::new();
-        hasher.update(format!("symphony-desktop-v1:{user}@{host}").as_bytes());
-        hasher.finalize().to_vec()
-    }
-}
-
-/// Configure or remove Windows user-session startup registration via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
-/// without requiring administrator privileges (Section 12).
+/// Configure or remove Windows user-session startup registration via
+/// `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` without administrator privileges.
+///
+/// Uses the registry API directly and reads the value back, so a rejected write (group policy,
+/// registry virtualization, access denied) is returned as an error instead of being reported as
+/// success. On other platforms this is a no-op.
 pub fn configure_windows_autostart(enable: bool, exe_path: &Path) -> SymphonyResult<()> {
     #[cfg(windows)]
     {
-        use std::process::Command;
-        let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-        let value_name = "SymphonyDesktopRuntime";
-        if enable {
-            let cmd_val = format!("\"{}\" --background", exe_path.display());
-            let status = Command::new("reg")
-                .args([
-                    "add", key, "/v", value_name, "/t", "REG_SZ", "/d", &cmd_val, "/f",
-                ])
-                .status()?;
-            if !status.success() {
-                tracing::warn!("Failed to set Windows HKCU Run auto-start entry");
-            }
-        } else {
-            let _ = Command::new("reg")
-                .args(["delete", key, "/v", value_name, "/f"])
-                .status();
-        }
+        win_autostart::configure(AUTOSTART_VALUE_NAME, enable, exe_path)
     }
     #[cfg(not(windows))]
     {
         let _ = (enable, exe_path);
+        Ok(())
     }
-    Ok(())
+}
+
+/// The currently registered autostart command, if any (always `None` off Windows).
+pub fn windows_autostart_command() -> SymphonyResult<Option<String>> {
+    #[cfg(windows)]
+    {
+        win_autostart::read(AUTOSTART_VALUE_NAME)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(None)
+    }
+}
+
+#[cfg(windows)]
+#[doc(hidden)]
+pub mod win_autostart {
+    //! Registry access for autostart; `value_name` is a parameter so tests use their own value.
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use std::ptr::null_mut;
+    use symphony_core::{SymphonyError, SymphonyResult};
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA};
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegSetValueExW, HKEY,
+        HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
+        RRF_RT_REG_SZ,
+    };
+
+    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+
+    fn wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(Some(0)).collect()
+    }
+
+    fn registry_error(action: &str, code: u32) -> SymphonyError {
+        SymphonyError::IoError(format!(
+            "Windows rejected {action} of the autostart entry: {}",
+            std::io::Error::from_raw_os_error(code as i32)
+        ))
+    }
+
+    struct Key(HKEY);
+    impl Drop for Key {
+        fn drop(&mut self) {
+            // SAFETY: the key was opened by RegCreateKeyExW.
+            unsafe { RegCloseKey(self.0) };
+        }
+    }
+
+    fn open_run_key(access: u32) -> SymphonyResult<Key> {
+        let mut key: HKEY = null_mut();
+        // SAFETY: valid NUL-terminated subkey name and out pointer.
+        let status = unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                wide(RUN_KEY).as_ptr(),
+                0,
+                null_mut(),
+                REG_OPTION_NON_VOLATILE,
+                access,
+                null_mut(),
+                &mut key,
+                null_mut(),
+            )
+        };
+        if status != 0 {
+            return Err(registry_error("opening the Run key for", status));
+        }
+        Ok(Key(key))
+    }
+
+    pub fn read(value_name: &str) -> SymphonyResult<Option<String>> {
+        let key = open_run_key(KEY_QUERY_VALUE)?;
+        let name = wide(value_name);
+        let mut buf = vec![0u16; 1024];
+        loop {
+            let mut size = (buf.len() * 2) as u32;
+            // SAFETY: `buf` has `size` writable bytes.
+            let status = unsafe {
+                RegGetValueW(
+                    key.0,
+                    null_mut(),
+                    name.as_ptr(),
+                    RRF_RT_REG_SZ,
+                    null_mut(),
+                    buf.as_mut_ptr() as *mut _,
+                    &mut size,
+                )
+            };
+            match status {
+                0 => {
+                    let len = (size as usize / 2).saturating_sub(1);
+                    return Ok(Some(String::from_utf16_lossy(&buf[..len])));
+                }
+                ERROR_FILE_NOT_FOUND => return Ok(None),
+                ERROR_MORE_DATA => buf.resize(size as usize / 2 + 1, 0),
+                code => return Err(registry_error("reading", code)),
+            }
+        }
+    }
+
+    pub fn configure(value_name: &str, enable: bool, exe_path: &Path) -> SymphonyResult<()> {
+        let key = open_run_key(KEY_SET_VALUE | KEY_QUERY_VALUE)?;
+        let name = wide(value_name);
+        if enable {
+            let command = super::autostart_command(exe_path);
+            let data = wide(&command);
+            // SAFETY: `data` is a NUL-terminated UTF-16 string of the given byte length.
+            let status = unsafe {
+                RegSetValueExW(
+                    key.0,
+                    name.as_ptr(),
+                    0,
+                    REG_SZ,
+                    data.as_ptr() as *const u8,
+                    (data.len() * 2) as u32,
+                )
+            };
+            if status != 0 {
+                return Err(registry_error("writing", status));
+            }
+            if read(value_name)?.as_deref() != Some(command.as_str()) {
+                return Err(SymphonyError::IoError(
+                    "The autostart entry did not persist (registry write was not applied)".into(),
+                ));
+            }
+        } else {
+            // SAFETY: valid key and NUL-terminated value name.
+            let status = unsafe { RegDeleteValueW(key.0, name.as_ptr()) };
+            if status != 0 && status != ERROR_FILE_NOT_FOUND {
+                return Err(registry_error("removing", status));
+            }
+            if read(value_name)?.is_some() {
+                return Err(SymphonyError::IoError(
+                    "The autostart entry could not be removed".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Runtime endpoint discovery record written by the process that owns the orchestration runtime.
@@ -403,7 +431,7 @@ pub fn configure_windows_autostart(enable: bool, exe_path: &Path) -> SymphonyRes
 /// Stored at `<data_dir>/runtime.json` with owner-only permissions so local clients (the desktop
 /// webview via Tauri IPC, the Vite dev server, integration tests) can find the API port — which
 /// may be an ephemeral fallback — and its per-launch access token.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct RuntimeDiscovery {
     pub base_url: String,
     pub token: String,
@@ -417,36 +445,41 @@ impl RuntimeDiscovery {
         data_dir.join("runtime.json")
     }
 
-    /// Persist the record, readable only by the current user.
+    /// Atomically publish the record, readable only by the current user.
+    ///
+    /// The temp file is created with owner-only permissions (Unix `0600`; on Windows a protected
+    /// DACL for the current user and `SYSTEM`, applied at creation so inherited directory ACLs
+    /// never apply), verified, and only then renamed to `runtime.json`. If the permissions cannot
+    /// be enforced (e.g. a FAT volume or a foreign-owned directory) nothing is published and an
+    /// error is returned — there is no insecure fallback.
     pub fn write(&self, data_dir: &Path) -> SymphonyResult<PathBuf> {
-        std::fs::create_dir_all(data_dir)?;
+        secure_fs::ensure_dir(data_dir)?;
         let path = Self::file_path(data_dir);
-        // A fresh, process-unique temp file created with `create_new` always gets the restrictive
-        // mode below; a pre-existing file with broader permissions is never reused.
-        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-        let _ = std::fs::remove_file(&tmp);
-        {
-            let mut opts = OpenOptions::new();
-            opts.create_new(true).write(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
-            let mut f = opts.open(&tmp)?;
-            f.write_all(
-                serde_json::to_string_pretty(self)
-                    .map_err(|e| SymphonyError::JsonError(e.to_string()))?
-                    .as_bytes(),
-            )?;
-        }
-        std::fs::rename(&tmp, &path)?;
+        let json = zeroize::Zeroizing::new(
+            serde_json::to_vec_pretty(self).map_err(|e| SymphonyError::JsonError(e.to_string()))?,
+        );
+        secure_fs::write_private_atomic(&path, &json).map_err(|e| {
+            SymphonyError::IoError(format!(
+                "Could not publish runtime discovery file {}: {e}",
+                path.display()
+            ))
+        })?;
         Ok(path)
     }
 
     /// Read a discovery record whose owning process is still alive.
+    ///
+    /// A record that is not private to the current user is ignored: it may have been planted by
+    /// another account to redirect clients (and their requests) to a server it controls.
     pub fn read_live(data_dir: &Path) -> Option<Self> {
-        let raw = std::fs::read_to_string(Self::file_path(data_dir)).ok()?;
+        let path = Self::file_path(data_dir);
+        if let Err(err) = secure_fs::verify_private_file(&path) {
+            if path.exists() {
+                tracing::warn!(error = %err, "Ignoring runtime discovery file with unsafe permissions");
+            }
+            return None;
+        }
+        let raw = std::fs::read_to_string(&path).ok()?;
         let record: Self = serde_json::from_str(&raw).ok()?;
         is_process_alive(record.pid).then_some(record)
     }
@@ -456,11 +489,24 @@ impl RuntimeDiscovery {
     }
 }
 
-/// Default application data directory (`%LOCALAPPDATA%\SymphonyDesktop` on Windows).
+impl std::fmt::Debug for RuntimeDiscovery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeDiscovery")
+            .field("base_url", &self.base_url)
+            .field("token", &"[redacted]")
+            .field("pid", &self.pid)
+            .field("api_version", &self.api_version)
+            .field("owner", &self.owner)
+            .finish()
+    }
+}
+
+/// Default application data directory shared by the desktop host and `symphony-cli`
+/// (`%LOCALAPPDATA%\symphony-desktop` on Windows).
 pub fn default_app_data_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("SymphonyDesktop")
+        .join("symphony-desktop")
 }
 
 #[cfg(test)]
@@ -475,26 +521,6 @@ mod tests {
         let snap = monitor.snapshot(&policy, 4);
         assert!(snap.total_memory_mb > 0);
         assert!(snap.recommended_max_concurrency >= 1);
-    }
-
-    #[test]
-    fn test_secret_store_roundtrip() {
-        let dir = tempdir().unwrap();
-        let store = SecretStore::new(dir.path()).unwrap();
-        store
-            .set_secret("GITHUB_TOKEN", "ghp_secret1234567890")
-            .unwrap();
-        assert_eq!(
-            store.get_secret("GITHUB_TOKEN").as_deref(),
-            Some("ghp_secret1234567890")
-        );
-
-        // Reload from disk
-        let store2 = SecretStore::new(dir.path()).unwrap();
-        assert_eq!(
-            store2.get_secret("GITHUB_TOKEN").as_deref(),
-            Some("ghp_secret1234567890")
-        );
     }
 
     #[test]

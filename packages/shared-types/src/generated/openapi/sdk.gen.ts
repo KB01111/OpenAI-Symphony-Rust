@@ -2,7 +2,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client/index.js';
-import type { ApprovePrMergeData, ApprovePrMergeErrors, ApprovePrMergeResponses, CancelTaskData, CancelTaskErrors, CancelTaskResponses, CreateProjectData, CreateProjectErrors, CreateProjectResponses, CreateTaskData, CreateTaskErrors, CreateTaskResponses, DecideApprovalData, DecideApprovalErrors, DecideApprovalResponses, DeleteCredentialData, DeleteCredentialErrors, DeleteCredentialResponses, DeleteProjectData, DeleteProjectErrors, DeleteProjectResponses, DispatchTaskData, DispatchTaskErrors, DispatchTaskResponses, ExportDiagnosticsData, ExportDiagnosticsErrors, ExportDiagnosticsResponses, GetIssueDetailData, GetIssueDetailErrors, GetIssueDetailResponses, GetProjectData, GetProjectErrors, GetProjectResponses, GetPrReviewData, GetPrReviewErrors, GetPrReviewResponses, GetRuntimeData, GetRuntimeErrors, GetRuntimeResponses, GetSettingsData, GetSettingsErrors, GetSettingsResponses, GetStateData, GetStateErrors, GetStateResponses, GetTaskData, GetTaskDiffData, GetTaskDiffErrors, GetTaskDiffResponses, GetTaskErrors, GetTaskResponses, GetWorkflowData, GetWorkflowErrors, GetWorkflowResponses, HealthData, HealthErrors, HealthResponses, ListApprovalsData, ListApprovalsErrors, ListApprovalsResponses, ListCredentialsData, ListCredentialsErrors, ListCredentialsResponses, ListProjectsData, ListProjectsErrors, ListProjectsResponses, ListProvidersData, ListProvidersErrors, ListProvidersResponses, ListPrReviewsData, ListPrReviewsErrors, ListPrReviewsResponses, ListRecentEventsData, ListRecentEventsErrors, ListRecentEventsResponses, ListTaskAttemptsData, ListTaskAttemptsErrors, ListTaskAttemptsResponses, ListTaskEventsData, ListTaskEventsErrors, ListTaskEventsResponses, ListTasksData, ListTasksErrors, ListTasksResponses, ListTaskValidationsData, ListTaskValidationsErrors, ListTaskValidationsResponses, ListWorktreesData, ListWorktreesErrors, ListWorktreesResponses, MoveTaskStatusData, MoveTaskStatusErrors, MoveTaskStatusResponses, PauseSchedulerData, PauseSchedulerErrors, PauseSchedulerResponses, PreviewWorkflowData, PreviewWorkflowErrors, PreviewWorkflowResponses, RefreshData, RefreshErrors, RefreshResponses, ResumeSchedulerData, ResumeSchedulerErrors, ResumeSchedulerResponses, RetryTaskData, RetryTaskErrors, RetryTaskResponses, SetCredentialData, SetCredentialErrors, SetCredentialResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, UpdateProjectData, UpdateProjectErrors, UpdateProjectResponses, UpdateSettingsData, UpdateSettingsErrors, UpdateSettingsResponses, UpdateWorkflowData, UpdateWorkflowErrors, UpdateWorkflowResponses, ValidateRepositoryData, ValidateRepositoryErrors, ValidateRepositoryResponses } from './types.gen.js';
+import type { ApprovePrMergeData, ApprovePrMergeErrors, ApprovePrMergeResponses, CancelTaskData, CancelTaskErrors, CancelTaskResponses, CreateProjectData, CreateProjectErrors, CreateProjectResponses, CreateTaskData, CreateTaskErrors, CreateTaskResponses, DecideApprovalData, DecideApprovalErrors, DecideApprovalResponses, DeleteCredentialData, DeleteCredentialErrors, DeleteCredentialResponses, DeleteProjectData, DeleteProjectErrors, DeleteProjectResponses, DispatchTaskData, DispatchTaskErrors, DispatchTaskResponses, ExportDiagnosticsData, ExportDiagnosticsErrors, ExportDiagnosticsResponses, GetIssueDetailData, GetIssueDetailErrors, GetIssueDetailResponses, GetProjectData, GetProjectErrors, GetProjectResponses, GetPrReviewData, GetPrReviewErrors, GetPrReviewResponses, GetRemoteAccessData, GetRemoteAccessErrors, GetRemoteAccessResponses, GetRuntimeData, GetRuntimeErrors, GetRuntimeResponses, GetSettingsData, GetSettingsErrors, GetSettingsResponses, GetStateData, GetStateErrors, GetStateResponses, GetTaskData, GetTaskDiffData, GetTaskDiffErrors, GetTaskDiffResponses, GetTaskErrors, GetTaskResponses, GetWorkflowData, GetWorkflowErrors, GetWorkflowResponses, HealthData, HealthErrors, HealthResponses, ListApprovalsData, ListApprovalsErrors, ListApprovalsResponses, ListCredentialsData, ListCredentialsErrors, ListCredentialsResponses, ListProjectsData, ListProjectsErrors, ListProjectsResponses, ListProvidersData, ListProvidersErrors, ListProvidersResponses, ListPrReviewsData, ListPrReviewsErrors, ListPrReviewsResponses, ListRecentEventsData, ListRecentEventsErrors, ListRecentEventsResponses, ListTaskAttemptsData, ListTaskAttemptsErrors, ListTaskAttemptsResponses, ListTaskEventsData, ListTaskEventsErrors, ListTaskEventsResponses, ListTasksData, ListTasksErrors, ListTasksResponses, ListTaskValidationsData, ListTaskValidationsErrors, ListTaskValidationsResponses, ListWorktreesData, ListWorktreesErrors, ListWorktreesResponses, MoveTaskStatusData, MoveTaskStatusErrors, MoveTaskStatusResponses, PauseSchedulerData, PauseSchedulerErrors, PauseSchedulerResponses, PreviewWorkflowData, PreviewWorkflowErrors, PreviewWorkflowResponses, RefreshData, RefreshErrors, RefreshResponses, ResumeSchedulerData, ResumeSchedulerErrors, ResumeSchedulerResponses, RetryTaskData, RetryTaskErrors, RetryTaskResponses, RevokeRemoteAccessTokenData, RevokeRemoteAccessTokenErrors, RevokeRemoteAccessTokenResponses, RotateRemoteAccessTokenData, RotateRemoteAccessTokenErrors, RotateRemoteAccessTokenResponses, SetCredentialData, SetCredentialErrors, SetCredentialResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, UpdateProjectData, UpdateProjectErrors, UpdateProjectResponses, UpdateSettingsData, UpdateSettingsErrors, UpdateSettingsResponses, UpdateWorkflowData, UpdateWorkflowErrors, UpdateWorkflowResponses, ValidateRepositoryData, ValidateRepositoryErrors, ValidateRepositoryResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -317,5 +317,33 @@ export const exportDiagnostics = <ThrowOnError extends boolean = false>(options?
 export const getIssueDetail = <ThrowOnError extends boolean = false>(options: Options<GetIssueDetailData, ThrowOnError>): RequestResult<GetIssueDetailResponses, GetIssueDetailErrors, ThrowOnError> => (options.client ?? client).get<GetIssueDetailResponses, GetIssueDetailErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/issues/{issue_identifier}',
+    ...options
+});
+
+/**
+ * Persisted remote-access settings together with the listener's effective state.
+ */
+export const getRemoteAccess = <ThrowOnError extends boolean = false>(options?: Options<GetRemoteAccessData, ThrowOnError>): RequestResult<GetRemoteAccessResponses, GetRemoteAccessErrors, ThrowOnError> => (options?.client ?? client).get<GetRemoteAccessResponses, GetRemoteAccessErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/remote-access',
+    ...options
+});
+
+/**
+ * Revoke the remote access token and stop the remote listener.
+ */
+export const revokeRemoteAccessToken = <ThrowOnError extends boolean = false>(options?: Options<RevokeRemoteAccessTokenData, ThrowOnError>): RequestResult<RevokeRemoteAccessTokenResponses, RevokeRemoteAccessTokenErrors, ThrowOnError> => (options?.client ?? client).delete<RevokeRemoteAccessTokenResponses, RevokeRemoteAccessTokenErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/remote-access/token',
+    ...options
+});
+
+/**
+ * Generate a new remote access token (256 random bits), replacing any previous one. The token
+ * is returned once and cannot be read back; open remote sessions using the old token end.
+ */
+export const rotateRemoteAccessToken = <ThrowOnError extends boolean = false>(options?: Options<RotateRemoteAccessTokenData, ThrowOnError>): RequestResult<RotateRemoteAccessTokenResponses, RotateRemoteAccessTokenErrors, ThrowOnError> => (options?.client ?? client).post<RotateRemoteAccessTokenResponses, RotateRemoteAccessTokenErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/remote-access/token',
     ...options
 });

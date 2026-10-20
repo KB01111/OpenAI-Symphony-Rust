@@ -97,6 +97,9 @@ pub enum SymphonyError {
 
     #[error("conflict: {0}")]
     Conflict(String),
+
+    #[error("credential_vault_error: {0}")]
+    CredentialVault(String),
 }
 
 impl SymphonyError {
@@ -133,6 +136,7 @@ impl SymphonyError {
             Self::Unauthorized(_) => "unauthorized",
             Self::IoError(_) => "io_error",
             Self::Conflict(_) => "conflict",
+            Self::CredentialVault(_) => "credential_vault_error",
         }
     }
 }
