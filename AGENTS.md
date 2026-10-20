@@ -26,8 +26,9 @@ Before completing any task, execute:
 
 ```powershell
 cargo fmt --all -- --check
-cargo clippy --workspace -- -D warnings
-cargo test --workspace
+cargo check --workspace --locked
+cargo clippy --workspace --locked -- -D warnings
+cargo test --workspace --locked
 pnpm typecheck
 pnpm test
 pnpm build
