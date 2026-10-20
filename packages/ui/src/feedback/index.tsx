@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useEffect, useRef } from "react";
 import {
   Button,
   Dialog,
@@ -50,6 +50,22 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 }) => {
   const { locale } = useDesign();
   const t = getTranslations(locale);
+  // A confirmation fires once: a second click in the same frame (before `pending` re-renders)
+  // is ignored. The lock resets when the dialog closes or a pending action settles (retry).
+  const fired = useRef(false);
+  const wasPending = useRef(pending);
+  useEffect(() => {
+    if (!open) fired.current = false;
+  }, [open]);
+  useEffect(() => {
+    if (wasPending.current && !pending) fired.current = false;
+    wasPending.current = pending;
+  }, [pending]);
+  const confirm = () => {
+    if (fired.current || pending) return;
+    fired.current = true;
+    onConfirm();
+  };
   return (
     <Dialog open={open} onOpenChange={(_, data) => !pending && onOpenChange(data.open)} modalType="alert">
       <DialogSurface aria-describedby={undefined}>
@@ -69,8 +85,8 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
               appearance="primary"
               disabled={pending}
               icon={pending ? <Spinner size="tiny" /> : undefined}
-              onClick={onConfirm}
-              style={destructive ? { background: "var(--destructive)", color: "#fff" } : undefined}
+              onClick={confirm}
+              style={destructive ? { background: "var(--destructive)", color: "var(--accent-foreground)" } : undefined}
             >
               {confirmLabel}
             </Button>

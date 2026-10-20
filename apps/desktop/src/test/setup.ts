@@ -24,3 +24,15 @@ if (typeof globalThis.ResizeObserver === "undefined") {
 
 Element.prototype.scrollIntoView ??= () => undefined;
 Element.prototype.scrollTo ??= () => undefined;
+
+// jsdom has no layout engine: give elements a viewport-sized box so virtualized lists
+// (@tanstack/react-virtual) render their first rows instead of nothing.
+const FAKE_WIDTH = 1200;
+const FAKE_HEIGHT = 800;
+Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => FAKE_WIDTH });
+Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => FAKE_HEIGHT });
+Object.defineProperty(Element.prototype, "clientWidth", { configurable: true, get: () => FAKE_WIDTH });
+Object.defineProperty(Element.prototype, "clientHeight", { configurable: true, get: () => FAKE_HEIGHT });
+Element.prototype.getBoundingClientRect = function getBoundingClientRect() {
+  return { x: 0, y: 0, top: 0, left: 0, right: FAKE_WIDTH, bottom: FAKE_HEIGHT, width: FAKE_WIDTH, height: FAKE_HEIGHT, toJSON: () => ({}) } as DOMRect;
+};
