@@ -1,8 +1,8 @@
-# Symphony Desktop 1.0
+# Symphony Desktop 2.0
 
-**A Native Windows-First AI Coding Orchestration Platform Built in Rust, Tauri 2, Fluent UI 2, and OpenAI Apps SDK UI**
+**A Native Windows-First AI Coding Orchestration Platform Built in Rust, Tauri 2, Fluent UI 2, shadcn/ui, and OpenAI Apps SDK UI**
 
-Symphony Desktop 1.0 is a local-first autonomous coding orchestration platform inspired by the [OpenAI Symphony Specification (`SPEC.md`)](https://github.com/openai/symphony/blob/main/SPEC.md). It turns GitHub Issues, Linear tasks, and manually created development tasks into isolated, multi-turn AI coding workflows with deterministic Git worktree management, multi-provider agent execution (`Codex App Server`, `Claude Code`, `OpenCode`), automated validation pipelines, evidence-backed pull request review ratings, and a real-time Windows 11 desktop and iOS remote companion interface.
+Symphony Desktop is a local-first autonomous coding orchestration platform inspired by the [OpenAI Symphony Specification (`SPEC.md`)](https://github.com/openai/symphony/blob/main/SPEC.md). It turns GitHub Issues, Linear tasks, and manually created development tasks into isolated, multi-turn AI coding workflows with deterministic Git worktree management, multi-provider agent execution (`Codex App Server`, `Claude Code`, `OpenCode`), automated validation pipelines, evidence-backed pull request review ratings, and a real-time Windows 11 desktop and iOS remote companion interface.
 
 ---
 
@@ -20,17 +20,18 @@ Symphony Desktop 1.0 is a local-first autonomous coding orchestration platform i
   - Collision-resistant workspace keys (`[A-Za-z0-9._-]` sanitization + 64-bit SHA-256 suffix when modified).
   - Canonical path containment and symlink escape prevention.
   - Per-task Git worktree creation (`git worktree add -B`), dirty-worktree guards, lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`), and automated validation command execution.
-- **Unified Fluent UI 2 + OpenAI Apps SDK UI Desktop Experience (`apps/desktop`, `packages/ui`)**:
-  - **Microsoft Fluent UI React v9 (`@fluentui/react-components`)** powers the Windows 11 application shell, navigation sidebar, command bar, dialogs, Kanban board cards, and settings forms.
-  - **OpenAI Apps SDK UI (`@openai/apps-sdk-ui`)** powers AI-native surfaces: `AppsSDKUIProvider`, `Alert`, `Badge`, `Button`, `CopyButton`, `CodeBlock`, `Markdown`, `Textarea`, `Tooltip`, `Popover`, `EmptyMessage`, `SegmentedControl`, and `ShimmerText`.
-  - Synchronized light/dark themes, reduced-motion support, and full English (`en`) and Swedish (`sv`) localization.
+- **Symphony Desktop 2.0 UI (`apps/desktop`, `packages/ui`)** — see [docs/UI_ARCHITECTURE.md](./docs/UI_ARCHITECTURE.md) and [docs/DESIGN_SYSTEM.md](./docs/DESIGN_SYSTEM.md):
+  - Modular desktop shell: command bar, collapsible sidebar with project switcher, Ctrl+K command palette, resizable context inspector, bottom activity drawer (events, agent/terminal output, validations, approvals, problems) and a status bar with live hardware telemetry.
+  - Views: Overview, Projects (guided Add Repository with native folder picker), Tasks (9-state Kanban with state-machine-validated drag and drop + data table), Agent Runs (control center), Live Execution workspace, Worktrees, Pull Request Review Center (1–5 merge readiness), Workflow Studio (CodeMirror + runtime validation/preview), Providers, Settings.
+  - One token source shared by **Fluent UI React v9** (Windows-native controls, dialogs, menus, forms), **shadcn/ui** (resizable panels, command palette, data tables, context menus) and **OpenAI Apps SDK UI** (AI-native approval, event, markdown, code and readiness surfaces); dark/light/system themes, compact/comfortable density, reduced motion, English and Swedish.
+  - Typed API contracts generated from Rust (`ts-rs`) and checked in CI; authenticated SSE streaming with resume, dedupe and reconnection.
 - **Hardware-Aware Windows 11 Execution (`symphony-platform`)**:
   - Optimized for hybrid laptops (e.g., ASUS ROG Zephyrus G16 with AMD Ryzen AI 9 HX 370 + Radeon 890M + RTX 4070).
   - Queries Windows power status via `GetSystemPowerStatus` (`windows-sys`) without waking disabled discrete GPUs on battery.
   - Adjusts max concurrent coding agents dynamically for AC power (default 2), battery power (default 1), and memory/CPU pressure.
   - Persistent background runtime with Windows system tray integration (`Close to Tray`, `Minimize`, `Stop Orchestrator`, `Exit Completely`) and single-instance lock protection.
 - **Lumen-Ready API & iOS Companion Foundation (`symphony-server`, `apps/mobile`)**:
-  - Versioned Axum HTTP/SSE API (`/api/v1/*`) compatible with the Symphony specification (`/api/v1/state`, `/api/v1/{issue_identifier}`, `/api/v1/refresh`) plus extended desktop/mobile endpoints and scoped Bearer token authentication.
+  - Versioned Axum HTTP/SSE API (`/api/v1/*`) compatible with the Symphony specification (`/api/v1/state`, `/api/v1/{issue_identifier}`, `/api/v1/refresh`) plus desktop/mobile endpoints. Every route except `health`/`runtime` requires a Bearer token (random per launch locally; `SYMPHONY_REMOTE_TOKEN` for the optional remote listener), CORS is restricted to the desktop webview and dev origins.
 
 ---
 
@@ -54,9 +55,9 @@ OpenAI-Symphony-Rust/
 │   ├── symphony-server/    # Axum HTTP + SSE local & authenticated remote server
 │   └── symphony-cli/       # Headless daemon & CLI (`symphony-cli`)
 ├── packages/
-│   ├── shared-types/       # Shared TypeScript interfaces, state machine, EN/SV i18n
-│   ├── api-client/         # Typed HTTP/SSE & Tauri IPC client (`SymphonyApiClient`)
-│   └── ui/                 # Unified Fluent UI v9 + @openai/apps-sdk-ui components
+│   ├── shared-types/       # Rust-generated API contracts, state machine table, EN/SV i18n
+│   ├── api-client/         # Typed HTTP client, authenticated SSE, Tauri IPC bridge (`SymphonyClient`)
+│   └── ui/                 # Symphony design system: tokens, Fluent v9 + shadcn/ui + Apps SDK UI
 ├── WORKFLOW.md             # Repository Symphony workflow configuration
 ├── ARCHITECTURE.md         # System architecture & SPEC.md compliance document
 ├── SECURITY.md             # Security boundaries, sandboxing, and secret isolation
@@ -105,25 +106,41 @@ pnpm build
 # Validate workflow configuration and print parsed ServiceConfig
 cargo run -p symphony-cli -- validate .\WORKFLOW.md
 
-# Start the orchestration engine and HTTP/SSE API on 127.0.0.1:47800
-cargo run -p symphony-cli -- .\WORKFLOW.md --port 47800
+# Start the orchestration engine and HTTP/SSE API (port from WORKFLOW.md `server.port`, else 4780;
+# falls back to an ephemeral port when busy). A random access token is generated and published,
+# with the endpoint, in <data_dir>\runtime.json (owner-only); it is never printed.
+cargo run -p symphony-cli -- .\WORKFLOW.md
+
+# Isolated data directory (separate database, vault and runtime lock)
+cargo run -p symphony-cli -- --data-dir .\.symphony-dev
 ```
 
 ### 5. Launch Symphony Desktop (Development Mode)
 
 ```powershell
-# Start the Vite desktop UI against the running local runtime
+# Browser UI against a running runtime: the dev server discovers it through runtime.json
+# (set SYMPHONY_DATA_DIR if the runtime uses --data-dir)
 pnpm --filter @symphony/desktop dev
 
-# Or launch the full native Tauri 2 Windows application
-cd apps\desktop
-pnpm tauri dev
+# Full native Tauri 2 application (embeds the runtime, or attaches to a running symphony-cli)
+pnpm --filter @symphony/desktop tauri dev
+```
+
+### 6. End-to-End Tests
+
+```powershell
+# Builds symphony-cli if needed, starts it with a throwaway data dir + fixture repo, runs Playwright
+pnpm --filter @symphony/desktop e2e
 ```
 
 ---
 
 ## Documentation Index
 
+- [docs/UI_ARCHITECTURE.md](./docs/UI_ARCHITECTURE.md) — Desktop UI architecture, contracts, discovery and streaming.
+- [docs/DESIGN_SYSTEM.md](./docs/DESIGN_SYSTEM.md) — Tokens, providers and component ownership.
+- [docs/UI_OVERHAUL_AUDIT.md](./docs/UI_OVERHAUL_AUDIT.md) — Pre-2.0 audit (P0–P3 findings).
+- [docs/UI_IMPLEMENTATION_REPORT.md](./docs/UI_IMPLEMENTATION_REPORT.md) — 2.0 implementation report and evidence.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Detailed architecture, Symphony `SPEC.md` compliance, and component design.
 - [SECURITY.md](./SECURITY.md) — Threat model, workspace isolation invariants, credential handling, and sandboxing.
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — Development standards, testing matrix, and PR workflow.

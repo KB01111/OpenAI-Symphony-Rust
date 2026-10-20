@@ -1,4 +1,4 @@
-# Symphony Desktop 1.0 — Architecture
+# Symphony Desktop 2.0 — Architecture
 
 ## 1. Overview & Alignment with OpenAI Symphony `SPEC.md`
 
@@ -43,26 +43,22 @@ Symphony Desktop 1.0 implements the language-independent [OpenAI Symphony Specif
 
 ---
 
-## 3. Unified Design System: Fluent UI 2 + OpenAI Apps SDK UI
+## 3. Desktop UI & Design System
 
-Symphony Desktop integrates two complementary design systems inside `packages/ui`:
+The 2.0 desktop UI and design system are documented in detail in
+[`docs/UI_ARCHITECTURE.md`](./docs/UI_ARCHITECTURE.md) and [`docs/DESIGN_SYSTEM.md`](./docs/DESIGN_SYSTEM.md).
+In short:
 
-1. **Microsoft Fluent UI React v9 (`@fluentui/react-components`)**:
-   - Provides the Windows 11 native application chrome, navigation rail, command bar, dialogs, form inputs, tabs, switches, and surface tokens (`webDarkTheme` / `webLightTheme`).
-2. **OpenAI Apps SDK UI (`@openai/apps-sdk-ui`)**:
-   - Loaded via `@import "tailwindcss"; @import "@openai/apps-sdk-ui/css";` and wrapped in `<AppsSDKUIProvider linkComponent="a">`.
-   - Powers all AI-native surfaces:
-     - `Alert` & `Button` in `AiApprovalBanner` for command and file-change approval requests.
-     - `CodeBlock` & `Markdown` in `AiEventStreamCard` for streaming agent reasoning, tool invocations, and unified Git diffs.
-     - `Badge` & `Tooltip` in `ProviderBadge`, `TaskStatusBadge`, and `PhaseBadge`.
-     - `SegmentedControl` in `LogModeSwitch` (`Concise Progress` vs `Detailed Logs`).
-     - `ShimmerText` for live active turn indicators.
-     - `EmptyMessage` in `AiEmptyView` for zero-state guidance.
-     - `Textarea` & `Popover` in `PromptComposerBox` for interactive operator guidance.
-3. **Theme Synchronization**:
-   - `SymphonyDesignProvider` synchronizes Fluent UI's `FluentProvider` theme with `@openai/apps-sdk-ui/theme`'s `applyDocumentTheme("light" | "dark")`, setting `data-theme` and `color-scheme` on `document.documentElement` so both libraries share unified surface contrast, typography (`Segoe UI Variable Text` / `Cascadia Code`), and reduced-motion preferences.
-
----
+- **Contracts**: API types are generated from the Rust structs with `ts-rs` and checked by
+  `crates/symphony-server/tests/ts_contract.rs`; the TypeScript client is integration-tested against the
+  real Axum router.
+- **Transport**: the webview discovers the runtime over Tauri IPC (`get_local_api_config`), calls the
+  authenticated HTTP API, and receives events over the in-process `symphony://event` channel (embedded
+  runtime) or authenticated SSE with `Last-Event-ID` resume (attached/remote).
+- **State**: durable data in TanStack Query (invalidated by events, fallback polling when the stream is
+  down); presentation preferences in a persisted zustand store.
+- **Design system**: one token source (`packages/ui/src/tokens/tokens.css`) feeding Tailwind v4, shadcn/ui,
+  Fluent UI v9 and OpenAI Apps SDK UI, coordinated by `SymphonyDesignProvider`.
 
 ## 4. Hardware-Aware Scheduling (Windows 11 Hybrid Laptops)
 

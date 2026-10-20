@@ -20,5 +20,6 @@ export const qk = {
   settings: ["settings"] as const,
   providers: ["providers"] as const,
   credentials: ["credentials"] as const,
-  runtime: ["runtime"] as const
+  runtime: ["runtime"] as const,
+  recentEvents: ["recent-events"] as const
 };

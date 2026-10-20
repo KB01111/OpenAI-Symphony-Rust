@@ -1,0 +1,59 @@
+name: Desktop native build (Windows)
+
+# Separate from ci.yml (owned by the CI-repair PR) so both can evolve independently.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-native-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tauri-windows:
+    name: Tauri 2 build (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: desktop-native
+
+      # Version comes from the root package.json "packageManager" field.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check generated API contracts are up to date
+        run: cargo test -p symphony-server --test ts_contract --locked
+
+      - name: Build desktop app (frontend + Tauri host, release, no installer)
+        run: pnpm --filter @symphony/desktop tauri build --no-bundle
+
+      - name: Smoke-check the native binary exists
+        shell: pwsh
+        run: |
+          $exe = "target/release/symphony-desktop.exe"
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          "{0:N1} MB" -f ((Get-Item $exe).Length / 1MB)
+
+      - name: Upload native binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: symphony-desktop-windows
+          path: target/release/symphony-desktop.exe
+          retention-days: 7

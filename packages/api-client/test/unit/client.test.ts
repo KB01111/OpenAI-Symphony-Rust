@@ -22,6 +22,7 @@ describe("SymphonyClient", () => {
     await client.previewWorkflow({ raw_markdown: "x" });
     await client.listApprovals(true);
     await client.listTasks({ projectId: "p1" });
+    await client.listRecentEvents(50);
     expect(seen).toEqual([
       "GET /api/v1/tasks/a%20b",
       "PATCH /api/v1/tasks/t1/status",
@@ -31,7 +32,8 @@ describe("SymphonyClient", () => {
       "PUT /api/v1/workflow",
       "POST /api/v1/workflow/preview",
       "GET /api/v1/approvals?only_pending=true",
-      "GET /api/v1/tasks?project_id=p1"
+      "GET /api/v1/tasks?project_id=p1",
+      "GET /api/v1/events/recent?limit=50"
     ]);
     const headers = fetchImpl.mock.calls[0]![1]!.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer t");

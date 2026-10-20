@@ -157,6 +157,10 @@ export class SymphonyClient {
   getState(signal?: AbortSignal) {
     return this.request<OrchestratorStateSnapshot>("GET", "/state", { signal });
   }
+  /** Persisted runtime events across all tasks, newest first. */
+  listRecentEvents(limit = 100, signal?: AbortSignal) {
+    return this.request<AgentEvent[]>("GET", "/events/recent", { query: { limit }, signal });
+  }
   refresh() {
     return this.request<RefreshResponse>("POST", "/refresh");
   }

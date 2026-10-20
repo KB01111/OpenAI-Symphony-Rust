@@ -314,6 +314,7 @@ pub fn build_router(orchestrator: Arc<SymphonyOrchestrator>, config: &ServerConf
         .route("/state", get(state_handler))
         .route("/refresh", post(refresh_handler))
         .route("/events", get(sse_events_handler))
+        .route("/events/recent", get(recent_events_handler))
         .route("/scheduler/pause", post(pause_scheduler_handler))
         .route("/scheduler/resume", post(resume_scheduler_handler))
         .route(
@@ -625,6 +626,15 @@ async fn sse_events_handler(State(state): State<ServerState>, headers: HeaderMap
     Sse::new(combined)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
         .into_response()
+}
+
+/// `GET /api/v1/events/recent?limit=N` — persisted events across all tasks, newest first.
+async fn recent_events_handler(
+    State(state): State<ServerState>,
+    Query(q): Query<LimitQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    respond(state.orchestrator.list_events(None, limit).await)
 }
 
 // ============================================================================

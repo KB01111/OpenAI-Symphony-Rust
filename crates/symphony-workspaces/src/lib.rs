@@ -868,6 +868,30 @@ mod tests {
         let changed = mgr.inspect_changed_files(&allocated.path).await.unwrap();
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].path, "feature.txt");
+        assert_eq!((changed[0].additions, changed[0].deletions), (1, 0));
+
+        // Tracked modifications report real line counts and both kinds show up in the diff.
+        std::fs::write(
+            allocated.path.join("README.md"),
+            "# Renamed Repo\nline two\n",
+        )
+        .unwrap();
+        let mut changed = mgr.inspect_changed_files(&allocated.path).await.unwrap();
+        changed.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(changed.len(), 2);
+        assert_eq!(changed[0].path, "README.md");
+        assert_eq!((changed[0].additions, changed[0].deletions), (2, 1));
+
+        let (diff, truncated) = mgr.collect_diff(&allocated.path, 64_000).await;
+        assert!(!truncated);
+        assert!(diff.contains("+# Renamed Repo"));
+        assert!(diff.contains("-# Test Repo"));
+        assert!(diff.contains("feature.txt"));
+        assert!(diff.contains("+hello world"));
+
+        let (short, truncated) = mgr.collect_diff(&allocated.path, 40).await;
+        assert!(truncated);
+        assert!(short.len() <= 40);
 
         // Refuses non-forced cleanup on dirty worktree
         assert!(mgr

@@ -38,6 +38,16 @@ export function useRuntimeState(opts?: Opts<Awaited<ReturnType<ReturnType<typeof
   return useQuery({ queryKey: qk.state, queryFn: ({ signal }) => client.getState(signal), refetchInterval, ...opts });
 }
 
+/** Persisted recent activity (survives app restarts); live events are appended by the stream. */
+export function useRecentEvents(limit = 100) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.recentEvents,
+    queryFn: ({ signal }) => client.listRecentEvents(limit, signal),
+    staleTime: 60_000
+  });
+}
+
 export function useProjects() {
   const client = useClient();
   return useQuery({ queryKey: qk.projects, queryFn: ({ signal }) => client.listProjects(signal), staleTime: 30_000 });

@@ -56,7 +56,34 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
 
 ## 4. Network & Remote API Security
 
-- **Local-Only Default**: `symphony-server` binds exclusively to `127.0.0.1` by default.
-- **Authenticated Remote Control**:
-  - Remote access for the iOS companion or Lumen integration is disabled by default.
-  - When enabled, all `/api/v1/*` mutations and streams require a constant-time verified `Authorization: Bearer <token>` header, and the Codex App Server stdio socket is never exposed directly to the network.
+- **Local-only default**: the embedded runtime binds `127.0.0.1` (port 4780, or an ephemeral fallback).
+- **Authentication on every route**: all `/api/v1/*` routes except `health` and `runtime` require
+  `Authorization: Bearer <token>`. The desktop host and `symphony-cli` generate a random 256-bit token per
+  launch; it is handed to the webview over Tauri IPC (or published in the owner-only
+  `<data_dir>/runtime.json` for local tools) and is never logged or printed. Tokens are compared in
+  constant time (`subtle`).
+- **No tokens in URLs**: the event stream uses `fetch` streaming with the `Authorization` header instead of
+  `EventSource` query parameters.
+- **CORS allowlist**: only the Tauri webview origins and the local dev servers are allowed (no `*`).
+- **Remote access** (mobile companion / Lumen) is disabled by default. When `remote_api_enabled` is set, the
+  desktop host starts a second listener on `remote_bind_address:remote_port` only if `SYMPHONY_REMOTE_TOKEN`
+  (≥ 16 characters) exists in the credential vault. Terminate TLS in front of it.
+- **Credential API allowlist**: only `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `LINEAR_API_KEY`,
+  `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` can be stored; values are never returned (`GET /credentials`
+  lists key names only). Only provider API keys are exported to the runtime environment.
+- **Workflow writes** go only to the active `WORKFLOW.md` (or the runtime's data directory); clients cannot
+  choose a path. Invalid documents are rejected before writing.
+- **Redaction**: workflow configuration returned by the API masks tracker `token`/`api_key`/`secret` values;
+  task diffs and diagnostics are passed through `redact_secrets` with the vault's values.
+
+## 5. Desktop Host (Tauri 2)
+
+- **Production CSP**: `default-src 'self'`, `script-src 'self'`, `connect-src` limited to IPC and loopback,
+  `object-src 'none'`, `frame-ancestors 'none'`, `form-action 'none'`; prototype freezing enabled.
+- **Least-privilege IPC**: app commands are declared in `build.rs` (`AppManifest::commands`), so each needs an
+  explicit `allow-*` permission in `capabilities/default.json`. The exposed commands are
+  `get_local_api_config`, `open_task_workspace` (opens only a task worktree that validates inside its
+  project's workspace root), `pick_repository_folder`, `set_autostart` and `exit_application`. There is no
+  shell, filesystem or arbitrary command bridge.
+- **Single authoritative scheduler**: desktop and CLI share the `symphony-runtime.lock` in the data
+  directory; a second process attaches to the running runtime instead of starting another scheduler.

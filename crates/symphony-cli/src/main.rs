@@ -267,8 +267,25 @@ async fn main() -> anyhow::Result<()> {
         discovery_path.display()
     );
 
-    tokio::signal::ctrl_c().await?;
+    wait_for_shutdown_signal().await;
     tracing::info!("Shutting down Symphony Engine gracefully...");
     RuntimeDiscovery::remove(&data_dir);
     Ok(())
+}
+
+/// Resolve on Ctrl+C, or SIGTERM on Unix, so the runtime lock and discovery file are released.
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }

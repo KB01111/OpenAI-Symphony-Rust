@@ -188,6 +188,9 @@ describe("Symphony runtime contract (real Axum router)", () => {
     expect(detail.attempts.restart_count).toBe(0);
     expect((await client.listTaskAttempts(reviewTask.id))[0]?.phase).toBe("succeeded");
     expect((await client.listTaskEvents(reviewTask.id)).length).toBeGreaterThan(3);
+    const recent = await client.listRecentEvents(20);
+    expect(recent.length).toBeGreaterThan(0);
+    expect(recent[0]!.timestamp >= recent[recent.length - 1]!.timestamp).toBe(true);
   });
 
   it("9. fetches PR review information and records human approval", async () => {
