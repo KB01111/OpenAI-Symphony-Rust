@@ -167,3 +167,17 @@ configured: Array<string>, allowed: Array<string>, };
 export type CredentialSavedResponse = { saved: boolean, key: string, };
 
 export type StreamControlEvent = { api_version: number, server_time: string, reason: string | null, };
+
+export const ALL_TASK_STATUSES: ReadonlyArray<TaskStatus> = ["backlog", "ready", "queued", "running", "blocked", "human_review", "completed", "failed", "cancelled"];
+
+export const TASK_STATUS_TRANSITIONS: Readonly<Record<TaskStatus, ReadonlyArray<TaskStatus>>> = {
+  backlog: ["backlog", "ready", "queued", "blocked", "cancelled"],
+  ready: ["ready", "backlog", "queued", "running", "blocked", "cancelled"],
+  queued: ["queued", "ready", "running", "blocked", "failed", "cancelled"],
+  running: ["running", "queued", "blocked", "human_review", "completed", "failed", "cancelled"],
+  blocked: ["blocked", "backlog", "ready", "queued", "cancelled"],
+  human_review: ["human_review", "ready", "queued", "running", "completed", "failed", "cancelled"],
+  completed: ["completed", "ready", "queued"],
+  failed: ["failed", "ready", "queued", "running", "cancelled"],
+  cancelled: ["cancelled", "backlog", "ready", "queued"],
+};

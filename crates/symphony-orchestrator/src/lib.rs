@@ -1035,6 +1035,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
             let _ = tx.send(reason.to_string());
         }
 
+        self.expire_pending_approvals(task_id).await;
+
         let mut task = self.get_task(task_id).await?;
         task.status = TaskStatus::Cancelled;
         task.current_phase = Some(RunAttemptPhase::CanceledByReconciliation);
@@ -1128,6 +1130,35 @@ Please implement the requested changes cleanly in the current Git workspace, run
         .await;
 
         Ok(req)
+    }
+
+    /// Mark approvals still pending for a task as cancelled (its run ended without a decision), so
+    /// they never linger as actionable in the UI.
+    async fn expire_pending_approvals(&self, task_id: &str) {
+        let Ok(pending) = self.storage.list_approvals(true).await else {
+            return;
+        };
+        for mut req in pending.into_iter().filter(|a| a.task_id == task_id) {
+            {
+                let mut mem = self.memory.write().await;
+                mem.pending_approvals.remove(&req.id);
+            }
+            req.status = ApprovalStatus::Cancelled;
+            req.decision = Some(ApprovalDecision::Cancel);
+            req.resolved_at = Some(Utc::now());
+            let _ = self.storage.upsert_approval(&req).await;
+            self.emit_event(
+                Some(req.task_id.clone()),
+                Some(req.issue_identifier.clone()),
+                Some(req.session_id.clone()),
+                Some(req.provider),
+                "approval/expired",
+                None,
+                format!("Approval '{}' expired because the run ended", req.title),
+                None,
+            )
+            .await;
+        }
     }
 
     pub async fn list_approvals(&self, only_pending: bool) -> SymphonyResult<Vec<ApprovalRequest>> {
@@ -2420,6 +2451,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         phase: RunAttemptPhase,
         error_msg: String,
     ) {
+        self.expire_pending_approvals(&task.id).await;
         let now = Utc::now();
         let elapsed = (now - attempt_record.started_at).num_milliseconds().max(0) as f64 / 1000.0;
         task.duration_seconds += elapsed;

@@ -104,7 +104,44 @@ fn generate() -> String {
         CredentialSavedResponse,
         StreamControlEvent,
     );
+    out.push_str(&task_transition_table());
     out.trim_end().to_string() + "\n"
+}
+
+/// Emit `TaskStatus::allowed_transitions` so the UI validates drag-and-drop moves with the exact
+/// Rust state machine instead of a hand-maintained copy. The server still enforces it.
+fn task_transition_table() -> String {
+    let all = [
+        TaskStatus::Backlog,
+        TaskStatus::Ready,
+        TaskStatus::Queued,
+        TaskStatus::Running,
+        TaskStatus::Blocked,
+        TaskStatus::HumanReview,
+        TaskStatus::Completed,
+        TaskStatus::Failed,
+        TaskStatus::Cancelled,
+    ];
+    let mut out = String::from("export const ALL_TASK_STATUSES: ReadonlyArray<TaskStatus> = [");
+    out.push_str(
+        &all.iter()
+            .map(|s| format!("\"{}\"", s.as_str()))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    out.push_str("];\n\n");
+    out.push_str("export const TASK_STATUS_TRANSITIONS: Readonly<Record<TaskStatus, ReadonlyArray<TaskStatus>>> = {\n");
+    for status in all {
+        let targets = status
+            .allowed_transitions()
+            .iter()
+            .map(|t| format!("\"{}\"", t.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("  {}: [{}],\n", status.as_str(), targets));
+    }
+    out.push_str("};\n");
+    out
 }
 
 fn contract_path() -> PathBuf {
