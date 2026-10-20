@@ -102,6 +102,8 @@ export const RuntimeProvider: React.FC<RuntimeProviderProps> = ({ children, clie
   // 2. Event stream + batched invalidation.
   useEffect(() => {
     if (!client) return;
+    // A new client means a (possibly restarted) runtime: drop cached server state.
+    void queryClient.invalidateQueries();
     const batcher = new Batcher<AgentEvent>((batch) => {
       append(batch);
       invalidateForEvents(queryClient, batch);
