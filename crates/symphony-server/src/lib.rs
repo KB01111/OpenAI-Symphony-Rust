@@ -894,11 +894,29 @@ async fn sse_events_handler(State(state): State<ServerState>, headers: HeaderMap
         Ok(ev) => agent_event_to_sse(&ev),
         Err(BroadcastStreamRecvError::Lagged(_)) => control_event("resync", Some("lagged")),
     });
-    // End the stream when the token it was opened with is rotated or revoked.
+    // End the stream when the token it was opened with is rotated or revoked. Subscribe first,
+    // then confirm the presented token is still current: a rotation between the auth middleware
+    // and this point is either seen here (401) or by the subscription (stream ends).
     let token_changed = {
         let mut rx = state.auth.as_ref().map(TokenSlot::subscribe);
-        if let Some(rx) = rx.as_mut() {
+        if let (Some(rx), Some(slot)) = (rx.as_mut(), state.auth.as_ref()) {
             rx.mark_unchanged();
+            let presented = headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.strip_prefix("Bearer "))
+                .unwrap_or("")
+                .trim();
+            if !slot
+                .current()
+                .is_some_and(|current| token_matches(&current, presented))
+            {
+                return api_error(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "A valid Bearer token is required",
+                );
+            }
         }
         async move {
             match rx {

@@ -280,11 +280,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Optional remote companion listener (disabled by default; reconfigured live by the API).
     remote_access.set_local_port(addr.port());
-    let settings = orchestrator
-        .storage()
-        .get_settings()
-        .await
-        .unwrap_or_default();
+    let mut settings = match orchestrator.storage().get_settings().await {
+        Ok(settings) => settings,
+        Err(err) => {
+            tracing::warn!(error = %err, "Could not read saved settings; remote access stays off until they are saved again");
+            Default::default()
+        }
+    };
+    // Settings saved before 2.0 carry the old default remote port, which is the local API's
+    // port (the desktop host migrates the same way).
+    if settings.remote_port == 4780 {
+        settings.remote_port = symphony_core::domain::AppSettings::default().remote_port;
+        if let Err(err) = orchestrator.storage().save_settings(&settings).await {
+            tracing::warn!(error = %err, "Could not persist the migrated remote API port");
+        }
+    }
     let remote = remote_access.apply(&settings).await;
     if remote.enabled {
         tracing::info!(state = ?remote.state, error = ?remote.error, "Remote companion access");

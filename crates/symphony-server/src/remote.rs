@@ -462,6 +462,8 @@ impl RemoteAccessManager {
         self.orchestrator
             .secret_store()
             .set_secret(REMOTE_TOKEN_KEY, &token)?;
+        // The previous token stops working now, even if the settings cannot be loaded below.
+        self.token.set(Some(token.clone()));
         let settings = self.orchestrator.storage().get_settings().await?;
         let status = self.apply(&settings).await;
         info!("Remote access token rotated");
@@ -473,6 +475,9 @@ impl RemoteAccessManager {
         self.orchestrator
             .secret_store()
             .delete_secret(REMOTE_TOKEN_KEY)?;
+        // Every remote request is rejected from here on, even if the settings cannot be loaded
+        // below (an absent token rejects all requests).
+        self.token.set(None);
         let settings = self.orchestrator.storage().get_settings().await?;
         let status = self.apply(&settings).await;
         info!("Remote access token revoked");
