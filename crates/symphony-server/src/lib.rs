@@ -168,6 +168,7 @@ pub struct CreateProjectRequest {
     pub auto_dispatch: Option<bool>,
     pub tracker_kind: Option<String>,
     pub required_labels: Option<Vec<String>>,
+    #[schema(minimum = 1, maximum = 32)]
     pub max_concurrent_agents: Option<u32>,
     pub validation_commands: Option<Vec<String>>,
 }

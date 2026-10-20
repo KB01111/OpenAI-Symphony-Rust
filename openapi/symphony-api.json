@@ -2446,7 +2446,8 @@
               "null"
             ],
             "format": "int32",
-            "minimum": 0
+            "maximum": 32,
+            "minimum": 1
           },
           "validation_commands": {
             "type": [
@@ -3380,7 +3381,8 @@
             ],
             "format": "int32",
             "default": null,
-            "minimum": 0
+            "maximum": 32,
+            "minimum": 1
           },
           "validation_commands": {
             "type": [

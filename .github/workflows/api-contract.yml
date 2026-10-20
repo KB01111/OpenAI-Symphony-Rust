@@ -87,14 +87,15 @@ jobs:
         run: |
           base="base/openapi/symphony-api.json"
           head="head/openapi/symphony-api.json"
+          # The head document is pull-request controlled: never follow external $refs (SSRF).
           if [ ! -f "$base" ]; then
             echo "The base branch has no OpenAPI document yet; nothing to compare."
             exit 0
           fi
-          "$RUNNER_TEMP/oasdiff" changelog "$base" "$head" --format markdown >> "$GITHUB_STEP_SUMMARY" || true
+          "$RUNNER_TEMP/oasdiff" changelog "$base" "$head" --allow-external-refs=false --format markdown >> "$GITHUB_STEP_SUMMARY" || true
           if [ "$ALLOW_BREAKING" = "true" ]; then
             echo "::warning::Breaking changes allowed by the 'api-breaking-change' label; bump API_VERSION in crates/symphony-server."
-            "$RUNNER_TEMP/oasdiff" breaking "$base" "$head"
+            "$RUNNER_TEMP/oasdiff" breaking "$base" "$head" --allow-external-refs=false
           else
-            "$RUNNER_TEMP/oasdiff" breaking "$base" "$head" --fail-on ERR
+            "$RUNNER_TEMP/oasdiff" breaking "$base" "$head" --allow-external-refs=false --fail-on ERR
           fi

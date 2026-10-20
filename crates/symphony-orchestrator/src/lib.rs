@@ -116,6 +116,7 @@ pub struct ProjectUpdate {
     pub linear_project_slug: Option<String>,
     pub required_labels: Option<Vec<String>>,
     pub auto_dispatch: Option<bool>,
+    #[schema(minimum = 1, maximum = 32)]
     pub max_concurrent_agents: Option<u32>,
     pub validation_commands: Option<Vec<String>>,
 }
