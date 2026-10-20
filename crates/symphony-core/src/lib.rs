@@ -36,6 +36,29 @@ mod tests {
     }
 
     #[test]
+    fn test_redaction_masks_nested_tracker_credentials() {
+        let cfg = ServiceConfig {
+            tracker_provider: serde_json::json!({
+                "repo": "acme/app",
+                "token": "ghp_top",
+                "oauth": { "access_token": "nested-secret", "scope": "repo" },
+                "credentials": { "user": "bot", "pass": "p" },
+                "headers": [{ "authorization": "Bearer x" }]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            ..Default::default()
+        };
+        let shown = serde_json::to_string(&cfg.redacted_for_display().tracker_provider).unwrap();
+        for secret in ["ghp_top", "nested-secret", "\"bot\"", "Bearer x"] {
+            assert!(!shown.contains(secret), "{secret} leaked in {shown}");
+        }
+        assert!(shown.contains("acme/app"));
+        assert!(shown.contains("\"scope\":\"repo\""));
+    }
+
+    #[test]
     fn test_strict_template_rendering() {
         let wf = WorkflowDefinition::parse(
             "---\ntracker:\n  kind: github\n---\nTask {{ issue.identifier }} (attempt={{ attempt }}): {{ issue.title }}",

@@ -289,6 +289,11 @@ async fn start_embedded_runtime(
     // Optional authenticated remote listener for the mobile companion / Lumen.
     if settings.remote_api_enabled {
         match secret_store.get_secret("SYMPHONY_REMOTE_TOKEN") {
+            Some(_) if settings.remote_port == addr.port() => tracing::warn!(
+                port = settings.remote_port,
+                "Remote API port equals the local API port; choose a different remote port. \
+                 Remote listener not started"
+            ),
             Some(remote_token) if remote_token.len() >= 16 => {
                 let remote = ServerConfig {
                     bind_host: settings.remote_bind_address.clone(),

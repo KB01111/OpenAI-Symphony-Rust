@@ -228,3 +228,44 @@ async fn workflow_config_never_leaks_tracker_tokens() {
     );
     assert!(!body.to_string().contains("ghp_supersecretvalue123456"));
 }
+
+#[tokio::test]
+async fn registering_a_subdirectory_stores_the_checkout_root() {
+    let (app, dir) = router().await;
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join("src/nested")).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@symphony.local"]);
+    git(&["config", "user.name", "T"]);
+    std::fs::write(repo.join("README.md"), "x\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "init"]);
+
+    let nested = repo.join("src/nested");
+    let resp = app
+        .clone()
+        .oneshot(authed(
+            Method::POST,
+            "/api/v1/projects",
+            Some(json!({ "name": "nested", "repo_path": nested.to_string_lossy() })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let project = json_body(resp).await;
+    let stored = std::path::PathBuf::from(project["repo_path"].as_str().unwrap());
+    assert_eq!(
+        stored.canonicalize().unwrap(),
+        repo.canonicalize().unwrap(),
+        "worktrees must be created from the checkout root"
+    );
+}

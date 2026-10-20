@@ -85,7 +85,7 @@ export const PromptComposerBox: React.FC<PromptComposerBoxProps> = ({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       onKeyDown={(e) => {
-        if (onSubmit && (e.ctrlKey || e.metaKey) && e.key === "Enter" && value.trim()) {
+        if (onSubmit && !submitting && !disabled && (e.ctrlKey || e.metaKey) && e.key === "Enter" && value.trim()) {
           e.preventDefault();
           onSubmit();
         }

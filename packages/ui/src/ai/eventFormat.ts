@@ -48,7 +48,10 @@ function str(value: JsonValue | undefined): string | null {
  */
 export function formatAgentEvent(event: AgentEvent): FormattedAgentEvent {
   const type = event.event_type;
-  const payload = asObject(event.payload);
+  // Codex App Server events carry the raw JSON-RPC notification (`{ method, params: { item } }`);
+  // orchestrator and simulated events carry the fields directly or under `item`.
+  const raw = asObject(event.payload);
+  const payload = asObject(raw?.params) ?? raw;
   const item = asObject(payload?.item) ?? payload;
   const itemType = str(item?.type ?? undefined) ?? "";
   const base: FormattedAgentEvent = {
@@ -91,7 +94,12 @@ export function formatAgentEvent(event: AgentEvent): FormattedAgentEvent {
     const files = changes
       .map((c) => asObject(c))
       .filter((c): c is JsonObject => c !== null)
-      .map((c) => ({ path: str(c.path) ?? "?", kind: str(c.kind) ?? "update", diff: str(c.diff) }));
+      .map((c) => ({
+        path: str(c.path) ?? "?",
+        // Codex reports `kind` as `{ type: "add" | "delete" | "update" }`.
+        kind: str(c.kind) ?? str(asObject(c.kind)?.type) ?? "update",
+        diff: str(c.diff)
+      }));
     return { ...base, kind: "file_change", tone: "accent", files };
   }
   if (type === "item/tool/call" || itemType === "mcpToolCall" || itemType === "dynamicToolCall") {

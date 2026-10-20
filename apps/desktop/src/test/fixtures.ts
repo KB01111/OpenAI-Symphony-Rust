@@ -133,7 +133,7 @@ export function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     },
     remote_api_enabled: false,
     remote_bind_address: "127.0.0.1",
-    remote_port: 4780,
+    remote_port: 47821,
     onboarding_completed: true,
     extra_env_vars: {},
     provider_default_models: {},

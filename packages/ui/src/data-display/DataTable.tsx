@@ -13,6 +13,14 @@ import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../primitives/table.js";
 import { cn } from "../lib/utils.js";
 
+/** Clicks/keys on a button, link or input inside a cell belong to that control, not the row. */
+function fromInteractiveChild(e: React.SyntheticEvent<HTMLElement>): boolean {
+  const target = e.target as HTMLElement | null;
+  if (!target || target === e.currentTarget) return false;
+  const interactive = target.closest("button, a, input, select, textarea, [role='button'], [role='menuitem'], [role='checkbox']");
+  return interactive !== null && interactive !== e.currentTarget && e.currentTarget.contains(interactive);
+}
+
 export type { ColumnDef, SortingState } from "@tanstack/react-table";
 
 export interface DataTableProps<T> {
@@ -84,9 +92,11 @@ export function DataTable<T>({
         tabIndex={onRowActivate ? 0 : undefined}
         aria-selected={row.id === selectedId}
         className={cn(onRowActivate && "cursor-pointer", "h-row")}
-        onClick={() => onRowActivate?.(row.original)}
+        onClick={(e) => {
+          if (!fromInteractiveChild(e)) onRowActivate?.(row.original);
+        }}
         onKeyDown={(e) => {
-          if (onRowActivate && (e.key === "Enter" || e.key === " ")) {
+          if (onRowActivate && (e.key === "Enter" || e.key === " ") && !fromInteractiveChild(e)) {
             e.preventDefault();
             onRowActivate(row.original);
           }

@@ -74,6 +74,22 @@ describe("formatAgentEvent", () => {
       payload: { item: { type: "fileChange", changes: [{ path: "a.md", kind: "add", diff: "+x" }] } }
     });
     expect(file.files).toEqual([{ path: "a.md", kind: "add", diff: "+x" }]);
+    // Codex App Server notifications are stored as the raw JSON-RPC message.
+    const codexFile = formatAgentEvent({
+      ...baseEvent,
+      event_type: "item/completed",
+      payload: {
+        method: "item/completed",
+        params: { item: { type: "fileChange", changes: [{ path: "src/lib.rs", kind: { type: "update" }, diff: "-a\n+b" }] } }
+      }
+    });
+    expect(codexFile).toMatchObject({ kind: "file_change", files: [{ path: "src/lib.rs", kind: "update", diff: "-a\n+b" }] });
+    const codexCmd = formatAgentEvent({
+      ...baseEvent,
+      event_type: "item/started",
+      payload: { method: "item/started", params: { item: { type: "commandExecution", command: "cargo test", exitCode: 0 } } }
+    });
+    expect(codexCmd).toMatchObject({ kind: "command", command: "cargo test", exitCode: 0 });
     expect(formatAgentEvent({ ...baseEvent, event_type: "attempt/failed", payload: null }).kind).toBe("error");
     expect(formatAgentEvent({ ...baseEvent, event_type: "approval/requested", payload: null }).tone).toBe("warning");
     expect(formatAgentEvent({ ...baseEvent, event_type: "attempt/succeeded", payload: null }).tone).toBe("success");

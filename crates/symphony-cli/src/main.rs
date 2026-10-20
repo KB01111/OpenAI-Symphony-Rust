@@ -112,18 +112,17 @@ async fn main() -> anyhow::Result<()> {
     let storage = Storage::connect(&db_path).await?;
     let secret_store = SecretStore::new(&data_dir)?;
 
+    // Precedence: --workflow, ./WORKFLOW.md, then a workflow previously saved to the data dir.
+    let data_dir_workflow = data_dir.join("WORKFLOW.md");
     let wf_path = cli.workflow_path.or_else(|| {
-        let candidate = PathBuf::from("WORKFLOW.md");
-        if candidate.exists() {
-            Some(candidate)
-        } else {
-            None
-        }
+        [PathBuf::from("WORKFLOW.md"), data_dir_workflow.clone()]
+            .into_iter()
+            .find(|candidate| candidate.exists())
     });
 
     let orchestrator = Arc::new(SymphonyOrchestrator::new(storage, wf_path, secret_store).await?);
     orchestrator
-        .set_workflow_fallback_path(data_dir.join("WORKFLOW.md"))
+        .set_workflow_fallback_path(data_dir_workflow)
         .await;
     orchestrator.start_background_loops();
 

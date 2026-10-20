@@ -37,6 +37,42 @@ async fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// Run git and read at most `limit` bytes of stdout without buffering the rest; the child is
+/// killed once the budget is exhausted. Returns the bytes read and whether output was cut off.
+/// Non-zero exit codes are accepted (`git diff --no-index` exits 1 when files differ).
+async fn git_stdout_bounded(cwd: &Path, args: &[&str], limit: usize) -> (Vec<u8>, bool) {
+    use tokio::io::AsyncReadExt;
+    let child = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn();
+    let Ok(mut child) = child else {
+        return (Vec::new(), false);
+    };
+    let Some(stdout) = child.stdout.take() else {
+        return (Vec::new(), false);
+    };
+    let mut buf = Vec::new();
+    let read = stdout.take(limit as u64 + 1).read_to_end(&mut buf).await;
+    let overflow = read.is_ok() && buf.len() > limit;
+    if overflow {
+        buf.truncate(limit);
+        let _ = child.start_kill();
+    }
+    let _ = child.wait().await;
+    (buf, overflow)
+}
+
+/// Split NUL-terminated git output (`-z`) into raw, unquoted paths/records.
+fn split_nul(output: &str) -> impl Iterator<Item = &str> {
+    output.split('\0').filter(|s| !s.is_empty())
+}
+
 fn count_text_lines(path: &Path) -> u32 {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_file() && meta.len() <= 2 * 1024 * 1024 => std::fs::read(path)
@@ -448,26 +484,36 @@ impl WorkspaceManager {
         if !workspace_path.exists() {
             return Ok(Vec::new());
         }
+        // `-z` output is NUL-separated and never C-quoted, so paths with spaces, quotes or
+        // non-ASCII characters are taken verbatim.
         let Some(status) = git_stdout(
             workspace_path,
-            &["status", "--porcelain", "--untracked-files=all"],
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         )
         .await
         else {
             return Ok(Vec::new());
         };
-        let numstat = git_stdout(workspace_path, &["diff", "--numstat", "HEAD"])
+        let numstat = git_stdout(workspace_path, &["diff", "--numstat", "-z", "HEAD"])
             .await
             .unwrap_or_default();
         let mut counts = std::collections::HashMap::new();
-        for line in numstat.lines() {
-            let mut parts = line.splitn(3, '\t');
+        let mut records = split_nul(&numstat);
+        while let Some(record) = records.next() {
+            let mut parts = record.splitn(3, '\t');
             let (Some(add), Some(del), Some(path)) = (parts.next(), parts.next(), parts.next())
             else {
                 continue;
             };
+            // Renames: `add\tdel\t` followed by the old and new path as separate records.
+            let path = if path.is_empty() {
+                let _old = records.next();
+                records.next().unwrap_or_default()
+            } else {
+                path
+            };
             counts.insert(
-                path.trim().to_string(),
+                path.to_string(),
                 (
                     add.parse::<u32>().unwrap_or(0),
                     del.parse::<u32>().unwrap_or(0),
@@ -476,19 +522,17 @@ impl WorkspaceManager {
         }
 
         let mut files = Vec::new();
-        for line in status.lines() {
-            if line.len() < 4 {
+        let mut entries = split_nul(&status);
+        while let Some(entry) = entries.next() {
+            if entry.len() < 4 {
                 continue;
             }
-            let code = line[..2].trim().to_string();
-            let raw_path = line[3..].trim();
-            // Renames are reported as `old -> new`; the new path is what exists on disk.
-            let path = raw_path
-                .rsplit_once(" -> ")
-                .map(|(_, new)| new)
-                .unwrap_or(raw_path)
-                .trim_matches('"')
-                .to_string();
+            let code = entry[..2].trim().to_string();
+            // Renames/copies list the new path first, then the original path as its own record.
+            if code.starts_with('R') || code.starts_with('C') {
+                let _original = entries.next();
+            }
+            let path = entry[3..].to_string();
             let status = match code.as_str() {
                 "M" | "MM" | "AM" => "modified",
                 "A" | "??" => "added",
@@ -523,31 +567,38 @@ impl WorkspaceManager {
         if !workspace_path.exists() {
             return (String::new(), false);
         }
-        let mut diff = git_stdout(workspace_path, &["diff", "HEAD"])
-            .await
-            .unwrap_or_default();
+        let (tracked, mut truncated) =
+            git_stdout_bounded(workspace_path, &["diff", "HEAD"], max_bytes).await;
+        let mut diff = String::from_utf8_lossy(&tracked).into_owned();
         let untracked = git_stdout(
             workspace_path,
-            &["ls-files", "--others", "--exclude-standard"],
+            &["ls-files", "-z", "--others", "--exclude-standard"],
         )
         .await
         .unwrap_or_default();
-        for path in untracked.lines().take(MAX_UNTRACKED_DIFF_FILES) {
-            if diff.len() >= max_bytes {
+        let paths: Vec<&str> = split_nul(&untracked).collect();
+        for (index, path) in paths.iter().enumerate() {
+            if truncated || diff.len() >= max_bytes {
+                truncated = true;
                 break;
             }
-            // `git diff --no-index` exits with 1 when files differ, so read stdout regardless of status.
-            let out = Command::new("git")
-                .arg("-C")
-                .arg(workspace_path)
-                .args(["diff", "--no-index", "--", "/dev/null", path])
-                .output()
-                .await;
-            if let Ok(o) = out {
-                diff.push_str(&String::from_utf8_lossy(&o.stdout));
+            if index >= MAX_UNTRACKED_DIFF_FILES {
+                // Remaining untracked files are omitted, so the diff is incomplete.
+                truncated = true;
+                break;
             }
+            let budget = max_bytes - diff.len();
+            let (bytes, cut) = git_stdout_bounded(
+                workspace_path,
+                &["diff", "--no-index", "--", "/dev/null", path],
+                budget,
+            )
+            .await;
+            diff.push_str(&String::from_utf8_lossy(&bytes));
+            truncated |= cut;
         }
-        truncate_utf8(diff, max_bytes)
+        let (diff, cut) = truncate_utf8(diff, max_bytes);
+        (diff, truncated || cut)
     }
 
     /// Safely remove a workspace directory and detach its Git worktree registration.
@@ -892,6 +943,15 @@ mod tests {
         let (short, truncated) = mgr.collect_diff(&allocated.path, 40).await;
         assert!(truncated);
         assert!(short.len() <= 40);
+
+        // Paths that git would C-quote (non-ASCII, spaces) are parsed verbatim via `-z`.
+        std::fs::write(allocated.path.join("café notes.txt"), "bonjour\n").unwrap();
+        let changed = mgr.inspect_changed_files(&allocated.path).await.unwrap();
+        assert!(changed
+            .iter()
+            .any(|f| f.path == "café notes.txt" && f.additions == 1));
+        let (diff, _) = mgr.collect_diff(&allocated.path, 64_000).await;
+        assert!(diff.contains("+bonjour"));
 
         // Refuses non-forced cleanup on dirty worktree
         assert!(mgr

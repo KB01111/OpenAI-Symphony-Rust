@@ -203,17 +203,7 @@ impl ServiceConfig {
     pub fn redacted_for_display(&self) -> Self {
         let mut copy = self.clone();
         for (key, value) in copy.tracker_provider.iter_mut() {
-            let lower = key.to_lowercase();
-            let sensitive = ["token", "api_key", "apikey", "secret", "password"]
-                .iter()
-                .any(|needle| lower.contains(needle));
-            if sensitive {
-                if let Value::String(s) = value {
-                    if !s.is_empty() {
-                        *value = Value::String("[redacted]".to_string());
-                    }
-                }
-            }
+            redact_value(key, value);
         }
         copy
     }
@@ -655,4 +645,44 @@ pub fn compute_backoff_delay_ms(
     let exp = attempt.saturating_sub(1).min(20);
     let raw = 10_000u64.saturating_mul(1u64 << exp);
     raw.min(max_retry_backoff_ms)
+}
+fn is_sensitive_key(key: &str) -> bool {
+    let lower = key.to_lowercase();
+    [
+        "token",
+        "api_key",
+        "apikey",
+        "secret",
+        "password",
+        "credential",
+        "authorization",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+/// Mask credential-looking values at any depth (`oauth: { access_token: … }`, lists of objects).
+fn redact_value(key: &str, value: &mut Value) {
+    match value {
+        Value::String(s) if is_sensitive_key(key) && !s.is_empty() => {
+            *value = Value::String("[redacted]".to_string());
+        }
+        Value::Object(map) => {
+            let parent_sensitive = is_sensitive_key(key);
+            for (child_key, child) in map.iter_mut() {
+                let effective = if parent_sensitive {
+                    key
+                } else {
+                    child_key.as_str()
+                };
+                redact_value(effective, child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                redact_value(key, item);
+            }
+        }
+        _ => {}
+    }
 }

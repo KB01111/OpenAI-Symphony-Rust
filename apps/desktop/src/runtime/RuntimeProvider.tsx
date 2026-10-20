@@ -78,7 +78,9 @@ export const RuntimeProvider: React.FC<RuntimeProviderProps> = ({ children, clie
       setPhase("discovering");
       try {
         const found = await (discover ?? (() => SymphonyClient.discover()))();
-        await found.runtime();
+        // `/state` is protected: this proves the discovered token, not just that a runtime
+        // answers (a stale runtime.json from a previous launch would pass a public probe).
+        await found.getState();
         if (cancelled) return;
         setClient(found);
         setError(null);
@@ -107,7 +109,15 @@ export const RuntimeProvider: React.FC<RuntimeProviderProps> = ({ children, clie
     const stream = client.createEventStream({
       onEvent: (event) => batcher.push(event),
       onResync: () => void queryClient.invalidateQueries(),
-      onStatus: (status) => setStreamStatus(status)
+      onStatus: (status) => {
+        setStreamStatus(status);
+        // The runtime restarted with a new per-launch token: discover it again instead of
+        // staying on a client every request of which is rejected.
+        if (status === "unauthorized" && !injected) {
+          setClient(null);
+          setAttempt((a) => a + 1);
+        }
+      }
     });
     streamRef.current = stream;
     stream.start();
@@ -116,7 +126,7 @@ export const RuntimeProvider: React.FC<RuntimeProviderProps> = ({ children, clie
       batcher.dispose();
       streamRef.current = null;
     };
-  }, [client, queryClient, append]);
+  }, [client, queryClient, append, injected]);
 
   // 3. Visibility / connectivity / resume handling.
   useEffect(() => {

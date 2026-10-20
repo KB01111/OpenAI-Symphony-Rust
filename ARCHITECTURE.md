@@ -75,5 +75,5 @@ Designed for modern hybrid laptops such as the **ASUS ROG Zephyrus G16** (AMD Ry
 
 ## 5. Remote Control, Lumen Integration, and iOS Companion
 
-- **Loopback vs. Remote Binding**: By default, `symphony-server` binds strictly to `127.0.0.1:47800`. Remote network binding requires explicit opt-in (`remote_access_enabled: true`), a configured scoped Bearer token, and TLS termination.
+- **Loopback vs. Remote Binding**: The local API binds strictly to `127.0.0.1` (4780, or an ephemeral fallback published via `runtime.json`/IPC) and always requires the per-launch Bearer token. The desktop host starts an additional remote listener only when `remote_api_enabled` is set and a `SYMPHONY_REMOTE_TOKEN` of at least 16 characters is stored in the vault; it binds `remote_bind_address:remote_port` (default `127.0.0.1:47821`) and refuses to reuse the local port. Expose it beyond the machine only behind TLS termination.
 - **iOS Companion (`apps/mobile`)**: Built with React 19, `@symphony/shared-types`, `@symphony/api-client`, and `@symphony/ui`, packaged with a Tauri 2 iOS configuration (`apps/mobile/tauri.ios.conf.json`). Connects remotely to the Windows orchestration daemon to monitor active agents, inspect streaming logs, approve tool calls, create tasks, and cancel runs with confirmation dialogs.

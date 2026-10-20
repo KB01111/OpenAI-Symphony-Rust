@@ -109,39 +109,49 @@ export class SymphonyClient {
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
     if (options.body !== undefined) headers["Content-Type"] = "application/json";
 
+    // The deadline and the caller's signal stay armed until the body has been read, so a stalled
+    // body still times out and can be cancelled.
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(), this.timeoutMs);
     const onAbort = () => timeout.abort();
     options.signal?.addEventListener("abort", onAbort, { once: true });
+    const failure = (error: unknown) =>
+      options.signal?.aborted ? new SymphonyApiError(0, "aborted", "Request aborted") : SymphonyApiError.network(error);
 
-    let response: Response;
     try {
-      response = await this.fetchImpl(this.url(path, options.query), {
-        method,
-        headers,
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-        signal: timeout.signal
-      });
-    } catch (error) {
-      if (options.signal?.aborted) throw new SymphonyApiError(0, "aborted", "Request aborted");
-      throw SymphonyApiError.network(error);
+      let response: Response;
+      try {
+        response = await this.fetchImpl(this.url(path, options.query), {
+          method,
+          headers,
+          body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+          signal: timeout.signal
+        });
+      } catch (error) {
+        throw failure(error);
+      }
+
+      if (!response.ok) {
+        let body: unknown = null;
+        try {
+          body = await response.json();
+        } catch {
+          /* non-JSON or interrupted error body */
+        }
+        throw SymphonyApiError.fromBody(response.status, body);
+      }
+      if (response.status === 204) return undefined as T;
+      let text: string;
+      try {
+        text = await response.text();
+      } catch (error) {
+        throw failure(error);
+      }
+      return (text ? JSON.parse(text) : undefined) as T;
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", onAbort);
     }
-
-    if (!response.ok) {
-      let body: unknown = null;
-      try {
-        body = await response.json();
-      } catch {
-        /* non-JSON error body */
-      }
-      throw SymphonyApiError.fromBody(response.status, body);
-    }
-    if (response.status === 204) return undefined as T;
-    const text = await response.text();
-    return (text ? JSON.parse(text) : undefined) as T;
   }
 
   // --------------------------------------------------------------------------------------------

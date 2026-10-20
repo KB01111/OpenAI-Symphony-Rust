@@ -14,8 +14,16 @@ function symphonyDevDiscovery(): Plugin {
     apply: "serve",
     configureServer(server) {
       server.middlewares.use("/__symphony/runtime", (req, res) => {
-        const host = (req.headers.host ?? "").split(":")[0];
-        if (host !== "localhost" && host !== "127.0.0.1") {
+        // Only same-origin requests from the dev page itself may read the token:
+        // - loopback Host header (blocks DNS rebinding),
+        // - browsers mark cross-site/same-site requests with Sec-Fetch-Site,
+        // - an Origin header, when present, must be this dev server.
+        const hostHeader = req.headers.host ?? "";
+        const host = hostHeader.split(":")[0];
+        const fetchSite = req.headers["sec-fetch-site"];
+        const origin = req.headers.origin;
+        const sameOrigin = origin === undefined || origin === `http://${hostHeader}`;
+        if ((host !== "localhost" && host !== "127.0.0.1") || (fetchSite !== undefined && fetchSite !== "same-origin") || !sameOrigin) {
           res.statusCode = 403;
           res.end();
           return;

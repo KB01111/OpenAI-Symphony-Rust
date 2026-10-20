@@ -2,11 +2,14 @@ import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button, CounterBadge, Tab, TabList, Tooltip } from "@fluentui/react-components";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { errorMessage } from "@symphony/api-client";
 import { formatMessage, type AgentEvent, type ApprovalDecision, type ApprovalRequest } from "@symphony/shared-types";
 import {
   AiApprovalBanner,
   AiEmptyView,
   AiEventStreamCard,
+  ErrorState,
+  LoadingRows,
   LogModeSwitch,
   SdkCodeBlock,
   VirtualList,
@@ -59,6 +62,7 @@ const TERMINAL_KINDS: AgentEventKind[] = ["command"];
 
 const ApprovalsTab: React.FC = () => {
   const m = useMessages(shellMessages);
+  const t = useT();
   const approvals = useApprovals(true);
   const decide = useDecideApproval();
   const navigate = useNavigate();
@@ -71,6 +75,11 @@ const ApprovalsTab: React.FC = () => {
       { onSettled: () => setPending(({ [approval.id]: _removed, ...rest }) => rest) }
     );
   };
+  if (approvals.isLoading) return <LoadingRows className="p-2" rows={3} />;
+  if (approvals.isError) {
+    // Never show "no approvals" when the list could not be fetched: requests may be waiting.
+    return <ErrorState className="m-2" title={m.drawer.loadFailed} message={errorMessage(approvals.error)} onRetry={() => void approvals.refetch()} retryLabel={t.common.retry} />;
+  }
   const list = approvals.data ?? [];
   if (list.length === 0) return <AiEmptyView className="m-2" title={m.drawer.noApprovals} />;
   return (
@@ -94,9 +103,14 @@ const ApprovalsTab: React.FC = () => {
 
 const ValidationsTab: React.FC = () => {
   const m = useMessages(shellMessages);
+  const t = useT();
   const taskId = useFocusedTaskId();
   const validations = useTaskValidations(taskId);
   if (!taskId) return <AiEmptyView className="m-2" title={m.drawer.selectTask} />;
+  if (validations.isLoading) return <LoadingRows className="p-2" rows={3} />;
+  if (validations.isError) {
+    return <ErrorState className="m-2" title={m.drawer.loadFailed} message={errorMessage(validations.error)} onRetry={() => void validations.refetch()} retryLabel={t.common.retry} />;
+  }
   const list = validations.data ?? [];
   if (list.length === 0) return <AiEmptyView className="m-2" title={m.drawer.noValidations} />;
   return (
@@ -125,6 +139,20 @@ const ProblemsTab: React.FC = () => {
   const { streamStatus } = useRuntime();
   const problems: { key: string; text: string; onOpen?: () => void }[] = [];
   if (streamStatus !== "open") problems.push({ key: "stream", text: m.drawer.problemStream });
+  const failedQueries: [string, { isError: boolean; error: unknown; refetch: () => unknown }][] = [
+    [m.nav.overview, state],
+    [m.nav.tasks, tasks],
+    [m.nav.providers, providers]
+  ];
+  for (const [resource, query] of failedQueries) {
+    if (query.isError) {
+      problems.push({
+        key: `q-${resource}`,
+        text: formatMessage(m.drawer.problemQuery, { resource, error: errorMessage(query.error) }),
+        onOpen: () => void query.refetch()
+      });
+    }
+  }
   if (state.data?.workflow_error) problems.push({ key: "wf", text: formatMessage(m.drawer.problemWorkflow, { error: state.data.workflow_error }), onOpen: () => navigate(paths.workflow()) });
   for (const p of providers.data ?? []) {
     if (!p.installed) problems.push({ key: `p-${p.provider}`, text: formatMessage(m.drawer.problemProvider, { provider: t.provider[p.provider] }), onOpen: () => navigate(paths.providers()) });

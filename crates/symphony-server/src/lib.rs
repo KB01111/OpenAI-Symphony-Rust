@@ -698,7 +698,7 @@ async fn create_project_handler(
         .filter(|s| !s.trim().is_empty())
         .or_else(|| {
             Some(
-                PathBuf::from(&req.repo_path)
+                PathBuf::from(&validation.repo_path)
                     .join("WORKFLOW.md")
                     .to_string_lossy()
                     .to_string(),

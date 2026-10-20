@@ -21,6 +21,9 @@ use symphony_core::{
     TokenUsage, ValidationResult, WorkflowDefinition, WorktreeInfo,
 };
 use symphony_platform::{HardwareMonitor, SecretStore};
+
+/// Provider API keys that agent subprocesses may receive from the credential vault.
+pub const PROVIDER_CREDENTIAL_ENV_KEYS: &[&str] = &["OPENAI_API_KEY", "ANTHROPIC_API_KEY"];
 use symphony_storage::Storage;
 use symphony_trackers::{GitHubTracker, LinearTracker, TrackerAdapter};
 use symphony_workspaces::WorkspaceManager;
@@ -867,15 +870,23 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
         let mut is_git_repository = false;
         let mut current_branch = None;
+        let mut resolved_path = repo_path.trim().to_string();
         if is_directory {
+            // Resolve the checkout root: a subdirectory of a repository is inside the work tree,
+            // but worktrees are created from the root (which holds `.git`).
             let out = tokio::process::Command::new("git")
                 .arg("-C")
                 .arg(&path)
-                .args(["rev-parse", "--is-inside-work-tree"])
+                .args(["rev-parse", "--show-toplevel"])
                 .output()
                 .await;
-            is_git_repository = matches!(&out, Ok(o) if o.status.success()
-                && String::from_utf8_lossy(&o.stdout).trim() == "true");
+            if let Ok(o) = &out {
+                let top = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if o.status.success() && !top.is_empty() {
+                    is_git_repository = true;
+                    resolved_path = PathBuf::from(&top).to_string_lossy().into_owned();
+                }
+            }
             if is_git_repository {
                 if let Ok(o) = tokio::process::Command::new("git")
                     .arg("-C")
@@ -895,7 +906,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             }
         }
         RepositoryValidation {
-            repo_path: repo_path.trim().to_string(),
+            repo_path: resolved_path,
             exists,
             is_directory,
             is_git_repository,
@@ -1312,32 +1323,39 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .get_pr_review(review_id)
             .await?
             .ok_or_else(|| SymphonyError::NotFound(format!("PR review {review_id} not found")))?;
-        if review.human_approved {
-            return Ok(review);
+        // Idempotent and retry-safe: a repeated call (e.g. after the task write failed) still
+        // completes the task, but approval is recorded and announced only once.
+        let newly_approved = !review.human_approved;
+        if newly_approved {
+            review.human_approved = true;
+            review.state = "approved_for_merge".to_string();
+            review.updated_at = Utc::now();
+            self.storage.upsert_pr_review(&review).await?;
         }
 
-        review.human_approved = true;
-        review.state = "approved_for_merge".to_string();
-        review.updated_at = Utc::now();
-        self.storage.upsert_pr_review(&review).await?;
-
         if let Ok(mut task) = self.get_task(&review.task_id).await {
-            task.status = TaskStatus::Completed;
-            task.completed_at = Some(Utc::now());
-            task.updated_at = Utc::now();
-            self.storage.upsert_task(&task).await?;
-
-            self.emit_event(
-                Some(task.id),
-                Some(task.issue.identifier),
-                None,
-                Some(task.provider),
-                "pr/human_approved",
-                Some(RunAttemptPhase::Succeeded),
-                format!("Human approved PR #{} ({})", review.pr_number, review.title),
-                None,
-            )
-            .await;
+            // Only a task waiting for human review is completed by an approval; a task that was
+            // re-dispatched, cancelled or already completed keeps its state.
+            let completes_task = task.status == TaskStatus::HumanReview;
+            if completes_task {
+                task.status = TaskStatus::Completed;
+                task.completed_at = Some(Utc::now());
+                task.updated_at = Utc::now();
+                self.storage.upsert_task(&task).await?;
+            }
+            if newly_approved || completes_task {
+                self.emit_event(
+                    Some(task.id),
+                    Some(task.issue.identifier),
+                    None,
+                    Some(task.provider),
+                    "pr/human_approved",
+                    Some(RunAttemptPhase::Succeeded),
+                    format!("Human approved PR #{} ({})", review.pr_number, review.title),
+                    None,
+                )
+                .await;
+            }
         }
 
         Ok(review)
@@ -1469,12 +1487,23 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
         std::fs::write(&path, raw_content)?;
 
-        {
+        let was_watched = {
             let mut mem = self.memory.write().await;
+            let was_watched = mem.active_workflow_path.is_some();
             mem.active_workflow = wf;
             mem.active_config = cfg;
             mem.active_workflow_path = Some(path.clone());
             mem.workflow_error = None;
+            was_watched
+        };
+        if !was_watched {
+            // First save to the fallback location: start watching it so later external edits
+            // reload the configuration like a workflow that existed at startup.
+            let orch = self.clone();
+            let watched = path.clone();
+            tokio::spawn(async move {
+                let _ = orch.watch_workflow_file(watched).await;
+            });
         }
         self.emit_event(
             None,
@@ -1497,15 +1526,37 @@ Please implement the requested changes cleanly in the current Git workspace, run
     // Tracker Synchronization & Reconciliation Loop (SPEC.md Sections 8 & 16)
     // =========================================================================
 
+    /// GitHub token for host-side tracker calls: every alias the credential API accepts, from the
+    /// vault first, then the process environment.
+    fn github_token(&self) -> Option<String> {
+        const ALIASES: [&str; 3] = ["GITHUB_TOKEN", "GH_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
+        ALIASES
+            .iter()
+            .find_map(|key| self.secret_store.get_secret(key))
+            .or_else(|| ALIASES.iter().find_map(|key| std::env::var(key).ok()))
+            .filter(|token| !token.trim().is_empty())
+    }
+
+    /// Provider API keys stored in the vault, passed to agent subprocesses explicitly so they work
+    /// after a restart without exporting them into the runtime's own environment. Tracker tokens
+    /// are never included (they stay host-side for dynamic tools).
+    fn provider_env_from_vault(&self) -> HashMap<String, String> {
+        PROVIDER_CREDENTIAL_ENV_KEYS
+            .iter()
+            .filter_map(|key| {
+                self.secret_store
+                    .get_secret(key)
+                    .filter(|v| !v.trim().is_empty())
+                    .map(|v| ((*key).to_string(), v))
+            })
+            .collect()
+    }
+
     fn build_tracker_for_project(&self, project: &Project) -> Option<Box<dyn TrackerAdapter>> {
         match project.tracker_kind.to_lowercase().as_str() {
             "github" => {
                 let repo = project.github_repo.clone()?;
-                let token = self
-                    .secret_store
-                    .get_secret("GITHUB_TOKEN")
-                    .or_else(|| std::env::var("GITHUB_TOKEN").ok())
-                    .or_else(|| std::env::var("GH_TOKEN").ok());
+                let token = self.github_token();
                 Some(Box::new(GitHubTracker::new(None, repo, token, None)))
             }
             "linear" => {
@@ -2103,14 +2154,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let gh_tracker = if project.tracker_kind.eq_ignore_ascii_case("github") {
             project.github_repo.as_ref().map(|repo| {
                 dynamic_tools.push(GitHubTracker::dynamic_tool_spec());
-                GitHubTracker::new(
-                    None,
-                    repo.clone(),
-                    self.secret_store
-                        .get_secret("GITHUB_TOKEN")
-                        .or_else(|| std::env::var("GITHUB_TOKEN").ok()),
-                    None,
-                )
+                GitHubTracker::new(None, repo.clone(), self.github_token(), None)
             })
         } else {
             None
@@ -2158,7 +2202,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             turn_sandbox_policy: config.codex.turn_sandbox_policy.clone(),
             read_timeout_ms: config.codex.read_timeout_ms,
             turn_timeout_ms: config.codex.turn_timeout_ms,
-            extra_env: HashMap::new(),
+            extra_env: self.provider_env_from_vault(),
             dynamic_tools,
             require_human_approval_for_requests: config.codex.approval_policy != json!("never"),
         };
@@ -2270,6 +2314,21 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     attempt_record.total_tokens += outcome.usage.total_tokens;
                     let _ = self.storage.upsert_run_attempt(&attempt_record).await;
 
+                    if outcome.cancelled {
+                        let _ = agent_session.stop().await;
+                        let reason = outcome
+                            .error_message
+                            .unwrap_or_else(|| "Turn aborted by operator".to_string());
+                        self.finish_unsuccessful_attempt(
+                            &mut task,
+                            &mut attempt_record,
+                            TaskStatus::Cancelled,
+                            RunAttemptPhase::CanceledByReconciliation,
+                            reason,
+                        )
+                        .await;
+                        return;
+                    }
                     if !outcome.succeeded {
                         let _ = agent_session.stop().await;
                         let err_msg = outcome
@@ -2451,11 +2510,31 @@ Please implement the requested changes cleanly in the current Git workspace, run
         phase: RunAttemptPhase,
         error_msg: String,
     ) {
+        self.finish_unsuccessful_attempt(
+            task,
+            attempt_record,
+            TaskStatus::Failed,
+            phase,
+            error_msg,
+        )
+        .await;
+    }
+
+    /// End an attempt that did not succeed: `Failed` (eligible for retry) or `Cancelled` (the
+    /// operator aborted the turn, e.g. via the "abort turn" approval decision).
+    async fn finish_unsuccessful_attempt(
+        &self,
+        task: &mut Task,
+        attempt_record: &mut RunAttempt,
+        status: TaskStatus,
+        phase: RunAttemptPhase,
+        error_msg: String,
+    ) {
         self.expire_pending_approvals(&task.id).await;
         let now = Utc::now();
         let elapsed = (now - attempt_record.started_at).num_milliseconds().max(0) as f64 / 1000.0;
         task.duration_seconds += elapsed;
-        task.status = TaskStatus::Failed;
+        task.status = status;
         task.current_phase = Some(phase);
         task.last_error = Some(error_msg.clone());
         task.updated_at = now;
@@ -2478,9 +2557,17 @@ Please implement the requested changes cleanly in the current Git workspace, run
             Some(task.issue.identifier.clone()),
             attempt_record.session_id.clone(),
             Some(task.provider),
-            "attempt/failed",
+            if status == TaskStatus::Cancelled {
+                "task/cancelled"
+            } else {
+                "attempt/failed"
+            },
             Some(phase),
-            format!("Task {} failed: {}", task.issue.identifier, error_msg),
+            if status == TaskStatus::Cancelled {
+                format!("Task {} cancelled: {}", task.issue.identifier, error_msg)
+            } else {
+                format!("Task {} failed: {}", task.issue.identifier, error_msg)
+            },
             None,
         )
         .await;

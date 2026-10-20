@@ -6,6 +6,29 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 describe("SymphonyClient", () => {
+  it("keeps the deadline armed while the response body is read", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init!.signal!;
+      // Headers arrive immediately, but the body stalls until the request is aborted.
+      return {
+        ok: true,
+        status: 200,
+        text: () =>
+          new Promise<string>((_, reject) => {
+            if (signal.aborted) reject(new Error("aborted"));
+            signal.addEventListener("abort", () => reject(new Error("aborted")));
+          })
+      } as unknown as Response;
+    });
+    const client = new SymphonyClient({ baseUrl: "http://h:1", token: null, timeoutMs: 30, fetchImpl: fetchImpl as unknown as typeof fetch });
+    await expect(client.getState()).rejects.toMatchObject({ kind: "network" });
+
+    const caller = new AbortController();
+    const pending = client.getState(caller.signal);
+    caller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "aborted" });
+  });
+
   it("targets the real Axum routes with the right verbs", async () => {
     const seen: string[] = [];
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
