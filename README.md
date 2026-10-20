@@ -24,7 +24,7 @@ Symphony Desktop is a local-first autonomous coding orchestration platform inspi
   - Modular desktop shell: command bar, collapsible sidebar with project switcher, Ctrl+K command palette, resizable context inspector, bottom activity drawer (events, agent/terminal output, validations, approvals, problems) and a status bar with live hardware telemetry.
   - Views: Overview, Projects (guided Add Repository with native folder picker), Tasks (9-state Kanban with state-machine-validated drag and drop + data table), Agent Runs (control center), Live Execution workspace, Worktrees, Pull Request Review Center (1–5 merge readiness), Workflow Studio (CodeMirror + runtime validation/preview), Providers, Settings.
   - One token source shared by **Fluent UI React v9** (Windows-native controls, dialogs, menus, forms), **shadcn/ui** (resizable panels, command palette, data tables, context menus) and **OpenAI Apps SDK UI** (AI-native approval, event, markdown, code and readiness surfaces); dark/light/system themes, compact/comfortable density, reduced motion, English and Swedish.
-  - Typed API contracts generated from Rust (`ts-rs`) and checked in CI; authenticated SSE streaming with resume, dedupe and reconnection.
+  - OpenAPI 3.1 document generated from the Axum routes (`utoipa-axum`), TypeScript types and SDK generated from it with Hey API; CI checks freshness and breaking changes. Authenticated SSE streaming with resume, dedupe and reconnection.
 - **Hardware-Aware Windows 11 Execution (`symphony-platform`)**:
   - Optimized for hybrid laptops (e.g., ASUS ROG Zephyrus G16 with AMD Ryzen AI 9 HX 370 + Radeon 890M + RTX 4070).
   - Queries Windows power status via `GetSystemPowerStatus` (`windows-sys`) without waking disabled discrete GPUs on battery.

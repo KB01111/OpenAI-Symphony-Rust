@@ -28,13 +28,16 @@ export default function TasksPage() {
   const projects = useProjects();
   const projectList = useMemo(() => projects.data ?? [], [projects.data]);
   // A persisted selection whose project was removed falls back to all projects (matching the
-  // toolbar), and is cleared once the project list confirms it no longer exists.
+  // toolbar), and is cleared once a settled project list confirms it no longer exists. While the
+  // list is refetching (e.g. right after creating a project) the selection is kept.
   const selectionExists = activeProjectId !== null && projectList.some((p) => p.id === activeProjectId);
-  const effectiveProjectId = projects.data ? (selectionExists ? activeProjectId : null) : activeProjectId;
+  const listSettled = projects.data !== undefined && !projects.isFetching;
+  const selectionGone = listSettled && activeProjectId !== null && !selectionExists;
+  const effectiveProjectId = selectionGone ? null : activeProjectId;
   const setActiveProject = useUiStore((s) => s.setActiveProject);
   useEffect(() => {
-    if (projects.data && activeProjectId !== null && !selectionExists) setActiveProject(null);
-  }, [projects.data, activeProjectId, selectionExists, setActiveProject]);
+    if (selectionGone) setActiveProject(null);
+  }, [selectionGone, setActiveProject]);
   const tasks = useTasks(effectiveProjectId);
   const allTasks = useMemo(() => tasks.data ?? [], [tasks.data]);
   const visible = useMemo(() => filterTasks(allTasks, filters), [allTasks, filters]);

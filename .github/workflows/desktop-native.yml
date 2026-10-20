@@ -44,8 +44,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Check generated API contracts are up to date
-        run: cargo test -p symphony-server --test ts_contract --locked
+      - name: Check API contract invariants (OpenAPI document and task state machine)
+        run: cargo test -p symphony-server --test openapi_contract --test state_machine_contract --locked
 
       - name: Build desktop app (frontend + Tauri host, release, no installer)
         run: pnpm --filter @symphony/desktop tauri build --no-bundle

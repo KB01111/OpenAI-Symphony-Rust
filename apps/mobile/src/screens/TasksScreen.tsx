@@ -78,7 +78,7 @@ export const TasksScreen: React.FC = () => {
                     size="small"
                     appearance="secondary"
                     className="ms-auto"
-                    disabled={dispatch.isPending && dispatch.variables === task.id}
+                    disabled={dispatch.isPending}
                     onClick={() => start(task)}
                   >
                     {m.startTask}

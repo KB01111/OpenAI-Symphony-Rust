@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Button, Checkbox, Field, Input, MessageBar, MessageBarBody, MessageBarTitle, Spinner } from "@fluentui/react-components";
-import { SymphonyClient } from "@symphony/api-client";
+import { SymphonyClient, configuredApiConfig } from "@symphony/api-client";
 import { formatMessage } from "@symphony/shared-types";
 import { classifyConnectionError, normalizeBaseUrl, type ConnectionSettings } from "../connection.js";
 import { useStrings } from "../i18n.js";
@@ -36,7 +36,9 @@ export const ConnectScreen: React.FC<ConnectScreenProps> = ({ initial, rejected,
     setProblem(null);
     setBusy(true);
     try {
-      const client = new SymphonyClient({ baseUrl: normalized.url, token: token.trim() || null, timeoutMs: 10_000 });
+      const client = SymphonyClient.fromConfig(
+        configuredApiConfig(normalized.url, token.trim() || null, "remote", { timeoutMs: 10_000 })
+      );
       // `/state` is protected, so this proves the token — `/health` would not.
       await client.getState();
       onConnected({ baseUrl: normalized.url, token: token.trim(), remember });

@@ -1,4 +1,4 @@
-import type { AgentEvent, JsonValue } from "@symphony/shared-types";
+import { asJsonObject, type AgentEvent, type JsonValue } from "@symphony/shared-types";
 
 export type AgentEventKind =
   | "message"
@@ -33,10 +33,7 @@ export interface FormattedAgentEvent {
 }
 
 type JsonObject = { [key: string]: JsonValue | undefined };
-
-function asObject(value: JsonValue | null | undefined): JsonObject | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : null;
-}
+const asObject = asJsonObject;
 
 function str(value: JsonValue | undefined): string | null {
   return typeof value === "string" ? value : null;
@@ -137,3 +134,23 @@ export const EVENT_KINDS: ReadonlyArray<AgentEventKind> = [
   "lifecycle",
   "other"
 ];
+
+/** Runtime events whose text the UI renders from its own EN/SV strings instead of `message`. */
+export type RuntimeEventTemplate =
+  | { key: "workflowReloaded" | "workflowSaved"; values: { path: string } }
+  | { key: "workflowReloadFailed"; values: { error: string } };
+
+/** The localized template for a runtime event, or `null` when the event's `message` is shown. */
+export function runtimeEventTemplate(event: AgentEvent): RuntimeEventTemplate | null {
+  const payload = asObject(event.payload);
+  switch (event.event_type) {
+    case "workflow/reloaded":
+      return { key: "workflowReloaded", values: { path: str(payload?.path) ?? "" } };
+    case "workflow/saved":
+      return { key: "workflowSaved", values: { path: str(payload?.path) ?? "" } };
+    case "workflow/reload_failed":
+      return { key: "workflowReloadFailed", values: { error: str(payload?.error) ?? event.message } };
+    default:
+      return null;
+  }
+}

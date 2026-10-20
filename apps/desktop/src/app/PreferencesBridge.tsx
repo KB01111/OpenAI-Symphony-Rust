@@ -23,6 +23,10 @@ export function PreferencesBridge(): null {
   const setLocale = useUiStore((s) => s.setLocale);
   // Last values both sides agreed on; `null` until runtime settings have loaded.
   const synced = useRef<Prefs | null>(null);
+  // Last local store values this bridge observed. Only a change of the store itself is a UI edit:
+  // when cached settings are adopted on mount, the store still holds its hydrated values during
+  // the first effect pass, and those must not be written back.
+  const seenLocal = useRef<Prefs>({ theme: themeMode, locale });
 
   const serverTheme = settings.data?.theme;
   const serverLocale = settings.data?.locale;
@@ -39,6 +43,9 @@ export function PreferencesBridge(): null {
 
   // UI → runtime (runs only when the local store changes)
   useEffect(() => {
+    const seen = seenLocal.current;
+    if (seen.theme === themeMode && seen.locale === locale) return;
+    seenLocal.current = { theme: themeMode, locale };
     const last = synced.current;
     if (!last || (last.theme === themeMode && last.locale === locale)) return;
     synced.current = { theme: themeMode, locale };

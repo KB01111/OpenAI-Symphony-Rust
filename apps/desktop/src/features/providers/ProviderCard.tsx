@@ -85,12 +85,16 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
 
   const saveDefaultModel = () => {
     if (!settings || busy) return;
-    const next: AppSettings["provider_default_models"] = { ...settings.provider_default_models };
-    if (trimmed) next[kind] = trimmed;
-    else delete next[kind];
-    const update: AppSettings = { ...settings, provider_default_models: next };
-    if (isGlobalDefault && trimmed) update.default_model = trimmed;
-    saveModel.mutate(update, {
+    // Functional update: queued saves from several provider cards each apply only their own field
+    // to the latest settings instead of overwriting each other with stale snapshots.
+    saveModel.mutate((latest) => {
+      const next: AppSettings["provider_default_models"] = { ...latest.provider_default_models };
+      if (trimmed) next[kind] = trimmed;
+      else delete next[kind];
+      const update: AppSettings = { ...latest, provider_default_models: next };
+      if (latest.default_provider === kind && trimmed) update.default_model = trimmed;
+      return update;
+    }, {
       onSuccess: () => notify("success", m.saved, formatMessage(m.savedDefault, { provider: provider.display_name }))
     });
   };
@@ -99,7 +103,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
     if (!settings || busy) return;
     const defaultModel = trimmed || savedModel || provider.default_model || models[0] || settings.default_model;
     saveGlobal.mutate(
-      { ...settings, default_provider: kind, default_model: defaultModel },
+      (latest) => ({ ...latest, default_provider: kind, default_model: defaultModel }),
       { onSuccess: () => notify("success", m.saved, formatMessage(m.savedGlobal, { provider: provider.display_name })) }
     );
   };

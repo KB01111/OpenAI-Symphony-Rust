@@ -49,9 +49,10 @@ The 2.0 desktop UI and design system are documented in detail in
 [`docs/UI_ARCHITECTURE.md`](./docs/UI_ARCHITECTURE.md) and [`docs/DESIGN_SYSTEM.md`](./docs/DESIGN_SYSTEM.md).
 In short:
 
-- **Contracts**: API types are generated from the Rust structs with `ts-rs` and checked by
-  `crates/symphony-server/tests/ts_contract.rs`; the TypeScript client is integration-tested against the
-  real Axum router.
+- **Contracts**: the Axum handlers are annotated with `utoipa`, so the OpenAPI document
+  (`openapi/symphony-api.json`) is generated from the served routes. Hey API generates the TypeScript
+  types, SDK and fetch client from it; `SymphonyClient` wraps that SDK and is integration-tested against
+  the real Axum router. CI checks that the contract is regenerated and has no breaking changes.
 - **Transport**: the webview discovers the runtime over Tauri IPC (`get_local_api_config`), calls the
   authenticated HTTP API, and receives events over the in-process `symphony://event` channel (embedded
   runtime) or authenticated SSE with `Last-Event-ID` resume (attached/remote).

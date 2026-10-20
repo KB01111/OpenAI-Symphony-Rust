@@ -1,4 +1,5 @@
-import { act, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it } from "vitest";
 import { PreferencesBridge } from "./PreferencesBridge.js";
 import { createMockRuntime, renderWithProviders } from "../test/renderWithProviders.js";
@@ -55,5 +56,34 @@ describe("PreferencesBridge", () => {
     await waitFor(() => expect(useUiStore.getState().themeMode).toBe("system"));
     expect(useUiStore.getState().locale).toBe("sv");
     expect(puts).toBe(1);
+  });
+
+  it("adopts cached runtime preferences on remount without writing stale local values back", async () => {
+    const stored = settings({ theme: "light", locale: "sv" });
+    const runtime = createMockRuntime({ "GET /settings": () => stored, "PUT /settings": ({ body }) => body });
+    const Harness = () => {
+      const [mounted, setMounted] = useState(true);
+      return (
+        <>
+          <button onClick={() => setMounted((m) => !m)}>toggle</button>
+          {mounted ? <PreferencesBridge /> : null}
+        </>
+      );
+    };
+    renderWithProviders(<Harness />, { runtime });
+    await waitFor(() => expect(useUiStore.getState().themeMode).toBe("light"));
+
+    // While the bridge is unmounted the local store diverges (e.g. hydrated from another window).
+    fireEvent.click(screen.getByRole("button", { name: "toggle" }));
+    act(() => {
+      useUiStore.getState().setThemeMode("dark");
+      useUiStore.getState().setLocale("en");
+    });
+    // Remount with the settings already cached: both effects run in the same pass.
+    fireEvent.click(screen.getByRole("button", { name: "toggle" }));
+    await waitFor(() => expect(useUiStore.getState().themeMode).toBe("light"));
+    expect(useUiStore.getState().locale).toBe("sv");
+    await new Promise((r) => setTimeout(r, 100));
+    expect(runtime.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
   });
 });

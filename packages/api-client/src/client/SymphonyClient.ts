@@ -1,35 +1,27 @@
+import * as api from "@symphony/shared-types/api";
+import { createClient, type Client } from "@symphony/shared-types/api/client";
 import type {
-  AgentEvent,
   AppSettings,
   ApprovalDecision,
-  ApprovalRequest,
   CreateProjectRequest,
   CreateTaskRequest,
-  CredentialKeysResponse,
-  CredentialSavedResponse,
-  HealthResponse,
-  IssueDetailResponse,
-  OrchestratorStateSnapshot,
   PreviewWorkflowRequest,
-  Project,
   ProjectUpdate,
-  ProviderStatus,
-  PullRequestReview,
-  RefreshResponse,
-  RepositoryValidation,
-  RunAttempt,
-  RuntimeInfo,
-  SchedulerStateResponse,
-  Task,
-  TaskDiff,
-  TaskStatus,
-  ValidationResult,
-  WorkflowDocument,
-  WorkflowValidation,
-  WorktreeInfo
+  TaskStatus
 } from "@symphony/shared-types";
+import {
+  API_BASE_PATH,
+  DEFAULT_TIMEOUT_MS,
+  configuredApiConfig,
+  defaultRuntimeTarget,
+  normalizeBaseUrl,
+  resolveApiConfig,
+  type ApiConfig,
+  type ApiConfigOptions,
+  type RuntimeTarget
+} from "../config/apiConfig.js";
 import { SymphonyApiError } from "../errors/index.js";
-import { discoverRuntimeEndpoint, type RuntimeEndpoint } from "../transport/discovery.js";
+import type { RuntimeEndpoint } from "../transport/discovery.js";
 import { NativeEventStream } from "../streaming/native.js";
 import { AuthenticatedSseStream, type EventStream, type EventStreamHandlers } from "../streaming/sse.js";
 
@@ -43,115 +35,119 @@ export interface SymphonyClientOptions {
   endpoint?: Pick<RuntimeEndpoint, "source" | "mode">;
 }
 
-interface RequestOptions {
-  body?: unknown;
-  query?: Record<string, string | number | boolean | null | undefined>;
-  signal?: AbortSignal;
+/** Options every generated SDK function accepts from this client. */
+interface CallOptions {
+  client: Client;
+  signal: AbortSignal;
+  throwOnError: false;
+}
+
+/** The shape generated SDK functions resolve to when `throwOnError` is `false`. */
+type CallResult<T> = { data?: T; error?: unknown; response?: Response };
+
+/** Query values: empty strings, `null` and `undefined` are omitted. */
+function q<T>(value: T | null | undefined | ""): T | undefined {
+  return value === null || value === "" ? undefined : value;
 }
 
 /**
- * Typed client for the Symphony runtime API (`/api/v1/*`). Every route here exists in
- * `crates/symphony-server/src/lib.rs`; payload types are generated from the Rust structs.
+ * Typed client for the Symphony runtime API (`/api/v1/*`).
+ *
+ * Every endpoint call goes through the SDK that Hey API generates from the Rust OpenAPI document
+ * (`@symphony/shared-types/api`), so paths, parameters and payloads cannot drift from the server.
+ * This class adds what the generated SDK does not provide: one connection configuration for
+ * desktop, local and remote runtimes, bearer authentication, request deadlines, normalized
+ * errors and the authenticated event stream.
  */
 export class SymphonyClient {
-  private baseUrl: string;
-  private token: string | null;
-  private readonly fetchImpl: typeof fetch;
-  private readonly timeoutMs: number;
-  private endpoint: Pick<RuntimeEndpoint, "source" | "mode">;
+  private config: ApiConfig;
+  private readonly http: Client;
 
-  constructor(options: SymphonyClientOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
-    this.token = options.token ?? null;
-    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
-    this.timeoutMs = options.timeoutMs ?? 20_000;
-    this.endpoint = options.endpoint ?? { source: "configured", mode: "remote" };
-  }
-
-  /** Create a client for the local runtime using desktop IPC or dev-server discovery. */
-  static async discover(fetchImpl?: typeof fetch): Promise<SymphonyClient> {
-    const endpoint = await discoverRuntimeEndpoint(fetchImpl);
-    return new SymphonyClient({
-      baseUrl: endpoint.baseUrl,
-      token: endpoint.token,
-      fetchImpl,
-      endpoint
+  constructor(options: SymphonyClientOptions | ApiConfig) {
+    this.config = {
+      baseUrl: normalizeBaseUrl(options.baseUrl),
+      token: options.token ?? null,
+      endpoint: options.endpoint ?? { source: "configured", mode: "remote" },
+      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      fetchImpl: options.fetchImpl
+    };
+    const fetchImpl = this.config.fetchImpl;
+    this.http = createClient({
+      baseUrl: this.config.baseUrl,
+      // Resolved per request so `setConnection` takes effect immediately. Only operations the
+      // OpenAPI document marks as bearer-protected receive it.
+      auth: () => this.config.token ?? undefined,
+      fetch: (request) => (fetchImpl ? fetchImpl(request) : fetch(request))
     });
   }
 
-  get connection(): { baseUrl: string; source: RuntimeEndpoint["source"]; mode: RuntimeEndpoint["mode"] } {
-    return { baseUrl: this.baseUrl, ...this.endpoint };
+  /** Build a client from a resolved connection configuration. */
+  static fromConfig(config: ApiConfig): SymphonyClient {
+    return new SymphonyClient(config);
   }
 
+  /** Resolve `target` (desktop IPC, local discovery or a remote endpoint) and build a client. */
+  static async connect(target: RuntimeTarget, options: ApiConfigOptions = {}): Promise<SymphonyClient> {
+    return SymphonyClient.fromConfig(await resolveApiConfig(target, options));
+  }
+
+  /** Create a client for the local runtime using desktop IPC or dev-server discovery. */
+  static discover(fetchImpl?: typeof fetch): Promise<SymphonyClient> {
+    return SymphonyClient.connect(defaultRuntimeTarget(), { fetchImpl });
+  }
+
+  get connection(): { baseUrl: string; source: RuntimeEndpoint["source"]; mode: RuntimeEndpoint["mode"] } {
+    return { baseUrl: this.config.baseUrl, ...this.config.endpoint };
+  }
+
+  /** Point this client at an explicitly configured (remote) runtime. */
   setConnection(baseUrl: string, token: string | null): void {
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
-    this.token = token;
-    this.endpoint = { source: "configured", mode: "remote" };
+    const next = configuredApiConfig(baseUrl, token, "remote", {
+      fetchImpl: this.config.fetchImpl,
+      timeoutMs: this.config.timeoutMs
+    });
+    this.config = next;
+    this.http.setConfig({ baseUrl: next.baseUrl });
   }
 
   // --------------------------------------------------------------------------------------------
   // Transport
   // --------------------------------------------------------------------------------------------
 
-  private url(path: string, query?: RequestOptions["query"]): string {
-    const url = `${this.baseUrl}/api/v1${path}`;
-    if (!query) return url;
-    const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(query)) {
-      if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
-    }
-    const qs = params.toString();
-    return qs ? `${url}?${qs}` : url;
-  }
-
-  private async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
-    const headers: Record<string, string> = { Accept: "application/json" };
-    if (this.token) headers.Authorization = `Bearer ${this.token}`;
-    if (options.body !== undefined) headers["Content-Type"] = "application/json";
-
-    // The deadline and the caller's signal stay armed until the body has been read, so a stalled
-    // body still times out and can be cancelled.
-    const timeout = new AbortController();
-    const timer = setTimeout(() => timeout.abort(), this.timeoutMs);
-    const onAbort = () => timeout.abort();
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-    const failure = (error: unknown) =>
-      options.signal?.aborted ? new SymphonyApiError(0, "aborted", "Request aborted") : SymphonyApiError.network(error);
-
+  /**
+   * Run one generated SDK call with the client's deadline and the caller's signal. Both stay
+   * armed until the response body has been read, so a stalled body still times out and can be
+   * cancelled. Failures become `SymphonyApiError`.
+   */
+  private async call<T>(operation: (options: CallOptions) => Promise<CallResult<T>>, signal?: AbortSignal): Promise<T> {
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), this.config.timeoutMs);
+    const onAbort = () => deadline.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      let response: Response;
+      let result: CallResult<T>;
       try {
-        response = await this.fetchImpl(this.url(path, options.query), {
-          method,
-          headers,
-          body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-          signal: timeout.signal
-        });
+        result = await operation({ client: this.http, signal: deadline.signal, throwOnError: false });
       } catch (error) {
-        throw failure(error);
+        throw this.failure(error, signal);
       }
-
-      if (!response.ok) {
-        let body: unknown = null;
-        try {
-          body = await response.json();
-        } catch {
-          /* non-JSON or interrupted error body */
+      if (result.error !== undefined) {
+        // An HTTP error carries the response; a network failure or abort does not.
+        if (result.response && !result.response.ok) {
+          throw SymphonyApiError.fromBody(result.response.status, result.error);
         }
-        throw SymphonyApiError.fromBody(response.status, body);
+        throw this.failure(result.error, signal);
       }
-      if (response.status === 204) return undefined as T;
-      let text: string;
-      try {
-        text = await response.text();
-      } catch (error) {
-        throw failure(error);
-      }
-      return (text ? JSON.parse(text) : undefined) as T;
+      return (result.response?.status === 204 ? undefined : result.data) as T;
     } finally {
       clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
+      signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  private failure(error: unknown, signal?: AbortSignal): SymphonyApiError {
+    if (error instanceof SymphonyApiError) return error;
+    return signal?.aborted ? new SymphonyApiError(0, "aborted", "Request aborted") : SymphonyApiError.network(error);
   }
 
   // --------------------------------------------------------------------------------------------
@@ -159,26 +155,26 @@ export class SymphonyClient {
   // --------------------------------------------------------------------------------------------
 
   health(signal?: AbortSignal) {
-    return this.request<HealthResponse>("GET", "/health", { signal });
+    return this.call((o) => api.health(o), signal);
   }
   runtime(signal?: AbortSignal) {
-    return this.request<RuntimeInfo>("GET", "/runtime", { signal });
+    return this.call((o) => api.getRuntime(o), signal);
   }
   getState(signal?: AbortSignal) {
-    return this.request<OrchestratorStateSnapshot>("GET", "/state", { signal });
+    return this.call((o) => api.getState(o), signal);
   }
   /** Persisted runtime events across all tasks, newest first. */
   listRecentEvents(limit = 100, signal?: AbortSignal) {
-    return this.request<AgentEvent[]>("GET", "/events/recent", { query: { limit }, signal });
+    return this.call((o) => api.listRecentEvents({ ...o, query: { limit } }), signal);
   }
   refresh() {
-    return this.request<RefreshResponse>("POST", "/refresh");
+    return this.call((o) => api.refresh(o));
   }
   pauseScheduler() {
-    return this.request<SchedulerStateResponse>("POST", "/scheduler/pause");
+    return this.call((o) => api.pauseScheduler(o));
   }
   resumeScheduler() {
-    return this.request<SchedulerStateResponse>("POST", "/scheduler/resume");
+    return this.call((o) => api.resumeScheduler(o));
   }
   setSchedulerPaused(paused: boolean) {
     return paused ? this.pauseScheduler() : this.resumeScheduler();
@@ -189,24 +185,22 @@ export class SymphonyClient {
   // --------------------------------------------------------------------------------------------
 
   listProjects(signal?: AbortSignal) {
-    return this.request<Project[]>("GET", "/projects", { signal });
+    return this.call((o) => api.listProjects(o), signal);
   }
   getProject(id: string, signal?: AbortSignal) {
-    return this.request<Project>("GET", `/projects/${encodeURIComponent(id)}`, { signal });
+    return this.call((o) => api.getProject({ ...o, path: { id } }), signal);
   }
   validateRepository(repoPath: string) {
-    return this.request<RepositoryValidation>("POST", "/projects/validate", {
-      body: { repo_path: repoPath }
-    });
+    return this.call((o) => api.validateRepository({ ...o, body: { repo_path: repoPath } }));
   }
   createProject(input: CreateProjectRequest) {
-    return this.request<Project>("POST", "/projects", { body: input });
+    return this.call((o) => api.createProject({ ...o, body: input }));
   }
   updateProject(id: string, update: ProjectUpdate) {
-    return this.request<Project>("PATCH", `/projects/${encodeURIComponent(id)}`, { body: update });
+    return this.call((o) => api.updateProject({ ...o, path: { id }, body: update }));
   }
-  deleteProject(id: string) {
-    return this.request<void>("DELETE", `/projects/${encodeURIComponent(id)}`);
+  deleteProject(id: string): Promise<void> {
+    return this.call((o) => api.deleteProject({ ...o, path: { id } })).then(() => undefined);
   }
 
   // --------------------------------------------------------------------------------------------
@@ -214,53 +208,44 @@ export class SymphonyClient {
   // --------------------------------------------------------------------------------------------
 
   listTasks(filter: { projectId?: string | null; status?: TaskStatus | null } = {}, signal?: AbortSignal) {
-    return this.request<Task[]>("GET", "/tasks", {
-      query: { project_id: filter.projectId, status: filter.status },
+    return this.call(
+      (o) => api.listTasks({ ...o, query: { project_id: q(filter.projectId), status: q(filter.status) } }),
       signal
-    });
+    );
   }
   getTask(id: string, signal?: AbortSignal) {
-    return this.request<Task>("GET", `/tasks/${encodeURIComponent(id)}`, { signal });
+    return this.call((o) => api.getTask({ ...o, path: { id } }), signal);
   }
   /** Create a manual task. `auto_start: true` dispatches it immediately. */
   createTask(input: CreateTaskRequest) {
-    return this.request<Task>("POST", "/tasks", { body: input });
+    return this.call((o) => api.createTask({ ...o, body: input }));
   }
   moveTaskStatus(id: string, status: TaskStatus) {
-    return this.request<Task>("PATCH", `/tasks/${encodeURIComponent(id)}/status`, { body: { status } });
+    return this.call((o) => api.moveTaskStatus({ ...o, path: { id }, body: { status } }));
   }
   dispatchTask(id: string) {
-    return this.request<Task>("POST", `/tasks/${encodeURIComponent(id)}/dispatch`);
+    return this.call((o) => api.dispatchTask({ ...o, path: { id } }));
   }
   cancelTask(id: string, reason?: string) {
-    return this.request<Task>("POST", `/tasks/${encodeURIComponent(id)}/cancel`, {
-      body: { reason: reason ?? null }
-    });
+    return this.call((o) => api.cancelTask({ ...o, path: { id }, body: { reason: reason ?? null } }));
   }
   retryTask(id: string) {
-    return this.request<Task>("POST", `/tasks/${encodeURIComponent(id)}/retry`);
+    return this.call((o) => api.retryTask({ ...o, path: { id } }));
   }
   listTaskEvents(id: string, limit = 500, signal?: AbortSignal) {
-    return this.request<AgentEvent[]>("GET", `/tasks/${encodeURIComponent(id)}/events`, {
-      query: { limit },
-      signal
-    });
+    return this.call((o) => api.listTaskEvents({ ...o, path: { id }, query: { limit } }), signal);
   }
   listTaskAttempts(id: string, signal?: AbortSignal) {
-    return this.request<RunAttempt[]>("GET", `/tasks/${encodeURIComponent(id)}/attempts`, { signal });
+    return this.call((o) => api.listTaskAttempts({ ...o, path: { id } }), signal);
   }
   listTaskValidations(id: string, signal?: AbortSignal) {
-    return this.request<ValidationResult[]>("GET", `/tasks/${encodeURIComponent(id)}/validations`, {
-      signal
-    });
+    return this.call((o) => api.listTaskValidations({ ...o, path: { id } }), signal);
   }
   getTaskDiff(id: string, signal?: AbortSignal) {
-    return this.request<TaskDiff>("GET", `/tasks/${encodeURIComponent(id)}/diff`, { signal });
+    return this.call((o) => api.getTaskDiff({ ...o, path: { id } }), signal);
   }
   getIssueDetail(identifier: string, signal?: AbortSignal) {
-    return this.request<IssueDetailResponse>("GET", `/issues/${encodeURIComponent(identifier)}`, {
-      signal
-    });
+    return this.call((o) => api.getIssueDetail({ ...o, path: { issue_identifier: identifier } }), signal);
   }
 
   // --------------------------------------------------------------------------------------------
@@ -268,28 +253,23 @@ export class SymphonyClient {
   // --------------------------------------------------------------------------------------------
 
   listApprovals(onlyPending = true, signal?: AbortSignal) {
-    return this.request<ApprovalRequest[]>("GET", "/approvals", {
-      query: { only_pending: onlyPending },
-      signal
-    });
+    return this.call((o) => api.listApprovals({ ...o, query: { only_pending: onlyPending } }), signal);
   }
   decideApproval(id: string, decision: ApprovalDecision) {
-    return this.request<ApprovalRequest>("POST", `/approvals/${encodeURIComponent(id)}/decide`, {
-      body: { decision }
-    });
+    return this.call((o) => api.decideApproval({ ...o, path: { id }, body: { decision } }));
   }
   listPullRequests(projectId?: string | null, signal?: AbortSignal) {
-    return this.request<PullRequestReview[]>("GET", "/prs", { query: { project_id: projectId }, signal });
+    return this.call((o) => api.listPrReviews({ ...o, query: { project_id: q(projectId) } }), signal);
   }
   getPullRequest(id: string, signal?: AbortSignal) {
-    return this.request<PullRequestReview>("GET", `/prs/${encodeURIComponent(id)}`, { signal });
+    return this.call((o) => api.getPrReview({ ...o, path: { id } }), signal);
   }
   /** Records explicit human approval. This never merges anything. */
   approvePullRequest(id: string) {
-    return this.request<PullRequestReview>("POST", `/prs/${encodeURIComponent(id)}/approve-merge`);
+    return this.call((o) => api.approvePrMerge({ ...o, path: { id } }));
   }
   listWorktrees(signal?: AbortSignal) {
-    return this.request<WorktreeInfo[]>("GET", "/worktrees", { signal });
+    return this.call((o) => api.listWorktrees(o), signal);
   }
 
   // --------------------------------------------------------------------------------------------
@@ -297,14 +277,14 @@ export class SymphonyClient {
   // --------------------------------------------------------------------------------------------
 
   getWorkflow(signal?: AbortSignal) {
-    return this.request<WorkflowDocument>("GET", "/workflow", { signal });
+    return this.call((o) => api.getWorkflow(o), signal);
   }
   /** Validate and render unsaved workflow text with the runtime's real parser. */
   previewWorkflow(input: PreviewWorkflowRequest, signal?: AbortSignal) {
-    return this.request<WorkflowValidation>("POST", "/workflow/preview", { body: input, signal });
+    return this.call((o) => api.previewWorkflow({ ...o, body: input }), signal);
   }
   saveWorkflow(rawMarkdown: string) {
-    return this.request<WorkflowValidation>("PUT", "/workflow", { body: { raw_markdown: rawMarkdown } });
+    return this.call((o) => api.updateWorkflow({ ...o, body: { raw_markdown: rawMarkdown } }));
   }
 
   // --------------------------------------------------------------------------------------------
@@ -312,25 +292,25 @@ export class SymphonyClient {
   // --------------------------------------------------------------------------------------------
 
   getSettings(signal?: AbortSignal) {
-    return this.request<AppSettings>("GET", "/settings", { signal });
+    return this.call((o) => api.getSettings(o), signal);
   }
   saveSettings(settings: AppSettings) {
-    return this.request<AppSettings>("PUT", "/settings", { body: settings });
+    return this.call((o) => api.updateSettings({ ...o, body: settings }));
   }
   listProviders(refresh = false, signal?: AbortSignal) {
-    return this.request<ProviderStatus[]>("GET", "/providers", { query: { refresh }, signal });
+    return this.call((o) => api.listProviders({ ...o, query: { refresh } }), signal);
   }
   listCredentials(signal?: AbortSignal) {
-    return this.request<CredentialKeysResponse>("GET", "/credentials", { signal });
+    return this.call((o) => api.listCredentials(o), signal);
   }
   saveCredential(key: string, value: string) {
-    return this.request<CredentialSavedResponse>("POST", "/credentials", { body: { key, value } });
+    return this.call((o) => api.setCredential({ ...o, body: { key, value } }));
   }
-  deleteCredential(key: string) {
-    return this.request<void>("DELETE", `/credentials/${encodeURIComponent(key)}`);
+  deleteCredential(key: string): Promise<void> {
+    return this.call((o) => api.deleteCredential({ ...o, path: { key } })).then(() => undefined);
   }
   exportDiagnostics() {
-    return this.request<Record<string, unknown>>("GET", "/diagnostics/export");
+    return this.call((o) => api.exportDiagnostics(o)) as Promise<Record<string, unknown>>;
   }
 
   // --------------------------------------------------------------------------------------------
@@ -339,17 +319,19 @@ export class SymphonyClient {
 
   /**
    * Create (but do not start) the runtime event stream. Uses the in-process Tauri channel when the
-   * runtime is embedded in the desktop host, otherwise authenticated SSE.
+   * runtime is embedded in the desktop host, otherwise authenticated SSE with `Last-Event-ID`
+   * replay (the generated SDK's SSE helper is deliberately not used).
    */
   createEventStream(handlers: EventStreamHandlers): EventStream {
-    if (this.endpoint.source === "tauri" && this.endpoint.mode === "embedded") {
+    const { endpoint, baseUrl, token, fetchImpl } = this.config;
+    if (endpoint.source === "tauri" && endpoint.mode === "embedded") {
       return new NativeEventStream(handlers);
     }
     return new AuthenticatedSseStream({
       ...handlers,
-      url: this.url("/events"),
-      token: this.token,
-      fetchImpl: this.fetchImpl
+      url: `${baseUrl}${API_BASE_PATH}/events`,
+      token,
+      fetchImpl: fetchImpl ?? ((input, init) => fetch(input, init))
     });
   }
 }

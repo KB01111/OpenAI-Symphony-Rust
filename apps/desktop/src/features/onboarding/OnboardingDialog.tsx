@@ -34,7 +34,7 @@ export default function OnboardingDialog() {
     if (!settings.data || save.isPending || submitting.current) return;
     submitting.current = true;
     save.mutate(
-      { ...settings.data, onboarding_completed: true },
+      (latest) => ({ ...latest, onboarding_completed: true }),
       {
         onError: (error) => notify("error", m.saveFailed, errorMessage(error)),
         onSettled: () => {

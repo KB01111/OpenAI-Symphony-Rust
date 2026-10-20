@@ -2,13 +2,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use ts_rs::TS;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::error::{SymphonyError, SymphonyResult};
 
 /// Blocker reference for an Issue (SPEC.md Section 4.1.1)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct BlockerRef {
     pub id: Option<String>,
     pub identifier: Option<String>,
@@ -16,7 +16,7 @@ pub struct BlockerRef {
 }
 
 /// Normalized Issue record used across orchestration, prompting, and observability (SPEC.md Section 4.1.1)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Issue {
     pub id: String,
     #[serde(default)]
@@ -117,7 +117,7 @@ pub fn sort_candidate_issues(issues: &mut [Issue]) {
 }
 
 /// Orchestrator internal claim states (SPEC.md Section 4.1.8 & 7.1)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OrchestrationClaimState {
     Unclaimed,
@@ -126,7 +126,7 @@ pub enum OrchestrationClaimState {
 }
 
 /// Run attempt lifecycle phases (SPEC.md Section 7.2)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunAttemptPhase {
     PreparingWorkspace,
@@ -162,7 +162,7 @@ impl std::fmt::Display for RunAttemptPhase {
 }
 
 /// Symphony Desktop Kanban & Orchestration Task Statuses (Section 4.C & 5)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Backlog,
@@ -290,7 +290,7 @@ impl std::str::FromStr for TaskStatus {
 }
 
 /// Multi-provider coding agent kinds
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     Codex,
@@ -422,7 +422,7 @@ impl std::str::FromStr for ProviderKind {
 }
 
 /// Typed capabilities exposed by an agent provider (Section 6)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ProviderCapabilities {
     pub provider: ProviderKind,
     pub available: bool,
@@ -440,7 +440,7 @@ pub struct ProviderCapabilities {
 }
 
 /// Non-secret provider profile configuration
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ProviderProfile {
     pub id: String,
     pub name: String,
@@ -454,7 +454,7 @@ pub struct ProviderProfile {
 }
 
 /// Project entity representing a connected local + tracker repository
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Project {
     pub id: String,
     pub name: String,
@@ -476,7 +476,7 @@ pub struct Project {
 }
 
 /// Task record persisted in SQLite and orchestrated by Symphony
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct Task {
     pub id: String,
     pub project_id: String,
@@ -580,7 +580,7 @@ impl Task {
 }
 
 /// Run attempt record (SPEC.md Section 4.1.5)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RunAttempt {
     pub id: String,
     pub task_id: String,
@@ -604,7 +604,7 @@ pub struct RunAttempt {
 }
 
 /// Live session metadata tracked while an agent subprocess is active (SPEC.md Section 4.1.6)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct LiveSession {
     pub session_id: String,
     pub thread_id: String,
@@ -632,7 +632,7 @@ pub struct LiveSession {
 }
 
 /// Retry Entry in orchestrator state (SPEC.md Section 4.1.7)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RetryEntry {
     pub task_id: String,
     pub issue_id: String,
@@ -643,7 +643,7 @@ pub struct RetryEntry {
 }
 
 /// Token usage report
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -670,7 +670,7 @@ impl TokenUsage {
 }
 
 /// Structured agent/orchestrator event emitted in real time and stored in SQLite
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct AgentEvent {
     pub id: String,
     pub task_id: Option<String>,
@@ -685,7 +685,7 @@ pub struct AgentEvent {
 }
 
 /// Approval request raised by an agent session (e.g. command execution, file patch, PR creation, merge)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ApprovalRequest {
     pub id: String,
     pub task_id: String,
@@ -702,7 +702,7 @@ pub struct ApprovalRequest {
     pub decision: Option<ApprovalDecision>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalStatus {
     Pending,
@@ -711,7 +711,7 @@ pub enum ApprovalStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecision {
     Accept,
@@ -721,7 +721,7 @@ pub enum ApprovalDecision {
 }
 
 /// Validation command execution record (Section 10)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ValidationResult {
     pub id: String,
     pub task_id: String,
@@ -736,7 +736,7 @@ pub struct ValidationResult {
 }
 
 /// Structured Pull Request Review & Merge-Readiness Rating (1 to 5 backed by evidence, Section 4.F)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct PullRequestReview {
     pub id: String,
     pub task_id: String,
@@ -761,7 +761,7 @@ pub struct PullRequestReview {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ChangedFileSummary {
     pub path: String,
     pub status: String,
@@ -769,7 +769,7 @@ pub struct ChangedFileSummary {
     pub deletions: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ReviewCommentEvaluation {
     pub author: String,
     pub is_agent: bool,
@@ -779,7 +779,7 @@ pub struct ReviewCommentEvaluation {
     pub evaluation_summary: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct MergeReadinessReport {
     /// Structured rating from 1 (blocked/critical issues) to 5 (ready to merge with full verification)
     pub score: u8,
@@ -881,7 +881,7 @@ impl MergeReadinessReport {
 }
 
 /// Hardware & power telemetry snapshot (Section 13: ASUS Zephyrus G16 / Windows 11 aware)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct HardwareSnapshot {
     pub cpu_brand: String,
     pub cpu_usage_percent: f32,
@@ -900,7 +900,7 @@ pub struct HardwareSnapshot {
 }
 
 /// Configurable resource-aware scheduling policy (Section 13)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(default)]
 pub struct ResourcePolicy {
     pub max_concurrent_on_ac: u32,
@@ -923,7 +923,7 @@ impl Default for ResourcePolicy {
 }
 
 /// SPEC.md Section 13.7.2 `/api/v1/state` response contract + Symphony Desktop extensions
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct OrchestratorStateSnapshot {
     pub generated_at: DateTime<Utc>,
     pub scheduler_paused: bool,
@@ -937,7 +937,7 @@ pub struct OrchestratorStateSnapshot {
     pub workflow_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct StateCounts {
     pub running: usize,
     pub retrying: usize,
@@ -948,7 +948,7 @@ pub struct StateCounts {
     pub failed: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct RunningSessionSummary {
     pub issue_id: String,
     pub issue_identifier: String,
@@ -968,7 +968,7 @@ pub struct RunningSessionSummary {
     pub tokens: TokenUsage,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct CodexTotals {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -977,18 +977,37 @@ pub struct CodexTotals {
     pub estimated_cost_usd: f64,
 }
 
+/// Allowed values of [`AppSettings::theme`]. Documents the API contract only; the setting is
+/// stored as a string and validated by the API layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreference {
+    System,
+    Dark,
+    Light,
+}
+
+/// Allowed values of [`AppSettings::locale`]. Documents the API contract only; the setting is
+/// stored as a string and validated by the API layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalePreference {
+    En,
+    Sv,
+}
+
 /// Application settings persisted in SQLite (non-secret).
 ///
 /// `#[serde(default)]` keeps previously persisted JSON readable when fields are added:
 /// missing keys fall back to `AppSettings::default()` instead of failing deserialization.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(default)]
 pub struct AppSettings {
     /// `system` | `dark` | `light` (validated by the API layer).
-    #[ts(type = "\"system\" | \"dark\" | \"light\"")]
+    #[schema(value_type = ThemePreference)]
     pub theme: String,
     /// `en` | `sv` (validated by the API layer).
-    #[ts(type = "\"en\" | \"sv\"")]
+    #[schema(value_type = LocalePreference)]
     pub locale: String,
     pub minimize_to_tray_on_close: bool,
     pub start_background_runtime_on_login: bool,
@@ -1031,7 +1050,7 @@ impl Default for AppSettings {
 /// Detection only inspects the presence of credential files or environment variables; it never
 /// reads or reports secret values. `Unknown` is used when credentials may live in an OS keychain
 /// that the runtime does not probe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderAuthState {
     Authenticated,
@@ -1041,7 +1060,7 @@ pub enum ProviderAuthState {
 }
 
 /// Runtime-detected status of a coding agent provider (`GET /api/v1/providers`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ProviderStatus {
     pub provider: ProviderKind,
     pub display_name: String,
@@ -1053,12 +1072,11 @@ pub struct ProviderStatus {
     pub auth_detail: Option<String>,
     pub default_model: Option<String>,
     pub capabilities: ProviderCapabilities,
-    #[ts(type = "string")]
     pub detected_at: DateTime<Utc>,
 }
 
 /// Git worktree allocated for a task (`GET /api/v1/worktrees`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct WorktreeInfo {
     pub task_id: String,
     pub project_id: String,
@@ -1073,12 +1091,11 @@ pub struct WorktreeInfo {
     pub exists: bool,
     pub dirty: bool,
     pub active_session_id: Option<String>,
-    #[ts(type = "string")]
     pub last_activity_at: DateTime<Utc>,
 }
 
 /// Changed files and unified diff for a task workspace (`GET /api/v1/tasks/{id}/diff`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TaskDiff {
     pub task_id: String,
     pub workspace_path: Option<String>,
@@ -1090,7 +1107,7 @@ pub struct TaskDiff {
 }
 
 /// Result of validating a local repository before project registration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RepositoryValidation {
     pub repo_path: String,
     pub exists: bool,
@@ -1103,13 +1120,12 @@ pub struct RepositoryValidation {
 }
 
 /// Runtime identity used by clients to discover capabilities (`GET /api/v1/runtime`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RuntimeInfo {
     pub service: String,
     pub version: String,
     pub api_version: u32,
     pub auth_required: bool,
-    #[ts(type = "string")]
     pub started_at: DateTime<Utc>,
     pub event_stream: String,
 }

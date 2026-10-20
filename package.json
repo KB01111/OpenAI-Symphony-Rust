@@ -12,6 +12,7 @@
     "build:desktop": "pnpm --filter @symphony/desktop build",
     "dev:mobile": "pnpm --filter @symphony/mobile dev",
     "build:mobile": "pnpm --filter @symphony/mobile build",
+    "generate:api": "node scripts/generate-api.mjs",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",

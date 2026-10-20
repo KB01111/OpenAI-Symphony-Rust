@@ -23,7 +23,7 @@ use axum::{
         sse::{Event as SseEvent, KeepAlive, Sse},
         Html, IntoResponse, Response,
     },
-    routing::{get, post},
+    routing::get,
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -33,15 +33,24 @@ use subtle::ConstantTimeEq;
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::info;
-use ts_rs::TS;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::openapi::{RefOr, Schema};
+use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use symphony_core::{
     domain::{
-        AgentEvent, AppSettings, ApprovalDecision, Project, ProviderKind, RuntimeInfo, TaskStatus,
+        AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, LocalePreference,
+        OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus, PullRequestReview,
+        RepositoryValidation, RunAttempt, RuntimeInfo, Task, TaskDiff, TaskStatus, ThemePreference,
+        ValidationResult, WorktreeInfo,
     },
     error::{Result, SymphonyError},
 };
-use symphony_orchestrator::{ProjectUpdate, SymphonyOrchestrator};
+use symphony_orchestrator::{
+    IssueDetailResponse, ProjectUpdate, RefreshResponse, SymphonyOrchestrator, WorkflowDocument,
+    WorkflowValidation,
+};
 
 /// API contract version reported by `GET /api/v1/runtime`. Bump on breaking changes.
 pub const API_VERSION: u32 = 2;
@@ -118,36 +127,34 @@ pub struct ServerState {
 }
 
 // ============================================================================
-// Request / response contracts (exported to TypeScript via ts-rs)
+// Request / response contracts (described in the OpenAPI document)
 // ============================================================================
 
-#[derive(Debug, Serialize, Deserialize, TS)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorBody {
     pub error: ApiErrorDetail,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorDetail {
     pub code: String,
     pub message: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct HealthResponse {
     pub status: String,
     pub service: String,
     pub version: String,
-    #[ts(type = "string")]
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SchedulerStateResponse {
     pub scheduler_paused: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize, TS)]
-#[ts(optional_fields = nullable)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct CreateProjectRequest {
     pub name: String,
     pub repo_path: String,
@@ -165,20 +172,19 @@ pub struct CreateProjectRequest {
     pub validation_commands: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, Serialize, TS)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct ValidateRepositoryRequest {
     pub repo_path: String,
 }
 
-#[derive(Debug, Deserialize, Default, Serialize, TS)]
-#[ts(optional_fields = nullable)]
+#[derive(Debug, Deserialize, Default, Serialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListTasksQuery {
     pub project_id: Option<String>,
     pub status: Option<TaskStatus>,
 }
 
-#[derive(Debug, Deserialize, Serialize, TS)]
-#[ts(optional_fields = nullable)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct CreateTaskRequest {
     pub project_id: String,
     pub identifier: Option<String>,
@@ -194,44 +200,45 @@ pub struct CreateTaskRequest {
     pub auto_start: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, Serialize, TS)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct MoveTaskStatusRequest {
     pub status: TaskStatus,
 }
 
-#[derive(Debug, Deserialize, Default, Serialize, TS)]
-#[ts(optional_fields = nullable)]
+#[derive(Debug, Deserialize, Default, Serialize, ToSchema)]
 pub struct CancelTaskRequest {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct LimitQuery {
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ApprovalsQuery {
     pub only_pending: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, Serialize, TS)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct DecideApprovalRequest {
     pub decision: ApprovalDecision,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ProjectQuery {
     pub project_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize, TS)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct UpdateWorkflowRequest {
     pub raw_markdown: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, TS)]
-#[ts(optional_fields = nullable)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct PreviewWorkflowRequest {
     pub raw_markdown: String,
     pub sample_identifier: Option<String>,
@@ -240,35 +247,35 @@ pub struct PreviewWorkflowRequest {
     pub attempt: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ProvidersQuery {
     pub refresh: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, Serialize, TS)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct SetCredentialRequest {
     pub key: String,
     pub value: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, TS)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct CredentialKeysResponse {
     /// Names of configured credentials. Values are never returned.
     pub configured: Vec<String>,
     pub allowed: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize, TS)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct CredentialSavedResponse {
     pub saved: bool,
     pub key: String,
 }
 
 /// Payload of the `ready` and `resync` SSE events.
-#[derive(Debug, Deserialize, Serialize, TS)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct StreamControlEvent {
     pub api_version: u32,
-    #[ts(type = "string")]
     pub server_time: DateTime<Utc>,
     pub reason: Option<String>,
 }
@@ -276,6 +283,202 @@ pub struct StreamControlEvent {
 // ============================================================================
 // Router
 // ============================================================================
+
+/// Root of the OpenAPI document. Paths are collected from the `#[utoipa::path]` annotations of
+/// the handlers registered in [`api_routes`]; [`ApiContract`] adds what annotations cannot say.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Symphony Runtime API",
+        description = "Local orchestration runtime API used by Symphony Desktop, the mobile companion and local tools."
+    ),
+    tags(
+        (name = "runtime", description = "Health, discovery and orchestrator state"),
+        (name = "scheduler", description = "Pause and resume dispatching"),
+        (name = "events", description = "Live event stream and event history"),
+        (name = "projects", description = "Registered repositories"),
+        (name = "tasks", description = "Tasks, attempts, validations and diffs"),
+        (name = "issues", description = "Tracker issue detail"),
+        (name = "approvals", description = "Agent approval requests"),
+        (name = "reviews", description = "Pull request reviews and merge readiness"),
+        (name = "worktrees", description = "Agent workspaces"),
+        (name = "workflow", description = "WORKFLOW.md editing and validation"),
+        (name = "settings", description = "Application settings"),
+        (name = "providers", description = "Coding agent providers"),
+        (name = "credentials", description = "Credential vault (key names only)"),
+        (name = "diagnostics", description = "Redacted diagnostics export"),
+    ),
+    // The shared error body plus types that travel over the event stream or document string
+    // fields; no JSON operation references them directly.
+    components(schemas(
+        ApiErrorBody,
+        AgentEvent,
+        StreamControlEvent,
+        ThemePreference,
+        LocalePreference
+    )),
+    modifiers(&ApiContract)
+)]
+pub struct ApiDoc;
+
+/// Name of the bearer-token security scheme in the OpenAPI document.
+pub const BEARER_SCHEME: &str = "bearer_auth";
+
+/// Routes that answer without a token (`health`, `runtime`).
+const PUBLIC_PATHS: &[&str] = &["/api/v1/health", "/api/v1/runtime"];
+
+/// Request bodies whose `Option` fields may be omitted. Every other schema lists all of its
+/// properties as required (nullable where the Rust field is an `Option`), because the server
+/// always serializes every field.
+const OPTIONAL_FIELD_SCHEMAS: &[&str] = &[
+    "CreateProjectRequest",
+    "CreateTaskRequest",
+    "CancelTaskRequest",
+    "PreviewWorkflowRequest",
+    "ProjectUpdate",
+];
+
+/// Completes the generated document: bearer security on protected operations, the shared error
+/// response, response descriptions and exact `required` lists.
+struct ApiContract;
+
+impl Modify for ApiContract {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            BEARER_SCHEME,
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .description(Some(
+                        "Per-launch token from the desktop host or `<data_dir>/runtime.json`",
+                    ))
+                    .build(),
+            ),
+        );
+        for (name, schema) in components.schemas.iter_mut() {
+            if OPTIONAL_FIELD_SCHEMAS.contains(&name.as_str()) {
+                continue;
+            }
+            if let RefOr::T(Schema::Object(object)) = schema {
+                object.required = object.properties.keys().cloned().collect();
+            }
+        }
+
+        let error = utoipa::openapi::ResponseBuilder::new()
+            .description("Error (`ApiErrorBody`)")
+            .content(
+                "application/json",
+                utoipa::openapi::ContentBuilder::new()
+                    .schema(Some(utoipa::openapi::Ref::from_schema_name("ApiErrorBody")))
+                    .build(),
+            )
+            .build();
+        for (path, item) in openapi.paths.paths.iter_mut() {
+            let protected = !PUBLIC_PATHS.contains(&path.as_str());
+            for operation in [
+                &mut item.get,
+                &mut item.put,
+                &mut item.post,
+                &mut item.delete,
+                &mut item.patch,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                operation
+                    .responses
+                    .responses
+                    .entry("default".into())
+                    .or_insert_with(|| RefOr::T(error.clone()));
+                // OpenAPI requires a description on every response object.
+                for (status, response) in operation.responses.responses.iter_mut() {
+                    if let RefOr::T(response) = response {
+                        if response.description.is_empty() {
+                            response.description = status
+                                .parse::<u16>()
+                                .ok()
+                                .and_then(|code| StatusCode::from_u16(code).ok())
+                                .and_then(|code| code.canonical_reason())
+                                .unwrap_or("Response")
+                                .to_string();
+                        }
+                    }
+                }
+                if protected {
+                    operation.security =
+                        Some(vec![utoipa::openapi::security::SecurityRequirement::new::<
+                            &str,
+                            [&str; 0],
+                            &str,
+                        >(BEARER_SCHEME, [])]);
+                }
+            }
+        }
+    }
+}
+
+/// Documented API routes, split into public and token-protected groups (relative to `/api/v1`).
+fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
+    let public = OpenApiRouter::new()
+        .routes(routes!(health_handler))
+        .routes(routes!(runtime_handler));
+    let protected = OpenApiRouter::new()
+        .routes(routes!(state_handler))
+        .routes(routes!(refresh_handler))
+        .routes(routes!(sse_events_handler))
+        .routes(routes!(recent_events_handler))
+        .routes(routes!(pause_scheduler_handler))
+        .routes(routes!(resume_scheduler_handler))
+        .routes(routes!(list_projects_handler, create_project_handler))
+        .routes(routes!(validate_repository_handler))
+        .routes(routes!(
+            get_project_handler,
+            update_project_handler,
+            delete_project_handler
+        ))
+        .routes(routes!(list_tasks_handler, create_task_handler))
+        .routes(routes!(get_task_by_id_handler))
+        .routes(routes!(move_task_status_handler))
+        .routes(routes!(dispatch_task_handler))
+        .routes(routes!(cancel_task_handler))
+        .routes(routes!(retry_task_handler))
+        .routes(routes!(list_task_events_handler))
+        .routes(routes!(list_task_attempts_handler))
+        .routes(routes!(list_task_validations_handler))
+        .routes(routes!(task_diff_handler))
+        .routes(routes!(list_approvals_handler))
+        .routes(routes!(decide_approval_handler))
+        .routes(routes!(list_prs_handler))
+        .routes(routes!(get_pr_handler))
+        .routes(routes!(approve_pr_merge_handler))
+        .routes(routes!(list_worktrees_handler))
+        .routes(routes!(get_workflow_handler, update_workflow_handler))
+        .routes(routes!(preview_workflow_handler))
+        .routes(routes!(get_settings_handler, put_settings_handler))
+        .routes(routes!(list_providers_handler))
+        .routes(routes!(list_credentials_handler, set_credential_handler))
+        .routes(routes!(delete_credential_handler))
+        .routes(routes!(export_diagnostics_handler))
+        .routes(routes!(issue_detail_handler))
+        // Undocumented compatibility routes: the legacy task alias and the SPEC.md Section
+        // 13.7.2 `/api/v1/<issue_identifier>` catch-all (registered last-resort by axum).
+        .route("/tasks/id/{id}", get(get_task_by_id_handler))
+        .route("/{issue_identifier}", get(issue_detail_handler));
+    (public, protected)
+}
+
+/// The OpenAPI document of `/api/v1`, generated from the same route table that serves requests.
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    let (public, protected) = api_routes();
+    let (_, mut api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
+        .nest("/api/v1", public.merge(protected))
+        .split_for_parts();
+    // Modifiers declared on `ApiDoc` run before the routes are merged; apply the contract again
+    // so it covers every collected path and schema.
+    ApiContract.modify(&mut api);
+    api
+}
 
 pub fn build_router(orchestrator: Arc<SymphonyOrchestrator>, config: &ServerConfig) -> Router {
     let state = ServerState {
@@ -310,82 +513,16 @@ pub fn build_router(orchestrator: Arc<SymphonyOrchestrator>, config: &ServerConf
         ])
         .max_age(Duration::from_secs(600));
 
-    let protected = Router::new()
-        .route("/state", get(state_handler))
-        .route("/refresh", post(refresh_handler))
-        .route("/events", get(sse_events_handler))
-        .route("/events/recent", get(recent_events_handler))
-        .route("/scheduler/pause", post(pause_scheduler_handler))
-        .route("/scheduler/resume", post(resume_scheduler_handler))
-        .route(
-            "/projects",
-            get(list_projects_handler).post(create_project_handler),
-        )
-        .route("/projects/validate", post(validate_repository_handler))
-        .route(
-            "/projects/{id}",
-            get(get_project_handler)
-                .patch(update_project_handler)
-                .delete(delete_project_handler),
-        )
-        .route("/tasks", get(list_tasks_handler).post(create_task_handler))
-        .route("/tasks/{id}", get(get_task_by_id_handler))
-        // Legacy alias kept for older clients.
-        .route("/tasks/id/{id}", get(get_task_by_id_handler))
-        .route(
-            "/tasks/{id}/status",
-            axum::routing::patch(move_task_status_handler),
-        )
-        .route("/tasks/{id}/dispatch", post(dispatch_task_handler))
-        .route("/tasks/{id}/cancel", post(cancel_task_handler))
-        .route("/tasks/{id}/retry", post(retry_task_handler))
-        .route("/tasks/{id}/events", get(list_task_events_handler))
-        .route("/tasks/{id}/attempts", get(list_task_attempts_handler))
-        .route(
-            "/tasks/{id}/validations",
-            get(list_task_validations_handler),
-        )
-        .route("/tasks/{id}/diff", get(task_diff_handler))
-        .route("/approvals", get(list_approvals_handler))
-        .route("/approvals/{id}/decide", post(decide_approval_handler))
-        .route("/prs", get(list_prs_handler))
-        .route("/prs/{id}", get(get_pr_handler))
-        .route("/prs/{id}/approve-merge", post(approve_pr_merge_handler))
-        .route("/worktrees", get(list_worktrees_handler))
-        .route(
-            "/workflow",
-            get(get_workflow_handler).put(update_workflow_handler),
-        )
-        .route("/workflow/preview", post(preview_workflow_handler))
-        .route(
-            "/settings",
-            get(get_settings_handler).put(put_settings_handler),
-        )
-        .route("/providers", get(list_providers_handler))
-        .route(
-            "/credentials",
-            get(list_credentials_handler).post(set_credential_handler),
-        )
-        .route(
-            "/credentials/{key}",
-            axum::routing::delete(delete_credential_handler),
-        )
-        .route("/diagnostics/export", get(export_diagnostics_handler))
-        .route("/issues/{issue_identifier}", get(issue_detail_handler))
-        // SPEC.md Section 13.7.2: `/api/v1/<issue_identifier>` catch-all
-        .route("/{issue_identifier}", get(issue_detail_handler))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_bearer_token,
-        ));
-
-    let public = Router::new()
-        .route("/health", get(health_handler))
-        .route("/runtime", get(runtime_handler));
+    let (public, protected) = api_routes();
+    let protected = protected.route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        require_bearer_token,
+    ));
+    let (api, _) = public.merge(protected).split_for_parts();
 
     Router::new()
         .route("/", get(root_handler))
-        .nest("/api/v1", public.merge(protected))
+        .nest("/api/v1", api)
         .layer(cors)
         .with_state(state)
 }
@@ -508,6 +645,13 @@ async fn root_handler() -> Html<&'static str> {
     )
 }
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    operation_id = "health",
+    tag = "runtime",
+    responses((status = 200, body = HealthResponse))
+)]
 async fn health_handler() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".into(),
@@ -517,6 +661,13 @@ async fn health_handler() -> Json<HealthResponse> {
     })
 }
 
+#[utoipa::path(
+    get,
+    path = "/runtime",
+    operation_id = "getRuntime",
+    tag = "runtime",
+    responses((status = 200, body = RuntimeInfo))
+)]
 async fn runtime_handler(State(state): State<ServerState>) -> Json<RuntimeInfo> {
     Json(RuntimeInfo {
         service: "symphony-orchestrator".into(),
@@ -532,15 +683,36 @@ async fn runtime_handler(State(state): State<ServerState>) -> Json<RuntimeInfo> 
 // State & scheduler
 // ============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/state",
+    operation_id = "getState",
+    tag = "runtime",
+    responses((status = 200, body = OrchestratorStateSnapshot))
+)]
 async fn state_handler(State(state): State<ServerState>) -> Response {
     respond(state.orchestrator.state_snapshot().await)
 }
 
+#[utoipa::path(
+    post,
+    path = "/refresh",
+    operation_id = "refresh",
+    tag = "runtime",
+    responses((status = 202, body = RefreshResponse))
+)]
 async fn refresh_handler(State(state): State<ServerState>) -> Response {
     let resp = state.orchestrator.trigger_refresh().await;
     (StatusCode::ACCEPTED, Json(resp)).into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/scheduler/pause",
+    operation_id = "pauseScheduler",
+    tag = "scheduler",
+    responses((status = 200, body = SchedulerStateResponse))
+)]
 async fn pause_scheduler_handler(State(state): State<ServerState>) -> Response {
     respond(
         state
@@ -553,6 +725,13 @@ async fn pause_scheduler_handler(State(state): State<ServerState>) -> Response {
     )
 }
 
+#[utoipa::path(
+    post,
+    path = "/scheduler/resume",
+    operation_id = "resumeScheduler",
+    tag = "scheduler",
+    responses((status = 200, body = SchedulerStateResponse))
+)]
 async fn resume_scheduler_handler(State(state): State<ServerState>) -> Response {
     respond(
         state
@@ -593,6 +772,14 @@ fn control_event(name: &str, reason: Option<&str>) -> SseEvent {
 /// Sends `ready` on connect. When the client reconnects with `Last-Event-ID`, persisted events
 /// newer than that id are replayed first; if the id is unknown (or the broadcast buffer
 /// overflowed) a `resync` event tells the client to refetch its state.
+#[utoipa::path(
+    get,
+    path = "/events",
+    operation_id = "streamEvents",
+    tag = "events",
+    params(("Last-Event-ID" = Option<String>, Header, description = "Resume after this event id; persisted events newer than it are replayed first.")),
+    responses((status = 200, description = "Server-Sent Events. `ready`/`resync` carry a `StreamControlEvent`; every other event is an `AgentEvent` named by its `event_type` with `id` = event id.", content_type = "text/event-stream", body = String))
+)]
 async fn sse_events_handler(State(state): State<ServerState>, headers: HeaderMap) -> Response {
     // Subscribe before reading history so no event falls between replay and live delivery.
     let rx = state.orchestrator.subscribe_events();
@@ -629,6 +816,14 @@ async fn sse_events_handler(State(state): State<ServerState>, headers: HeaderMap
 }
 
 /// `GET /api/v1/events/recent?limit=N` — persisted events across all tasks, newest first.
+#[utoipa::path(
+    get,
+    path = "/events/recent",
+    operation_id = "listRecentEvents",
+    tag = "events",
+    params(LimitQuery),
+    responses((status = 200, description = "Newest first", body = Vec<AgentEvent>))
+)]
 async fn recent_events_handler(
     State(state): State<ServerState>,
     Query(q): Query<LimitQuery>,
@@ -641,10 +836,25 @@ async fn recent_events_handler(
 // Projects
 // ============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/projects",
+    operation_id = "listProjects",
+    tag = "projects",
+    responses((status = 200, body = Vec<Project>))
+)]
 async fn list_projects_handler(State(state): State<ServerState>) -> Response {
     respond(state.orchestrator.list_projects().await)
 }
 
+#[utoipa::path(
+    get,
+    path = "/projects/{id}",
+    operation_id = "getProject",
+    tag = "projects",
+    params(("id" = String, Path, description = "Project id")),
+    responses((status = 200, body = Project))
+)]
 async fn get_project_handler(State(state): State<ServerState>, Path(id): Path<String>) -> Response {
     match state.orchestrator.list_projects().await {
         Ok(list) => match list.into_iter().find(|p| p.id == id) {
@@ -655,6 +865,14 @@ async fn get_project_handler(State(state): State<ServerState>, Path(id): Path<St
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/projects/validate",
+    operation_id = "validateRepository",
+    tag = "projects",
+    request_body = ValidateRepositoryRequest,
+    responses((status = 200, body = RepositoryValidation))
+)]
 async fn validate_repository_handler(
     State(state): State<ServerState>,
     Json(req): Json<ValidateRepositoryRequest>,
@@ -662,6 +880,14 @@ async fn validate_repository_handler(
     Json(state.orchestrator.validate_repository(&req.repo_path).await).into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/projects",
+    operation_id = "createProject",
+    tag = "projects",
+    request_body = CreateProjectRequest,
+    responses((status = 201, body = Project))
+)]
 async fn create_project_handler(
     State(state): State<ServerState>,
     Json(req): Json<CreateProjectRequest>,
@@ -741,6 +967,15 @@ async fn create_project_handler(
     }
 }
 
+#[utoipa::path(
+    patch,
+    path = "/projects/{id}",
+    operation_id = "updateProject",
+    tag = "projects",
+    params(("id" = String, Path, description = "Project id")),
+    request_body = ProjectUpdate,
+    responses((status = 200, body = Project))
+)]
 async fn update_project_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -749,6 +984,14 @@ async fn update_project_handler(
     respond(state.orchestrator.update_project(&id, update).await)
 }
 
+#[utoipa::path(
+    delete,
+    path = "/projects/{id}",
+    operation_id = "deleteProject",
+    tag = "projects",
+    params(("id" = String, Path, description = "Project id")),
+    responses((status = 204, description = "Deleted"))
+)]
 async fn delete_project_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -763,6 +1006,14 @@ async fn delete_project_handler(
 // Tasks
 // ============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/tasks",
+    operation_id = "listTasks",
+    tag = "tasks",
+    params(ListTasksQuery),
+    responses((status = 200, body = Vec<Task>))
+)]
 async fn list_tasks_handler(
     State(state): State<ServerState>,
     Query(query): Query<ListTasksQuery>,
@@ -781,6 +1032,14 @@ async fn list_tasks_handler(
     )
 }
 
+#[utoipa::path(
+    post,
+    path = "/tasks",
+    operation_id = "createTask",
+    tag = "tasks",
+    request_body = CreateTaskRequest,
+    responses((status = 201, body = Task))
+)]
 async fn create_task_handler(
     State(state): State<ServerState>,
     Json(req): Json<CreateTaskRequest>,
@@ -813,6 +1072,14 @@ async fn create_task_handler(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/tasks/{id}",
+    operation_id = "getTask",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses((status = 200, body = Task))
+)]
 async fn get_task_by_id_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -820,6 +1087,15 @@ async fn get_task_by_id_handler(
     respond(state.orchestrator.get_task(&id).await)
 }
 
+#[utoipa::path(
+    patch,
+    path = "/tasks/{id}/status",
+    operation_id = "moveTaskStatus",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = MoveTaskStatusRequest,
+    responses((status = 200, body = Task))
+)]
 async fn move_task_status_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -828,6 +1104,14 @@ async fn move_task_status_handler(
     respond(state.orchestrator.transition_task(&id, req.status).await)
 }
 
+#[utoipa::path(
+    post,
+    path = "/tasks/{id}/dispatch",
+    operation_id = "dispatchTask",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses((status = 200, body = Task))
+)]
 async fn dispatch_task_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -835,6 +1119,15 @@ async fn dispatch_task_handler(
     respond(state.orchestrator.dispatch_task_now(&id).await)
 }
 
+#[utoipa::path(
+    post,
+    path = "/tasks/{id}/cancel",
+    operation_id = "cancelTask",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body(content = Option<CancelTaskRequest>, description = "Optional cancellation reason"),
+    responses((status = 200, body = Task))
+)]
 async fn cancel_task_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -847,10 +1140,26 @@ async fn cancel_task_handler(
     respond(state.orchestrator.cancel_task(&id, &reason).await)
 }
 
+#[utoipa::path(
+    post,
+    path = "/tasks/{id}/retry",
+    operation_id = "retryTask",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses((status = 200, body = Task))
+)]
 async fn retry_task_handler(State(state): State<ServerState>, Path(id): Path<String>) -> Response {
     respond(state.orchestrator.retry_task(&id).await)
 }
 
+#[utoipa::path(
+    get,
+    path = "/tasks/{id}/events",
+    operation_id = "listTaskEvents",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id"), LimitQuery),
+    responses((status = 200, description = "Newest first", body = Vec<AgentEvent>))
+)]
 async fn list_task_events_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -860,6 +1169,14 @@ async fn list_task_events_handler(
     respond(state.orchestrator.list_events(Some(&id), limit).await)
 }
 
+#[utoipa::path(
+    get,
+    path = "/tasks/{id}/attempts",
+    operation_id = "listTaskAttempts",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses((status = 200, body = Vec<RunAttempt>))
+)]
 async fn list_task_attempts_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -867,6 +1184,14 @@ async fn list_task_attempts_handler(
     respond(state.orchestrator.list_run_attempts(&id).await)
 }
 
+#[utoipa::path(
+    get,
+    path = "/tasks/{id}/validations",
+    operation_id = "listTaskValidations",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses((status = 200, body = Vec<ValidationResult>))
+)]
 async fn list_task_validations_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -874,10 +1199,26 @@ async fn list_task_validations_handler(
     respond(state.orchestrator.list_validation_results(&id).await)
 }
 
+#[utoipa::path(
+    get,
+    path = "/tasks/{id}/diff",
+    operation_id = "getTaskDiff",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses((status = 200, body = TaskDiff))
+)]
 async fn task_diff_handler(State(state): State<ServerState>, Path(id): Path<String>) -> Response {
     respond(state.orchestrator.task_diff(&id).await)
 }
 
+#[utoipa::path(
+    get,
+    path = "/issues/{issue_identifier}",
+    operation_id = "getIssueDetail",
+    tag = "issues",
+    params(("issue_identifier" = String, Path, description = "Tracker issue identifier, e.g. `SYM-12`")),
+    responses((status = 200, body = IssueDetailResponse))
+)]
 async fn issue_detail_handler(
     State(state): State<ServerState>,
     Path(issue_identifier): Path<String>,
@@ -889,6 +1230,14 @@ async fn issue_detail_handler(
 // Approvals & pull requests
 // ============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/approvals",
+    operation_id = "listApprovals",
+    tag = "approvals",
+    params(ApprovalsQuery),
+    responses((status = 200, body = Vec<ApprovalRequest>))
+)]
 async fn list_approvals_handler(
     State(state): State<ServerState>,
     Query(q): Query<ApprovalsQuery>,
@@ -901,6 +1250,15 @@ async fn list_approvals_handler(
     )
 }
 
+#[utoipa::path(
+    post,
+    path = "/approvals/{id}/decide",
+    operation_id = "decideApproval",
+    tag = "approvals",
+    params(("id" = String, Path, description = "Approval id")),
+    request_body = DecideApprovalRequest,
+    responses((status = 200, body = ApprovalRequest))
+)]
 async fn decide_approval_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -909,6 +1267,14 @@ async fn decide_approval_handler(
     respond(state.orchestrator.resolve_approval(&id, req.decision).await)
 }
 
+#[utoipa::path(
+    get,
+    path = "/prs",
+    operation_id = "listPrReviews",
+    tag = "reviews",
+    params(ProjectQuery),
+    responses((status = 200, body = Vec<PullRequestReview>))
+)]
 async fn list_prs_handler(
     State(state): State<ServerState>,
     Query(q): Query<ProjectQuery>,
@@ -921,10 +1287,26 @@ async fn list_prs_handler(
     )
 }
 
+#[utoipa::path(
+    get,
+    path = "/prs/{id}",
+    operation_id = "getPrReview",
+    tag = "reviews",
+    params(("id" = String, Path, description = "Review id")),
+    responses((status = 200, body = PullRequestReview))
+)]
 async fn get_pr_handler(State(state): State<ServerState>, Path(id): Path<String>) -> Response {
     respond(state.orchestrator.get_pr_review(&id).await)
 }
 
+#[utoipa::path(
+    post,
+    path = "/prs/{id}/approve-merge",
+    operation_id = "approvePrMerge",
+    tag = "reviews",
+    params(("id" = String, Path, description = "Review id")),
+    responses((status = 200, body = PullRequestReview))
+)]
 async fn approve_pr_merge_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -932,6 +1314,13 @@ async fn approve_pr_merge_handler(
     respond(state.orchestrator.approve_pr_merge(&id).await)
 }
 
+#[utoipa::path(
+    get,
+    path = "/worktrees",
+    operation_id = "listWorktrees",
+    tag = "worktrees",
+    responses((status = 200, body = Vec<WorktreeInfo>))
+)]
 async fn list_worktrees_handler(State(state): State<ServerState>) -> Response {
     respond(state.orchestrator.list_worktrees().await)
 }
@@ -940,10 +1329,25 @@ async fn list_worktrees_handler(State(state): State<ServerState>) -> Response {
 // Workflow
 // ============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/workflow",
+    operation_id = "getWorkflow",
+    tag = "workflow",
+    responses((status = 200, body = WorkflowDocument))
+)]
 async fn get_workflow_handler(State(state): State<ServerState>) -> Response {
     Json(state.orchestrator.get_workflow_document().await).into_response()
 }
 
+#[utoipa::path(
+    put,
+    path = "/workflow",
+    operation_id = "updateWorkflow",
+    tag = "workflow",
+    request_body = UpdateWorkflowRequest,
+    responses((status = 200, body = WorkflowValidation))
+)]
 async fn update_workflow_handler(
     State(state): State<ServerState>,
     Json(req): Json<UpdateWorkflowRequest>,
@@ -958,6 +1362,14 @@ async fn update_workflow_handler(
 
 /// Validates and renders unsaved workflow text. Always `200`; invalid documents are reported
 /// through `valid: false` + `error` so editors can show inline diagnostics.
+#[utoipa::path(
+    post,
+    path = "/workflow/preview",
+    operation_id = "previewWorkflow",
+    tag = "workflow",
+    request_body = PreviewWorkflowRequest,
+    responses((status = 200, description = "Always 200; invalid documents report `valid: false`", body = WorkflowValidation))
+)]
 async fn preview_workflow_handler(
     State(state): State<ServerState>,
     Json(req): Json<PreviewWorkflowRequest>,
@@ -979,6 +1391,13 @@ async fn preview_workflow_handler(
 // Settings, providers & credentials
 // ============================================================================
 
+#[utoipa::path(
+    get,
+    path = "/settings",
+    operation_id = "getSettings",
+    tag = "settings",
+    responses((status = 200, body = AppSettings))
+)]
 async fn get_settings_handler(State(state): State<ServerState>) -> Response {
     respond(state.orchestrator.storage().get_settings().await)
 }
@@ -1020,6 +1439,14 @@ fn validate_settings(settings: &AppSettings) -> std::result::Result<(), String> 
     Ok(())
 }
 
+#[utoipa::path(
+    put,
+    path = "/settings",
+    operation_id = "updateSettings",
+    tag = "settings",
+    request_body = AppSettings,
+    responses((status = 200, body = AppSettings))
+)]
 async fn put_settings_handler(
     State(state): State<ServerState>,
     Json(settings): Json<AppSettings>,
@@ -1036,6 +1463,14 @@ async fn put_settings_handler(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/providers",
+    operation_id = "listProviders",
+    tag = "providers",
+    params(ProvidersQuery),
+    responses((status = 200, body = Vec<ProviderStatus>))
+)]
 async fn list_providers_handler(
     State(state): State<ServerState>,
     Query(q): Query<ProvidersQuery>,
@@ -1049,6 +1484,13 @@ async fn list_providers_handler(
     .into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/credentials",
+    operation_id = "listCredentials",
+    tag = "credentials",
+    responses((status = 200, body = CredentialKeysResponse))
+)]
 async fn list_credentials_handler(State(state): State<ServerState>) -> Response {
     let configured = state
         .orchestrator
@@ -1067,6 +1509,14 @@ async fn list_credentials_handler(State(state): State<ServerState>) -> Response 
     .into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/credentials",
+    operation_id = "setCredential",
+    tag = "credentials",
+    request_body = SetCredentialRequest,
+    responses((status = 200, body = CredentialSavedResponse))
+)]
 async fn set_credential_handler(
     State(state): State<ServerState>,
     Json(req): Json<SetCredentialRequest>,
@@ -1095,6 +1545,14 @@ async fn set_credential_handler(
     }
 }
 
+#[utoipa::path(
+    delete,
+    path = "/credentials/{key}",
+    operation_id = "deleteCredential",
+    tag = "credentials",
+    params(("key" = String, Path, description = "Credential key from the allowlist")),
+    responses((status = 204, description = "Deleted"))
+)]
 async fn delete_credential_handler(
     State(state): State<ServerState>,
     Path(key): Path<String>,
@@ -1118,6 +1576,13 @@ async fn delete_credential_handler(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/diagnostics/export",
+    operation_id = "exportDiagnostics",
+    tag = "diagnostics",
+    responses((status = 200, description = "Redacted diagnostics bundle", body = Object))
+)]
 async fn export_diagnostics_handler(State(state): State<ServerState>) -> Response {
     let secrets = state.orchestrator.secret_store().all_secret_values();
     match state

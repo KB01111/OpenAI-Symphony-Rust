@@ -306,6 +306,13 @@ export function useSaveWorkflow() {
   });
 }
 
+/**
+ * Login-autostart value the native host last applied in this session; `null` until the first
+ * change. Compared instead of the cached settings so a failed native update is retried by the
+ * next settings save even though the runtime already stored the new value.
+ */
+let appliedAutostart: boolean | null = null;
+
 /** A full settings object, or an update applied to the latest saved settings when the write runs. */
 export type SettingsChange = AppSettings | ((latest: AppSettings) => AppSettings);
 
@@ -328,8 +335,16 @@ export function useSaveSettings() {
       const saved = await client.saveSettings(next);
       // The runtime has stored the change: reflect it before any native side effect can fail.
       qc.setQueryData(qk.settings, saved);
-      if (isTauri() && previous?.start_background_runtime_on_login !== saved.start_background_runtime_on_login) {
-        await nativeHost.setAutostart(saved.start_background_runtime_on_login);
+      const wanted = saved.start_background_runtime_on_login;
+      const applied = appliedAutostart ?? previous?.start_background_runtime_on_login;
+      if (isTauri() && applied !== wanted) {
+        try {
+          await nativeHost.setAutostart(wanted);
+          appliedAutostart = wanted;
+        } catch (error) {
+          appliedAutostart = !wanted;
+          throw error;
+        }
       }
       return saved;
     },

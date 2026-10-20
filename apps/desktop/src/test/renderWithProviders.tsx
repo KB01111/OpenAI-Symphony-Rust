@@ -31,10 +31,13 @@ export function createMockRuntime(routes: Record<string, MockHandler> = {}): Moc
   const table = new Map(Object.entries(routes));
   const calls: MockRuntime["calls"] = [];
   const fetchImpl: typeof fetch = async (input, init) => {
-    const url = new URL(String(input));
-    const method = (init?.method ?? "GET").toUpperCase();
+    // The generated SDK passes a `Request`; the event stream passes a URL and init.
+    const request = input instanceof Request ? input : null;
+    const url = new URL(request ? request.url : String(input));
+    const method = (request?.method ?? init?.method ?? "GET").toUpperCase();
     const path = url.pathname.replace(/^\/api\/v1/, "");
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    const text = request ? await request.text() : init?.body ? String(init.body) : "";
+    const body = text ? JSON.parse(text) : undefined;
     calls.push({ method, path, body });
     if (path === "/events") {
       return new Response(new ReadableStream({ start() {} }), { status: 200, headers: { "Content-Type": "text/event-stream" } });

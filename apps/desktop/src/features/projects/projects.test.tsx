@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import AddRepositoryDialog from "./AddRepositoryDialog.js";
 import ProjectsPage from "./ProjectsPage.js";
@@ -78,5 +78,23 @@ describe("ProjectsPage", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /Delete|Remove/ }));
     expect((await screen.findAllByText(/Project has a running task/)).length).toBeGreaterThan(0);
     expect(runtime.calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("rebases a clean edit form onto a project another client changed", async () => {
+    let current = project({ id: "p1", name: "App", updated_at: "2026-10-01T10:00:00Z" });
+    const runtime = createMockRuntime({
+      "GET /projects": () => [current],
+      "GET /projects/:id": () => current,
+      "GET /tasks": () => [],
+      "GET /providers": () => [],
+      "GET /settings": () => settings()
+    });
+    const { queryClient } = renderWithProviders(<ProjectsPage />, { runtime, route: "/projects/p1", path: "/projects/:projectId" });
+    await waitFor(() => expect((screen.getByLabelText(/^Name/) as HTMLInputElement).value).toBe("App"));
+
+    current = project({ id: "p1", name: "Renamed elsewhere", updated_at: "2026-10-01T11:00:00Z" });
+    await act(() => queryClient.invalidateQueries());
+    await waitFor(() => expect((screen.getByLabelText(/^Name/) as HTMLInputElement).value).toBe("Renamed elsewhere"));
+    expect(runtime.calls.filter((c) => c.method === "PATCH")).toHaveLength(0);
   });
 });

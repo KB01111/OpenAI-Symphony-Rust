@@ -1,10 +1,5 @@
-import {
-  TASK_STATUS_TRANSITIONS,
-  type ProviderCapabilities,
-  type ProviderKind,
-  type RunAttemptPhase,
-  type TaskStatus
-} from "./generated/contracts.js";
+import type { ProviderCapabilities, ProviderKind, RunAttemptPhase, TaskStatus } from "./generated/openapi/types.gen.js";
+import { TASK_STATUS_TRANSITIONS } from "./generated/stateMachine.js";
 
 export const ALL_PROVIDERS: ReadonlyArray<ProviderKind> = [
   "codex",

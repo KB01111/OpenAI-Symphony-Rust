@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Batcher, SymphonyClient, type EventStream, type StreamStatus } from "@symphony/api-client";
+import { Batcher, SymphonyClient, configuredApiConfig, type EventStream, type StreamStatus } from "@symphony/api-client";
 import type { AgentEvent } from "@symphony/shared-types";
 import { keysForEvents, mobileKeys } from "./liveData.js";
 
@@ -52,7 +52,7 @@ export const SessionProvider: React.FC<SessionProviderProps> = ({
 }) => {
   const queryClient = useQueryClient();
   const client = useMemo(
-    () => injected ?? new SymphonyClient({ baseUrl, token: token || null }),
+    () => injected ?? SymphonyClient.fromConfig(configuredApiConfig(baseUrl, token || null, "remote")),
     [injected, baseUrl, token]
   );
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");

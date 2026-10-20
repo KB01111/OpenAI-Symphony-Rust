@@ -27,11 +27,41 @@ except as an optimistic move that is rolled back if the runtime rejects it.
 
 ## 2. Contracts
 
-- Rust types in `symphony-core`, `symphony-orchestrator` and `symphony-server` derive `ts_rs::TS`.
-- `crates/symphony-server/tests/ts_contract.rs` renders them (plus the `TaskStatus` transition table)
-  into `packages/shared-types/src/generated/contracts.ts` and **fails CI when the file is stale**.
-  Regenerate with `UPDATE_TS_CONTRACTS=1 cargo test -p symphony-server --test ts_contract`.
+Rust is the single source of truth; nothing about the HTTP API is written by hand in TypeScript.
+
+```text
+Axum handlers + #[utoipa::path]  ──utoipa-axum──▶  openapi/symphony-api.json  ──Hey API──▶  @symphony/shared-types
+(crates/symphony-server)                           (checked in, OpenAPI 3.1)               types · SDK · fetch client
+                                                                                                    │
+TaskStatus::allowed_transitions  ──────────────────▶  generated/stateMachine.ts                     ▼
+                                                                                  SymphonyClient (@symphony/api-client)
+```
+
+- API types in `symphony-core`, `symphony-orchestrator` and `symphony-server` derive `utoipa::ToSchema`;
+  query structs derive `IntoParams`. Every handler is registered through `OpenApiRouter::routes(routes!(…))`
+  with an explicit `operationId`, so the document cannot list a route the server does not serve.
+- `ApiContract` (a `utoipa::Modify`) adds the bearer security scheme to every protected operation, the
+  shared `ApiErrorBody` error response and exact `required` lists: response fields are always present
+  (`null` when empty), only the request bodies in `OPTIONAL_FIELD_SCHEMAS` have optional fields.
+- `crates/symphony-server/tests/openapi_contract.rs` fails when `openapi/symphony-api.json` is stale and
+  checks the invariants (unique operation ids, tags, error responses, bearer auth on exactly the
+  protected routes, path parameters, required fields). `tests/state_machine_contract.rs` does the same
+  for `packages/shared-types/src/generated/stateMachine.ts`.
+- `@hey-api/openapi-ts` (pinned to an exact version) generates `packages/shared-types/src/generated/openapi/`
+  (`packages/shared-types/openapi-ts.config.ts`). `@symphony/shared-types` re-exports the types;
+  `@symphony/shared-types/api` exposes the SDK functions.
+- `pnpm generate:api` regenerates all three artifacts on any OS. The `API contract` workflow fails when
+  they are stale and runs `oasdiff breaking` (pinned, checksum-verified) against the base branch; an
+  intended break needs the `api-breaking-change` label and an `API_VERSION` bump.
 - `crates/symphony-server/tests/api_router.rs` tests routing, auth, CORS and error mapping in Rust.
+- `SymphonyClient` calls only generated SDK functions through its own Hey API client instance and
+  adds the deadline, bearer auth, `SymphonyApiError` mapping and the event stream. The authenticated
+  SSE stream (`Last-Event-ID` replay, `resync`) and runtime discovery are unchanged; the SDK's own
+  SSE helper is not used.
+- One configuration describes every connection (`packages/api-client/src/config/apiConfig.ts`):
+  `RuntimeTarget` is `desktop` (Tauri IPC), `local` (explicit URL or dev-server discovery) or
+  `remote` (mobile companion), and `resolveApiConfig` turns it into the `ApiConfig` that
+  `SymphonyClient.fromConfig` / `SymphonyClient.connect` use.
 - `packages/api-client/test/integration/runtime.test.ts` drives the real Axum router through
   `symphony-cli` with the TypeScript client (discovery, state, project registration, task creation,
   immediate dispatch, live SSE events, approvals, cancel/retry, PR review, workflow preview/save,
@@ -40,7 +70,7 @@ except as an optimistic move that is rolled back if the runtime rejects it.
 ### Settings compatibility
 
 The Rust field names are persisted in SQLite and are authoritative; the TypeScript type is generated
-from them, so no renaming/migration was needed. `AppSettings` and `ResourcePolicy` use
+from them through the OpenAPI document, so no renaming/migration was needed. `AppSettings` and `ResourcePolicy` use
 `#[serde(default)]`, so new fields (e.g. `provider_default_models`) read older stored JSON safely.
 
 ## 3. Runtime discovery & authentication

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use ts_rs::TS;
+use utoipa::ToSchema;
 
 use crate::domain::Issue;
 use crate::error::{SymphonyError, SymphonyResult};
@@ -96,15 +96,16 @@ fn parse_yaml_front_matter(yaml_str: &str) -> SymphonyResult<Map<String, Value>>
 }
 
 /// Typed view over `WorkflowDefinition.config` (SPEC.md Section 5.3 & Section 6)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ServiceConfig {
     pub tracker_kind: String,
+    #[schema(value_type = Object)]
     pub tracker_provider: Map<String, Value>,
     pub required_labels: Vec<String>,
     pub active_states: Vec<String>,
     pub terminal_states: Vec<String>,
     pub polling_interval_ms: u64,
-    #[ts(type = "string")]
+    #[schema(value_type = String)]
     pub workspace_root: PathBuf,
     pub hooks: HooksConfig,
     pub agent: AgentConfig,
@@ -112,7 +113,7 @@ pub struct ServiceConfig {
     pub server_port: Option<u16>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct HooksConfig {
     pub after_create: Option<String>,
     pub before_run: Option<String>,
@@ -121,7 +122,7 @@ pub struct HooksConfig {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AgentConfig {
     pub max_concurrent_agents: u32,
     pub max_turns: u32,
@@ -129,7 +130,7 @@ pub struct AgentConfig {
     pub max_concurrent_agents_by_state: HashMap<String, u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CodexConfig {
     pub command: String,
     pub approval_policy: Value,

@@ -13,9 +13,9 @@ When operating inside this repository (whether dispatched by Symphony Desktop it
 - `crates/symphony-trackers`: GitHub Issues REST adapter, Linear GraphQL adapter, and host-side dynamic tools (`github_api`, `linear_graphql`).
 - `crates/symphony-agents`: `CodexAppServerDriver` (stdio JSON-RPC 2.0), `ClaudeCodeDriver`, `OpenCodeDriver`, and `SimulatedAgentDriver`.
 - `crates/symphony-orchestrator`: Single authoritative scheduler, reconciliation loop, approval gate, and PR Merge Readiness evaluator.
-- `crates/symphony-server`: Axum HTTP/SSE API (`/api/v1/*`, Bearer-token auth). `tests/ts_contract.rs` generates `packages/shared-types/src/generated/contracts.ts` — regenerate with `UPDATE_TS_CONTRACTS=1 cargo test -p symphony-server --test ts_contract` after changing any API type.
-- `packages/shared-types`: Rust-generated API contracts (never hand-edit `src/generated/`), state-machine helpers, EN/SV translations.
-- `packages/api-client`: Typed HTTP client, authenticated SSE streaming, Tauri IPC bridge; integration tests run against `symphony-cli`.
+- `crates/symphony-server`: Axum HTTP/SSE API (`/api/v1/*`, Bearer-token auth) served through `utoipa-axum`: every handler carries a `#[utoipa::path]` annotation and the OpenAPI document (`openapi/symphony-api.json`) is generated from the same route table. After changing any route or API type run `pnpm generate:api` (OpenAPI document, task state machine and Hey API client) and commit the result; CI fails on a stale contract and on breaking changes (label the PR `api-breaking-change` and bump `API_VERSION` when a break is intended).
+- `packages/shared-types`: generated API contracts (never hand-edit `src/generated/`): Hey API types/SDK/fetch client from the OpenAPI document (`@symphony/shared-types/api`) and the Rust task state machine; state-machine helpers, EN/SV translations.
+- `packages/api-client`: `SymphonyClient` (wraps the generated SDK), the central API configuration for desktop/local/remote runtimes (`src/config/apiConfig.ts`), authenticated SSE streaming, Tauri IPC bridge; integration tests run against `symphony-cli`.
 - `packages/ui`: Symphony design system (tokens, `SymphonyDesignProvider`, Fluent v9 + shadcn/ui primitives + Apps SDK UI AI components). See `docs/DESIGN_SYSTEM.md` for component ownership.
 - `apps/desktop`: Tauri 2 Windows 11 desktop application (`src/app`, `src/layouts`, `src/features/*`; see `docs/UI_ARCHITECTURE.md`).
 - `apps/mobile`: iOS/Mobile remote companion application.

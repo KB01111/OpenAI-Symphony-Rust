@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/utils.js";
 import { useUiStrings } from "../i18n.js";
-import { formatAgentEvent, type AgentEventKind, type EventTone } from "./eventFormat.js";
+import { formatAgentEvent, runtimeEventTemplate, type AgentEventKind, type EventTone } from "./eventFormat.js";
 import { PhaseBadge } from "./badges.js";
 
 const KIND_ICONS: Record<AgentEventKind, React.ComponentType<{ className?: string }>> = {
@@ -64,7 +64,12 @@ export const AiEventStreamCard = React.memo(function AiEventStreamCard({
 }: AiEventStreamCardProps) {
   const { ui } = useUiStrings();
   const [showRaw, setShowRaw] = useState(false);
-  const formatted = useMemo(() => formatAgentEvent(event), [event]);
+  const formatted = useMemo(() => {
+    const base = formatAgentEvent(event);
+    // Runtime lifecycle events with a known shape are rendered in the UI locale.
+    const template = runtimeEventTemplate(event);
+    return template ? { ...base, text: formatMessage(ui[template.key], template.values) } : base;
+  }, [event, ui]);
   const Icon = KIND_ICONS[formatted.kind];
   const technical = mode === "technical";
   const time = useMemo(() => new Date(event.timestamp).toLocaleTimeString(), [event.timestamp]);

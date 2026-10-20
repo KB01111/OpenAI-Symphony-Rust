@@ -198,3 +198,29 @@ describe("MergeReadinessCard", () => {
     expect(onApprove).toHaveBeenCalledWith(review);
   });
 });
+
+describe("localized runtime events", () => {
+  const reloaded: AgentEvent = {
+    ...baseEvent,
+    id: "w1",
+    task_id: null,
+    issue_identifier: null,
+    session_id: null,
+    provider: null,
+    phase: null,
+    event_type: "workflow/reloaded",
+    message: "Reloaded workflow from /repo/WORKFLOW.md",
+    payload: { path: "/repo/WORKFLOW.md" }
+  };
+
+  it("renders workflow events from the UI locale instead of the runtime message", () => {
+    render(
+      <SymphonyDesignProvider themeMode="light" locale="sv">
+        <AiEventStreamCard event={reloaded} />
+      </SymphonyDesignProvider>
+    );
+    expect(screen.getByText("WORKFLOW.md lästes in på nytt från /repo/WORKFLOW.md")).toBeTruthy();
+    expect(screen.queryByText(reloaded.message)).toBeNull();
+  });
+});
+

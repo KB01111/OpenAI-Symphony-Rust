@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Button, Dropdown, Field, Input, Option, Spinner, Switch, Textarea } from "@fluentui/react-components";
 import { formatMessage } from "@symphony/shared-types";
-import { useNotify } from "@symphony/ui";
+import { ErrorState, useNotify } from "@symphony/ui";
 import { useStrings } from "../i18n.js";
 import { useCreateTask, useProjects } from "./queries.js";
 
@@ -20,6 +20,17 @@ export const NewTaskForm: React.FC<{ onDone: () => void }> = ({ onDone }) => {
   const project = list.find((p) => p.id === projectId) ?? list[0];
 
   if (projects.isLoading) return <Spinner size="small" label={t.common.loading} />;
+  // A failed request is not "no projects": show the error with a retry instead.
+  if (projects.isError && !projects.data) {
+    return (
+      <ErrorState
+        title={m.loadProjectsFailed}
+        message={projects.error.message}
+        onRetry={() => void projects.refetch()}
+        retryLabel={t.common.retry}
+      />
+    );
+  }
   if (list.length === 0) return <p className="text-sm text-muted-foreground">{m.noProjects}</p>;
 
   const submit = (e: React.FormEvent) => {

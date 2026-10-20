@@ -42,11 +42,13 @@ const ProjectEditForm: React.FC<{ project: Project }> = ({ project }) => {
   const dirty = isDirty(project, form);
 
   // Another client (or a sync) updated this project: rebase a clean form onto the new values so a
-  // later save cannot PATCH stale fields over them. Unsaved edits are kept.
-  const [baseUpdatedAt, setBaseUpdatedAt] = useState(project.updated_at);
-  if (project.updated_at !== baseUpdatedAt) {
-    setBaseUpdatedAt(project.updated_at);
-    if (!dirty) setForm(projectToForm(project));
+  // later save cannot PATCH stale fields over them. Unsaved edits are kept. Cleanliness is judged
+  // against the snapshot the form was based on: compared with the updated project, the remote
+  // change itself would look like a local edit.
+  const [base, setBase] = useState(project);
+  if (project.updated_at !== base.updated_at) {
+    setBase(project);
+    if (!isDirty(base, form)) setForm(projectToForm(project));
   }
 
   const submit = (e: React.FormEvent) => {

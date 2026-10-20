@@ -17,7 +17,7 @@ regex.workspace = true
 liquid.workspace = true
 dirs.workspace = true
 tracing.workspace = true
-ts-rs.workspace = true
+utoipa.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

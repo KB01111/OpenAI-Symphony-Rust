@@ -29,7 +29,7 @@ use symphony_trackers::{GitHubTracker, LinearTracker, TrackerAdapter};
 use symphony_workspaces::WorkspaceManager;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 use tracing::{debug, info, warn};
-use ts_rs::TS;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// How long provider detection results are reused before re-probing CLIs.
@@ -38,7 +38,7 @@ const PROVIDER_CACHE_TTL_SECS: i64 = 60;
 const TASK_DIFF_MAX_BYTES: usize = 512 * 1024;
 
 /// SPEC.md Section 13.7.2 `/api/v1/<issue_identifier>` response contract
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct IssueDetailResponse {
     pub issue_identifier: String,
     pub issue_id: String,
@@ -58,30 +58,29 @@ pub struct IssueDetailResponse {
     pub task: Task,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkspaceInfo {
     pub path: Option<String>,
     pub branch_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AttemptSummary {
     pub restart_count: u32,
     pub current_retry_attempt: u32,
 }
 
 /// SPEC.md Section 13.7.2 `POST /api/v1/refresh` response contract
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RefreshResponse {
     pub queued: bool,
     pub coalesced: bool,
-    #[ts(type = "string")]
     pub requested_at: DateTime<Utc>,
     pub operations: Vec<String>,
 }
 
 /// Workflow document as served to editors (`GET /api/v1/workflow`).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkflowDocument {
     /// File the document is loaded from and saved to, if any.
     pub path: Option<String>,
@@ -94,7 +93,7 @@ pub struct WorkflowDocument {
 }
 
 /// Result of previewing or saving a workflow document.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkflowValidation {
     pub valid: bool,
     pub error_code: Option<String>,
@@ -105,9 +104,8 @@ pub struct WorkflowValidation {
 }
 
 /// Partial project update (`PATCH /api/v1/projects/{id}`). Absent fields are left unchanged.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 #[serde(default)]
-#[ts(optional_fields = nullable)]
 pub struct ProjectUpdate {
     pub name: Option<String>,
     pub default_branch: Option<String>,
@@ -470,7 +468,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                         "workflow/reloaded",
                         None,
                         format!("Reloaded workflow from {}", path.display()),
-                        None,
+                        Some(json!({ "path": path.display().to_string() })),
                     )
                     .await;
                 }
@@ -487,7 +485,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                         "workflow/reload_failed",
                         None,
                         err.to_string(),
-                        None,
+                        Some(json!({ "error": err.to_string() })),
                     )
                     .await;
                 }
@@ -505,7 +503,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     "workflow/reload_failed",
                     None,
                     err.to_string(),
-                    None,
+                    Some(json!({ "error": err.to_string() })),
                 )
                 .await;
             }
@@ -1558,7 +1556,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             "workflow/saved",
             None,
             format!("Saved workflow to {}", path.display()),
-            None,
+            Some(json!({ "path": path.display().to_string() })),
         )
         .await;
         Ok(WorkflowValidation {

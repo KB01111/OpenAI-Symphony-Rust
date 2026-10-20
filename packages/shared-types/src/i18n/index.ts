@@ -5,7 +5,7 @@ import type {
   ProviderKind,
   RunAttemptPhase,
   TaskStatus
-} from "../generated/contracts.js";
+} from "../generated/openapi/types.gen.js";
 import type { TransitionRejection } from "../status.js";
 
 export type Locale = "en" | "sv";

@@ -1,5 +1,5 @@
 import React from "react";
-import { formatMessage, getTranslations, type JsonValue, type Project, type ProviderStatus, type RunAttempt, type Task } from "@symphony/shared-types";
+import { formatMessage, getTranslations, type Project, type ProviderStatus, type RunAttempt, type Task } from "@symphony/shared-types";
 import {
   ErrorState,
   KeyValueList,
@@ -24,7 +24,7 @@ const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title
   </section>
 );
 
-function policyText(value: JsonValue | null | undefined): string {
+function policyText(value: unknown): string {
   if (value === null || value === undefined) return "—";
   return typeof value === "string" ? value : JSON.stringify(value);
 }

@@ -51,7 +51,10 @@ tempfile = "3.15"
 url = "2.5"
 rand = "0.8"
 base64 = "0.22"
-ts-rs = { version = "12", features = ["chrono-impl", "serde-json-impl", "no-serde-warnings"] }
+# Exact pins: the OpenAPI document (and the TypeScript client generated from it) must not change
+# because a generator was upgraded implicitly.
+utoipa = { version = "=6.0.0", features = ["chrono", "preserve_order", "preserve_path_order"] }
+utoipa-axum = "=0.3.0"
 subtle = "2.6"
 
 # Internal crates

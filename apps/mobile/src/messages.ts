@@ -63,6 +63,7 @@ export const mobileMessages = defineMessages({
     decisionSent: "Decision sent",
     decisionFailed: "Decision not recorded",
     loadApprovalsFailed: "Could not load approvals",
+    loadProjectsFailed: "Could not load projects",
     // Runs
     noAgentsBody: "Running agent sessions appear here with live progress.",
     turns: "{count} turns",
@@ -144,6 +145,7 @@ export const mobileMessages = defineMessages({
     decisionSent: "Beslut skickat",
     decisionFailed: "Beslutet registrerades inte",
     loadApprovalsFailed: "Kunde inte läsa in godkännanden",
+    loadProjectsFailed: "Kunde inte läsa in projekt",
     noAgentsBody: "Körande agentsessioner visas här med förlopp i realtid.",
     turns: "{count} turer",
     tokenCount: "{count} tokens",

@@ -242,7 +242,16 @@ async fn start_embedded_runtime(
         .await
         .map_err(|e| format!("Failed to initialize SQLite storage: {e}"))?;
     let secret_store = SecretStore::new(&data_dir).map_err(|e| e.to_string())?;
-    let settings = storage.get_settings().await.unwrap_or_default();
+    let mut settings = storage.get_settings().await.unwrap_or_default();
+    // Settings saved before 2.0 carry the old default remote port, which is the local API's port.
+    // Migrate that legacy value to the new default and persist it, so the listener, `GET /settings`
+    // and the settings form all agree on the port actually used.
+    if settings.remote_port == DEFAULT_LOCAL_PORT {
+        settings.remote_port = symphony_core::AppSettings::default().remote_port;
+        if let Err(err) = storage.save_settings(&settings).await {
+            tracing::warn!(error = %err, "Could not persist the migrated remote API port");
+        }
+    }
 
     let wf_path = [PathBuf::from("WORKFLOW.md"), data_dir.join("WORKFLOW.md")]
         .into_iter()
@@ -287,12 +296,6 @@ async fn start_embedded_runtime(
     .write(&data_dir);
 
     // Optional authenticated remote listener for the mobile companion / Lumen.
-    // Settings saved before 2.0 carry the old default remote port, which is the local API's port;
-    // treat that legacy value as the new default instead of silently disabling remote access.
-    let mut settings = settings;
-    if settings.remote_port == DEFAULT_LOCAL_PORT {
-        settings.remote_port = symphony_core::AppSettings::default().remote_port;
-    }
     if settings.remote_api_enabled {
         match secret_store.get_secret("SYMPHONY_REMOTE_TOKEN") {
             Some(_) if settings.remote_port == addr.port() => tracing::warn!(
