@@ -21,7 +21,10 @@ mod tests {
     fn test_workflow_parse_and_front_matter_validation() {
         let raw = "---\ntracker:\n  kind: github\n  required_labels:\n    - symphony\nagent:\n  max_concurrent_agents: 4\n---\nHello {{ issue.identifier }}: {{ issue.title }}";
         let wf = WorkflowDefinition::parse(raw, None).expect("should parse");
-        assert_eq!(wf.prompt_template, "Hello {{ issue.identifier }}: {{ issue.title }}");
+        assert_eq!(
+            wf.prompt_template,
+            "Hello {{ issue.identifier }}: {{ issue.title }}"
+        );
         let cfg = ServiceConfig::from_workflow(&wf).expect("valid config");
         assert_eq!(cfg.tracker_kind, "github");
         assert_eq!(cfg.required_labels, vec!["symphony".to_string()]);

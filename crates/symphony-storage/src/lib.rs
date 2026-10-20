@@ -524,10 +524,7 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn list_approvals(
-        &self,
-        only_pending: bool,
-    ) -> SymphonyResult<Vec<ApprovalRequest>> {
+    pub async fn list_approvals(&self, only_pending: bool) -> SymphonyResult<Vec<ApprovalRequest>> {
         let rows = if only_pending {
             sqlx::query(
                 "SELECT * FROM approval_requests WHERE status = 'pending' ORDER BY created_at DESC",
@@ -605,8 +602,8 @@ impl Storage {
     }
 
     pub async fn upsert_pr_review(&self, pr: &PullRequestReview) -> SymphonyResult<()> {
-        let review_json = serde_json::to_string(pr)
-            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let review_json =
+            serde_json::to_string(pr).map_err(|e| SymphonyError::StorageError(e.to_string()))?;
 
         sqlx::query(
             r#"
@@ -717,10 +714,11 @@ impl Storage {
     }
 
     pub async fn list_provider_profiles(&self) -> SymphonyResult<Vec<ProviderProfile>> {
-        let rows = sqlx::query("SELECT * FROM provider_profiles ORDER BY is_default DESC, name ASC")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let rows =
+            sqlx::query("SELECT * FROM provider_profiles ORDER BY is_default DESC, name ASC")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
 
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
@@ -872,7 +870,8 @@ fn row_to_task(r: sqlx::sqlite::SqliteRow) -> SymphonyResult<Task> {
         current_session_id: r.get("current_session_id"),
         current_thread_id: r.get("current_thread_id"),
         current_turn_id: r.get("current_turn_id"),
-        current_phase: phase_opt.and_then(|p| serde_json::from_value(serde_json::Value::String(p)).ok()),
+        current_phase: phase_opt
+            .and_then(|p| serde_json::from_value(serde_json::Value::String(p)).ok()),
         pr_number: r.get::<Option<i64>, _>("pr_number").map(|n| n as u64),
         pr_url: r.get("pr_url"),
         input_tokens: r.get::<i64, _>("input_tokens") as u64,
@@ -942,8 +941,8 @@ fn row_to_approval(r: sqlx::sqlite::SqliteRow) -> SymphonyResult<ApprovalRequest
     let status_str: String = r.get("status");
     let decision_opt: Option<String> = r.get("decision");
 
-    let status: ApprovalStatus =
-        serde_json::from_value(serde_json::Value::String(status_str)).unwrap_or(ApprovalStatus::Pending);
+    let status: ApprovalStatus = serde_json::from_value(serde_json::Value::String(status_str))
+        .unwrap_or(ApprovalStatus::Pending);
     let decision: Option<ApprovalDecision> =
         decision_opt.and_then(|d| serde_json::from_value(serde_json::Value::String(d)).ok());
 
@@ -1011,6 +1010,10 @@ mod tests {
         let recovered = storage.recover_stale_running_tasks().await.unwrap();
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].status, TaskStatus::Queued);
-        assert!(recovered[0].last_error.as_ref().unwrap().contains("Interrupted"));
+        assert!(recovered[0]
+            .last_error
+            .as_ref()
+            .unwrap()
+            .contains("Interrupted"));
     }
 }

@@ -363,15 +363,7 @@ pub fn configure_windows_autostart(enable: bool, exe_path: &Path) -> SymphonyRes
             let cmd_val = format!("\"{}\" --background", exe_path.display());
             let status = Command::new("reg")
                 .args([
-                    "add",
-                    key,
-                    "/v",
-                    value_name,
-                    "/t",
-                    "REG_SZ",
-                    "/d",
-                    &cmd_val,
-                    "/f",
+                    "add", key, "/v", value_name, "/t", "REG_SZ", "/d", &cmd_val, "/f",
                 ])
                 .status()?;
             if !status.success() {
@@ -415,7 +407,9 @@ mod tests {
     fn test_secret_store_roundtrip() {
         let dir = tempdir().unwrap();
         let store = SecretStore::new(dir.path()).unwrap();
-        store.set_secret("GITHUB_TOKEN", "ghp_secret1234567890").unwrap();
+        store
+            .set_secret("GITHUB_TOKEN", "ghp_secret1234567890")
+            .unwrap();
         assert_eq!(
             store.get_secret("GITHUB_TOKEN").as_deref(),
             Some("ghp_secret1234567890")

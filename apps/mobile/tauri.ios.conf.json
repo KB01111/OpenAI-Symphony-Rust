@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Symphony Companion",
+  "version": "1.0.0",
+  "identifier": "com.openai.symphony.companion",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @symphony/mobile dev",
+    "devUrl": "http://localhost:1421",
+    "beforeBuildCommand": "pnpm --filter @symphony/mobile build",
+    "frontendDist": "./dist"
+  },
+  "bundle": {
+    "active": true,
+    "iOS": {
+      "minimumSystemVersion": "16.0",
+      "developmentTeam": "SYMPHONY_TEAM_ID"
+    }
+  }
+}

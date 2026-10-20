@@ -182,7 +182,10 @@ async fn main() -> anyhow::Result<()> {
     let (_, cfg, _) = orchestrator.get_workflow_document(None).await?;
     let port = cli.port.or(cfg.server_port).unwrap_or(4780);
     let (addr, _handle) = start_http_server(orchestrator.clone(), &cli.host, port, None).await?;
-    tracing::info!("Symphony CLI & Background Engine running at http://{}", addr);
+    tracing::info!(
+        "Symphony CLI & Background Engine running at http://{}",
+        addr
+    );
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("Shutting down Symphony Engine gracefully...");

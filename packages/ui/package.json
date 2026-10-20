@@ -1,0 +1,29 @@
+{
+  "name": "@symphony/ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.tsx",
+  "types": "./src/index.tsx",
+  "exports": {
+    ".": "./src/index.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "node --eval \"console.log('ui package ok')\""
+  },
+  "dependencies": {
+    "@fluentui/react-components": "^9.61.0",
+    "@openai/apps-sdk-ui": "^0.2.2",
+    "@symphony/shared-types": "workspace:*",
+    "lucide-react": "^0.487.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "typescript": "^5.8.2"
+  }
+}

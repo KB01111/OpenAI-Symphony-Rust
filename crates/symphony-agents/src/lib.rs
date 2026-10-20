@@ -215,7 +215,8 @@ impl CodexAppServerSession {
         approval_gate: Arc<dyn ApprovalGate>,
         event_tx: mpsc::Sender<AgentStreamEvent>,
     ) -> Result<Self> {
-        let mut cmd = build_codex_command(&config.command, &config.workspace_path, &config.extra_env);
+        let mut cmd =
+            build_codex_command(&config.command, &config.workspace_path, &config.extra_env);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -235,18 +236,27 @@ impl CodexAppServerSession {
         })?;
 
         let pid = child.id();
-        let stdin = child.stdin.take().ok_or_else(|| SymphonyError::AgentProtocolError {
-            code: "stdin_unavailable".into(),
-            message: "Codex child process stdin was not piped".into(),
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| SymphonyError::AgentProtocolError {
-            code: "stdout_unavailable".into(),
-            message: "Codex child process stdout was not piped".into(),
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| SymphonyError::AgentProtocolError {
-            code: "stderr_unavailable".into(),
-            message: "Codex child process stderr was not piped".into(),
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| SymphonyError::AgentProtocolError {
+                code: "stdin_unavailable".into(),
+                message: "Codex child process stdin was not piped".into(),
+            })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| SymphonyError::AgentProtocolError {
+                code: "stdout_unavailable".into(),
+                message: "Codex child process stdout was not piped".into(),
+            })?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| SymphonyError::AgentProtocolError {
+                code: "stderr_unavailable".into(),
+                message: "Codex child process stderr was not piped".into(),
+            })?;
 
         let (stdout_tx, stdout_rx) = mpsc::channel::<String>(512);
         tokio::spawn(async move {
@@ -295,7 +305,9 @@ impl CodexAppServerSession {
         };
 
         session.initialize_protocol(&event_tx).await?;
-        let thread_id = session.start_or_resume_thread(existing_thread_id, &event_tx).await?;
+        let thread_id = session
+            .start_or_resume_thread(existing_thread_id, &event_tx)
+            .await?;
         session.thread_id = thread_id;
 
         Ok(session)
@@ -305,20 +317,27 @@ impl CodexAppServerSession {
         let mut line = serde_json::to_string(payload)?;
         line.push('\n');
         let mut guard = self.stdin.lock().await;
-        guard.write_all(line.as_bytes()).await.map_err(|e| {
-            SymphonyError::AgentProtocolError {
+        guard
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| SymphonyError::AgentProtocolError {
                 code: "stdin_write_failed".into(),
                 message: format!("Failed writing to Codex stdin: {e}"),
-            }
-        })?;
-        guard.flush().await.map_err(|e| SymphonyError::AgentProtocolError {
-            code: "stdin_flush_failed".into(),
-            message: format!("Failed flushing Codex stdin: {e}"),
-        })?;
+            })?;
+        guard
+            .flush()
+            .await
+            .map_err(|e| SymphonyError::AgentProtocolError {
+                code: "stdin_flush_failed".into(),
+                message: format!("Failed flushing Codex stdin: {e}"),
+            })?;
         Ok(())
     }
 
-    async fn initialize_protocol(&mut self, event_tx: &mpsc::Sender<AgentStreamEvent>) -> Result<()> {
+    async fn initialize_protocol(
+        &mut self,
+        event_tx: &mpsc::Sender<AgentStreamEvent>,
+    ) -> Result<()> {
         let req_id = self.next_id;
         self.next_id += 1;
 
@@ -412,7 +431,10 @@ impl CodexAppServerSession {
                 .await
                 .map_err(|_| SymphonyError::AgentProtocolError {
                     code: "response_timeout".into(),
-                    message: format!("Timed out waiting for response ({} ms)", self.config.read_timeout_ms),
+                    message: format!(
+                        "Timed out waiting for response ({} ms)",
+                        self.config.read_timeout_ms
+                    ),
                 })?;
 
             let Some(line) = line_opt else {
@@ -465,7 +487,10 @@ impl CodexAppServerSession {
         msg: &Value,
         event_tx: &mpsc::Sender<AgentStreamEvent>,
     ) -> Result<Option<TurnCompletionSignal>> {
-        let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("other");
+        let method = msg
+            .get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or("other");
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
         let session_id = self
             .current_turn_id
@@ -489,7 +514,7 @@ impl CodexAppServerSession {
                 turn_id: self.current_turn_id.clone(),
                 pid: self.pid,
                 message: text_message.clone(),
-                usage: usage.clone(),
+                usage,
                 rate_limits: rate_limits.clone(),
                 raw: msg.clone(),
             })
@@ -549,7 +574,10 @@ impl CodexAppServerSession {
                         .or_else(|| params.get("tool"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                    let arguments = params
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
 
                     let result = if let Some(ref handler) = self.tool_handler {
                         handler.execute_tool(tool_name, &arguments).await
@@ -680,7 +708,10 @@ impl AgentSession for CodexAppServerSession {
         self.next_id += 1;
 
         let cwd = self.config.workspace_path.to_string_lossy().to_string();
-        let title = format!("{}: {}", self.config.issue_identifier, self.config.issue_title);
+        let title = format!(
+            "{}: {}",
+            self.config.issue_identifier, self.config.issue_title
+        );
         let sandbox_policy = self
             .config
             .turn_sandbox_policy
@@ -877,13 +908,12 @@ impl AgentSession for ClaudeCodeSession {
         prompt: &str,
         event_tx: mpsc::Sender<AgentStreamEvent>,
     ) -> Result<TurnExecutionOutcome> {
-        let exe = if self.config.command.trim().is_empty()
-            || self.config.command == "codex app-server"
-        {
-            "claude"
-        } else {
-            self.config.command.trim()
-        };
+        let exe =
+            if self.config.command.trim().is_empty() || self.config.command == "codex app-server" {
+                "claude"
+            } else {
+                self.config.command.trim()
+            };
 
         let mut cmd = Command::new(exe);
         cmd.arg("-p")
@@ -953,7 +983,7 @@ impl AgentSession for ClaudeCodeSession {
                         turn_id: Some("turn-1".into()),
                         pid: self.pid,
                         message: text,
-                        usage: Some(usage.clone()),
+                        usage: Some(usage),
                         rate_limits: None,
                         raw: val,
                     })
@@ -1039,13 +1069,12 @@ impl AgentSession for OpenCodeSession {
         prompt: &str,
         event_tx: mpsc::Sender<AgentStreamEvent>,
     ) -> Result<TurnExecutionOutcome> {
-        let exe = if self.config.command.trim().is_empty()
-            || self.config.command == "codex app-server"
-        {
-            "opencode"
-        } else {
-            self.config.command.trim()
-        };
+        let exe =
+            if self.config.command.trim().is_empty() || self.config.command == "codex app-server" {
+                "opencode"
+            } else {
+                self.config.command.trim()
+            };
 
         let mut cmd = Command::new(exe);
         cmd.arg("run")
@@ -1087,7 +1116,11 @@ impl AgentSession for OpenCodeSession {
 
         while let Ok(Some(line)) = lines.next_line().await {
             if let Ok(val) = serde_json::from_str::<Value>(&line) {
-                if let Some(sid) = val.get("sessionID").or_else(|| val.get("session_id")).and_then(|v| v.as_str()) {
+                if let Some(sid) = val
+                    .get("sessionID")
+                    .or_else(|| val.get("session_id"))
+                    .and_then(|v| v.as_str())
+                {
                     discovered_session = sid.to_string();
                 }
                 if let Some(u) = extract_token_usage(&val) {
@@ -1110,7 +1143,7 @@ impl AgentSession for OpenCodeSession {
                         turn_id: Some("turn-1".into()),
                         pid: self.pid,
                         message: text,
-                        usage: Some(usage.clone()),
+                        usage: Some(usage),
                         rate_limits: None,
                         raw: val,
                     })
@@ -1166,7 +1199,8 @@ impl SimulatedAgentSession {
     pub fn new(config: AgentLaunchConfig, existing_thread_id: Option<String>) -> Self {
         Self {
             config,
-            thread_id: existing_thread_id.unwrap_or_else(|| format!("thread-sim-{}", uuid::Uuid::new_v4())),
+            thread_id: existing_thread_id
+                .unwrap_or_else(|| format!("thread-sim-{}", uuid::Uuid::new_v4())),
             turn_counter: 0,
             cancel_tx: None,
         }
@@ -1286,7 +1320,7 @@ impl AgentSession for SimulatedAgentSession {
                 turn_id: Some(turn_id.clone()),
                 pid: Some(std::process::id()),
                 message: Some(summary_msg.clone()),
-                usage: Some(usage.clone()),
+                usage: Some(usage),
                 rate_limits: Some(json!({ "requests_remaining": 999 })),
                 raw: json!({ "status": "completed", "usage": usage }),
             })

@@ -1,0 +1,87 @@
+name: Symphony Desktop CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-verify:
+    name: Windows 11 (Rust + Desktop + Mobile Web)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Run Rust workspace unit & E2E tests
+        run: cargo test --workspace
+
+      - name: Run Frontend TypeScript typecheck
+        run: pnpm typecheck
+
+      - name: Run Frontend Vitest suites
+        run: pnpm test
+
+      - name: Build Desktop and Mobile production bundles
+        run: pnpm build
+
+  macos-ios-companion:
+    name: macOS (iOS Companion Validation)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Typecheck & build shared + iOS companion bundle
+        run: |
+          pnpm --filter @symphony/shared-types typecheck
+          pnpm --filter @symphony/api-client typecheck
+          pnpm --filter @symphony/ui typecheck
+          pnpm --filter @symphony/mobile typecheck
+          pnpm --filter @symphony/mobile build

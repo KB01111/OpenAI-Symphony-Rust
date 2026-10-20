@@ -143,13 +143,11 @@ impl GitHubTracker {
             .map(|arr| {
                 arr.iter()
                     .filter_map(|item| {
-                        item.as_str()
-                            .map(|s| s.trim().to_lowercase())
-                            .or_else(|| {
-                                item.get("name")
-                                    .and_then(|n| n.as_str())
-                                    .map(|s| s.trim().to_lowercase())
-                            })
+                        item.as_str().map(|s| s.trim().to_lowercase()).or_else(|| {
+                            item.get("name")
+                                .and_then(|n| n.as_str())
+                                .map(|s| s.trim().to_lowercase())
+                        })
                     })
                     .filter(|s| !s.is_empty())
                     .collect()
@@ -219,10 +217,7 @@ impl GitHubTracker {
             .get("method")
             .and_then(|v| v.as_str())
             .unwrap_or("GET");
-        let path = arguments
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let body = arguments.get("body");
         match self.execute_dynamic_tool(method, path, body).await {
             Ok((ok, val)) => (ok, serde_json::to_string_pretty(&val).unwrap_or_default()),
