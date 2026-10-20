@@ -30,7 +30,7 @@ const SessionEvents: React.FC<{ taskId: string }> = ({ taskId }) => {
     <ol className="space-y-0.5" aria-label={t.mobile.events}>
       {list.map((event) => (
         <li key={event.id}>
-          <AiEventStreamCard event={event} mode="concise" />
+          <AiEventStreamCard event={event} mode="technical" />
         </li>
       ))}
     </ol>

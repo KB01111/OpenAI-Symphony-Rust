@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { RunningSessionSummary } from "@symphony/shared-types";
 import AgentsPage from "./AgentsPage.js";
@@ -64,8 +64,11 @@ describe("AgentsPage", () => {
     const dialog = await screen.findByRole("alertdialog");
     expect(runtime.calls.some((c) => c.path === "/tasks/t7/cancel")).toBe(false);
     const confirm = within(dialog).getByRole("button", { name: "Cancel run" });
-    fireEvent.click(confirm);
-    fireEvent.click(confirm);
+    // Both clicks land in one frame, before the pending state can disable the button.
+    act(() => {
+      fireEvent.click(confirm);
+      fireEvent.click(confirm);
+    });
     await waitFor(() => expect(runtime.calls.filter((c) => c.method === "POST" && c.path === "/tasks/t7/cancel")).toHaveLength(1));
   });
 });

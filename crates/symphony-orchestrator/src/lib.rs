@@ -2629,6 +2629,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         task.status = status;
         task.current_phase = Some(phase);
         task.last_error = Some(error_msg.clone());
+        task.current_session_id = None;
         task.updated_at = now;
         let _ = self.storage.upsert_task(task).await;
 

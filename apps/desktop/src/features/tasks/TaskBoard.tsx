@@ -36,11 +36,11 @@ import { groupByStatus } from "./taskLogic.js";
 const PAGE_SIZE = 60;
 const STATUS_SET = new Set<string>(ALL_TASK_STATUSES);
 
-/** Pointer: drop on the column under the cursor; keyboard: fall back to rectangle overlap. */
-const collisionDetection: CollisionDetection = (args) => {
-  const within = pointerWithin(args);
-  return within.length > 0 ? within : rectIntersection(args);
-};
+/**
+ * Pointer: drop only on the column under the cursor (a gutter is no drop); keyboard drags have no
+ * pointer coordinates, so they use rectangle overlap.
+ */
+const collisionDetection: CollisionDetection = (args) => (args.pointerCoordinates ? pointerWithin(args) : rectIntersection(args));
 
 /** Arrow keys jump between columns (left/right) and nudge within a column (up/down). */
 const columnKeyboardCoordinates: KeyboardCoordinateGetter = (event, { currentCoordinates, context }) => {

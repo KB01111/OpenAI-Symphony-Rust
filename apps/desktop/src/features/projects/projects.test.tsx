@@ -24,7 +24,7 @@ describe("project form logic", () => {
     const form = projectToForm(p);
     expect(validateProjectForm({ ...form, name: " " })).toHaveProperty("name");
     const update = formToUpdate(p, { ...form, name: "Renamed" });
-    expect(update.name).toBe("Renamed");
+    expect(update).toEqual({ name: "Renamed" });
   });
 });
 
