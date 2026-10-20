@@ -51,6 +51,7 @@ describe("remote access validation (mirror of validate_remote_settings)", () => 
     expect(validateSettings(settings({ remote_bind_address: "192.168.1.20" }), v)).toHaveProperty("remote_bind_address");
     expect(validateSettings(settings({ remote_bind_address: "::1" }), v)).toEqual({});
     expect(isLoopback("127.0.0.1.evil.example")).toBe(false);
+    expect(isLoopback("127.999.999.999")).toBe(false);
   });
 
   it("accepts only bare https origins (http for localhost) and never wildcards", () => {

@@ -268,6 +268,11 @@ struct Running {
     spec: ListenSpec,
     addr: SocketAddr,
     handle: tokio::task::JoinHandle<()>,
+    /// This listener's own copy of the token. axum serves each connection on a task of its own,
+    /// so aborting `handle` alone would leave open connections (keep-alive, event streams)
+    /// served; clearing this slot when the listener stops rejects their requests and ends their
+    /// streams.
+    slot: TokenSlot,
 }
 
 struct Inner {
@@ -346,9 +351,23 @@ impl RemoteAccessManager {
     /// Reconcile the listener with `settings`: start, stop or rebind as needed. A listener whose
     /// address and origins are unchanged keeps running (token changes apply in place).
     pub async fn apply(&self, settings: &AppSettings) -> RemoteAccessStatus {
-        let token = self.stored_token();
-        self.token.set(token.clone());
         let mut inner = self.inner.lock().await;
+        self.apply_locked(&mut inner, settings).await
+    }
+
+    /// Publish `token` to the manager and to the running listener.
+    fn set_token(&self, inner: &Inner, token: Option<String>) {
+        self.token.set(token.clone());
+        if let Some(running) = &inner.running {
+            running.slot.set(token);
+        }
+    }
+
+    /// `apply` with the state lock held, so the vault read and the token publication cannot
+    /// interleave with a concurrent rotation or revocation.
+    async fn apply_locked(&self, inner: &mut Inner, settings: &AppSettings) -> RemoteAccessStatus {
+        let token = self.stored_token();
+        self.set_token(inner, token.clone());
         inner.settings = settings.clone();
 
         let desired: std::result::Result<ListenSpec, (RemoteListenerState, Option<String>)> =
@@ -392,11 +411,16 @@ impl RemoteAccessManager {
                     inner.state = RemoteListenerState::Running;
                     inner.error = None;
                 } else {
-                    Self::stop(&mut inner).await;
-                    match self.bind(&spec).await {
-                        Ok((addr, handle)) => {
+                    Self::stop(inner).await;
+                    match self.bind(&spec, token.clone()).await {
+                        Ok((addr, handle, slot)) => {
                             info!(address = %addr, "Remote companion listener started");
-                            inner.running = Some(Running { spec, addr, handle });
+                            inner.running = Some(Running {
+                                spec,
+                                addr,
+                                handle,
+                                slot,
+                            });
                             inner.state = RemoteListenerState::Running;
                             inner.error = None;
                         }
@@ -412,18 +436,20 @@ impl RemoteAccessManager {
                 }
             }
             Err((state, error)) => {
-                Self::stop(&mut inner).await;
+                Self::stop(inner).await;
                 inner.state = state;
                 inner.error = error;
             }
         }
-        self.status_of(&inner)
+        self.status_of(inner)
     }
 
     async fn bind(
         &self,
         spec: &ListenSpec,
-    ) -> std::io::Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+        token: Option<String>,
+    ) -> std::io::Result<(SocketAddr, tokio::task::JoinHandle<()>, TokenSlot)> {
+        let slot = TokenSlot::new(token);
         let config = ServerConfig {
             bind_host: spec.host.clone(),
             port: spec.port,
@@ -433,8 +459,7 @@ impl RemoteAccessManager {
             scope: ApiScope::Remote,
             remote_access: None,
         };
-        let router =
-            build_router_inner(self.orchestrator.clone(), &config, Some(self.token.clone()));
+        let router = build_router_inner(self.orchestrator.clone(), &config, Some(slot.clone()));
         let host = spec.host.trim_start_matches('[').trim_end_matches(']');
         let listener = tokio::net::TcpListener::bind((host, spec.port)).await?;
         let addr = listener.local_addr()?;
@@ -443,12 +468,14 @@ impl RemoteAccessManager {
                 tracing::error!(error = %err, "Remote companion listener terminated with error");
             }
         });
-        Ok((addr, handle))
+        Ok((addr, handle, slot))
     }
 
-    /// Stop the listener and drop every open connection (event streams included).
+    /// Stop the listener. Open connections are cut off too: their token is cleared, so further
+    /// requests are rejected and event streams end.
     async fn stop(inner: &mut Inner) {
         if let Some(running) = inner.running.take() {
+            running.slot.set(None);
             running.handle.abort();
             let _ = running.handle.await;
             info!(address = %running.addr, "Remote companion listener stopped");
@@ -458,28 +485,30 @@ impl RemoteAccessManager {
     /// Generate a new random token, store it in the vault and apply it immediately. The previous
     /// token stops working at once.
     pub async fn rotate_token(&self) -> Result<RemoteTokenIssued> {
+        let mut inner = self.inner.lock().await;
         let token = generate_access_token();
         self.orchestrator
             .secret_store()
             .set_secret(REMOTE_TOKEN_KEY, &token)?;
         // The previous token stops working now, even if the settings cannot be loaded below.
-        self.token.set(Some(token.clone()));
+        self.set_token(&inner, Some(token.clone()));
         let settings = self.orchestrator.storage().get_settings().await?;
-        let status = self.apply(&settings).await;
+        let status = self.apply_locked(&mut inner, &settings).await;
         info!("Remote access token rotated");
         Ok(RemoteTokenIssued { token, status })
     }
 
     /// Delete the token and stop the listener; remote clients are disconnected immediately.
     pub async fn revoke_token(&self) -> Result<RemoteAccessStatus> {
+        let mut inner = self.inner.lock().await;
         self.orchestrator
             .secret_store()
             .delete_secret(REMOTE_TOKEN_KEY)?;
         // Every remote request is rejected from here on, even if the settings cannot be loaded
         // below (an absent token rejects all requests).
-        self.token.set(None);
+        self.set_token(&inner, None);
         let settings = self.orchestrator.storage().get_settings().await?;
-        let status = self.apply(&settings).await;
+        let status = self.apply_locked(&mut inner, &settings).await;
         info!("Remote access token revoked");
         Ok(status)
     }

@@ -511,8 +511,27 @@ async fn listener_follows_configuration_changes() {
         200
     );
 
+    // An event stream opened before the listener is disabled must not outlive it.
+    let mut stream = h
+        .http
+        .get(format!("http://127.0.0.1:{new_port}/api/v1/events"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stream.status(), 200);
+    assert!(stream.chunk().await.unwrap().is_some());
+
     // Disable: stopped.
     let status = h.remote.apply(&AppSettings::default()).await;
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Ok(Some(_)) = stream.chunk().await {}
+    })
+    .await;
+    assert!(
+        ended.is_ok(),
+        "open event stream must end when the listener stops"
+    );
     assert_eq!(status.state, RemoteListenerState::Disabled);
     assert!(h
         .http

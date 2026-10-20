@@ -113,12 +113,20 @@ async fn main() -> anyhow::Result<()> {
         .db_path
         .unwrap_or_else(|| data_dir.join("symphony.sqlite"));
     let storage = Storage::connect(&db_path).await?;
-    if cli.quarantine_credential_vault {
-        if let Some(moved) = SecretStore::quarantine_vault(&data_dir)? {
-            eprintln!("Moved the credential vault aside to {}", moved.display());
+    // `--quarantine-credential-vault` only acts on a vault that cannot be opened; a readable
+    // vault is used as is, so leaving the flag in a service definition is harmless.
+    let secret_store = match SecretStore::new(&data_dir) {
+        Err(symphony_core::SymphonyError::CredentialVault(message))
+            if cli.quarantine_credential_vault =>
+        {
+            tracing::error!(error = %message, "Credential vault unreadable; moving it aside as requested");
+            if let Some(moved) = SecretStore::quarantine_vault(&data_dir)? {
+                eprintln!("Moved the credential vault aside to {}", moved.display());
+            }
+            SecretStore::new(&data_dir)?
         }
-    }
-    let secret_store = SecretStore::new(&data_dir)?;
+        other => other?,
+    };
 
     // Precedence: --workflow, ./WORKFLOW.md, then a workflow previously saved to the data dir.
     let data_dir_workflow = data_dir.join("WORKFLOW.md");

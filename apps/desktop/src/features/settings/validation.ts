@@ -70,7 +70,8 @@ export function serverErrorFields(message: string): SettingsField[] {
 /** Bind addresses that keep the remote listener on this machine. */
 export function isLoopback(address: string): boolean {
   const a = address.trim().toLowerCase();
-  return a === "localhost" || a === "::1" || a === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(a);
+  const v4 = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(a);
+  return a === "localhost" || a === "::1" || a === "[::1]" || (v4 !== null && v4.slice(1).every((octet) => Number(octet) <= 255));
 }
 
 /**

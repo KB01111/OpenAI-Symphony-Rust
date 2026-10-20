@@ -31,6 +31,13 @@ pub fn verify_private_file(path: &Path) -> io::Result<()> {
     imp::verify_private_file(path)
 }
 
+/// Read a file only if it is private to the current user. The checks and the read use the same
+/// open handle (symlinks / reparse points are refused), so the file cannot be swapped between
+/// the check and the read.
+pub fn read_private_file(path: &Path) -> io::Result<Vec<u8>> {
+    imp::read_private_file(path)
+}
+
 /// Create `dir` (and parents) if missing. A directory created here is owner-only on Unix; an
 /// existing directory is left as is, since the files inside it are protected individually.
 pub fn ensure_dir(dir: &Path) -> io::Result<()> {
@@ -140,7 +147,22 @@ mod imp {
     }
 
     pub fn verify_private_file(path: &Path) -> io::Result<()> {
-        let meta = std::fs::symlink_metadata(path)?;
+        check_metadata(path, &std::fs::symlink_metadata(path)?)
+    }
+
+    pub fn read_private_file(path: &Path) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        check_metadata(path, &file.metadata()?)?;
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)?;
+        Ok(contents)
+    }
+
+    fn check_metadata(path: &Path, meta: &std::fs::Metadata) -> io::Result<()> {
         if !meta.file_type().is_file() {
             return Err(insecure(path, "not a regular file"));
         }
@@ -176,7 +198,7 @@ mod imp {
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-        GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+        GetNamedSecurityInfoW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{
         AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetTokenInformation,
@@ -185,7 +207,9 @@ mod imp {
         OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY,
         TOKEN_USER,
     };
-    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL,
+    };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
@@ -316,24 +340,74 @@ mod imp {
         if !meta.file_type().is_file() {
             return Err(insecure(path, "not a regular file"));
         }
-        let user = CurrentUser::query()?;
         let path_w = wide(path.as_os_str());
-        // SAFETY: every pointer below points into the security descriptor returned by
-        // GetNamedSecurityInfoW, which stays alive (LocalBox) until the end of this block.
+        check_descriptor(path, |owner, dacl, sd| {
+            // SAFETY: valid NUL-terminated path and out pointers.
+            unsafe {
+                GetNamedSecurityInfoW(
+                    path_w.as_ptr(),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                    owner,
+                    null_mut(),
+                    dacl,
+                    null_mut(),
+                    sd,
+                )
+            }
+        })
+    }
+
+    pub fn read_private_file(path: &Path) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        // FILE_FLAG_OPEN_REPARSE_POINT opens a symlink/junction itself instead of its target, so
+        // the metadata check below rejects it.
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .access_mode(GENERIC_READ | READ_CONTROL)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let meta = file.metadata()?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(insecure(path, "not a regular file"));
+        }
+        let handle = file.as_raw_handle() as HANDLE;
+        check_descriptor(path, |owner, dacl, sd| {
+            // SAFETY: `handle` is open with READ_CONTROL for the duration of the call.
+            unsafe {
+                GetSecurityInfo(
+                    handle,
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                    owner,
+                    null_mut(),
+                    dacl,
+                    null_mut(),
+                    sd,
+                )
+            }
+        })?;
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)?;
+        Ok(contents)
+    }
+
+    /// Validate the owner and DACL returned by `fetch` (GetNamedSecurityInfoW or
+    /// GetSecurityInfo).
+    fn check_descriptor(
+        path: &Path,
+        fetch: impl FnOnce(*mut PSID, *mut *mut ACL, *mut PSECURITY_DESCRIPTOR) -> u32,
+    ) -> io::Result<()> {
+        let user = CurrentUser::query()?;
+        // SAFETY: every pointer below points into the security descriptor returned by `fetch`,
+        // which stays alive (LocalBox) until the end of this block.
         unsafe {
             let mut owner: PSID = null_mut();
             let mut dacl: *mut ACL = null_mut();
             let mut sd: PSECURITY_DESCRIPTOR = null_mut();
-            let status = GetNamedSecurityInfoW(
-                path_w.as_ptr(),
-                SE_FILE_OBJECT,
-                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-                &mut owner,
-                null_mut(),
-                &mut dacl,
-                null_mut(),
-                &mut sd,
-            );
+            let status = fetch(&mut owner, &mut dacl, &mut sd);
             if status != 0 {
                 return Err(io::Error::from_raw_os_error(status as i32));
             }
@@ -442,6 +516,28 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let err = verify_private_file(&path).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn read_private_file_reads_only_private_files() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("private");
+        write_private_atomic(&path, b"secret").unwrap();
+        assert_eq!(read_private_file(&path).unwrap(), b"secret");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let shared = dir.path().join("shared");
+            std::fs::write(&shared, b"x").unwrap();
+            std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(read_private_file(&shared).is_err());
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(
+                read_private_file(&link).is_err(),
+                "symlinks are never followed"
+            );
+        }
     }
 
     #[cfg(unix)]

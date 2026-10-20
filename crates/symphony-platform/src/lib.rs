@@ -473,14 +473,17 @@ impl RuntimeDiscovery {
     /// another account to redirect clients (and their requests) to a server it controls.
     pub fn read_live(data_dir: &Path) -> Option<Self> {
         let path = Self::file_path(data_dir);
-        if let Err(err) = secure_fs::verify_private_file(&path) {
-            if path.exists() {
-                tracing::warn!(error = %err, "Ignoring runtime discovery file with unsafe permissions");
+        // Checked and read through one handle, so the file cannot be swapped in between.
+        let raw = match secure_fs::read_private_file(&path) {
+            Ok(raw) => zeroize::Zeroizing::new(raw),
+            Err(err) => {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(error = %err, "Ignoring runtime discovery file with unsafe permissions");
+                }
+                return None;
             }
-            return None;
-        }
-        let raw = std::fs::read_to_string(&path).ok()?;
-        let record: Self = serde_json::from_str(&raw).ok()?;
+        };
+        let record: Self = serde_json::from_slice(&raw).ok()?;
         is_process_alive(record.pid).then_some(record)
     }
 

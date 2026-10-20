@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,7 +91,11 @@ function runCli({ changes, base, head, labelled }) {
     writeFileSync(join(dir, "base.rs"), `pub const API_VERSION: u32 = ${base};\n`);
     args.push("--base-source", join(dir, "base.rs"));
   }
-  return spawnSync(process.execPath, args, { encoding: "utf8" });
+  try {
+    return spawnSync(process.execPath, args, { encoding: "utf8" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 test("CLI exit codes follow the policy", () => {
@@ -111,5 +115,6 @@ test("CLI rejects malformed input with exit code 2", () => {
   const r = spawnSync(process.execPath, [script, "--changes", join(dir, "changes.json"), "--head-source", join(dir, "head.rs"), "--labelled", "false"], {
     encoding: "utf8"
   });
+  rmSync(dir, { recursive: true, force: true });
   assert.equal(r.status, 2);
 });

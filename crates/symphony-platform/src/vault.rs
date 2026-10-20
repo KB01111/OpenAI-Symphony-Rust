@@ -69,6 +69,13 @@ struct VaultPayload {
     entries: BTreeMap<String, String>,
 }
 
+/// Borrowing twin of [`VaultPayload`] for serialization, so no unzeroized copy of the secrets
+/// is made.
+#[derive(Serialize)]
+struct VaultPayloadRef<'a> {
+    entries: &'a BTreeMap<String, String>,
+}
+
 /// Encrypted blob produced by a [`VaultProtector`].
 pub struct SealedBlob {
     pub nonce: Option<Vec<u8>>,
@@ -248,9 +255,7 @@ impl SecretStore {
 
     fn encode(&self, entries: &BTreeMap<String, String>) -> SymphonyResult<Vec<u8>> {
         let protection = self.protector.protection();
-        let plaintext = Zeroizing::new(serde_json::to_vec(&VaultPayload {
-            entries: entries.clone(),
-        })?);
+        let plaintext = Zeroizing::new(serde_json::to_vec(&VaultPayloadRef { entries })?);
         let blob = self
             .protector
             .seal(&plaintext, &associated_data(protection))?;
@@ -518,7 +523,7 @@ mod keyfile {
     use super::*;
     use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305, NONCE_LEN};
     use ring::rand::{SecureRandom, SystemRandom};
-    use std::io::{Read, Write};
+    use std::io::Write;
 
     const KEY_FILE: &str = "credentials.key";
     const KEY_LEN: usize = 32;
@@ -535,15 +540,12 @@ mod keyfile {
             let rng = SystemRandom::new();
             let mut key_bytes = Zeroizing::new([0u8; KEY_LEN]);
             if path.exists() {
-                secure_fs::verify_private_file(&path).map_err(|e| {
+                let buf = Zeroizing::new(secure_fs::read_private_file(&path).map_err(|e| {
                     vault_error(format!(
                         "refusing to use the vault key: {e}. Restrict it with `chmod 600 {}`",
                         path.display()
                     ))
-                })?;
-                let mut file = std::fs::File::open(&path)?;
-                let mut buf = Zeroizing::new(Vec::new());
-                file.read_to_end(&mut buf)?;
+                })?);
                 if buf.len() != KEY_LEN {
                     return Err(vault_error(format!(
                         "{} is corrupt (expected a {KEY_LEN}-byte key)",

@@ -359,6 +359,8 @@ export function useSaveSettings() {
               .saveSettings({ ...saved, start_background_runtime_on_login: observed })
               .catch(() => null);
             if (reverted) qc.setQueryData(qk.settings, reverted);
+            // The revert itself failed: refetch rather than keep showing the rejected value.
+            else void qc.invalidateQueries({ queryKey: qk.settings });
           }
           throw error;
         }

@@ -212,4 +212,37 @@ fn unreadable_vault_stops_the_runtime_until_explicitly_quarantined() {
                 .starts_with("credentials.vault.corrupt-")
         });
     assert!(moved, "the corrupt vault is kept aside, not deleted");
+
+    // With a readable vault the flag is a no-op: nothing is moved aside.
+    symphony_platform::SecretStore::new(dir.path())
+        .unwrap()
+        .set_secret("GITHUB_TOKEN", "ghp_keep_me")
+        .unwrap();
+    let before = std::fs::read(dir.path().join("credentials.vault")).ok();
+    assert!(before.is_some());
+    let mut child = Command::new(BIN)
+        .args(["--port", "0", "--quarantine-credential-vault", "--data-dir"])
+        .arg(dir.path())
+        .current_dir(dir.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for_discovery(dir.path(), &mut child);
+    let _ = child.kill();
+    let _ = child.wait();
+    let quarantined = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("credentials.vault.corrupt-")
+        })
+        .count();
+    assert_eq!(quarantined, 1, "a readable vault is never quarantined");
+    assert_eq!(
+        std::fs::read(dir.path().join("credentials.vault")).ok(),
+        before
+    );
 }

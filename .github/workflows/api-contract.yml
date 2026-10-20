@@ -33,6 +33,8 @@ env:
 jobs:
   generated:
     name: Generated contracts are up to date
+    # A label change cannot change the generated artifacts.
+    if: github.event.action != 'labeled' && github.event.action != 'unlabeled'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -70,7 +72,11 @@ jobs:
 
   breaking:
     name: API versioning policy
-    if: github.event_name == 'pull_request'
+    # Re-run on label changes only for the label the policy reads.
+    if: >-
+      github.event_name == 'pull_request' &&
+      ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+       github.event.label.name == 'api-breaking-change')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
