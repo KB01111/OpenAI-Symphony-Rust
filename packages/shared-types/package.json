@@ -11,13 +11,11 @@
     "./api/client": "./src/generated/openapi/client/index.ts"
   },
   "scripts": {
-    "generate": "openapi-ts",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
     "test": "node --eval \"console.log('shared-types ok')\""
   },
   "devDependencies": {
-    "@hey-api/openapi-ts": "0.99.0",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   }
 }

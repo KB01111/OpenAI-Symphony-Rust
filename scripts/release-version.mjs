@@ -35,7 +35,7 @@ export function collectVersions(root) {
   add(cargo, readCargoWorkspaceVersion(readFileSync(cargo, "utf8")));
 
   const packageFiles = [join(root, "package.json")];
-  for (const group of ["apps", "packages"]) {
+  for (const group of ["apps", "packages", "tools"]) {
     const dir = join(root, group);
     if (!existsSync(dir)) continue;
     for (const entry of readdirSync(dir, { withFileTypes: true })) {

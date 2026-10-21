@@ -1,6 +1,7 @@
 packages:
   - "apps/*"
   - "packages/*"
+  - "tools/*"
 allowBuilds:
   esbuild: true
 # Security overrides for exact transitive pins whose parents have no fixed release yet. Each one is

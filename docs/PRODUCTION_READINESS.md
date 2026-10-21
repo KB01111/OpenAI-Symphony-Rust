@@ -61,11 +61,10 @@ These cannot be done from the repository and are deliberately not faked:
   autostart (see the manual checklist).
 - **iOS companion** is validated as a web build; no native iOS packaging.
 
-## 5. Dependency upgrades that need an upstream release
+## 5. Pinned tooling
 
-Dependabot keeps proposing these; close the PRs until the blocker is gone (`dependabot.yml` deliberately has
-no ignore rules, because they would also suppress security updates).
-
-| Upgrade | Blocker | Unblocked when |
-| --- | --- | --- |
-| TypeScript 7 in `packages/shared-types` | TypeScript 7 (the native compiler) no longer ships the JavaScript compiler API that `@hey-api/openapi-ts` (0.99) uses to generate the API client, so `pnpm generate:api` fails with it. Every other package uses TypeScript 7; `packages/shared-types`, which owns the generator, stays on TypeScript 6 so the generator's `typescript` peer resolves there. | `@hey-api/openapi-ts` supports TypeScript 7; then move `packages/shared-types` to TypeScript 7 too. |
+- **API client generator** (`tools/api-generator`): `@hey-api/openapi-ts` 0.99 uses the JavaScript compiler API
+  that TypeScript 7 (the native compiler) no longer ships, so this one tool package stays on TypeScript 6.
+  It only writes `packages/shared-types/src/generated/openapi`, whose output has no runtime dependency on
+  Hey API; every application package, `shared-types` included, compiles with TypeScript 7. Move the tool to
+  TypeScript 7 once `@hey-api/openapi-ts` supports it (`pnpm generate:api` must still leave no diff).

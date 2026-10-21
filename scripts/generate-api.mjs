@@ -30,4 +30,4 @@ run("cargo", ["test", "--locked", "-p", "symphony-server", "--test", "openapi_co
   UPDATE_OPENAPI: "1",
   UPDATE_STATE_MACHINE: "1"
 });
-run("pnpm", ["--filter", "@symphony/shared-types", "generate"]);
+run("pnpm", ["--filter", "@symphony/api-generator", "generate"]);

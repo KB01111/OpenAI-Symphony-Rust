@@ -1,0 +1,14 @@
+{
+  "name": "@symphony/api-generator",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generates packages/shared-types/src/generated/openapi from the OpenAPI document. Kept separate because @hey-api/openapi-ts needs the TypeScript 6 compiler API, which TypeScript 7 no longer ships.",
+  "scripts": {
+    "generate": "openapi-ts"
+  },
+  "devDependencies": {
+    "@hey-api/openapi-ts": "0.99.0",
+    "typescript": "^6.0.3"
+  }
+}
