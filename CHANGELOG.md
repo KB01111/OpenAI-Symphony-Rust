@@ -38,7 +38,8 @@ First release. Replace "Unreleased" with the release date in the commit that is 
   `node` started by `npm test`), not only the shell.
 
 - A stalled task is retried only after its backoff delay: it was picked up again as a regular
-  queued task on the next scheduler tick. Due retries also respect a paused scheduler, host
+  queued task on the next scheduler tick, and after a restart the backoff resumes from the task's
+  saved retry time. Due retries also respect a paused scheduler, host
   resource pressure and the concurrency limit; they no longer start beyond it.
 - Token counts and cost estimates are no longer inflated: the runtime totals added every usage
   report of a session (Codex sends many, each with the running total), and a multi-turn Codex task

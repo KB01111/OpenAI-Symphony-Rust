@@ -167,3 +167,25 @@ async fn claude_code_runs_add_up_to_session_usage() {
     assert_eq!(second.usage, usage(100, 50));
     assert_cumulative(&reported_usage(&mut rx), usage(200, 100));
 }
+
+#[tokio::test]
+async fn simulated_turns_report_session_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(256);
+    let mut session = start_agent_session(
+        config(ProviderKind::Simulated, String::new(), dir.path()),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+
+    let first = session.run_turn("one", tx.clone()).await.unwrap();
+    let second = session.run_turn("two", tx).await.unwrap();
+
+    assert_eq!(first.usage, second.usage);
+    // Intermediate reports of the second turn include the first turn as well.
+    assert_cumulative(&reported_usage(&mut rx), first.usage.plus(&second.usage));
+}

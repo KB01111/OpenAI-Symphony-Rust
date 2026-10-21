@@ -1568,11 +1568,11 @@ impl AgentSession for SimulatedAgentSession {
                 &session_id,
                 &turn_id,
                 plan.clone(),
-                Some(TokenUsage {
+                Some(self.completed_usage.plus(&TokenUsage {
                     input_tokens: 180,
                     output_tokens: 60,
                     total_tokens: 240,
-                }),
+                })),
                 json!({ "item": { "type": "agentMessage", "text": plan } }),
             ))
             .await;

@@ -297,6 +297,28 @@ impl SymphonyOrchestrator {
         let existing_tasks = storage.list_tasks(None).await.unwrap_or_default();
         let mut totals = CodexTotals::default();
         let mut completed_ids = HashSet::new();
+        // Retry timers live in memory; a backoff still running at shutdown resumes from the
+        // task's persisted `next_retry_at` instead of the task becoming an ordinary candidate.
+        let now = Utc::now();
+        let mut retry_attempts = HashMap::new();
+        for t in &existing_tasks {
+            if let Some(due_at) = t
+                .next_retry_at
+                .filter(|due| *due > now && t.status == TaskStatus::Queued)
+            {
+                retry_attempts.insert(
+                    t.id.clone(),
+                    RetryEntry {
+                        task_id: t.id.clone(),
+                        issue_id: t.issue.id.clone(),
+                        identifier: t.issue.identifier.clone(),
+                        attempt: t.attempt_count.max(1),
+                        due_at,
+                        error: t.last_error.clone(),
+                    },
+                );
+            }
+        }
         for t in &existing_tasks {
             totals.input_tokens = totals.input_tokens.saturating_add(t.input_tokens);
             totals.output_tokens = totals.output_tokens.saturating_add(t.output_tokens);
@@ -315,7 +337,7 @@ impl SymphonyOrchestrator {
             scheduler_paused: false,
             running: HashMap::new(),
             claimed_issue_ids: HashSet::new(),
-            retry_attempts: HashMap::new(),
+            retry_attempts,
             completed_issue_ids: completed_ids,
             codex_totals: totals,
             latest_rate_limits: None,
@@ -2923,7 +2945,13 @@ mod tests {
     /// An orchestrator with one manual project whose hardware policy always allows exactly one
     /// concurrent agent, independent of the host's load, and one task that is not yet queued.
     async fn single_slot_orchestrator(temp: &TempDir) -> (SymphonyOrchestrator, Task) {
-        let storage = Storage::connect_in_memory().await.unwrap();
+        single_slot_orchestrator_on(temp, Storage::connect_in_memory().await.unwrap()).await
+    }
+
+    async fn single_slot_orchestrator_on(
+        temp: &TempDir,
+        storage: Storage,
+    ) -> (SymphonyOrchestrator, Task) {
         let mut settings = storage.get_settings().await.unwrap();
         settings.resource_policy = symphony_core::ResourcePolicy {
             max_concurrent_on_ac: 1,
@@ -3010,6 +3038,36 @@ mod tests {
             .await
             .retry_attempts
             .contains_key(&task.id));
+    }
+
+    #[tokio::test]
+    async fn test_retry_backoff_survives_a_restart() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("retry.db");
+        let task_id = {
+            let storage = Storage::connect(&db_path).await.unwrap();
+            let (orch, task) = single_slot_orchestrator_on(&temp, storage).await;
+            orch.schedule_retry(&task.id, false, Some("Stall timeout exceeded".into()))
+                .await
+                .unwrap();
+            task.id
+        };
+
+        let storage = Storage::connect(&db_path).await.unwrap();
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        let orch = SymphonyOrchestrator::new(storage, None, secrets)
+            .await
+            .unwrap();
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task_id));
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        let waiting = orch.get_task(&task_id).await.unwrap();
+        assert_eq!(waiting.status, TaskStatus::Queued);
+        assert_eq!(waiting.attempt_count, 0);
     }
 
     #[tokio::test]
