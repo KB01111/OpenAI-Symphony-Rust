@@ -1970,6 +1970,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 {
                     continue;
                 }
+                // Moved by hand since the snapshot: `transition_task` dropped the retry.
+                Ok(task) if task.status != TaskStatus::Queued => continue,
                 Ok(_) => {}
                 // The task is gone: nothing left to retry.
                 Err(_) => {
@@ -1977,9 +1979,17 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     continue;
                 }
             }
+            // Claim the retry: only an entry that is still registered may start (a manual move
+            // removes it under the same lock).
+            if self
+                .memory
+                .write()
+                .await
+                .retry_attempts
+                .remove(&task_id)
+                .is_none()
             {
-                let mut mem = self.memory.write().await;
-                mem.retry_attempts.remove(&task_id);
+                continue;
             }
             let _ = self.dispatch_task_now(&task_id).await;
             dispatched += 1;
