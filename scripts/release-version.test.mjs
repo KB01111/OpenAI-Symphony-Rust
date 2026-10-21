@@ -12,7 +12,7 @@ import { changelogReleaseDate, changelogSection, checkVersions, collectVersions,
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-function fixture({ cargo = "2.1.0", root = "2.1.0", app = "2.1.0", tauri = "2.1.0" } = {}) {
+function fixture({ cargo = "2.1.0", root = "2.1.0", app = "2.1.0", tauri = "2.1.0", tool = "2.1.0" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "symphony-version-"));
   writeFileSync(
     join(dir, "Cargo.toml"),
@@ -22,6 +22,8 @@ function fixture({ cargo = "2.1.0", root = "2.1.0", app = "2.1.0", tauri = "2.1.
   mkdirSync(join(dir, "apps", "desktop", "src-tauri"), { recursive: true });
   writeFileSync(join(dir, "apps", "desktop", "package.json"), JSON.stringify({ name: "desktop", version: app }));
   writeFileSync(join(dir, "apps", "desktop", "src-tauri", "tauri.conf.json"), JSON.stringify({ version: tauri }));
+  mkdirSync(join(dir, "tools", "api-generator"), { recursive: true });
+  writeFileSync(join(dir, "tools", "api-generator", "package.json"), JSON.stringify({ name: "api-generator", version: tool }));
   return dir;
 }
 
@@ -35,7 +37,7 @@ test("agreeing manifests pass and report the version", () => {
   try {
     const result = checkVersions(collectVersions(dir));
     assert.deepEqual(result, { ok: true, version: "2.1.0", errors: [] });
-    assert.equal(collectVersions(dir).length, 4);
+    assert.equal(collectVersions(dir).length, 5);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -47,6 +49,17 @@ test("a drifting manifest is named", () => {
     const result = checkVersions(collectVersions(dir));
     assert.equal(result.ok, false);
     assert.match(result.errors.join(" "), /tauri\.conf\.json=2\.0\.0/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a workspace tool's manifest is checked too", () => {
+  const dir = fixture({ tool: "2.0.0" });
+  try {
+    const result = checkVersions(collectVersions(dir));
+    assert.equal(result.ok, false);
+    assert.match(result.errors.join(" "), /tools\/api-generator\/package\.json=2\.0\.0/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
