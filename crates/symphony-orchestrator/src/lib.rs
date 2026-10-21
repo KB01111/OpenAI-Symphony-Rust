@@ -297,15 +297,12 @@ impl SymphonyOrchestrator {
         let existing_tasks = storage.list_tasks(None).await.unwrap_or_default();
         let mut totals = CodexTotals::default();
         let mut completed_ids = HashSet::new();
-        // Retry timers live in memory; a backoff still running at shutdown resumes from the
-        // task's persisted `next_retry_at` instead of the task becoming an ordinary candidate.
-        let now = Utc::now();
+        // Retry timers live in memory; a retry pending at shutdown (or set by the crash recovery
+        // above) resumes from the task's persisted `next_retry_at`: a running backoff is honoured
+        // and an overdue retry keeps its precedence over new candidates.
         let mut retry_attempts = HashMap::new();
         for t in &existing_tasks {
-            if let Some(due_at) = t
-                .next_retry_at
-                .filter(|due| *due > now && t.status == TaskStatus::Queued)
-            {
+            if let Some(due_at) = t.next_retry_at.filter(|_| t.status == TaskStatus::Queued) {
                 retry_attempts.insert(
                     t.id.clone(),
                     RetryEntry {
@@ -3068,6 +3065,35 @@ mod tests {
         let waiting = orch.get_task(&task_id).await.unwrap();
         assert_eq!(waiting.status, TaskStatus::Queued);
         assert_eq!(waiting.attempt_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_overdue_retry_is_restored_after_a_restart() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("overdue.db");
+        let task_id = {
+            let storage = Storage::connect(&db_path).await.unwrap();
+            let (orch, task) = single_slot_orchestrator_on(&temp, storage.clone()).await;
+            orch.schedule_retry(&task.id, false, None).await.unwrap();
+            let mut overdue = orch.get_task(&task.id).await.unwrap();
+            overdue.next_retry_at = Some(Utc::now() - chrono::Duration::seconds(5));
+            storage.upsert_task(&overdue).await.unwrap();
+            task.id
+        };
+
+        let storage = Storage::connect(&db_path).await.unwrap();
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        let orch = SymphonyOrchestrator::new(storage, None, secrets)
+            .await
+            .unwrap();
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task_id));
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task_id).await.unwrap().attempt_count, 1);
     }
 
     #[tokio::test]

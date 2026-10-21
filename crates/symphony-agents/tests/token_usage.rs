@@ -185,7 +185,8 @@ async fn simulated_turns_report_session_usage() {
     let first = session.run_turn("one", tx.clone()).await.unwrap();
     let second = session.run_turn("two", tx).await.unwrap();
 
-    assert_eq!(first.usage, second.usage);
+    assert_eq!(first.usage, usage(450, 210));
+    assert_eq!(second.usage, usage(450, 210));
     // Intermediate reports of the second turn include the first turn as well.
     assert_cumulative(&reported_usage(&mut rx), first.usage.plus(&second.usage));
 }
