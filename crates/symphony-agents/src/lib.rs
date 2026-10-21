@@ -50,6 +50,9 @@ pub struct AgentStreamEvent {
     pub turn_id: Option<String>,
     pub pid: Option<u32>,
     pub message: Option<String>,
+    /// Cumulative usage of this agent session so far (all turns since the session started),
+    /// never a per-request or per-turn value, so consumers can count the growth between reports
+    /// without double-counting repeated reports.
     pub usage: Option<TokenUsage>,
     pub rate_limits: Option<Value>,
     pub raw: Value,
@@ -64,6 +67,7 @@ pub struct TurnExecutionOutcome {
     pub cancelled: bool,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+    /// Usage of this turn alone.
     pub usage: TokenUsage,
     pub rate_limits: Option<Value>,
     pub assistant_messages: Vec<String>,
@@ -208,6 +212,8 @@ pub struct CodexAppServerSession {
     stdout_rx: mpsc::Receiver<String>,
     thread_id: String,
     current_turn_id: Option<String>,
+    /// Latest absolute thread total reported by `thread/tokenUsage/updated`.
+    thread_usage: TokenUsage,
     pid: Option<u32>,
     next_id: i64,
     tool_handler: Option<Arc<dyn DynamicToolHandler>>,
@@ -287,6 +293,7 @@ impl CodexAppServerSession {
             stdout_rx,
             thread_id: String::new(),
             current_turn_id: None,
+            thread_usage: TokenUsage::default(),
             pid,
             next_id: 1,
             tool_handler,
@@ -486,7 +493,11 @@ impl CodexAppServerSession {
             .as_ref()
             .map(|turn_id| format!("{}-{}", self.thread_id, turn_id));
 
-        let usage = extract_token_usage(msg);
+        // Codex reports absolute thread totals, which are already cumulative for the session.
+        let usage = extract_token_usage(msg).map(|u| u.max(&self.thread_usage));
+        if let Some(u) = usage {
+            self.thread_usage = u;
+        }
         let rate_limits = extract_rate_limits(msg);
         let text_message = extract_display_message(method, &params);
 
@@ -693,6 +704,7 @@ impl AgentSession for CodexAppServerSession {
         prompt: &str,
         event_tx: mpsc::Sender<AgentStreamEvent>,
     ) -> Result<TurnExecutionOutcome> {
+        let usage_at_turn_start = self.thread_usage;
         let req_id = self.next_id;
         self.next_id += 1;
 
@@ -752,7 +764,6 @@ impl AgentSession for CodexAppServerSession {
             })
             .await;
 
-        let mut latest_usage = TokenUsage::default();
         let mut latest_rate_limits = None;
         let mut assistant_messages = Vec::new();
         let turn_timeout = Duration::from_millis(self.config.turn_timeout_ms.max(5000));
@@ -764,9 +775,6 @@ impl AgentSession for CodexAppServerSession {
                     Err(_) => continue,
                 };
 
-                if let Some(u) = extract_token_usage(&parsed) {
-                    latest_usage = u;
-                }
                 if let Some(rl) = extract_rate_limits(&parsed) {
                     latest_rate_limits = Some(rl);
                 }
@@ -784,6 +792,8 @@ impl AgentSession for CodexAppServerSession {
             })
         })
         .await;
+        // The thread total covers every earlier turn as well; the outcome reports this turn only.
+        let latest_usage = self.thread_usage.since(&usage_at_turn_start);
 
         match loop_res {
             Ok(Ok(TurnCompletionSignal::Completed)) => Ok(TurnExecutionOutcome {
@@ -1043,6 +1053,8 @@ pub struct ClaudeCodeSession {
     session_id: Option<String>,
     pid: Option<u32>,
     cancelled: Arc<Mutex<bool>>,
+    /// Usage of the finished turns; each CLI run reports only its own.
+    completed_usage: TokenUsage,
 }
 
 impl ClaudeCodeSession {
@@ -1052,6 +1064,7 @@ impl ClaudeCodeSession {
             session_id: existing_session_id,
             pid: None,
             cancelled: Arc::new(Mutex::new(false)),
+            completed_usage: TokenUsage::default(),
         }
     }
 }
@@ -1154,7 +1167,7 @@ impl AgentSession for ClaudeCodeSession {
                             turn_id: Some("turn-1".into()),
                             pid: self.pid,
                             message: text,
-                            usage: Some(usage),
+                            usage: Some(self.completed_usage.plus(&usage)),
                             rate_limits: None,
                             raw: val,
                         },
@@ -1165,6 +1178,7 @@ impl AgentSession for ClaudeCodeSession {
 
         let status = process.wait().await?;
         self.session_id = Some(discovered_session.clone());
+        self.completed_usage.add(&usage);
         let is_cancelled = *self.cancelled.lock().await;
 
         Ok(TurnExecutionOutcome {
@@ -1205,6 +1219,8 @@ pub struct OpenCodeSession {
     session_id: Option<String>,
     pid: Option<u32>,
     cancelled: Arc<Mutex<bool>>,
+    /// Usage of the finished turns; each CLI run reports only its own.
+    completed_usage: TokenUsage,
 }
 
 impl OpenCodeSession {
@@ -1214,6 +1230,7 @@ impl OpenCodeSession {
             session_id: existing_session_id,
             pid: None,
             cancelled: Arc::new(Mutex::new(false)),
+            completed_usage: TokenUsage::default(),
         }
     }
 }
@@ -1315,7 +1332,7 @@ impl AgentSession for OpenCodeSession {
                             turn_id: Some("turn-1".into()),
                             pid: self.pid,
                             message: text,
-                            usage: Some(usage),
+                            usage: Some(self.completed_usage.plus(&usage)),
                             rate_limits: None,
                             raw: val,
                         },
@@ -1326,6 +1343,7 @@ impl AgentSession for OpenCodeSession {
 
         let status = process.wait().await?;
         self.session_id = Some(discovered_session.clone());
+        self.completed_usage.add(&usage);
         let is_cancelled = *self.cancelled.lock().await;
 
         Ok(TurnExecutionOutcome {
@@ -1374,6 +1392,8 @@ pub struct SimulatedAgentSession {
     config: AgentLaunchConfig,
     thread_id: String,
     turn_counter: u32,
+    /// Usage of the finished turns, so stream events report session totals.
+    completed_usage: TokenUsage,
     cancel_tx: Option<oneshot::Sender<()>>,
     approval_gate: Option<Arc<dyn ApprovalGate>>,
 }
@@ -1385,6 +1405,7 @@ impl SimulatedAgentSession {
             thread_id: existing_thread_id
                 .unwrap_or_else(|| format!("thread-sim-{}", uuid::Uuid::new_v4())),
             turn_counter: 0,
+            completed_usage: TokenUsage::default(),
             cancel_tx: None,
             approval_gate: None,
         }
@@ -1501,6 +1522,22 @@ impl AgentSession for SimulatedAgentSession {
             .await;
 
         if prompt.contains("SIMULATE_FAILURE") {
+            let failed_usage = TokenUsage {
+                input_tokens: 120,
+                output_tokens: 40,
+                total_tokens: 160,
+            };
+            self.completed_usage.add(&failed_usage);
+            // Stream the usage like every other turn: runtime totals are credited from events.
+            let failed = self.stream_event(
+                "turn/failed",
+                &session_id,
+                &turn_id,
+                "Simulated turn failure triggered by prompt".into(),
+                Some(self.completed_usage),
+                json!({ "status": "failed", "usage": failed_usage }),
+            );
+            let _ = event_tx.send(failed).await;
             return Ok(self.outcome(
                 turn_id,
                 session_id,
@@ -1510,11 +1547,7 @@ impl AgentSession for SimulatedAgentSession {
                     "simulated_error",
                     "Simulated turn failure triggered by prompt".into(),
                 )),
-                TokenUsage {
-                    input_tokens: 120,
-                    output_tokens: 40,
-                    total_tokens: 160,
-                },
+                failed_usage,
                 vec!["Encountered simulated failure.".into()],
             ));
         }
@@ -1547,11 +1580,11 @@ impl AgentSession for SimulatedAgentSession {
                 &session_id,
                 &turn_id,
                 plan.clone(),
-                Some(TokenUsage {
+                Some(self.completed_usage.plus(&TokenUsage {
                     input_tokens: 180,
                     output_tokens: 60,
                     total_tokens: 240,
-                }),
+                })),
                 json!({ "item": { "type": "agentMessage", "text": plan } }),
             ))
             .await;
@@ -1669,9 +1702,10 @@ impl AgentSession for SimulatedAgentSession {
             &session_id,
             &turn_id,
             summary_msg.clone(),
-            Some(usage),
+            Some(self.completed_usage.plus(&usage)),
             json!({ "status": "completed", "usage": usage }),
         );
+        self.completed_usage.add(&usage);
         completed.rate_limits = Some(json!({ "requests_remaining": 999 }));
         let _ = event_tx.send(completed).await;
 

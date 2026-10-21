@@ -657,6 +657,32 @@ impl TokenUsage {
         self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
     }
 
+    /// `self + other`, saturating per counter.
+    pub fn plus(&self, other: &Self) -> Self {
+        let mut sum = *self;
+        sum.add(other);
+        sum
+    }
+
+    /// Tokens in `self` beyond `earlier` (per counter, never negative): the usage between two
+    /// cumulative reports.
+    pub fn since(&self, earlier: &Self) -> Self {
+        Self {
+            input_tokens: self.input_tokens.saturating_sub(earlier.input_tokens),
+            output_tokens: self.output_tokens.saturating_sub(earlier.output_tokens),
+            total_tokens: self.total_tokens.saturating_sub(earlier.total_tokens),
+        }
+    }
+
+    /// The larger value of each counter.
+    pub fn max(&self, other: &Self) -> Self {
+        Self {
+            input_tokens: self.input_tokens.max(other.input_tokens),
+            output_tokens: self.output_tokens.max(other.output_tokens),
+            total_tokens: self.total_tokens.max(other.total_tokens),
+        }
+    }
+
     pub fn estimate_cost_usd(&self, model: Option<&str>) -> f64 {
         // Approximate per-1M token pricing for estimation
         let (in_rate, out_rate) = match model.unwrap_or("gpt-5-codex") {

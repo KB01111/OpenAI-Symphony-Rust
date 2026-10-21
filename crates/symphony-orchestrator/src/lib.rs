@@ -253,6 +253,10 @@ pub struct SymphonyOrchestrator {
     event_tx: broadcast::Sender<AgentEvent>,
     refresh_tx: mpsc::Sender<()>,
     refresh_rx: Arc<Mutex<mpsc::Receiver<()>>>,
+    /// Serializes the decisions that start a task with manual status changes, so a scheduler
+    /// tick working from a snapshot cannot start a task that was just moved by hand. Taken before
+    /// `memory`, never while holding it.
+    dispatch_lock: Arc<Mutex<()>>,
 }
 
 impl SymphonyOrchestrator {
@@ -297,6 +301,25 @@ impl SymphonyOrchestrator {
         let existing_tasks = storage.list_tasks(None).await.unwrap_or_default();
         let mut totals = CodexTotals::default();
         let mut completed_ids = HashSet::new();
+        // Retry timers live in memory; a retry pending at shutdown (or set by the crash recovery
+        // above) resumes from the task's persisted `next_retry_at`: a running backoff is honoured
+        // and an overdue retry keeps its precedence over new candidates.
+        let mut retry_attempts = HashMap::new();
+        for t in &existing_tasks {
+            if let Some(due_at) = t.next_retry_at.filter(|_| t.status == TaskStatus::Queued) {
+                retry_attempts.insert(
+                    t.id.clone(),
+                    RetryEntry {
+                        task_id: t.id.clone(),
+                        issue_id: t.issue.id.clone(),
+                        identifier: t.issue.identifier.clone(),
+                        attempt: t.attempt_count.max(1),
+                        due_at,
+                        error: t.last_error.clone(),
+                    },
+                );
+            }
+        }
         for t in &existing_tasks {
             totals.input_tokens = totals.input_tokens.saturating_add(t.input_tokens);
             totals.output_tokens = totals.output_tokens.saturating_add(t.output_tokens);
@@ -315,7 +338,7 @@ impl SymphonyOrchestrator {
             scheduler_paused: false,
             running: HashMap::new(),
             claimed_issue_ids: HashSet::new(),
-            retry_attempts: HashMap::new(),
+            retry_attempts,
             completed_issue_ids: completed_ids,
             codex_totals: totals,
             latest_rate_limits: None,
@@ -337,6 +360,7 @@ impl SymphonyOrchestrator {
             event_tx,
             refresh_tx,
             refresh_rx: Arc::new(Mutex::new(refresh_rx)),
+            dispatch_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -1034,6 +1058,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
     }
 
     pub async fn transition_task(&self, task_id: &str, next: TaskStatus) -> SymphonyResult<Task> {
+        let _dispatch_guard = self.dispatch_lock.lock().await;
         let mut task = self.get_task(task_id).await?;
         if next == TaskStatus::Running && task.status != TaskStatus::Running {
             return Err(SymphonyError::InvalidStateTransition {
@@ -1048,8 +1073,18 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 task.issue.identifier
             )));
         }
+        let status_changes = task.status != next;
         task.transition_to(next)?;
+        if status_changes {
+            // Moving the task by hand supersedes a scheduled retry (a move within the same column
+            // keeps it, so it cannot skip the backoff).
+            task.next_retry_at = None;
+        }
         self.storage.upsert_task(&task).await?;
+        if status_changes {
+            // Only once the move is stored: a failed write leaves the retry (and its backoff).
+            self.memory.write().await.retry_attempts.remove(task_id);
+        }
 
         self.emit_event(
             Some(task.id.clone()),
@@ -1735,10 +1770,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         // 1. Reconcile active runs (Part A: Stall detection, Part B: Tracker state refresh)
         self.reconcile_active_runs().await?;
 
-        // 2. Process due retries
-        self.process_due_retries().await?;
-
-        // 3. Check if scheduler is paused or delayed by hardware pressure
+        // 2. Check if scheduler is paused or delayed by hardware pressure. Due retries are
+        // dispatches too, so they wait here like new candidates (SPEC.md Section 8.4).
         if self.is_scheduler_paused().await {
             return Ok(());
         }
@@ -1751,6 +1784,13 @@ Please implement the requested changes cleanly in the current Git workspace, run
             );
             return Ok(());
         }
+
+        // 3. Process due retries first; those without a free slot stay due for the next tick.
+        let running_count = self.memory.read().await.running.len() as u32;
+        self.process_due_retries(
+            hw.effective_max_concurrency.saturating_sub(running_count) as usize
+        )
+        .await?;
 
         let running_count = self.memory.read().await.running.len() as u32;
         if running_count >= hw.effective_max_concurrency {
@@ -1788,6 +1828,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     && !mem.claimed_issue_ids.contains(&task.issue.id)
                     && !mem.completed_issue_ids.contains(&task.issue.id)
                     && !mem.running.contains_key(&task.id)
+                    // A task waiting out its retry backoff is `Queued` too; the retry dispatches it.
+                    && !mem.retry_attempts.contains_key(&task.id)
                 {
                     eligible_tasks.push(task);
                 }
@@ -1909,23 +1951,58 @@ Please implement the requested changes cleanly in the current Git workspace, run
         Ok(())
     }
 
-    async fn process_due_retries(&self) -> SymphonyResult<()> {
+    /// Dispatch up to `available_slots` due retries, oldest due first. A retry whose issue is not
+    /// dispatchable right now (e.g. a new unresolved blocker) stays due without starting, exactly
+    /// as the candidate filter would hold the task back, and runs once the issue is eligible.
+    async fn process_due_retries(&self, available_slots: usize) -> SymphonyResult<()> {
         let now = Utc::now();
-        let due_task_ids: Vec<String> = {
+        let (due_task_ids, terminal_states) = {
             let mem = self.memory.read().await;
-            mem.retry_attempts
+            let mut due: Vec<&RetryEntry> = mem
+                .retry_attempts
                 .values()
                 .filter(|r| r.due_at <= now)
-                .map(|r| r.task_id.clone())
-                .collect()
+                .collect();
+            due.sort_by_key(|r| r.due_at);
+            let ids: Vec<String> = due.into_iter().map(|r| r.task_id.clone()).collect();
+            (ids, mem.active_config.terminal_states.clone())
         };
 
+        let mut dispatched = 0;
         for task_id in due_task_ids {
-            {
-                let mut mem = self.memory.write().await;
-                mem.retry_attempts.remove(&task_id);
+            if dispatched >= available_slots {
+                break;
             }
-            let _ = self.dispatch_task_now(&task_id).await;
+            // Checked, claimed and started as one step against manual status changes.
+            let _dispatch_guard = self.dispatch_lock.lock().await;
+            match self.get_task(&task_id).await {
+                Ok(task)
+                    if !task.issue.dispatchable || task.issue.is_todo_blocked(&terminal_states) =>
+                {
+                    continue;
+                }
+                // Moved by hand since the snapshot (which also dropped the retry).
+                Ok(task) if task.status != TaskStatus::Queued => continue,
+                Ok(_) => {}
+                // The task is gone: nothing left to retry.
+                Err(_) => {
+                    self.memory.write().await.retry_attempts.remove(&task_id);
+                    continue;
+                }
+            }
+            // Claim the retry: only an entry that is still registered may start.
+            if self
+                .memory
+                .write()
+                .await
+                .retry_attempts
+                .remove(&task_id)
+                .is_none()
+            {
+                continue;
+            }
+            let _ = self.dispatch_task_locked(&task_id).await;
+            dispatched += 1;
         }
         Ok(())
     }
@@ -1976,6 +2053,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
     /// Dispatch a single task immediately into an isolated Git worktree and start the AI provider session
     pub async fn dispatch_task_now(&self, task_id: &str) -> SymphonyResult<Task> {
+        let _dispatch_guard = self.dispatch_lock.lock().await;
+        self.dispatch_task_locked(task_id).await
+    }
+
+    /// `dispatch_task_now` for a caller that already holds `dispatch_lock`.
+    async fn dispatch_task_locked(&self, task_id: &str) -> SymphonyResult<Task> {
         let mut task = self.get_task(task_id).await?;
         let project = self
             .storage
@@ -2001,6 +2084,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
         task.attempt_count += 1;
         task.status = TaskStatus::Running;
+        // The retry (if any) is consumed; a stale time would otherwise be restored after a restart.
+        task.next_retry_at = None;
         task.current_phase = Some(RunAttemptPhase::PreparingWorkspace);
         task.started_at = Some(Utc::now());
         task.updated_at = Utc::now();
@@ -2261,9 +2346,26 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let event_task_id = task.id.clone();
         let event_identifier = task.issue.identifier.clone();
         let event_provider = task.provider;
+        let event_model = task.model.clone();
+        // Tokens of the task's earlier attempts, so the live session shows the task's total.
+        let usage_before_attempt = TokenUsage {
+            input_tokens: task.input_tokens,
+            output_tokens: task.output_tokens,
+            total_tokens: task.total_tokens,
+        };
 
         tokio::spawn(async move {
-            while let Some(ev) = stream_rx.recv().await {
+            // Session usage already credited to the runtime totals. Events report cumulative
+            // session usage (possibly the same value many times), so only the growth counts.
+            let mut credited = TokenUsage::default();
+            while let Some(mut ev) = stream_rx.recv().await {
+                if let Some(session_usage) = ev.usage {
+                    orch_events
+                        .credit_live_usage(session_usage.since(&credited), event_model.as_deref())
+                        .await;
+                    credited = credited.max(&session_usage);
+                    ev.usage = Some(usage_before_attempt.plus(&session_usage));
+                }
                 orch_events
                     .handle_agent_stream_event(
                         &event_task_id,
@@ -2665,6 +2767,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
         .await;
     }
 
+    /// Add tokens consumed since the last report to the runtime totals.
+    async fn credit_live_usage(&self, delta: TokenUsage, model: Option<&str>) {
+        if delta == TokenUsage::default() {
+            return;
+        }
+        let mut mem = self.memory.write().await;
+        let totals = &mut mem.codex_totals;
+        totals.input_tokens = totals.input_tokens.saturating_add(delta.input_tokens);
+        totals.output_tokens = totals.output_tokens.saturating_add(delta.output_tokens);
+        totals.total_tokens = totals.total_tokens.saturating_add(delta.total_tokens);
+        totals.estimated_cost_usd += delta.estimate_cost_usd(model);
+    }
+
     async fn handle_agent_stream_event(
         &self,
         task_id: &str,
@@ -2691,21 +2806,6 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     handle.session.output_tokens = usage.output_tokens;
                     handle.session.total_tokens = usage.total_tokens;
                 }
-            }
-            if let Some(ref usage) = ev.usage {
-                mem.codex_totals.input_tokens = mem
-                    .codex_totals
-                    .input_tokens
-                    .saturating_add(usage.input_tokens);
-                mem.codex_totals.output_tokens = mem
-                    .codex_totals
-                    .output_tokens
-                    .saturating_add(usage.output_tokens);
-                mem.codex_totals.total_tokens = mem
-                    .codex_totals
-                    .total_tokens
-                    .saturating_add(usage.total_tokens);
-                mem.codex_totals.estimated_cost_usd += usage.estimate_cost_usd(None);
             }
             if let Some(ref rl) = ev.rate_limits {
                 mem.latest_rate_limits = Some(rl.clone());
@@ -2857,6 +2957,23 @@ mod tests {
         assert_eq!(finished.status, TaskStatus::HumanReview);
         assert!(finished.total_tokens > 0);
 
+        // The live runtime totals count each token once, like the task (and so like the totals
+        // rebuilt from the tasks after a restart). Stream events are applied asynchronously.
+        let mut live_total = 0;
+        for _ in 0..100 {
+            live_total = orch
+                .state_snapshot()
+                .await
+                .unwrap()
+                .codex_totals
+                .total_tokens;
+            if live_total == finished.total_tokens {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(live_total, finished.total_tokens);
+
         let detail = orch.issue_detail("SYM-1").await.unwrap();
         assert_eq!(detail.validation_results.len(), 1);
         assert!(detail.validation_results[0].passed);
@@ -2873,6 +2990,286 @@ mod tests {
         assert!(approved_pr.human_approved);
         let completed_task = orch.get_task(&task.id).await.unwrap();
         assert_eq!(completed_task.status, TaskStatus::Completed);
+    }
+
+    /// An orchestrator with one manual project whose hardware policy always allows exactly one
+    /// concurrent agent, independent of the host's load, and one task that is not yet queued.
+    async fn single_slot_orchestrator(temp: &TempDir) -> (SymphonyOrchestrator, Task) {
+        single_slot_orchestrator_on(temp, Storage::connect_in_memory().await.unwrap()).await
+    }
+
+    async fn single_slot_orchestrator_on(
+        temp: &TempDir,
+        storage: Storage,
+    ) -> (SymphonyOrchestrator, Task) {
+        let mut settings = storage.get_settings().await.unwrap();
+        settings.resource_policy = symphony_core::ResourcePolicy {
+            max_concurrent_on_ac: 1,
+            max_concurrent_on_battery: 1,
+            high_memory_threshold_percent: 101.0,
+            high_cpu_threshold_percent: 101.0,
+            reduce_on_thermal_throttle: false,
+        };
+        storage.save_settings(&settings).await.unwrap();
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        let orch = SymphonyOrchestrator::new(storage, None, secrets)
+            .await
+            .unwrap();
+        orch.create_project(Project {
+            id: "proj-retry".into(),
+            name: "Retry Repo".into(),
+            repo_path: temp.path().join("repo").to_string_lossy().to_string(),
+            default_branch: "main".into(),
+            workspace_root: temp.path().join("workspaces").to_string_lossy().to_string(),
+            workflow_path: None,
+            preferred_provider: ProviderKind::Simulated,
+            preferred_model: None,
+            tracker_kind: "manual".into(),
+            github_repo: None,
+            linear_project_slug: None,
+            required_labels: Vec::new(),
+            auto_dispatch: false,
+            max_concurrent_agents: 1,
+            validation_commands: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+        let task = orch
+            .create_manual_task(
+                "proj-retry".into(),
+                Some("SYM-RETRY".into()),
+                "Retry scheduling".into(),
+                None,
+                Some(1),
+                Some(ProviderKind::Simulated),
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .unwrap();
+        (orch, task)
+    }
+
+    async fn make_retry_due(orch: &SymphonyOrchestrator, task_id: &str) {
+        let mut mem = orch.memory.write().await;
+        mem.retry_attempts.get_mut(task_id).unwrap().due_at =
+            Utc::now() - chrono::Duration::seconds(1);
+    }
+
+    #[tokio::test]
+    async fn test_retry_backoff_is_not_bypassed_by_candidate_selection() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.schedule_retry(&task.id, false, Some("Stall timeout exceeded".into()))
+            .await
+            .unwrap();
+
+        // The task is `Queued` but still inside its backoff window: no tick may start it.
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        let waiting = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(waiting.status, TaskStatus::Queued);
+        assert_eq!(waiting.attempt_count, 0);
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+
+        make_retry_due(&orch, &task.id).await;
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        let dispatched = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(dispatched.attempt_count, 1);
+        assert_eq!(dispatched.next_retry_at, None);
+        assert!(!orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+    }
+
+    #[tokio::test]
+    async fn test_retry_backoff_survives_a_restart() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("retry.db");
+        let task_id = {
+            let storage = Storage::connect(&db_path).await.unwrap();
+            let (orch, task) = single_slot_orchestrator_on(&temp, storage).await;
+            orch.schedule_retry(&task.id, false, Some("Stall timeout exceeded".into()))
+                .await
+                .unwrap();
+            task.id
+        };
+
+        let storage = Storage::connect(&db_path).await.unwrap();
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        let orch = SymphonyOrchestrator::new(storage, None, secrets)
+            .await
+            .unwrap();
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task_id));
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        let waiting = orch.get_task(&task_id).await.unwrap();
+        assert_eq!(waiting.status, TaskStatus::Queued);
+        assert_eq!(waiting.attempt_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_overdue_retry_is_restored_after_a_restart() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("overdue.db");
+        let task_id = {
+            let storage = Storage::connect(&db_path).await.unwrap();
+            let (orch, task) = single_slot_orchestrator_on(&temp, storage.clone()).await;
+            orch.schedule_retry(&task.id, false, None).await.unwrap();
+            let mut overdue = orch.get_task(&task.id).await.unwrap();
+            overdue.next_retry_at = Some(Utc::now() - chrono::Duration::seconds(5));
+            storage.upsert_task(&overdue).await.unwrap();
+            task.id
+        };
+
+        let storage = Storage::connect(&db_path).await.unwrap();
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        let orch = SymphonyOrchestrator::new(storage, None, secrets)
+            .await
+            .unwrap();
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task_id));
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task_id).await.unwrap().attempt_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_moving_a_task_by_hand_supersedes_its_retry() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.schedule_retry(&task.id, false, None).await.unwrap();
+
+        // A move within the same column keeps the backoff.
+        orch.transition_task(&task.id, TaskStatus::Queued)
+            .await
+            .unwrap();
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+
+        let blocked = orch
+            .transition_task(&task.id, TaskStatus::Blocked)
+            .await
+            .unwrap();
+        assert_eq!(blocked.next_retry_at, None);
+        assert!(!orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+    }
+
+    #[tokio::test]
+    async fn test_due_retry_waits_while_its_issue_is_not_dispatchable() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.schedule_retry(&task.id, false, None).await.unwrap();
+        make_retry_due(&orch, &task.id).await;
+        let mut held = orch.get_task(&task.id).await.unwrap();
+        held.issue.dispatchable = false;
+        orch.storage.upsert_task(&held).await.unwrap();
+
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 0);
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+
+        held.issue.dispatchable = true;
+        orch.storage.upsert_task(&held).await.unwrap();
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_due_retry_waits_for_resumed_scheduler_and_free_slot() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.schedule_retry(&task.id, false, None).await.unwrap();
+        make_retry_due(&orch, &task.id).await;
+
+        orch.set_scheduler_paused(true).await.unwrap();
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 0);
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+        orch.set_scheduler_paused(false).await.unwrap();
+
+        // Occupy the only slot with another run: the due retry stays due instead of exceeding it.
+        let (cancel_tx, _cancel_rx) = oneshot::channel::<String>();
+        let busy = LiveSession {
+            session_id: "busy".into(),
+            thread_id: String::new(),
+            turn_id: "turn-1".into(),
+            task_id: "busy-task".into(),
+            issue_id: "busy-issue".into(),
+            issue_identifier: "SYM-BUSY".into(),
+            issue_title: "Occupies the slot".into(),
+            project_id: "proj-retry".into(),
+            provider: ProviderKind::Simulated,
+            model: None,
+            workspace_path: String::new(),
+            branch_name: String::new(),
+            pid: None,
+            phase: RunAttemptPhase::StreamingTurn,
+            attempt_number: 1,
+            turn_count: 1,
+            started_at: Utc::now(),
+            last_event: None,
+            last_message: None,
+            last_event_at: Some(Utc::now()),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+        };
+        orch.memory.write().await.running.insert(
+            "busy-task".into(),
+            ActiveWorkerHandle {
+                session: busy,
+                cancel_tx,
+            },
+        );
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 0);
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+
+        orch.memory.write().await.running.remove("busy-task");
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 1);
     }
 
     #[tokio::test]
