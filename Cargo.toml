@@ -44,7 +44,7 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 axum = { version = "0.8", features = ["ws", "macros", "json"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"] }
+tower-http = { version = "0.7", features = ["cors", "trace", "fs", "set-header"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 notify = "8.0"
 sysinfo = "0.33"
