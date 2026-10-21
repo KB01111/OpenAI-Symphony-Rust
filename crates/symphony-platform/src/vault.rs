@@ -379,6 +379,16 @@ impl SecretStore {
         self.set_secret(key, "")
     }
 
+    /// Stop masking `value` in logs after Symphony itself invalidated it (a rotated or revoked
+    /// remote access token), unless the vault still stores it under any key. Checked under the
+    /// vault lock, so a concurrent `set_secret` of the same value cannot be unmasked.
+    pub fn forget_invalidated_secret(&self, value: &str) {
+        let guard = self.cache.lock().expect("secret cache mutex");
+        if !guard.values().any(|v| v == value.trim()) {
+            symphony_core::redaction::forget_secret(value);
+        }
+    }
+
     pub fn list_configured_keys(&self) -> Vec<String> {
         let guard = self.cache.lock().expect("secret cache mutex");
         guard.keys().cloned().collect()
@@ -690,6 +700,27 @@ mod tests {
         assert_eq!(redact_secrets(new, &[]), "[REDACTED]");
         store.delete_secret("ACME_KEY").unwrap();
         assert_eq!(redact_secrets(new, &[]), "[REDACTED]");
+    }
+
+    #[test]
+    fn invalidated_values_still_stored_elsewhere_stay_masked() {
+        use symphony_core::redaction::redact_secrets;
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::new(dir.path()).unwrap();
+        let (shared, only) = ("shared-value-Hq8Vb2", "revoked-only-Tz5Kd1");
+        store.set_secret("REMOTE", shared).unwrap();
+        store.set_secret("PROVIDER_KEY", shared).unwrap();
+        store.set_secret("OTHER", only).unwrap();
+        store.delete_secret("REMOTE").unwrap();
+        store.forget_invalidated_secret(shared);
+        assert_eq!(
+            redact_secrets(shared, &[]),
+            "[REDACTED]",
+            "still a provider key"
+        );
+        store.delete_secret("OTHER").unwrap();
+        store.forget_invalidated_secret(only);
+        assert_eq!(redact_secrets(only, &[]), only);
     }
 
     #[test]

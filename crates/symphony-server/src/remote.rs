@@ -639,10 +639,13 @@ impl RemoteAccessManager {
         self.orchestrator
             .secret_store()
             .set_secret(REMOTE_TOKEN_KEY, &token)?;
-        // The previous token stops working now, so it no longer needs masking in logs.
+        // The previous token stops working now, so it no longer needs masking in logs (unless
+        // the same value is also stored as another credential).
         self.set_token(&inner, Some(token.clone()));
         if let Some(previous) = previous {
-            symphony_core::redaction::forget_secret(&previous);
+            self.orchestrator
+                .secret_store()
+                .forget_invalidated_secret(&previous);
         }
         let status = self.apply_locked(&mut inner, &settings).await;
         info!("Remote access token rotated");
@@ -660,7 +663,9 @@ impl RemoteAccessManager {
         // Every remote request is rejected from here on (an absent token rejects all requests).
         self.set_token(&inner, None);
         if let Some(previous) = previous {
-            symphony_core::redaction::forget_secret(&previous);
+            self.orchestrator
+                .secret_store()
+                .forget_invalidated_secret(&previous);
         }
         let status = self.apply_locked(&mut inner, &settings).await;
         info!("Remote access token revoked");

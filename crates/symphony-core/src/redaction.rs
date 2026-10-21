@@ -89,7 +89,8 @@ pub fn retire_secret(secret: &str) {
 
 /// Stop masking `secret`: only for a value Symphony itself has invalidated (a rotated or revoked
 /// remote access token), which is worthless once revoked and must not use up the retired bound
-/// that keeps replaced provider credentials masked.
+/// that keeps replaced provider credentials masked. Callers check that the value is not also in
+/// use elsewhere (`SecretStore::forget_invalidated_secret`).
 pub fn forget_secret(secret: &str) {
     if let (Some(secret), Ok(mut registry)) = (significant(secret), REGISTERED_SECRETS.write()) {
         registry.live.retain(|k| k != secret);
