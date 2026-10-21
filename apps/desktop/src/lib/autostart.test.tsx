@@ -85,12 +85,20 @@ describe("login autostart with an unknown outcome", () => {
     // Not confirmed: the saved value goes back to the last confirmed one.
     expect(stored.start_background_runtime_on_login).toBe(false);
 
+    // An unrelated save while the native state is still unknown retries the native call; when
+    // that fails too, the setting the user did not touch is left as it was (never inverted).
+    await act(async () => {
+      await result.current.mutateAsync({ ...stored, polling_interval_ms: 4000 }).catch(() => undefined);
+    });
+    expect(stored.start_background_runtime_on_login).toBe(false);
+    expect(stored.polling_interval_ms).toBe(4000);
+
     // A later, unrelated save retries the native call even though the value did not change.
     fail = false;
     await act(async () => {
       await result.current.mutateAsync({ ...stored, polling_interval_ms: 5000 });
     });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
   });
 });
 

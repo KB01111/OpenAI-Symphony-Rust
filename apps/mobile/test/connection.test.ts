@@ -59,6 +59,17 @@ describe("normalizeBaseUrl", () => {
     expect(b.session.data.has(STORAGE_KEYS.token)).toBe(false);
     expect(b.local.data.has(STORAGE_KEYS.baseUrl)).toBe(false);
   });
+
+  it("drops an insecure legacy host and the token saved with it", () => {
+    const b = backends();
+    b.local.data.set(STORAGE_KEYS.legacyHost, "http://192.168.1.20:4780");
+    b.local.data.set(STORAGE_KEYS.token, "legacy-token");
+    b.session.data.set(STORAGE_KEYS.token, "session-token");
+    expect(loadConnection(b.all)).toBeNull();
+    expect(b.local.data.has(STORAGE_KEYS.legacyHost)).toBe(false);
+    expect(b.local.data.has(STORAGE_KEYS.token)).toBe(false);
+    expect(b.session.data.has(STORAGE_KEYS.token)).toBe(false);
+  });
 });
 
 describe("token storage policy", () => {

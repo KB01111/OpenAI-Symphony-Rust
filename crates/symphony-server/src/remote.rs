@@ -18,10 +18,14 @@
 //!   take effect immediately, including for already-open event streams.
 //! - **Explicit CORS**: only the configured origins plus the companion app's own origin; never `*`.
 
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Duration;
 
 use axum::{
     extract::{MatchedPath, Request},
@@ -32,6 +36,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use symphony_core::{domain::AppSettings, error::Result};
 use symphony_orchestrator::SymphonyOrchestrator;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex};
 use tracing::{info, warn};
 use utoipa::ToSchema;
@@ -257,6 +263,105 @@ pub fn validate_remote_settings(settings: &AppSettings) -> std::result::Result<(
     Ok(())
 }
 
+/// How long [`RemoteAccessManager::stop`] lets open connections finish before closing them.
+const GRACEFUL_STOP: Duration = Duration::from_secs(3);
+
+/// A TCP listener whose connections can all be closed at once. axum serves every connection on
+/// a task of its own that outlives the accept loop, so stopping the listener alone cannot end a
+/// connection whose request is still in flight; [`KillableStream`] can.
+struct KillableListener {
+    inner: TcpListener,
+    kill: watch::Receiver<bool>,
+}
+
+impl axum::serve::Listener for KillableListener {
+    type Io = KillableStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (stream, addr) = axum::serve::Listener::accept(&mut self.inner).await;
+        (KillableStream::new(stream, self.kill.clone()), addr)
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.inner.local_addr()
+    }
+}
+
+/// A connection that fails every read and write once the listener's kill switch is set, which
+/// makes hyper drop the connection (and the request it is serving) immediately.
+struct KillableStream {
+    inner: TcpStream,
+    killed: Pin<Box<dyn Future<Output = ()> + Send>>,
+    dead: bool,
+}
+
+impl KillableStream {
+    fn new(inner: TcpStream, mut kill: watch::Receiver<bool>) -> Self {
+        let killed = Box::pin(async move {
+            // A dropped sender (manager gone) also ends the connection.
+            let _ = kill.wait_for(|killed| *killed).await;
+        });
+        Self {
+            inner,
+            killed,
+            dead: false,
+        }
+    }
+
+    /// Whether the kill switch is set; registers the task for wake-up when it is not.
+    fn is_dead(&mut self, cx: &mut Context<'_>) -> bool {
+        if !self.dead && self.killed.as_mut().poll(cx).is_ready() {
+            self.dead = true;
+        }
+        self.dead
+    }
+}
+
+fn killed_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::ConnectionAborted,
+        "remote listener stopped",
+    )
+}
+
+impl AsyncRead for KillableStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.is_dead(cx) {
+            return Poll::Ready(Err(killed_error()));
+        }
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for KillableStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.is_dead(cx) {
+            return Poll::Ready(Err(killed_error()));
+        }
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.is_dead(cx) {
+            return Poll::Ready(Err(killed_error()));
+        }
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ListenSpec {
     host: String,
@@ -271,10 +376,10 @@ struct Running {
     /// Starts axum's graceful shutdown, which closes idle keep-alive connections and waits for
     /// in-flight requests.
     shutdown: tokio::sync::oneshot::Sender<()>,
-    /// This listener's own copy of the token. axum serves each connection on a task of its own,
-    /// so aborting `handle` alone would leave open connections (keep-alive, event streams)
-    /// served; clearing this slot when the listener stops rejects their requests and ends their
-    /// streams.
+    /// Closes every open connection at once (see [`KillableStream`]).
+    kill: watch::Sender<bool>,
+    /// This listener's own copy of the token. Clearing it when the listener stops rejects
+    /// further requests on open connections and ends their event streams.
     slot: TokenSlot,
 }
 
@@ -358,6 +463,21 @@ impl RemoteAccessManager {
         self.apply_locked(&mut inner, settings).await
     }
 
+    /// `apply` after a settings save: reconciles against the settings persisted *now*, read with
+    /// the state lock held, so two concurrent saves can never leave the listener on the older
+    /// one. `saved` is used only when the settings cannot be read back.
+    pub async fn apply_persisted(&self, saved: &AppSettings) -> RemoteAccessStatus {
+        let mut inner = self.inner.lock().await;
+        let latest = match self.orchestrator.storage().get_settings().await {
+            Ok(latest) => latest,
+            Err(err) => {
+                warn!(error = %err, "Could not re-read settings; applying the saved copy");
+                saved.clone()
+            }
+        };
+        self.apply_locked(&mut inner, &latest).await
+    }
+
     /// Publish `token` to the manager and to the running listener.
     fn set_token(&self, inner: &Inner, token: Option<String>) {
         self.token.set(token.clone());
@@ -415,16 +535,10 @@ impl RemoteAccessManager {
                     inner.error = None;
                 } else {
                     Self::stop(inner).await;
-                    match self.bind(&spec, token.clone()).await {
-                        Ok((addr, handle, shutdown, slot)) => {
-                            info!(address = %addr, "Remote companion listener started");
-                            inner.running = Some(Running {
-                                spec,
-                                addr,
-                                handle,
-                                shutdown,
-                                slot,
-                            });
+                    match self.bind(spec.clone(), token.clone()).await {
+                        Ok(running) => {
+                            info!(address = %running.addr, "Remote companion listener started");
+                            inner.running = Some(running);
                             inner.state = RemoteListenerState::Running;
                             inner.error = None;
                         }
@@ -448,16 +562,7 @@ impl RemoteAccessManager {
         self.status_of(inner)
     }
 
-    async fn bind(
-        &self,
-        spec: &ListenSpec,
-        token: Option<String>,
-    ) -> std::io::Result<(
-        SocketAddr,
-        tokio::task::JoinHandle<()>,
-        tokio::sync::oneshot::Sender<()>,
-        TokenSlot,
-    )> {
+    async fn bind(&self, spec: ListenSpec, token: Option<String>) -> std::io::Result<Running> {
         let slot = TokenSlot::new(token);
         let config = ServerConfig {
             bind_host: spec.host.clone(),
@@ -470,8 +575,13 @@ impl RemoteAccessManager {
         };
         let router = build_router_inner(self.orchestrator.clone(), &config, Some(slot.clone()));
         let host = spec.host.trim_start_matches('[').trim_end_matches(']');
-        let listener = tokio::net::TcpListener::bind((host, spec.port)).await?;
+        let listener = TcpListener::bind((host, spec.port)).await?;
         let addr = listener.local_addr()?;
+        let (kill, kill_rx) = watch::channel(false);
+        let listener = KillableListener {
+            inner: listener,
+            kill: kill_rx,
+        };
         let (shutdown, signal) = tokio::sync::oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
             let served = axum::serve(listener, router).with_graceful_shutdown(async move {
@@ -481,22 +591,37 @@ impl RemoteAccessManager {
                 tracing::error!(error = %err, "Remote companion listener terminated with error");
             }
         });
-        Ok((addr, handle, shutdown, slot))
+        Ok(Running {
+            spec,
+            addr,
+            handle,
+            shutdown,
+            kill,
+            slot,
+        })
     }
 
     /// Stop the listener and close its connections: the token is cleared first (requests on
     /// open connections are rejected and event streams end), then a graceful shutdown closes
-    /// the connections; anything still open after a short grace period is aborted.
+    /// the connections; connections still open after a short grace period (a request still in
+    /// flight) are closed forcibly, which also lets the graceful shutdown complete.
     async fn stop(inner: &mut Inner) {
         if let Some(mut running) = inner.running.take() {
             running.slot.set(None);
             let _ = running.shutdown.send(());
-            if tokio::time::timeout(std::time::Duration::from_secs(3), &mut running.handle)
+            if tokio::time::timeout(GRACEFUL_STOP, &mut running.handle)
                 .await
                 .is_err()
             {
-                running.handle.abort();
-                let _ = running.handle.await;
+                warn!(address = %running.addr, "Closing remote connections still open after the grace period");
+                let _ = running.kill.send(true);
+                if tokio::time::timeout(GRACEFUL_STOP, &mut running.handle)
+                    .await
+                    .is_err()
+                {
+                    running.handle.abort();
+                    let _ = running.handle.await;
+                }
             }
             info!(address = %running.addr, "Remote companion listener stopped");
         }

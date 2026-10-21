@@ -59,14 +59,15 @@ world-writable directory; an inherited-permission file is rejected and replaced;
 | The remote listener used the full local router: a valid remote token could read/write credentials, settings and `WORKFLOW.md`, export diagnostics, administer projects and approve merges. | Verified defect | Remote scope: only `REMOTE_OPERATIONS` (state, events, projects/tasks read, task create/dispatch/cancel/retry, agent approvals, PR review read, scheduler pause/resume). Everything else answers `403 forbidden_scope`. The OpenAPI document marks each operation `x-symphony-remote`; a test fails on unclassified endpoints. |
 | Remote CORS reused the local origins (desktop webview + Vite dev servers). | Verified defect | Remote CORS = companion origin (`tauri://localhost`) + validated `remote_allowed_origins` (bare `https://`, `http://` only for loopback, no `*`). |
 | The bearer token could travel in cleartext (`remote_bind_address` accepted `0.0.0.0`; the companion defaulted to `http://`). | Verified defect | Loopback-only binding (validated by `PUT /settings`, refused by the manager), `X-Forwarded-Proto: http` refused (`insecure_transport`), companion defaults to `https://` and refuses `http://` to non-loopback hosts, including URLs saved by older versions. |
-| Open SSE streams outlived token changes. | Hardening | Streams end when their token is rotated or revoked; stopping the listener drops all connections. |
+| Open SSE streams outlived token changes. | Hardening | Streams end when their token is rotated or revoked. Stopping the listener closes idle connections gracefully and, after a 3 s grace period, forcibly closes connections still serving a request (axum serves each connection on its own task, which outlives the accept loop). A settings save reconciles the listener against the settings persisted at that moment, so concurrent saves cannot leave it on an older copy. |
 | Raw `WORKFLOW.md` exposes literal credentials (Devin thread on PR #4). | Partly accepted design | Locally this remains as designed (the editor needs the source; only same-user processes hold the local token). The remote scope now blocks it entirely. |
 
-Tests: `crates/symphony-server/tests/remote_access.rs` (13 tests over real TCP listeners: disabled by
+Tests: `crates/symphony-server/tests/remote_access.rs` (16 tests over real TCP listeners: disabled by
 default, token required, local/remote tokens not interchangeable, 21 sensitive operations forbidden,
 companion operations allowed, rotation/revocation, SSE stream ended by rotation + reconnect, CORS
 allow/deny, cleartext forwarding refused, rebind on port change, bind failure + recovery, non-loopback and
-local-port refusal, local admin endpoints), `remote.rs` unit tests, `packages/api-client/test/integration/remote.test.ts`
+local-port refusal, local admin endpoints, idle and in-flight connections closed on stop, concurrent
+saves), `remote.rs` unit tests, `packages/api-client/test/integration/remote.test.ts`
 (the generated client against `symphony-cli`: enable → issue → companion calls → forbidden admin calls →
 rotate → reconnect with `setConnection` → revoke → unsafe settings rejected), desktop `settings.test.tsx`,
 mobile `connection.test.ts`.
@@ -129,19 +130,25 @@ send and cross-origin scripts cannot send without a preflight.
 | `cargo check --workspace --locked` | pass |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | pass |
 | `cargo clippy … --all-targets --locked --target x86_64-pc-windows-gnu -- -D warnings` (platform, server, cli, desktop) | pass — the Windows code paths (DPAPI, DACLs, registry, `MessageBoxW`) compile and lint clean |
-| `cargo test --workspace --locked` | 73 tests pass on Linux (the Windows-only `windows_native.rs` tests are compiled out there and run on `windows-latest`) |
+| `cargo test --workspace --locked` | all tests pass on Linux (the Windows-only `windows_native.rs` tests are compiled out there and run on `windows-latest`) |
 | `cargo test -p symphony-platform --target x86_64-pc-windows-gnu` under **Wine 9** | 13 unit + 6 `windows_native` tests pass (DPAPI, DACL creation/verification, autostart registry). Wine does not persist the DACL *protected* flag, so that single assertion is relaxed only when `SYMPHONY_TEST_UNDER_WINE` is set; real Windows enforces it. Wine is a sanity check, not evidence of Windows behaviour. |
 | `pnpm generate:api` (twice) | no diff |
-| `pnpm typecheck` / `pnpm test` / `pnpm build` | pass — api-client 18 unit + 20 integration (real `symphony-cli`, incl. 6 remote-access), ui 7, desktop 74, mobile 14, policy scripts 12 |
+| `pnpm typecheck` / `pnpm test` / `pnpm build` | pass — api-client 18 unit + 20 integration (real `symphony-cli`, incl. 6 remote-access), ui 7, desktop 77, mobile 15, policy scripts 12 |
 | `pnpm --filter @symphony/desktop e2e` | 30 Playwright tests pass (generated screenshots/perf files were not committed) |
 | `oasdiff breaking` (base `2dc6c719` → head) | no findings |
 
 ### CI (GitHub Actions on this PR)
 
-See the PR description for run links and results of: *Windows 11 (Rust + Desktop + Mobile Web)* (includes
-the Windows-only Rust tests), *Tauri 2 build (windows-latest)* (release build, native smoke test, unsigned
-installer), *Generated contracts are up to date*, *API versioning policy*, *Playwright against real
-runtime*, *macOS (iOS Companion Validation)*.
+All checks pass on `2241190` (see the PR description for run links): *Windows 11 (Rust + Desktop + Mobile
+Web)* (includes the Windows-only Rust tests), *Tauri 2 build (windows-latest)*, *Generated contracts are up
+to date*, *API versioning policy*, *Playwright against real runtime*, *macOS (iOS Companion Validation)*.
+
+On the real `windows-latest` runner (not Wine), `scripts/windows-native-smoke.ps1` ran the release
+`symphony-desktop.exe` and `symphony-cli.exe` and reported *"Windows native smoke test passed."* It logged
+`runtime.json is owner-only: … D:P(A;;FA;;;SY)(A;;FA;;;LA)` (protected DACL: SYSTEM + the runner account,
+no inherited entries, in a world-writable data directory) and *"credentials.vault is owner-only"*, and
+the job uploaded the `symphony-desktop-windows-installer-UNSIGNED` artifact. This is CI evidence on
+Windows Server; it is not a manual Windows 11 desktop session.
 
 ### Not verified automatically
 

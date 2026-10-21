@@ -337,8 +337,13 @@ async fn companion_operations_are_available_remotely() {
         .send()
         .await
         .unwrap();
-    assert_ne!(resp.status(), 403);
-    assert_ne!(resp.status(), 401);
+    assert_eq!(
+        resp.status(),
+        404,
+        "the handler rejects the unknown project"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "project_not_found");
     // Scheduler control is part of the companion scope.
     let resp = h
         .http
@@ -732,4 +737,56 @@ async fn stopping_the_listener_closes_idle_keep_alive_connections() {
         matches!(read, Ok(Ok(0)) | Ok(Err(_))),
         "the keep-alive connection must be closed when the listener stops"
     );
+}
+
+#[tokio::test]
+async fn stopping_the_listener_closes_connections_with_a_request_in_flight() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let h = harness().await;
+    let (base, token) = h.start().await;
+    let addr = base.trim_start_matches("http://").to_string();
+
+    // An authorized request whose body never completes: the handler is still waiting for it, so
+    // the graceful shutdown cannot close this connection on its own.
+    let mut conn = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let request = format!(
+        "POST /api/v1/tasks HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{{\"title\":"
+    );
+    conn.write_all(request.as_bytes()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // `stop` waits a 3 s grace period, then closes the remaining connections, which lets the
+    // graceful shutdown finish; the task-abort last resort (another 3 s) must not be needed.
+    let started = std::time::Instant::now();
+    h.remote.revoke_token().await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "open connections must be closed after the grace period, took {:?}",
+        started.elapsed()
+    );
+    let mut buf = vec![0u8; 4096];
+    let read = tokio::time::timeout(Duration::from_secs(2), conn.read(&mut buf)).await;
+    assert!(
+        matches!(read, Ok(Ok(0)) | Ok(Err(_))),
+        "the connection must be closed once the listener has stopped, got {read:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_settings_save_applies_the_latest_persisted_settings() {
+    let h = harness().await;
+    let (base, token) = h.start().await;
+    // A newer save (remote access disabled) has already been persisted when an older save's
+    // apply runs: the listener follows the persisted settings, not the stale copy.
+    h.save_settings(&AppSettings::default()).await;
+    let status = h.remote.apply_persisted(&enabled_settings(0)).await;
+    assert_eq!(status.state, RemoteListenerState::Disabled);
+    assert!(status.listening_on.is_none());
+    assert!(h
+        .http
+        .get(format!("{base}/api/v1/health"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .is_err());
 }

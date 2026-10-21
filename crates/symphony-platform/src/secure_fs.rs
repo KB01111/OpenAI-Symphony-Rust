@@ -154,7 +154,9 @@ mod imp {
         use std::io::Read;
         let mut file = OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
+            // O_NONBLOCK: opening a FIFO planted at `path` must not block; it is then rejected
+            // as "not a regular file". The flag has no effect on reads of a regular file.
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(path)?;
         check_metadata(path, &file.metadata()?)?;
         let mut contents = Vec::new();
@@ -549,6 +551,25 @@ mod tests {
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(verify_private_file(&link).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_rejects_a_fifo_without_blocking() {
+        let dir = tempdir().unwrap();
+        let fifo = dir.path().join("runtime.json");
+        let c_path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        // Without O_NONBLOCK the open would wait forever for a writer.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_private_file(&fifo).map(|_| ()));
+        });
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("reading a FIFO must not block");
+        assert!(result.is_err(), "a FIFO is not a regular file");
     }
 
     #[test]

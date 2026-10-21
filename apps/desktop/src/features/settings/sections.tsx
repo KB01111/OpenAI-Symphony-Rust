@@ -410,13 +410,13 @@ const RemoteTokenControls: React.FC = () => {
         <Button
           appearance={configured ? "secondary" : "primary"}
           icon={rotate.isPending ? <Spinner size="tiny" /> : <KeyRound className="size-4" />}
-          disabled={rotate.isPending || status.isPending}
+          disabled={rotate.isPending || status.isPending || status.isError}
           onClick={() => (configured ? setConfirm("rotate") : runRotate())}
         >
           {configured ? m.remote.rotate : m.remote.generate}
         </Button>
         {configured ? (
-          <Button icon={<ShieldOff className="size-4" />} disabled={revoke.isPending} onClick={() => setConfirm("revoke")}>
+          <Button icon={<ShieldOff className="size-4" />} disabled={revoke.isPending || status.isError} onClick={() => setConfirm("revoke")}>
             {m.remote.revoke}
           </Button>
         ) : null}

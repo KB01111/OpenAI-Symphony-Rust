@@ -27,12 +27,17 @@ $env:SYMPHONY_DATA_DIR = "$env:TEMP\symphony-manual"
 Remove-Item $env:SYMPHONY_DATA_DIR -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
+`SYMPHONY_DATA_DIR` only reaches processes started from this PowerShell window. From step 2 on, start
+Symphony from the same window (`& "$env:LOCALAPPDATA\Symphony Desktop\symphony-desktop.exe"`, or the
+path you installed to) so it uses the fresh directory; a copy started from the Start menu or the tray
+uses `%LOCALAPPDATA%\symphony-desktop` instead. Steps 1 and 7 deliberately use the Start menu.
+
 Record the Windows build (`winver`), the commit and pass/fail for each step.
 
 1. **Installer (unsigned)** — Download `symphony-desktop-windows-installer-UNSIGNED` from the
    `desktop-native` workflow run. SmartScreen warns about an unknown publisher: this is expected for an
    unsigned build, which must not be distributed as a production release. Install per-user, launch from the
-   Start menu, and uninstall at the end. Record whether `%LOCALAPPDATA%\symphony-desktop` (database,
+   Start menu (default data directory), exit from the tray, and uninstall at the end. Record whether `%LOCALAPPDATA%\symphony-desktop` (database,
    vault, discovery file — created by the runtime, not by the installer) is still present afterwards.
 2. **First start** — The window opens; Settings → Application shows mode *Embedded*, an endpoint on
    `127.0.0.1` and no discovery warning. `icacls "$env:SYMPHONY_DATA_DIR\runtime.json"` lists only your

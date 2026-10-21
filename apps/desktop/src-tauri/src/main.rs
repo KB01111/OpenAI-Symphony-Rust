@@ -231,20 +231,15 @@ fn setup_tray(app: &AppHandle, embedded: bool) -> tauri::Result<()> {
 /// Ask the user whether to move an unreadable credential vault aside. Returns `true` to move it
 /// aside and continue with an empty vault, `false` to quit. Never decides silently.
 #[cfg(windows)]
-fn confirm_vault_quarantine(message: &str) -> bool {
+fn confirm_vault_quarantine(message: &str, locale: &str) -> bool {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONERROR, MB_YESNO,
     };
     let wide = |s: &str| -> Vec<u16> { OsStr::new(s).encode_wide().chain(Some(0)).collect() };
-    let text = wide(&format!(
-        "Symphony could not open its credential vault:\n\n{message}\n\nMove the unreadable vault \
-         aside and continue with an empty vault? The old file is kept next to it as \
-         credentials.vault.corrupt-<time>, and you will need to re-enter your API keys.\n\nChoose \
-         No to quit without changing anything."
-    ));
-    let title = wide("Symphony Desktop: credential vault");
+    let (text, title) = vault_quarantine_prompt(message, locale);
+    let (text, title) = (wide(&text), wide(title));
     // SAFETY: both strings are NUL-terminated UTF-16 and outlive the call.
     let choice = unsafe {
         MessageBoxW(
@@ -257,20 +252,46 @@ fn confirm_vault_quarantine(message: &str) -> bool {
     choice == IDYES
 }
 
+/// Text and title of the vault quarantine prompt in the user's language (`en` | `sv`).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn vault_quarantine_prompt(message: &str, locale: &str) -> (String, &'static str) {
+    if locale == "sv" {
+        (
+            format!(
+                "Symphony kunde inte öppna sitt lösenordsvalv:\n\n{message}\n\nFlytta undan det \
+                 oläsbara valvet och fortsätt med ett tomt valv? Den gamla filen sparas bredvid som \
+                 credentials.vault.corrupt-<tid>, och du behöver ange dina API-nycklar igen.\n\n\
+                 Välj Nej för att avsluta utan att ändra något."
+            ),
+            "Symphony Desktop: lösenordsvalv",
+        )
+    } else {
+        (
+            format!(
+                "Symphony could not open its credential vault:\n\n{message}\n\nMove the unreadable \
+                 vault aside and continue with an empty vault? The old file is kept next to it as \
+                 credentials.vault.corrupt-<time>, and you will need to re-enter your API keys.\n\n\
+                 Choose No to quit without changing anything."
+            ),
+            "Symphony Desktop: credential vault",
+        )
+    }
+}
+
 #[cfg(not(windows))]
-fn confirm_vault_quarantine(_message: &str) -> bool {
+fn confirm_vault_quarantine(_message: &str, _locale: &str) -> bool {
     // Development hosts: no native prompt; use `symphony-cli --quarantine-credential-vault`.
     false
 }
 
 /// Open the credential vault. An unreadable vault is never replaced silently: the user either
 /// moves it aside explicitly or the app stops with the error.
-fn open_secret_store(data_dir: &Path) -> Result<SecretStore, String> {
+fn open_secret_store(data_dir: &Path, locale: &str) -> Result<SecretStore, String> {
     match SecretStore::new(data_dir) {
         Ok(store) => Ok(store),
         Err(SymphonyError::CredentialVault(message)) => {
             tracing::error!(error = %message, "Credential vault could not be opened");
-            if !confirm_vault_quarantine(&message) {
+            if !confirm_vault_quarantine(&message, locale) {
                 return Err(format!("Credential vault could not be opened: {message}"));
             }
             SecretStore::quarantine_vault(data_dir).map_err(|e| e.to_string())?;
@@ -311,8 +332,8 @@ async fn start_embedded_runtime(
     let storage = Storage::connect(&data_dir.join("symphony.sqlite"))
         .await
         .map_err(|e| format!("Failed to initialize SQLite storage: {e}"))?;
-    let secret_store = open_secret_store(&data_dir)?;
     let mut settings = storage.get_settings().await.unwrap_or_default();
+    let secret_store = open_secret_store(&data_dir, &settings.locale)?;
     // Settings saved before 2.0 carry the old default remote port, which is the local API's port.
     // Migrate that legacy value to the new default and persist it, so the listener, `GET /settings`
     // and the settings form all agree on the port actually used.

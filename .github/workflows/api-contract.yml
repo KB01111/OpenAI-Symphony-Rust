@@ -16,8 +16,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Label events run in their own group: adding or removing `api-breaking-change` must never cancel
+# the code-triggered run (which also checks the generated contracts), and a push must not cancel
+# the policy re-evaluation of a label change. Within each group the newest run wins.
 concurrency:
-  group: api-contract-${{ github.ref }}
+  group: api-contract-${{ github.ref }}-${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') && 'label' || 'code' }}
   cancel-in-progress: true
 
 # Least privilege: these jobs only read the repository.

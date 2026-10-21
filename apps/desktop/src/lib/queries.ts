@@ -357,8 +357,8 @@ export function useSaveSettings() {
           // state unknown so the next save retries.
           const observed = observedAutostart(error);
           appliedAutostart = observed ?? "unknown";
-          const restore = observed ?? !wanted;
-          if (restore !== wanted) {
+          const restore = observed ?? previous?.start_background_runtime_on_login;
+          if (restore !== undefined && restore !== wanted) {
             const reverted = await client
               .saveSettings({ ...saved, start_background_runtime_on_login: restore })
               .catch(() => null);

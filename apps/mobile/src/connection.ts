@@ -132,6 +132,9 @@ export function loadConnection(backends: StorageBackends): ConnectionSettings | 
   if (!baseUrl && legacyHost) {
     const migrated = normalizeBaseUrl(legacyHost);
     if (migrated.ok) baseUrl = migrated.url;
+    // A legacy host that is no longer acceptable (e.g. plain http:// to another device) is
+    // dropped, and so is any token saved alongside it.
+    else forgetToken(backends);
   }
   if (legacyHost !== null) safeRemove(local, STORAGE_KEYS.legacyHost);
   if (!baseUrl) return null;

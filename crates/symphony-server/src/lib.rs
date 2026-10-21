@@ -1587,7 +1587,7 @@ async fn put_settings_handler(
             // Apply remote-access changes to the running listener right away; the effective
             // state (including bind failures) is reported by `GET /remote-access`.
             if let Some(remote) = &state.remote_access {
-                remote.apply(&settings).await;
+                remote.apply_persisted(&settings).await;
             }
             Json(settings).into_response()
         }
