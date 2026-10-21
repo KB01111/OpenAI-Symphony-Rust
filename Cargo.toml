@@ -40,7 +40,7 @@ liquid = "0.26"
 async-trait = "0.1"
 futures = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "macros", "migrate"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "macros", "migrate"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 axum = { version = "0.8", features = ["ws", "macros", "json"] }
 tower = { version = "0.5", features = ["util"] }
