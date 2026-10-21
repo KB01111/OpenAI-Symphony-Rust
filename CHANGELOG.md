@@ -37,6 +37,18 @@ First release. Replace "Unreleased" with the release date in the commit that is 
 - Timed-out lifecycle hooks and validation commands terminate their whole process tree (for example
   `node` started by `npm test`), not only the shell.
 
+- Restarting the desktop app or the CLI right after a crash no longer fails or attaches to the dead
+  runtime: Windows releases a terminated process's file lock with a delay, and a process that had
+  exited could still be reported as running. A lock left by an exited owner is now waited for (up to
+  10 s), process liveness on Windows comes from the process object itself, and a desktop started while
+  another runtime is still starting waits for it to publish its endpoint.
+
+### Changed
+
+- Dependencies: TypeScript 6, Vite 8 with `@vitejs/plugin-react` 6, TanStack Table 9, motion 14,
+  lucide-react 1, sqlx 0.9 (existing databases open unchanged), tower-http 0.7, sha2 0.11, base64 0.23,
+  dirs 7, and current GitHub Actions.
+
 ### Security
 
 - DPAPI-backed credential vault (ChaCha20-Poly1305 with an owner-only key elsewhere), owner-only

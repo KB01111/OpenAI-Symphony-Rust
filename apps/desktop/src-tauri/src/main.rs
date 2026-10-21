@@ -446,6 +446,21 @@ async fn start_embedded_runtime(
     })
 }
 
+/// The runtime holding the data directory lock may still be starting (it takes the lock before
+/// its API listens), so give it time to publish its endpoint before giving up.
+async fn wait_for_live_runtime(data_dir: &Path) -> Option<RuntimeDiscovery> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if let Some(found) = RuntimeDiscovery::read_live(data_dir) {
+            return Some(found);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
 fn main() {
     // Same override as `symphony-cli --data-dir` / `SYMPHONY_DATA_DIR`, so the desktop and
     // the CLI agree on the data directory (and isolated native smoke tests are possible).
@@ -485,7 +500,7 @@ fn main() {
             let state = tauri::async_runtime::block_on(async {
                 match SingleInstanceGuard::acquire(&data_dir) {
                     Ok(guard) => start_embedded_runtime(&handle, data_dir.clone(), guard).await,
-                    Err(_) => match RuntimeDiscovery::read_live(&data_dir) {
+                    Err(_) => match wait_for_live_runtime(&data_dir).await {
                         Some(found) => {
                             tracing::info!(base_url = %found.base_url, owner = %found.owner, "Attaching to existing Symphony runtime");
                             Ok(DesktopAppState {

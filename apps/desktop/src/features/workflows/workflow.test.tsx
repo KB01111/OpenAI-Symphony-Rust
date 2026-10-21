@@ -74,7 +74,7 @@ describe("WorkflowStudioPage", () => {
     fireEvent.change(editor, { target: { value: `${VALID}\nextra` } });
     fireEvent.click(screen.getByRole("button", { name: /^Revert$/ }));
     const dialog = await screen.findByRole("alertdialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Revert" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Revert" }));
     await waitFor(() => expect(editor.value).toBe(VALID));
   });
 });

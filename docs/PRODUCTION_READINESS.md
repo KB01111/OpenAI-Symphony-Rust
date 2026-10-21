@@ -54,9 +54,19 @@ These cannot be done from the repository and are deliberately not faked:
   owner-only key file instead of an OS keychain, and agent trees are tracked by process group (a host killed
   with SIGKILL cannot clean up; Windows Job Objects can).
 - **Remote access** has no built-in TLS: put it behind a TLS reverse proxy or an encrypted tunnel.
-- **Dependencies**: `katex` < 0.18.2 (low severity, reached through `@openai/apps-sdk-ui`); unmaintained
+- **Dependencies**: `katex` < 0.18.2 (low severity, reached through `@openai/apps-sdk-ui`; see §5); unmaintained
   transitive crates under Tauri/GTK and `serde_yaml` (no maintained drop-in yet). Tracked by the weekly
   supply-chain run and Dependabot.
 - **Manual-only native behaviour**: tray, folder picker, notifications, window-state restore and sign-in
   autostart (see the manual checklist).
 - **iOS companion** is validated as a web build; no native iOS packaging.
+
+## 5. Dependency upgrades that need an upstream release
+
+Dependabot keeps proposing these; close the PRs until the blocker is gone (`dependabot.yml` deliberately has
+no ignore rules, because they would also suppress security updates).
+
+| Upgrade | Blocker | Unblocked when |
+| --- | --- | --- |
+| TypeScript 7 | TypeScript 7 (the native compiler) no longer ships the JavaScript compiler API that `@hey-api/openapi-ts` (0.99) uses to generate the API client, so `pnpm generate:api` fails. The workspace is on TypeScript 6, which has TypeScript 7's defaults. | `@hey-api/openapi-ts` supports TypeScript 7. |
+| `katex` ≥ 0.18.2 (advisory GHSA-238p-pmpm-9mq7, low) | `@openai/apps-sdk-ui` 0.2.2 bundles the KaTeX 0.16 stylesheet; KaTeX 0.18 renames the layout classes it styles (`base`, `strut`, `sizing` → `katex-*`), so an override would break math rendering. The vulnerable settings path is not reachable: `rehype-katex` passes fixed options. | An `@openai/apps-sdk-ui` release with KaTeX 0.18 and its stylesheet. |

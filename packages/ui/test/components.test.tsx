@@ -4,11 +4,13 @@ import type { AgentEvent, ApprovalRequest, PullRequestReview } from "@symphony/s
 import {
   AiApprovalBanner,
   AiEventStreamCard,
+  DataTable,
   MergeReadinessCard,
   SymphonyDesignProvider,
   TaskStatusBadge,
   formatAgentEvent,
-  readinessEvidence
+  readinessEvidence,
+  type ColumnDef
 } from "../src/index.js";
 import { setMedia } from "./setup.js";
 
@@ -224,3 +226,59 @@ describe("localized runtime events", () => {
   });
 });
 
+
+describe("DataTable", () => {
+  interface Item {
+    id: string;
+    name: string;
+    branch: string;
+    tokens: number;
+  }
+  const items: Item[] = [
+    { id: "b", name: "beta", branch: "feature-10", tokens: 30 },
+    { id: "a", name: "alpha", branch: "feature-9", tokens: 100 },
+    { id: "c", name: "gamma", branch: "feature-2", tokens: 5 }
+  ];
+  const columns: ColumnDef<Item, unknown>[] = [
+    { id: "name", header: "Name", accessorFn: (i) => i.name, cell: ({ row }) => row.original.name },
+    { id: "branch", header: "Branch", accessorFn: (i) => i.branch, cell: ({ row }) => row.original.branch },
+    { id: "tokens", header: "Tokens", accessorFn: (i) => i.tokens, cell: ({ row }) => String(row.original.tokens) }
+  ];
+  const firstCells = () =>
+    screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.querySelector("td")?.textContent);
+
+  it("sorts strings, alphanumeric values and numbers from the header and reports aria-sort", () => {
+    render(<DataTable data={items} columns={columns} getRowId={(i) => i.id} ariaLabel="Items" />);
+    expect(firstCells()).toEqual(["beta", "alpha", "gamma"]);
+
+    fireEvent.click(screen.getByRole("button", { name: /Name/ }));
+    expect(firstCells()).toEqual(["alpha", "beta", "gamma"]);
+    expect(screen.getByRole("columnheader", { name: /Name/ })).toHaveAttribute("aria-sort", "ascending");
+    fireEvent.click(screen.getByRole("button", { name: /Name/ }));
+    expect(firstCells()).toEqual(["gamma", "beta", "alpha"]);
+    expect(screen.getByRole("columnheader", { name: /Name/ })).toHaveAttribute("aria-sort", "descending");
+
+    // Alphanumeric: feature-2 < feature-9 < feature-10 (not lexicographic).
+    fireEvent.click(screen.getByRole("button", { name: /Branch/ }));
+    expect(firstCells()).toEqual(["gamma", "alpha", "beta"]);
+
+    // Numbers sort descending first, like TanStack Table v8.
+    fireEvent.click(screen.getByRole("button", { name: /Tokens/ }));
+    expect(firstCells()).toEqual(["alpha", "beta", "gamma"]);
+  });
+
+  it("activates rows by click and keyboard", () => {
+    const onRowActivate = vi.fn();
+    render(
+      <DataTable data={items} columns={columns} getRowId={(i) => i.id} ariaLabel="Items" selectedId="a" onRowActivate={onRowActivate} />
+    );
+    const rows = screen.getAllByRole("row").slice(1);
+    expect(rows[1]).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(rows[0]!);
+    fireEvent.keyDown(rows[2]!, { key: "Enter" });
+    expect(onRowActivate.mock.calls.map(([i]) => (i as Item).id)).toEqual(["b", "c"]);
+  });
+});

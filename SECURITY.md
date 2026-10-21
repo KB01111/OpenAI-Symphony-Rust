@@ -184,7 +184,8 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   updates for Cargo, npm and GitHub Actions.
 - Security overrides in `pnpm-workspace.yaml` are scoped to the vulnerable versions of exact transitive pins
   and documented there. Accepted findings: `katex` < 0.18.2 (low; reached through `@openai/apps-sdk-ui`
-  markdown rendering, whose parents require `^0.16`) and RUSTSEC-2024-0429 (unsound `glib` 0.18
+  markdown rendering, whose parents require `^0.16`; not overridden because KaTeX 0.18 renames the layout
+  classes that the SDK's bundled 0.16 stylesheet styles, which would break math rendering) and RUSTSEC-2024-0429 (unsound `glib` 0.18
   `VariantStrIter`, only in Tauri's Linux GTK stack, unused by Symphony; listed in `deny.toml`).
 - Workflow actions are pinned to commit SHAs, tokens are read-only except where a job publishes, and the
   release job restores no caches.

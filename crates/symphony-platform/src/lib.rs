@@ -3,6 +3,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use symphony_core::{HardwareSnapshot, ResourcePolicy, SymphonyError, SymphonyResult};
 use sysinfo::System;
 use tracing::info;
@@ -202,7 +203,15 @@ impl SingleInstanceGuard {
     /// Become the single runtime owner of `runtime_dir`. Acquisition is atomic across processes
     /// (exclusive advisory file lock), so a CLI and a desktop host starting concurrently cannot
     /// both own the same data directory.
+    ///
+    /// A lock whose recorded owner has already exited is waited for (up to [`STALE_LOCK_GRACE`])
+    /// instead of being reported as a running runtime: Windows releases the locks of a terminated
+    /// process asynchronously, so a restart right after a crash can still find the lock held.
     pub fn acquire(runtime_dir: &Path) -> SymphonyResult<Self> {
+        Self::acquire_within(runtime_dir, STALE_LOCK_GRACE)
+    }
+
+    fn acquire_within(runtime_dir: &Path, grace: Duration) -> SymphonyResult<Self> {
         std::fs::create_dir_all(runtime_dir)?;
         let lock_path = runtime_dir.join("symphony-runtime.lock");
         let current_pid = std::process::id();
@@ -213,22 +222,28 @@ impl SingleInstanceGuard {
             .read(true)
             .write(true)
             .open(&lock_path)?;
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(std::fs::TryLockError::WouldBlock) => {
-                let mut contents = String::new();
-                let owner = File::open(&lock_path)
-                    .and_then(|mut f| f.read_to_string(&mut contents))
-                    .ok()
-                    .and_then(|_| contents.trim().parse::<u32>().ok());
-                return Err(SymphonyError::InvalidConfig(match owner {
-                    Some(pid) => {
-                        format!("Symphony background runtime is already running (PID {pid})")
+        let deadline = Instant::now() + grace;
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    let owner = lock_owner_pid(&lock_path, runtime_dir);
+                    // An unknown owner may be a runtime that has not published its PID yet: treat
+                    // it as running, like a live one.
+                    let owner_exited = owner.is_some_and(|pid| !is_process_alive(pid));
+                    if owner_exited && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
                     }
-                    None => "Symphony background runtime is already running".to_string(),
-                }));
+                    return Err(SymphonyError::InvalidConfig(match owner {
+                        Some(pid) => {
+                            format!("Symphony background runtime is already running (PID {pid})")
+                        }
+                        None => "Symphony background runtime is already running".to_string(),
+                    }));
+                }
+                Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
             }
-            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }
         file.set_len(0)?;
         write!(file, "{current_pid}")?;
@@ -251,12 +266,69 @@ impl SingleInstanceGuard {
     }
 }
 
-/// Inspect whether a process PID is currently alive on the host (used during crash recovery & lock check).
+/// PID of the runtime holding the lock: from the lock file, or — where the lock also blocks
+/// reading it (Windows) — from the discovery record the owner published.
+fn lock_owner_pid(lock_path: &Path, runtime_dir: &Path) -> Option<u32> {
+    let mut contents = String::new();
+    File::open(lock_path)
+        .and_then(|mut f| f.read_to_string(&mut contents))
+        .ok()
+        .and_then(|_| contents.trim().parse::<u32>().ok())
+        .or_else(|| {
+            let raw =
+                secure_fs::read_private_file(&RuntimeDiscovery::file_path(runtime_dir)).ok()?;
+            let raw = zeroize::Zeroizing::new(raw);
+            serde_json::from_slice::<RuntimeDiscovery>(&raw)
+                .ok()
+                .map(|r| r.pid)
+        })
+}
+
+/// How long [`SingleInstanceGuard::acquire`] waits for the OS to release a lock whose owner has
+/// already exited.
+pub const STALE_LOCK_GRACE: Duration = Duration::from_secs(10);
+
+/// Inspect whether a process PID is currently running on the host (used during crash recovery & lock check).
 pub fn is_process_alive(pid: u32) -> bool {
-    let mut sys = System::new();
-    let sys_pid = sysinfo::Pid::from_u32(pid);
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[sys_pid]), true);
-    sys.process(sys_pid).is_some()
+    #[cfg(windows)]
+    {
+        win_process::is_running(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut sys = System::new();
+        let sys_pid = sysinfo::Pid::from_u32(pid);
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[sys_pid]), true);
+        sys.process(sys_pid).is_some()
+    }
+}
+
+/// A Windows process that has exited stays in the system process list while anything still holds
+/// a handle to it (its parent, an antivirus scan), so a process snapshot reports it as running;
+/// the process object's own signalled state is authoritative.
+#[cfg(windows)]
+mod win_process {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+
+    pub fn is_running(pid: u32) -> bool {
+        // SAFETY: plain handle APIs; the handle is closed before returning.
+        unsafe {
+            let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+            if handle.is_null() {
+                // A process we may not open (another account's, or protected) still exists; an
+                // unused PID fails with ERROR_INVALID_PARAMETER.
+                return GetLastError() == ERROR_ACCESS_DENIED;
+            }
+            let running = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+            CloseHandle(handle);
+            running
+        }
+    }
 }
 
 /// Name of the per-user autostart value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
@@ -537,5 +609,89 @@ mod tests {
         drop(guard);
         let guard2 = SingleInstanceGuard::acquire(dir.path()).unwrap();
         assert_eq!(guard2.pid(), std::process::id());
+    }
+
+    /// PID of a process that has exited; the returned child still holds its process handle.
+    fn exited_child() -> (std::process::Child, u32) {
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "exit"])
+            .spawn()
+            .unwrap();
+        #[cfg(not(windows))]
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        child.wait().unwrap();
+        let pid = child.id();
+        (child, pid)
+    }
+
+    /// Hold the lock the way a runtime does, after recording `owner` as its PID.
+    fn hold_lock(dir: &Path, owner: u32) -> File {
+        RuntimeDiscovery {
+            base_url: "http://127.0.0.1:1".into(),
+            token: "t".repeat(64),
+            pid: owner,
+            api_version: 1,
+            owner: "symphony-cli".into(),
+        }
+        .write(dir)
+        .unwrap();
+        let lock_path = dir.join("symphony-runtime.lock");
+        std::fs::write(&lock_path, owner.to_string()).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        file.lock().unwrap();
+        file
+    }
+
+    #[test]
+    fn an_exited_process_is_not_alive_while_a_handle_to_it_is_open() {
+        assert!(is_process_alive(std::process::id()));
+        let (_child, pid) = exited_child();
+        assert!(!is_process_alive(pid));
+    }
+
+    #[test]
+    fn a_live_lock_owner_is_refused_without_waiting() {
+        let dir = tempdir().unwrap();
+        let _held = hold_lock(dir.path(), std::process::id());
+        let start = Instant::now();
+        let Err(err) = SingleInstanceGuard::acquire_within(dir.path(), Duration::from_secs(30))
+        else {
+            panic!("a second owner must be refused");
+        };
+        assert!(err.to_string().contains("already running"), "{err}");
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_lock_left_by_an_exited_owner_is_taken_over_once_the_os_releases_it() {
+        let dir = tempdir().unwrap();
+        let (_child, dead) = exited_child();
+        let held = hold_lock(dir.path(), dead);
+        // The OS releases a terminated process's lock with a delay.
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            drop(held);
+        });
+        let guard =
+            SingleInstanceGuard::acquire_within(dir.path(), Duration::from_secs(30)).unwrap();
+        assert_eq!(guard.pid(), std::process::id());
+        release.join().unwrap();
+    }
+
+    #[test]
+    fn the_wait_for_a_stale_lock_is_bounded() {
+        let dir = tempdir().unwrap();
+        let (_child, dead) = exited_child();
+        let _held = hold_lock(dir.path(), dead);
+        let start = Instant::now();
+        assert!(
+            SingleInstanceGuard::acquire_within(dir.path(), Duration::from_millis(300)).is_err()
+        );
+        assert!(start.elapsed() >= Duration::from_millis(300));
     }
 }

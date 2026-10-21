@@ -33,26 +33,26 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.11", features = ["v4", "serde"] }
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 regex = "1.11"
 liquid = "0.26"
 async-trait = "0.1"
 futures = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "macros", "migrate"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "macros", "migrate"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 axum = { version = "0.8", features = ["ws", "macros", "json"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"] }
+tower-http = { version = "0.7", features = ["cors", "trace", "fs", "set-header"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 notify = "8.0"
 sysinfo = "0.33"
-dirs = "6.0"
+dirs = "7.0"
 tempfile = "3.15"
 url = "2.5"
 rand = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 # Exact pins: the OpenAPI document (and the TypeScript client generated from it) must not change
 # because a generator was upgraded implicitly.
 utoipa = { version = "=6.0.0", features = ["chrono", "preserve_order", "preserve_path_order"] }
