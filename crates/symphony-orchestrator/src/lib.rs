@@ -1073,9 +1073,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
             // Moving the task by hand supersedes a scheduled retry (a move within the same column
             // keeps it, so it cannot skip the backoff).
             task.next_retry_at = None;
-            self.memory.write().await.retry_attempts.remove(task_id);
         }
         self.storage.upsert_task(&task).await?;
+        if status_changes {
+            // Only once the move is stored: a failed write leaves the retry (and its backoff).
+            self.memory.write().await.retry_attempts.remove(task_id);
+        }
 
         self.emit_event(
             Some(task.id.clone()),
