@@ -17,6 +17,7 @@
     "@symphony/shared-types": "workspace:*",
     "@symphony/ui": "workspace:*",
     "@tanstack/react-query": "^5.69.0",
+    "katex": "^0.18.11",
     "lucide-react": "^1.60.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

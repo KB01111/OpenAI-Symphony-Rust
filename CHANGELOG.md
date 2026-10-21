@@ -45,12 +45,16 @@ First release. Replace "Unreleased" with the release date in the commit that is 
 
 ### Changed
 
+- Keyboard focus indicators: a single keyborg copy (Fluent UI 9.74.10); two copies shared one
+  registry and could tear down keyboard-navigation tracking.
 - Dependencies: TypeScript 7 (TypeScript 6 for the API client generator), Vite 8 with `@vitejs/plugin-react` 6, TanStack Table 9, motion 14,
   lucide-react 1, sqlx 0.9 (existing databases open unchanged), tower-http 0.7, sha2 0.11, base64 0.23,
   dirs 7, and current GitHub Actions.
 
 ### Security
 
+- KaTeX raised to 0.18 (GHSA-238p-pmpm-9mq7) with its own stylesheet, so math rendered in agent
+  messages keeps its layout; `pnpm audit` reports no known vulnerabilities.
 - DPAPI-backed credential vault (ChaCha20-Poly1305 with an owner-only key elsewhere), owner-only
   runtime discovery file, explicit vault quarantine instead of silent credential loss.
 - See `docs/POST_MERGE_STABILIZATION.md` for the full hardening report.
