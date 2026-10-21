@@ -45,7 +45,7 @@ First release. Replace "Unreleased" with the release date in the commit that is 
 
 ### Changed
 
-- Dependencies: TypeScript 6, Vite 8 with `@vitejs/plugin-react` 6, TanStack Table 9, motion 14,
+- Dependencies: TypeScript 7 (TypeScript 6 for the API client generator), Vite 8 with `@vitejs/plugin-react` 6, TanStack Table 9, motion 14,
   lucide-react 1, sqlx 0.9 (existing databases open unchanged), tower-http 0.7, sha2 0.11, base64 0.23,
   dirs 7, and current GitHub Actions.
 
