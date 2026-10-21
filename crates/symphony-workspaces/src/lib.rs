@@ -6,8 +6,10 @@ use symphony_core::{
     ChangedFileSummary, HooksConfig, SymphonyError, SymphonyResult, ValidationResult,
 };
 use tokio::process::Command;
-use tokio::time::timeout;
 use tracing::{debug, info, warn};
+
+pub mod process;
+pub use process::{hide_console_window, output_with_timeout, prepare_tree_command, ProcessTree};
 
 const HASH_PREFIX_HEX_LEN: usize = 16; // 64 bits of entropy per SPEC.md Section 4.2
 
@@ -23,8 +25,15 @@ pub const SECRET_ENV_VARS_TO_STRIP: &[&str] = &[
 
 const MAX_UNTRACKED_DIFF_FILES: usize = 200;
 
+/// `git` without a console window (the release desktop app is a GUI-subsystem process).
+pub fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    hide_console_window(&mut cmd);
+    cmd
+}
+
 async fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
+    let out = git_command()
         .arg("-C")
         .arg(cwd)
         .args(args)
@@ -42,7 +51,7 @@ async fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
 /// Non-zero exit codes are accepted (`git diff --no-index` exits 1 when files differ).
 async fn git_stdout_bounded(cwd: &Path, args: &[&str], limit: usize) -> (Vec<u8>, bool) {
     use tokio::io::AsyncReadExt;
-    let child = Command::new("git")
+    let child = git_command()
         .arg("-C")
         .arg(cwd)
         .args(args)
@@ -369,7 +378,7 @@ impl WorkspaceManager {
         base_branch: &str,
     ) -> SymphonyResult<()> {
         // First prune stale worktree metadata
-        let _ = Command::new("git")
+        let _ = git_command()
             .arg("-C")
             .arg(repo_path)
             .arg("worktree")
@@ -386,7 +395,7 @@ impl WorkspaceManager {
             "HEAD".to_string()
         };
 
-        let output = Command::new("git")
+        let output = git_command()
             .arg("-C")
             .arg(repo_path)
             .arg("worktree")
@@ -405,7 +414,7 @@ impl WorkspaceManager {
             if stderr.contains("already checked out") || stderr.contains("already used by worktree")
             {
                 let fallback_branch = format!("{branch_name}-{}", std::process::id());
-                let retry_out = Command::new("git")
+                let retry_out = git_command()
                     .arg("-C")
                     .arg(repo_path)
                     .arg("worktree")
@@ -440,7 +449,7 @@ impl WorkspaceManager {
     }
 
     async fn git_ref_exists(repo_path: &Path, git_ref: &str) -> bool {
-        Command::new("git")
+        git_command()
             .arg("-C")
             .arg(repo_path)
             .arg("rev-parse")
@@ -459,7 +468,7 @@ impl WorkspaceManager {
         if !workspace_path.exists() {
             return false;
         }
-        let output = Command::new("git")
+        let output = git_command()
             .arg("-C")
             .arg(workspace_path)
             .arg("status")
@@ -634,7 +643,7 @@ impl WorkspaceManager {
 
         if let Some(repo) = repo_path {
             if repo.exists() {
-                let mut cmd = Command::new("git");
+                let mut cmd = git_command();
                 cmd.arg("-C").arg(repo).arg("worktree").arg("remove");
                 if force {
                     cmd.arg("--force");
@@ -670,11 +679,11 @@ impl WorkspaceManager {
             let executed_at = chrono::Utc::now();
 
             let mut command = build_host_shell_command(trimmed, workspace_path);
-            let res = timeout(Duration::from_millis(timeout_ms), command.output()).await;
+            let res = output_with_timeout(&mut command, Duration::from_millis(timeout_ms)).await;
 
             let duration_ms = start.elapsed().as_millis() as u64;
             match res {
-                Ok(Ok(output)) => {
+                Some(Ok(output)) => {
                     let code = output.status.code().unwrap_or(-1);
                     let passed = output.status.success();
                     results.push(ValidationResult {
@@ -696,7 +705,7 @@ impl WorkspaceManager {
                         executed_at,
                     });
                 }
-                Ok(Err(e)) => {
+                Some(Err(e)) => {
                     results.push(ValidationResult {
                         id: format!("{task_id}-val-{}", results.len() + 1),
                         task_id: task_id.to_string(),
@@ -710,7 +719,7 @@ impl WorkspaceManager {
                         executed_at,
                     });
                 }
-                Err(_) => {
+                None => {
                     results.push(ValidationResult {
                         id: format!("{task_id}-val-{}", results.len() + 1),
                         task_id: task_id.to_string(),
@@ -745,10 +754,9 @@ pub async fn run_lifecycle_hook(
     );
 
     let mut cmd = build_host_shell_command(script, workspace_path);
-    let fut = cmd.output();
 
-    match timeout(Duration::from_millis(timeout_ms), fut).await {
-        Ok(Ok(output)) => {
+    match output_with_timeout(&mut cmd, Duration::from_millis(timeout_ms)).await {
+        Some(Ok(output)) => {
             if output.status.success() {
                 Ok(String::from_utf8_lossy(&output.stdout).to_string())
             } else {
@@ -765,11 +773,11 @@ pub async fn run_lifecycle_hook(
                 })
             }
         }
-        Ok(Err(e)) => Err(SymphonyError::HookFailed {
+        Some(Err(e)) => Err(SymphonyError::HookFailed {
             hook: hook_name.to_string(),
             reason: e.to_string(),
         }),
-        Err(_) => Err(SymphonyError::HookTimeout {
+        None => Err(SymphonyError::HookTimeout {
             hook: hook_name.to_string(),
             timeout_ms,
         }),
@@ -785,11 +793,6 @@ pub fn build_host_shell_command(script: &str, cwd: &Path) -> Command {
             .arg("-NonInteractive")
             .arg("-Command")
             .arg(script);
-        #[cfg(windows)]
-        {
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            c.creation_flags(CREATE_NO_WINDOW);
-        }
         c
     } else {
         let mut c = Command::new("sh");
@@ -800,8 +803,8 @@ pub fn build_host_shell_command(script: &str, cwd: &Path) -> Command {
     cmd.current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
+    prepare_tree_command(&mut cmd);
 
     for var in SECRET_ENV_VARS_TO_STRIP {
         cmd.env_remove(var);

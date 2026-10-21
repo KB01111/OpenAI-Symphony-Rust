@@ -4725,10 +4725,12 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "libc",
  "serde",
  "serde_json",
  "symphony-core",
  "symphony-workspaces",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",
@@ -4913,6 +4915,7 @@ version = "2.0.0"
 dependencies = [
  "chrono",
  "hex",
+ "libc",
  "regex",
  "serde",
  "serde_json",
@@ -4921,6 +4924,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

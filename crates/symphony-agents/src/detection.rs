@@ -56,6 +56,7 @@ async fn probe_version(binary: &Path) -> Option<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    symphony_workspaces::hide_console_window(&mut cmd);
     for key in symphony_workspaces::SECRET_ENV_VARS_TO_STRIP {
         cmd.env_remove(key);
     }

@@ -13,9 +13,9 @@ use symphony_core::domain::{
 };
 use symphony_core::error::{Result, SymphonyError};
 use symphony_core::redaction::redact_secrets;
-use symphony_workspaces::SECRET_ENV_VARS_TO_STRIP;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use symphony_workspaces::{prepare_tree_command, ProcessTree, SECRET_ENV_VARS_TO_STRIP};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 
@@ -200,6 +200,9 @@ pub fn detect_all_providers() -> Vec<ProviderProfile> {
 /// Official OpenAI Codex App Server JSON-RPC 2.0 stdio session
 pub struct CodexAppServerSession {
     config: AgentLaunchConfig,
+    // Declared before `child`: fields drop in order, so the tree is killed while the app-server
+    // process is still unreaped (see `ProcessTree::kill`).
+    tree: ProcessTree,
     child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
     stdout_rx: mpsc::Receiver<String>,
@@ -224,6 +227,7 @@ impl CodexAppServerSession {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        prepare_tree_command(&mut cmd);
 
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -238,6 +242,7 @@ impl CodexAppServerSession {
                 }
             }
         })?;
+        let tree = ProcessTree::attach(&child);
 
         let pid = child.id();
         let stdin = child
@@ -272,31 +277,11 @@ impl CodexAppServerSession {
             }
         });
 
-        let stderr_event_tx = event_tx.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let redacted = redact_secrets(&line, &[]);
-                tracing::debug!(target: "codex_stderr", pid = ?pid, "{}", redacted);
-                let _ = stderr_event_tx
-                    .send(AgentStreamEvent {
-                        event_type: "agent/stderr".into(),
-                        timestamp: Utc::now(),
-                        session_id: None,
-                        thread_id: None,
-                        turn_id: None,
-                        pid,
-                        message: Some(redacted.clone()),
-                        usage: None,
-                        rate_limits: None,
-                        raw: json!({ "stderr": redacted }),
-                    })
-                    .await;
-            }
-        });
+        forward_stderr(stderr, pid, event_tx.clone());
 
         let mut session = Self {
             config,
+            tree,
             child,
             stdin: Arc::new(Mutex::new(stdin)),
             stdout_rx,
@@ -860,13 +845,125 @@ impl AgentSession for CodexAppServerSession {
                 }))
                 .await;
         }
+        self.tree.kill();
         let _ = self.child.kill().await;
         Ok(())
     }
 
     async fn stop(&mut self) -> Result<()> {
+        self.tree.kill();
         let _ = self.child.kill().await;
         Ok(())
+    }
+}
+
+/// Forward a child's stderr as redacted `agent/stderr` events (and debug logs). Reading it also
+/// keeps the pipe drained: an unread stderr pipe fills up and blocks the agent forever.
+fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<AgentStreamEvent>) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let redacted = redact_secrets(&line, &[]);
+            tracing::debug!(target: "agent_stderr", pid = ?pid, "{}", redacted);
+            let _ = event_tx
+                .send(AgentStreamEvent {
+                    event_type: "agent/stderr".into(),
+                    timestamp: Utc::now(),
+                    session_id: None,
+                    thread_id: None,
+                    turn_id: None,
+                    pid,
+                    message: Some(redacted.clone()),
+                    usage: None,
+                    rate_limits: None,
+                    raw: json!({ "stderr": redacted }),
+                })
+                .await;
+        }
+    });
+}
+
+/// One turn of a one-shot CLI agent (Claude Code, OpenCode): the process tree, its stdout lines
+/// and a drained stderr. Dropping it (e.g. when the orchestrator abandons a cancelled or stalled
+/// turn) kills every process the agent started.
+struct CliTurnProcess {
+    // Declared before `child` so it drops first, while the leader is still unreaped.
+    tree: ProcessTree,
+    child: Child,
+    lines: Lines<BufReader<ChildStdout>>,
+    deadline: tokio::time::Instant,
+    timeout_ms: u64,
+}
+
+impl CliTurnProcess {
+    fn spawn(
+        cmd: &mut Command,
+        config: &AgentLaunchConfig,
+        event_tx: &mpsc::Sender<AgentStreamEvent>,
+        not_found_code: &str,
+        label: &str,
+        exe: &str,
+    ) -> Result<Self> {
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        prepare_tree_command(cmd);
+        let mut child = cmd.spawn().map_err(|e| SymphonyError::AgentProtocolError {
+            code: not_found_code.into(),
+            message: format!("Failed to spawn {label} ('{exe}'): {e}"),
+        })?;
+        let tree = ProcessTree::attach(&child);
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| SymphonyError::AgentProtocolError {
+                code: "stdout_unavailable".into(),
+                message: format!("{label} stdout was not piped"),
+            })?;
+        if let Some(stderr) = child.stderr.take() {
+            forward_stderr(stderr, child.id(), event_tx.clone());
+        }
+        // Same floor as the Codex driver.
+        let turn_timeout = Duration::from_millis(config.turn_timeout_ms.max(5000));
+        Ok(Self {
+            tree,
+            child,
+            lines: BufReader::new(stdout).lines(),
+            deadline: tokio::time::Instant::now() + turn_timeout,
+            timeout_ms: config.turn_timeout_ms,
+        })
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
+    /// Next stdout line; `Ok(None)` at end of output. Fails (and kills the tree) once
+    /// `turn_timeout_ms` has elapsed since the turn started.
+    async fn next_line(&mut self) -> Result<Option<String>> {
+        match tokio::time::timeout_at(self.deadline, self.lines.next_line()).await {
+            Ok(Ok(line)) => Ok(line),
+            Ok(Err(_)) => Ok(None),
+            Err(_) => {
+                self.tree.kill();
+                Err(SymphonyError::TurnTimeout(self.timeout_ms))
+            }
+        }
+    }
+
+    /// Wait for the agent to exit (still bounded by the turn timeout).
+    async fn wait(mut self) -> Result<std::process::ExitStatus> {
+        match tokio::time::timeout_at(self.deadline, self.child.wait()).await {
+            Ok(status) => {
+                let status = status?;
+                self.tree.release();
+                Ok(status)
+            }
+            Err(_) => {
+                self.tree.kill();
+                Err(SymphonyError::TurnTimeout(self.timeout_ms))
+            }
+        }
     }
 }
 
@@ -925,10 +1022,7 @@ impl AgentSession for ClaudeCodeSession {
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose")
-            .current_dir(&self.config.workspace_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .current_dir(&self.config.workspace_path);
 
         if let Some(ref sid) = self.session_id {
             cmd.arg("--resume").arg(sid);
@@ -943,14 +1037,15 @@ impl AgentSession for ClaudeCodeSession {
             cmd.env(k, v);
         }
 
-        let mut child = cmd.spawn().map_err(|e| SymphonyError::AgentProtocolError {
-            code: "claude_code_not_found".into(),
-            message: format!("Failed to spawn Claude Code CLI ('{exe}'): {e}"),
-        })?;
-        self.pid = child.id();
-
-        let stdout = child.stdout.take().unwrap();
-        let mut lines = BufReader::new(stdout).lines();
+        let mut process = CliTurnProcess::spawn(
+            &mut cmd,
+            &self.config,
+            &event_tx,
+            "claude_code_not_found",
+            "Claude Code CLI",
+            exe,
+        )?;
+        self.pid = process.pid();
         let mut usage = TokenUsage::default();
         let mut messages = Vec::new();
         let mut discovered_session = self
@@ -958,7 +1053,7 @@ impl AgentSession for ClaudeCodeSession {
             .clone()
             .unwrap_or_else(|| format!("claude-{}", uuid::Uuid::new_v4()));
 
-        while let Ok(Some(line)) = lines.next_line().await {
+        while let Some(line) = process.next_line().await? {
             if let Ok(val) = serde_json::from_str::<Value>(&line) {
                 if let Some(sid) = val.get("session_id").and_then(|v| v.as_str()) {
                     discovered_session = sid.to_string();
@@ -995,7 +1090,7 @@ impl AgentSession for ClaudeCodeSession {
             }
         }
 
-        let status = child.wait().await?;
+        let status = process.wait().await?;
         self.session_id = Some(discovered_session.clone());
         let is_cancelled = *self.cancelled.lock().await;
 
@@ -1085,10 +1180,7 @@ impl AgentSession for OpenCodeSession {
             .arg("--format")
             .arg("json")
             .arg(prompt)
-            .current_dir(&self.config.workspace_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .current_dir(&self.config.workspace_path);
 
         if let Some(ref sid) = self.session_id {
             cmd.arg("--session").arg(sid);
@@ -1103,14 +1195,15 @@ impl AgentSession for OpenCodeSession {
             cmd.env(k, v);
         }
 
-        let mut child = cmd.spawn().map_err(|e| SymphonyError::AgentProtocolError {
-            code: "opencode_not_found".into(),
-            message: format!("Failed to spawn OpenCode CLI ('{exe}'): {e}"),
-        })?;
-        self.pid = child.id();
-
-        let stdout = child.stdout.take().unwrap();
-        let mut lines = BufReader::new(stdout).lines();
+        let mut process = CliTurnProcess::spawn(
+            &mut cmd,
+            &self.config,
+            &event_tx,
+            "opencode_not_found",
+            "OpenCode CLI",
+            exe,
+        )?;
+        self.pid = process.pid();
         let mut usage = TokenUsage::default();
         let mut messages = Vec::new();
         let mut discovered_session = self
@@ -1118,7 +1211,7 @@ impl AgentSession for OpenCodeSession {
             .clone()
             .unwrap_or_else(|| format!("opencode-{}", uuid::Uuid::new_v4()));
 
-        while let Ok(Some(line)) = lines.next_line().await {
+        while let Some(line) = process.next_line().await? {
             if let Ok(val) = serde_json::from_str::<Value>(&line) {
                 if let Some(sid) = val
                     .get("sessionID")
@@ -1155,7 +1248,7 @@ impl AgentSession for OpenCodeSession {
             }
         }
 
-        let status = child.wait().await?;
+        let status = process.wait().await?;
         self.session_id = Some(discovered_session.clone());
         let is_cancelled = *self.cancelled.lock().await;
 
