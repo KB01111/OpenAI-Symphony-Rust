@@ -51,9 +51,20 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Symphony Desktop Contributors",
+    "copyright": "Copyright (c) Symphony Desktop Contributors. MIT License.",
+    "category": "DeveloperTool",
+    "shortDescription": "Autonomous coding orchestration for Windows 11",
+    "longDescription": "Symphony Desktop schedules coding agents (Codex, Claude Code, OpenCode) against GitHub and Linear issues in isolated Git worktrees, with approvals, validation and merge readiness checks.",
+    "homepage": "https://github.com/KB01111/OpenAI-Symphony-Rust",
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }
