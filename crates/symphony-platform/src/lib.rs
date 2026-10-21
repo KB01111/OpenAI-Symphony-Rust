@@ -207,8 +207,16 @@ impl SingleInstanceGuard {
     /// A lock whose recorded owner has already exited is waited for (up to [`STALE_LOCK_GRACE`])
     /// instead of being reported as a running runtime: Windows releases the locks of a terminated
     /// process asynchronously, so a restart right after a crash can still find the lock held.
+    ///
+    /// Fails with [`SymphonyError::InvalidConfig`] when another runtime holds the lock; any other
+    /// error is an I/O failure.
     pub fn acquire(runtime_dir: &Path) -> SymphonyResult<Self> {
         Self::acquire_within(runtime_dir, STALE_LOCK_GRACE)
+    }
+
+    /// [`acquire`](Self::acquire) without waiting for a lock left by an exited owner.
+    pub fn try_acquire(runtime_dir: &Path) -> SymphonyResult<Self> {
+        Self::acquire_within(runtime_dir, Duration::ZERO)
     }
 
     fn acquire_within(runtime_dir: &Path, grace: Duration) -> SymphonyResult<Self> {
@@ -248,6 +256,9 @@ impl SingleInstanceGuard {
         file.set_len(0)?;
         write!(file, "{current_pid}")?;
         file.flush()?;
+        // A discovery record left behind now belongs to a dead owner. Until this runtime publishes
+        // its own, a contender would read that PID as the lock owner's and wait for its release.
+        RuntimeDiscovery::remove(runtime_dir);
         info!(pid = current_pid, lock = %lock_path.display(), "Acquired single-instance runtime lock");
 
         Ok(Self {
@@ -309,7 +320,7 @@ pub fn is_process_alive(pid: u32) -> bool {
 #[cfg(windows)]
 mod win_process {
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, WAIT_TIMEOUT,
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::System::Threading::{
         OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
@@ -324,7 +335,8 @@ mod win_process {
                 // unused PID fails with ERROR_INVALID_PARAMETER.
                 return GetLastError() == ERROR_ACCESS_DENIED;
             }
-            let running = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+            // Only a signalled process has exited; a failed wait is no evidence of that.
+            let running = WaitForSingleObject(handle, 0) != WAIT_OBJECT_0;
             CloseHandle(handle);
             running
         }
@@ -681,6 +693,16 @@ mod tests {
             SingleInstanceGuard::acquire_within(dir.path(), Duration::from_secs(30)).unwrap();
         assert_eq!(guard.pid(), std::process::id());
         release.join().unwrap();
+    }
+
+    #[test]
+    fn acquiring_the_lock_discards_a_dead_owners_discovery_record() {
+        let dir = tempdir().unwrap();
+        let (_child, dead) = exited_child();
+        drop(hold_lock(dir.path(), dead));
+        assert!(RuntimeDiscovery::file_path(dir.path()).exists());
+        let _guard = SingleInstanceGuard::try_acquire(dir.path()).unwrap();
+        assert!(!RuntimeDiscovery::file_path(dir.path()).exists());
     }
 
     #[test]
