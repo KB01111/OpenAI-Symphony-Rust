@@ -18,12 +18,22 @@ function installedKatexVersion(app) {
   return JSON.parse(readFileSync(pkg, "utf8")).version;
 }
 
+/** CSS without its comments, so a commented-out import does not count as loaded. */
+function withoutComments(css) {
+  return css.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+test("a commented-out import does not count as loaded", () => {
+  const css = withoutComments('/* @import "katex/dist/katex.min.css" layer(base); */\n@import "x";');
+  assert.equal(css.indexOf("katex"), -1);
+});
+
 for (const app of apps) {
   test(`${app} loads KaTeX's own stylesheet after the Apps SDK stylesheet`, () => {
     const [major, minor] = installedKatexVersion(app).split(".").map(Number);
     if (major === 0 && minor < 18) return; // The SDK's bundled stylesheet still matches.
 
-    const css = readFileSync(join(root, "apps", app, "src", "styles", "globals.css"), "utf8");
+    const css = withoutComments(readFileSync(join(root, "apps", app, "src", "styles", "globals.css"), "utf8"));
     const sdk = css.indexOf('@import "@openai/apps-sdk-ui/css";');
     const katex = css.indexOf('@import "katex/dist/katex.min.css" layer(base);');
     assert.notEqual(sdk, -1, "the Apps SDK stylesheet import is missing");
