@@ -204,9 +204,11 @@ impl SingleInstanceGuard {
     /// (exclusive advisory file lock), so a CLI and a desktop host starting concurrently cannot
     /// both own the same data directory.
     ///
-    /// A lock whose recorded owner has already exited is waited for (up to [`STALE_LOCK_GRACE`])
-    /// instead of being reported as a running runtime: Windows releases the locks of a terminated
-    /// process asynchronously, so a restart right after a crash can still find the lock held.
+    /// Only a lock whose owner is known to be running is refused at once. Otherwise (the owner has
+    /// exited, or has not published its PID yet) the lock is waited for, up to
+    /// [`STALE_LOCK_GRACE`]: Windows releases the locks of a terminated process asynchronously, so
+    /// a restart right after a crash, even one before the owner published anything, can still
+    /// find the lock held.
     ///
     /// Fails with [`SymphonyError::InvalidConfig`] when another runtime holds the lock; any other
     /// error is an I/O failure.
@@ -236,10 +238,10 @@ impl SingleInstanceGuard {
                 Ok(()) => break,
                 Err(std::fs::TryLockError::WouldBlock) => {
                     let owner = lock_owner_pid(&lock_path, runtime_dir);
-                    // An unknown owner may be a runtime that has not published its PID yet: treat
-                    // it as running, like a live one.
-                    let owner_exited = owner.is_some_and(|pid| !is_process_alive(pid));
-                    if owner_exited && Instant::now() < deadline {
+                    // An unknown owner has either crashed before publishing its PID or is still
+                    // starting; the latter publishes within moments and is then refused below.
+                    let owner_running = owner.is_some_and(is_process_alive);
+                    if !owner_running && Instant::now() < deadline {
                         std::thread::sleep(Duration::from_millis(100));
                         continue;
                     }
@@ -617,7 +619,7 @@ mod tests {
         let guard = SingleInstanceGuard::acquire(dir.path()).unwrap();
         assert_eq!(guard.pid(), std::process::id());
         // A second owner is rejected while the first guard holds the lock.
-        assert!(SingleInstanceGuard::acquire(dir.path()).is_err());
+        assert!(SingleInstanceGuard::try_acquire(dir.path()).is_err());
         drop(guard);
         let guard2 = SingleInstanceGuard::acquire(dir.path()).unwrap();
         assert_eq!(guard2.pid(), std::process::id());
@@ -703,6 +705,24 @@ mod tests {
         assert!(RuntimeDiscovery::file_path(dir.path()).exists());
         let _guard = SingleInstanceGuard::try_acquire(dir.path()).unwrap();
         assert!(!RuntimeDiscovery::file_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn a_lock_whose_owner_never_published_its_pid_is_waited_for() {
+        // An owner that crashed right after taking the lock: no PID in the lock file (or one that
+        // cannot be read, as on Windows) and no discovery record.
+        let dir = tempdir().unwrap();
+        let lock_path = dir.path().join("symphony-runtime.lock");
+        let held = File::create(&lock_path).unwrap();
+        held.lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            drop(held);
+        });
+        let guard =
+            SingleInstanceGuard::acquire_within(dir.path(), Duration::from_secs(30)).unwrap();
+        assert_eq!(guard.pid(), std::process::id());
+        release.join().unwrap();
     }
 
     #[test]

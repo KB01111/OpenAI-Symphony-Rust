@@ -276,6 +276,7 @@ describe("DataTable", () => {
       <DataTable data={items} columns={columns} getRowId={(i) => i.id} ariaLabel="Items" selectedId="a" onRowActivate={onRowActivate} />
     );
     const rows = screen.getAllByRole("row").slice(1);
+    for (const row of rows) expect(row).toHaveAttribute("tabindex", "0");
     expect(rows[1]).toHaveAttribute("aria-selected", "true");
     fireEvent.click(rows[0]!);
     fireEvent.keyDown(rows[2]!, { key: "Enter" });
