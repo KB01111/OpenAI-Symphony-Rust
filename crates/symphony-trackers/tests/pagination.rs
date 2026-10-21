@@ -193,3 +193,53 @@ async fn linear_listing_rejects_a_cursor_that_does_not_advance() {
     assert!(err.to_string().contains("endCursor"), "{err}");
     assert_eq!(requests.lock().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn github_candidates_are_read_beyond_the_listing_limit() {
+    // 1,550 open issues: newer issues past the 10-page listing limit must still be candidates.
+    let (base, _) = serve(Box::new(|target, _| {
+        let page = query_param(target, "page").unwrap_or(1);
+        let first = (page - 1) * 100 + 1;
+        github_issues(first, 1550usize.saturating_sub(first - 1).min(100))
+    }))
+    .await;
+    let tracker = GitHubTracker::new(Some(base), "owner/repo".into(), None, None);
+
+    let issues = tracker
+        .fetch_candidate_issues(&["open".into()], &[])
+        .await
+        .unwrap();
+
+    assert_eq!(issues.len(), 1550);
+    assert_eq!(issues.last().unwrap().identifier, "GH-1550");
+}
+
+#[tokio::test]
+async fn github_closed_listing_reads_newest_first() {
+    let (base, requests) = serve(Box::new(|_, _| json!([]))).await;
+    let tracker = GitHubTracker::new(Some(base), "owner/repo".into(), None, None);
+
+    tracker
+        .fetch_issues_by_states(&["closed".into()])
+        .await
+        .unwrap();
+    tracker
+        .fetch_issues_by_states(&["open".into()])
+        .await
+        .unwrap();
+
+    let targets: Vec<String> = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(target, _)| target.clone())
+        .collect();
+    assert!(
+        targets[0].contains("state=closed") && targets[0].contains("direction=desc"),
+        "{targets:?}"
+    );
+    assert!(
+        targets[1].contains("state=open") && targets[1].contains("direction=asc"),
+        "{targets:?}"
+    );
+}

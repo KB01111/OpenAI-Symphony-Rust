@@ -9,9 +9,12 @@ use symphony_core::{
 };
 use tracing::warn;
 
-/// Pages fetched per issue listing before giving up on the rest, so a huge backlog (e.g. every
-/// closed issue of an old repository during startup cleanup) cannot stall a scheduler tick.
+/// Pages read per state listing (startup cleanup of terminal issues) before giving up on the rest,
+/// so the closed history of an old repository cannot stall startup.
 const MAX_ISSUE_PAGES: usize = 10;
+/// Pages read per candidate listing. Open work has to be seen completely (GitHub lists oldest
+/// first, so a low cap would hide every newer issue); this only bounds a runaway listing.
+const MAX_CANDIDATE_PAGES: usize = 100;
 const GITHUB_PAGE_SIZE: usize = 100;
 const LINEAR_PAGE_SIZE: usize = 50;
 
@@ -534,25 +537,13 @@ impl GitHubTracker {
     }
 }
 
-#[async_trait]
-impl TrackerAdapter for GitHubTracker {
-    fn kind(&self) -> &'static str {
-        "github"
-    }
-
-    async fn fetch_candidate_issues(
+impl GitHubTracker {
+    /// Issues in `state_names`, reading at most `max_pages` pages.
+    async fn list_issues(
         &self,
-        active_states: &[String],
-        required_labels: &[String],
+        state_names: &[String],
+        max_pages: usize,
     ) -> SymphonyResult<Vec<Issue>> {
-        let issues = self.fetch_issues_by_states(active_states).await?;
-        Ok(issues
-            .into_iter()
-            .filter(|i| i.dispatchable && i.has_required_labels(required_labels))
-            .collect())
-    }
-
-    async fn fetch_issues_by_states(&self, state_names: &[String]) -> SymphonyResult<Vec<Issue>> {
         self.validate_config()?;
         let normalized_states: Vec<String> = state_names
             .iter()
@@ -577,10 +568,13 @@ impl TrackerAdapter for GitHubTracker {
             _ => "open",
         };
 
+        // Candidates oldest first (SPEC.md Section 8.2); a closed-only listing (terminal cleanup)
+        // newest first, since recently closed issues are the ones that may still have workspaces.
+        let direction = if api_state == "closed" { "desc" } else { "asc" };
         let mut out = Vec::new();
-        for page in 1..=MAX_ISSUE_PAGES {
+        for page in 1..=max_pages {
             let url = format!(
-                "{}/repos/{}/issues?state={api_state}&per_page={GITHUB_PAGE_SIZE}&page={page}&sort=created&direction=asc",
+                "{}/repos/{}/issues?state={api_state}&per_page={GITHUB_PAGE_SIZE}&page={page}&sort=created&direction={direction}",
                 self.api_url, self.repo
             );
 
@@ -619,10 +613,33 @@ impl TrackerAdapter for GitHubTracker {
         }
         warn!(
             repo = %self.repo,
-            pages = MAX_ISSUE_PAGES,
-            "GitHub issue listing truncated; only the oldest issues are considered"
+            pages = max_pages,
+            "GitHub issue listing truncated; only the first pages are considered"
         );
         Ok(out)
+    }
+}
+
+#[async_trait]
+impl TrackerAdapter for GitHubTracker {
+    fn kind(&self) -> &'static str {
+        "github"
+    }
+
+    async fn fetch_candidate_issues(
+        &self,
+        active_states: &[String],
+        required_labels: &[String],
+    ) -> SymphonyResult<Vec<Issue>> {
+        let issues = self.list_issues(active_states, MAX_CANDIDATE_PAGES).await?;
+        Ok(issues
+            .into_iter()
+            .filter(|i| i.dispatchable && i.has_required_labels(required_labels))
+            .collect())
+    }
+
+    async fn fetch_issues_by_states(&self, state_names: &[String]) -> SymphonyResult<Vec<Issue>> {
+        self.list_issues(state_names, MAX_ISSUE_PAGES).await
     }
 
     async fn fetch_issue_states_by_ids(&self, issue_ids: &[String]) -> SymphonyResult<Vec<Issue>> {
@@ -1036,25 +1053,13 @@ impl LinearTracker {
     }
 }
 
-#[async_trait]
-impl TrackerAdapter for LinearTracker {
-    fn kind(&self) -> &'static str {
-        "linear"
-    }
-
-    async fn fetch_candidate_issues(
+impl LinearTracker {
+    /// Issues in `state_names`, reading at most `max_pages` pages.
+    async fn list_issues(
         &self,
-        active_states: &[String],
-        required_labels: &[String],
+        state_names: &[String],
+        max_pages: usize,
     ) -> SymphonyResult<Vec<Issue>> {
-        let issues = self.fetch_issues_by_states(active_states).await?;
-        Ok(issues
-            .into_iter()
-            .filter(|i| i.dispatchable && i.has_required_labels(required_labels))
-            .collect())
-    }
-
-    async fn fetch_issues_by_states(&self, state_names: &[String]) -> SymphonyResult<Vec<Issue>> {
         if self.project_slug.is_empty() {
             return Err(SymphonyError::TrackerError {
                 code: "missing_linear_project_slug".to_string(),
@@ -1067,7 +1072,7 @@ impl TrackerAdapter for LinearTracker {
 
         let mut out = Vec::new();
         let mut after = Value::Null;
-        for _ in 0..MAX_ISSUE_PAGES {
+        for _ in 0..max_pages {
             let body = self
                 .graphql(
                     LINEAR_COLLECTION_QUERY,
@@ -1112,10 +1117,33 @@ impl TrackerAdapter for LinearTracker {
         }
         warn!(
             project = %self.project_slug,
-            pages = MAX_ISSUE_PAGES,
+            pages = max_pages,
             "Linear issue listing truncated; only the first pages are considered"
         );
         Ok(out)
+    }
+}
+
+#[async_trait]
+impl TrackerAdapter for LinearTracker {
+    fn kind(&self) -> &'static str {
+        "linear"
+    }
+
+    async fn fetch_candidate_issues(
+        &self,
+        active_states: &[String],
+        required_labels: &[String],
+    ) -> SymphonyResult<Vec<Issue>> {
+        let issues = self.list_issues(active_states, MAX_CANDIDATE_PAGES).await?;
+        Ok(issues
+            .into_iter()
+            .filter(|i| i.dispatchable && i.has_required_labels(required_labels))
+            .collect())
+    }
+
+    async fn fetch_issues_by_states(&self, state_names: &[String]) -> SymphonyResult<Vec<Issue>> {
+        self.list_issues(state_names, MAX_ISSUE_PAGES).await
     }
 
     async fn fetch_issue_states_by_ids(&self, issue_ids: &[String]) -> SymphonyResult<Vec<Issue>> {

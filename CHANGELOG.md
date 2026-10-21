@@ -46,9 +46,10 @@ First release. Replace "Unreleased" with the release date in the commit that is 
   counted its earlier turns again on every turn. Stream events now carry the session's cumulative
   usage, turn outcomes that turn's usage, and only growth is counted. The first turn of a resumed
   Codex thread may still include the thread's earlier usage if the app server reports it.
-- GitHub and Linear issue listings read every page (up to 10 pages: 1,000 GitHub or 500 Linear
-  issues) instead of only the first 100 or 50 issues, so newer issues of a large backlog are
-  dispatched and terminal workspaces are cleaned up.
+- GitHub and Linear issue listings follow pagination instead of stopping at the first 100 or 50
+  issues, so newer issues of a large backlog are dispatched. Candidate listings read up to 100
+  pages; the terminal-state listing used for startup workspace cleanup reads up to 10 pages,
+  newest closed GitHub issues first.
 
 - Restarting the desktop app or the CLI right after a crash no longer fails or attaches to the dead
   runtime: Windows releases a terminated process's file lock with a delay, and a process that had
