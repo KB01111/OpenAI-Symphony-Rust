@@ -65,7 +65,9 @@ test("pre-release and build metadata are valid versions", () => {
     const versions = [{ file: "Cargo.toml", version }];
     assert.deepEqual(checkVersions(versions, `v${version}`).errors, [], version);
   }
-  assert.equal(checkVersions([{ file: "a", version: "2.1.0+" }]).ok, false);
+  for (const invalid of ["2.1.0+", "2.1.0+build..7", "2.1.0+build.", "2.1.0-rc..1", "2.1.0-"]) {
+    assert.equal(checkVersions([{ file: "a", version: invalid }]).ok, false, invalid);
+  }
 });
 
 test("malformed versions are rejected", () => {

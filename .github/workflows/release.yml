@@ -186,7 +186,9 @@ jobs:
             $draft = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json isDraft --jq .isDraft
             if ($LASTEXITCODE -ne 0) { throw 'could not read the existing release' }
             if ($draft -ne 'true') { throw "release $env:RELEASE_TAG is already published; assets were not replaced" }
-            # --clobber only replaces assets of the same name: remove everything this run does not
+            Invoke-Gh release upload $env:RELEASE_TAG @assets --clobber --repo $env:GITHUB_REPOSITORY
+            # --clobber only replaces assets of the same name: after the upload succeeded (a failed
+            # upload leaves the previous set intact), remove everything this run does not
             # produce (e.g. the -UNSIGNED files of an earlier unsigned run of a now signed release).
             $staged = Get-ChildItem dist-release | ForEach-Object Name
             $existing = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json assets --jq '.assets[].name'
@@ -196,7 +198,6 @@ jobs:
                 Invoke-Gh release delete-asset $env:RELEASE_TAG $name --yes --repo $env:GITHUB_REPOSITORY
               }
             }
-            Invoke-Gh release upload $env:RELEASE_TAG @assets --clobber --repo $env:GITHUB_REPOSITORY
             Invoke-Gh release edit $env:RELEASE_TAG --notes-file "$env:RUNNER_TEMP/release-notes.md" --repo $env:GITHUB_REPOSITORY
           } else {
             $pre = if ($env:RELEASE_VERSION -match '-') { @('--prerelease') } else { @() }

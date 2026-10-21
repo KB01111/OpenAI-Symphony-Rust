@@ -863,10 +863,17 @@ impl AgentSession for CodexAppServerSession {
 /// but not the timeline, and the pipe keeps draining.
 fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<AgentStreamEvent>) {
     tokio::spawn(async move {
+        // Lines longer than this (an agent writing without newlines) are forwarded in pieces, so
+        // memory stays bounded.
+        const MAX_STDERR_LINE: u64 = 16 * 1024;
+        use tokio::io::AsyncReadExt;
         let mut reader = BufReader::new(stderr);
         let mut raw = Vec::new();
         // Raw bytes, decoded lossily: invalid UTF-8 must not stop the draining.
-        while matches!(reader.read_until(b'\n', &mut raw).await, Ok(n) if n > 0) {
+        while matches!(
+            (&mut reader).take(MAX_STDERR_LINE).read_until(b'\n', &mut raw).await,
+            Ok(n) if n > 0
+        ) {
             let line = String::from_utf8_lossy(&raw);
             let redacted = redact_secrets(line.trim_end_matches(['\r', '\n']), &[]);
             raw.clear();

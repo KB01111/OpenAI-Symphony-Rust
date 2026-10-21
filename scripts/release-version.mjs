@@ -15,7 +15,8 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // MAJOR.MINOR.PATCH with optional pre-release and build metadata (semver.org).
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const IDENTIFIERS = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*"; // non-empty, dot-separated
+const SEMVER = new RegExp(`^\\d+\\.\\d+\\.\\d+(?:-${IDENTIFIERS})?(?:\\+${IDENTIFIERS})?$`);
 
 /** Version of `[workspace.package]` in the root Cargo.toml, or null. */
 export function readCargoWorkspaceVersion(cargoToml) {

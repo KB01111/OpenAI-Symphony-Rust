@@ -295,3 +295,42 @@ async fn invalid_utf8_on_stderr_does_not_stop_the_draining() {
         "lines after the invalid one are still forwarded"
     );
 }
+
+#[tokio::test]
+async fn stderr_without_newlines_is_forwarded_in_bounded_pieces() {
+    let dir = tempfile::tempdir().unwrap();
+    // 256 KiB on stderr without a single newline.
+    let agent = fake_agent(
+        dir.path(),
+        "head -c 262144 /dev/zero | tr '\\0' x >&2\nexit 0",
+    );
+    let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(1024);
+    let events = tokio::spawn(async move {
+        let mut pieces = Vec::new();
+        while let Some(event) = rx.recv().await {
+            if event.event_type == "agent/stderr" {
+                pieces.push(event.message.unwrap_or_default().len());
+            }
+        }
+        pieces
+    });
+    let mut session = start_agent_session(
+        config(ProviderKind::ClaudeCode, &agent, dir.path(), 600_000),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(30), session.run_turn("work", tx))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(outcome.succeeded);
+    drop(session);
+    let pieces = events.await.unwrap();
+    assert!(pieces.len() >= 16, "forwarded in pieces: {pieces:?}");
+    assert!(pieces.iter().all(|len| *len <= 16 * 1024), "{pieces:?}");
+    assert_eq!(pieces.iter().sum::<usize>(), 262_144);
+}
