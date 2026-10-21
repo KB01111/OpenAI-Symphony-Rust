@@ -243,3 +243,35 @@ async fn github_closed_listing_reads_newest_first() {
         "{targets:?}"
     );
 }
+
+#[tokio::test]
+async fn linear_listing_keeps_its_issues_when_the_last_page_has_no_cursor() {
+    // Every page advances the cursor except the tenth (the last one read), which has none.
+    let (base, requests) = serve(Box::new(|_, body| {
+        let request: Value = serde_json::from_str(body).unwrap();
+        let page = request
+            .pointer("/variables/after")
+            .and_then(|v| v.as_str())
+            .map_or(1, |cursor| cursor.parse::<usize>().unwrap() + 1);
+        let end_cursor = if page == 10 { Value::Null } else { json!(page.to_string()) };
+        json!({ "data": { "issues": {
+            "nodes": [{ "id": format!("sym-{page}"), "identifier": format!("SYM-{page}"), "title": "t", "state": { "name": "Todo" } }],
+            "pageInfo": { "hasNextPage": true, "endCursor": end_cursor }
+        } } })
+    }))
+    .await;
+    let tracker = LinearTracker::new(
+        Some(base),
+        "project".into(),
+        Some("lin_api_test".into()),
+        Vec::new(),
+    );
+
+    let issues = tracker
+        .fetch_issues_by_states(&["Todo".into()])
+        .await
+        .unwrap();
+
+    assert_eq!(issues.len(), 10);
+    assert_eq!(requests.lock().unwrap().len(), 10);
+}

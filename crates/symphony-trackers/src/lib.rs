@@ -1072,7 +1072,7 @@ impl LinearTracker {
 
         let mut out = Vec::new();
         let mut after = Value::Null;
-        for _ in 0..max_pages {
+        for page in 1..=max_pages {
             let body = self
                 .graphql(
                     LINEAR_COLLECTION_QUERY,
@@ -1103,6 +1103,10 @@ impl LinearTracker {
                 .and_then(|v| v.as_str());
             if !has_next {
                 return Ok(out);
+            }
+            if page == max_pages {
+                // No further request follows, so the cursor is not needed: report the truncation.
+                break;
             }
             // A next page without a new cursor would refetch the same page (or end silently).
             match cursor {
