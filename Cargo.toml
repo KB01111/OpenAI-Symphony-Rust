@@ -19,6 +19,8 @@ edition = "2021"
 license = "MIT"
 authors = ["Symphony Desktop Contributors"]
 repository = "https://github.com/KB01111/OpenAI-Symphony-Rust"
+# Internal crates of the desktop app; never published to crates.io.
+publish = false
 
 [workspace.dependencies]
 tokio = { version = "1.43", features = ["full"] }

@@ -1,0 +1,76 @@
+name: Supply chain
+
+# Dependency policy: RustSec advisories (vulnerable, unsound, yanked, unmaintained direct
+# dependencies), licenses, crate sources (deny.toml), and npm advisories. Runs when dependencies
+# change and weekly, because new advisories are published for unchanged lockfiles.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - Cargo.lock
+      - deny.toml
+      - "**/package.json"
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/workflows/supply-chain.yml
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo deny (advisories, licenses, sources)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_DENY_VERSION: 0.20.2
+      # SHA-256 of cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz (upstream .sha256 file).
+      CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Install cargo-deny (checksum verified)
+        run: |
+          name="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl -sSfL -o "$RUNNER_TEMP/deny.tgz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${name}.tar.gz"
+          echo "${CARGO_DENY_SHA256}  $RUNNER_TEMP/deny.tgz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/deny.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/${name}" >> "$GITHUB_PATH"
+
+      - name: cargo deny check
+        run: cargo-deny --locked check
+
+  pnpm-audit:
+    name: pnpm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+
+      # Moderate and above fail, for runtime and build-time dependencies alike. Remaining low
+      # findings are listed in the output for review (see CHANGELOG/SECURITY.md for accepted ones).
+      - name: pnpm audit
+        run: pnpm audit --audit-level moderate

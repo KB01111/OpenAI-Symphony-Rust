@@ -1,0 +1,40 @@
+# Weekly dependency updates. Minor and patch updates are grouped per ecosystem to keep the PR count
+# manageable; major updates arrive individually because they need review. Security updates are
+# raised immediately regardless of this schedule.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Exact pins: the OpenAPI document and the generated client must not change implicitly.
+      - dependency-name: utoipa
+      - dependency-name: utoipa-axum
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Pinned generator versions keep `pnpm generate:api` deterministic; upgrade deliberately.
+      - dependency-name: "@hey-api/*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      github-actions:
+        patterns: ["*"]
