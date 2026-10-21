@@ -11,7 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@fluentui/react-components": "^9.61.0",
+    "@fluentui/react-components": "^9.74.10",
     "@openai/apps-sdk-ui": "^0.2.2",
     "@symphony/api-client": "workspace:*",
     "@symphony/shared-types": "workspace:*",

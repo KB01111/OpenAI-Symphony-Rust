@@ -51,6 +51,23 @@ describe("SymphonyDesignProvider", () => {
     expect(document.documentElement.dataset.density).toBe("compact");
   });
 
+  it("passes every theme token through Fluent's token validation", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      for (const themeMode of ["light", "dark"] as const) {
+        render(
+          <SymphonyDesignProvider themeMode={themeMode}>
+            <span>child</span>
+          </SymphonyDesignProvider>
+        );
+      }
+      const rejected = warn.mock.calls.map((args) => String(args[0])).filter((m) => m.includes("theme token"));
+      expect(rejected).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("localizes shared components", () => {
     render(
       <SymphonyDesignProvider themeMode="dark" locale="sv">
