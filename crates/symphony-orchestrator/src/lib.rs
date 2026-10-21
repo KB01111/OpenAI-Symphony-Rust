@@ -1942,10 +1942,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
         Ok(())
     }
 
-    /// Dispatch up to `available_slots` due retries, oldest due first.
+    /// Dispatch up to `available_slots` due retries, oldest due first. A retry whose issue is not
+    /// dispatchable right now (e.g. a new unresolved blocker) stays due without starting, exactly
+    /// as the candidate filter would hold the task back, and runs once the issue is eligible.
     async fn process_due_retries(&self, available_slots: usize) -> SymphonyResult<()> {
         let now = Utc::now();
-        let due_task_ids: Vec<String> = {
+        let (due_task_ids, terminal_states) = {
             let mem = self.memory.read().await;
             let mut due: Vec<&RetryEntry> = mem
                 .retry_attempts
@@ -1953,18 +1955,34 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 .filter(|r| r.due_at <= now)
                 .collect();
             due.sort_by_key(|r| r.due_at);
-            due.into_iter()
-                .take(available_slots)
-                .map(|r| r.task_id.clone())
-                .collect()
+            let ids: Vec<String> = due.into_iter().map(|r| r.task_id.clone()).collect();
+            (ids, mem.active_config.terminal_states.clone())
         };
 
+        let mut dispatched = 0;
         for task_id in due_task_ids {
+            if dispatched >= available_slots {
+                break;
+            }
+            match self.get_task(&task_id).await {
+                Ok(task)
+                    if !task.issue.dispatchable || task.issue.is_todo_blocked(&terminal_states) =>
+                {
+                    continue;
+                }
+                Ok(_) => {}
+                // The task is gone: nothing left to retry.
+                Err(_) => {
+                    self.memory.write().await.retry_attempts.remove(&task_id);
+                    continue;
+                }
+            }
             {
                 let mut mem = self.memory.write().await;
                 mem.retry_attempts.remove(&task_id);
             }
             let _ = self.dispatch_task_now(&task_id).await;
+            dispatched += 1;
         }
         Ok(())
     }
@@ -3135,6 +3153,31 @@ mod tests {
             .await
             .retry_attempts
             .contains_key(&task.id));
+    }
+
+    #[tokio::test]
+    async fn test_due_retry_waits_while_its_issue_is_not_dispatchable() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.schedule_retry(&task.id, false, None).await.unwrap();
+        make_retry_due(&orch, &task.id).await;
+        let mut held = orch.get_task(&task.id).await.unwrap();
+        held.issue.dispatchable = false;
+        orch.storage.upsert_task(&held).await.unwrap();
+
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 0);
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+
+        held.issue.dispatchable = true;
+        orch.storage.upsert_task(&held).await.unwrap();
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 1);
     }
 
     #[tokio::test]
