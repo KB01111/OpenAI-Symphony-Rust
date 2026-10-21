@@ -90,11 +90,36 @@ The Axum route table in `crates/symphony-server` is the only source of truth for
 | Layer | What runs it | What it proves |
 | --- | --- | --- |
 | Rust unit/integration tests | `cargo test --workspace` on `windows-latest` (ci.yml) and Linux | Vault (DPAPI on Windows), owner-only DACLs in world-writable directories, HKCU autostart round-trip (`crates/symphony-platform/tests/windows_native.rs`), CLI runtime lifecycle (`crates/symphony-cli/tests/runtime_lifecycle.rs`), remote access (`crates/symphony-server/tests/remote_access.rs`) |
-| Native smoke test | `scripts/windows-native-smoke.ps1` in desktop-native.yml, against the release `symphony-desktop.exe` and `symphony-cli.exe` | Runtime start, DACLs, DPAPI persistence across restart, single instance / single scheduler, crash recovery without orphans, attach mode |
+| Native smoke test | `scripts/windows-native-smoke.ps1` in desktop-native.yml and release.yml, against the release `symphony-desktop.exe` and `symphony-cli.exe` | Runtime start, DACLs, DPAPI persistence across restart, owner-only token-free desktop log, single instance / single scheduler, crash recovery without orphans, attach mode |
 | Browser E2E | Playwright (`pnpm --filter @symphony/desktop e2e`) against the Vite dev server and a real `symphony-cli` | UI flows and contracts; **not** native behaviour |
 | Manual | [`docs/WINDOWS_NATIVE_SMOKE_TEST.md`](./docs/WINDOWS_NATIVE_SMOKE_TEST.md) | Tray, folder picker, notifications, window-state restore, autostart at sign-in, unsigned installer |
 
 A successful Tauri build alone proves compilation, not runtime behaviour; say which layer verified a claim.
+
+---
+
+## Dependencies and Supply Chain
+
+- `cargo deny check` (policy in `deny.toml`) and `pnpm audit --audit-level moderate` run in
+  `.github/workflows/supply-chain.yml`. A new license needs a review before it is added to `deny.toml`;
+  an advisory may only be ignored there with the reason it does not apply and when to remove the entry.
+- Prefer upgrading a parent package. When a parent pins a vulnerable version exactly, add a
+  version-scoped override to `pnpm-workspace.yaml` with a comment naming the advisory and the parent.
+- New workflow steps use actions pinned to a full commit SHA (with the tag as a comment) and the least
+  token permissions they need.
+
+## Releasing
+
+1. Bump the version in every manifest (root `Cargo.toml` `[workspace.package]`, every `package.json`,
+   `apps/desktop/src-tauri/tauri.conf.json`), run `cargo check --workspace` to refresh `Cargo.lock`, and
+   replace `Unreleased` in the `CHANGELOG.md` heading with the release date (`## [X.Y.Z] - YYYY-MM-DD`).
+2. `node scripts/release-version.mjs --tag vX.Y.Z --notes notes.md` must pass; merge the change to `main`.
+3. Tag the merge commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml` re-checks the version,
+   runs the Rust and frontend tests, builds the NSIS installer and CLI, signs them when the
+   `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` secrets are set, runs the native smoke test,
+   writes `SHA256SUMS.txt` and creates a **draft** release with the changelog section as notes.
+4. Run the manual checklist in [`docs/WINDOWS_NATIVE_SMOKE_TEST.md`](./docs/WINDOWS_NATIVE_SMOKE_TEST.md)
+   with the drafted installer, then publish the draft. Never publish assets named `UNSIGNED`.
 
 ---
 
