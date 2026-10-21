@@ -323,3 +323,105 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
+
+    fn running(pid: u32) -> bool {
+        // SAFETY: plain handle queries; the handle is closed before returning.
+        unsafe {
+            let handle = OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            );
+            if handle.is_null() {
+                return false;
+            }
+            let exited = WaitForSingleObject(handle, 0) == WAIT_OBJECT_0;
+            CloseHandle(handle);
+            !exited
+        }
+    }
+
+    /// `powershell.exe` that starts a long-running grandchild (like an agent starting a tool),
+    /// records its pid and keeps running itself.
+    fn wrapper_with_grandchild(pid_file: &Path) -> Command {
+        let mut cmd = Command::new("powershell.exe");
+        cmd.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]).arg(format!(
+            "$p = Start-Process -FilePath ping.exe -ArgumentList '-n','300','127.0.0.1' -WindowStyle Hidden -PassThru; \
+             Set-Content -Path '{}' -Value $p.Id; Start-Sleep -Seconds 300",
+            pid_file.display()
+        ));
+        cmd
+    }
+
+    async fn read_pid(pid_file: &Path) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            if let Ok(raw) = std::fs::read_to_string(pid_file) {
+                if let Ok(pid) = raw.trim().parse() {
+                    return pid;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the wrapper never started its grandchild"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn assert_terminated(pid: u32) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while running(pid) {
+            assert!(
+                Instant::now() < deadline,
+                "process {pid} survived its job object"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_the_tree_kills_grandchildren_through_the_job_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+        let mut cmd = wrapper_with_grandchild(&pid_file);
+        prepare_tree_command(&mut cmd);
+        let child = cmd.spawn().unwrap();
+        let tree = ProcessTree::attach(&child);
+        assert!(
+            tree.job.is_some(),
+            "the child must be assigned to a job object"
+        );
+
+        let grandchild = read_pid(&pid_file).await;
+        assert!(running(grandchild));
+        let wrapper = child.id().unwrap();
+
+        drop(tree);
+        drop(child);
+        assert_terminated(grandchild).await;
+        assert_terminated(wrapper).await;
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_command_takes_its_grandchildren_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+        let mut cmd = wrapper_with_grandchild(&pid_file);
+        cmd.stdout(std::process::Stdio::piped());
+        assert!(output_with_timeout(&mut cmd, Duration::from_secs(15))
+            .await
+            .is_none());
+        assert_terminated(read_pid(&pid_file).await).await;
+    }
+}
