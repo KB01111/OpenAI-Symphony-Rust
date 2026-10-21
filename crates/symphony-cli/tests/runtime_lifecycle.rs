@@ -163,7 +163,10 @@ fn runtime_publishes_private_discovery_coordinates_one_scheduler_and_recovers() 
     assert_eq!(logs.len(), 1, "one daily file: {logs:?}");
     secure_fs::verify_private_file(&logs[0]).expect("the log file must be owner-only");
     let log = std::fs::read_to_string(&logs[0]).unwrap();
-    assert!(log.contains("Symphony"), "the runtime logged to the file: {log}");
+    assert!(
+        log.contains("Symphony"),
+        "the runtime logged to the file: {log}"
+    );
     assert!(!log.contains(&record.token) && !log.contains(&fresh.token));
 }
 

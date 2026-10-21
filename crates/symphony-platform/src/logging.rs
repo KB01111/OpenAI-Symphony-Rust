@@ -157,7 +157,10 @@ impl State {
             secure_fs::verify_private_file(&path)?;
             OpenOptions::new().append(true).open(&path)?
         } else {
-            secure_fs::create_private_file(&path)?
+            // Created owner-only, then reopened for appending like an existing file: another
+            // process (e.g. a second desktop instance before it exits) may append concurrently.
+            drop(secure_fs::create_private_file(&path)?);
+            OpenOptions::new().append(true).open(&path)?
         };
         self.written = file.metadata().map(|m| m.len()).unwrap_or(0);
         self.file = Some(file);
