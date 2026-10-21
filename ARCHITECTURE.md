@@ -22,8 +22,9 @@ Symphony Desktop 2.0 implements the language-independent [OpenAI Symphony Specif
    - **Part A (Stall Detection)**: Checks `elapsed_ms > codex.stall_timeout_ms` since the last agent protocol event (`last_codex_timestamp`) or attempt start, interrupting stalled sessions and scheduling exponential backoff retries.
    - **Part B (Tracker State Reconciliation)**: Queries `fetch_issues_by_ids` for running tasks. Tasks in `terminal_states` stop immediately and clean up their workspace; tasks still in `active_states` update their in-memory snapshot; tasks moved to non-active states stop without destroying worktrees.
 5. **Retry Backoff & Continuation**:
-   - Normal worker completion schedules a continuation check (`attempt = 1`, `1000ms` delay).
-   - Abnormal worker exit schedules exponential backoff: `min(10000 * 2^(attempt - 1), agent.max_retry_backoff_ms)`.
+   - Continuation happens inside an attempt: while the agent ends a turn with `[CONTINUE_TURN]`, the next turn runs on the same thread (up to `agent.max_turns`). A successful attempt then runs hooks and validations and stops in `HumanReview` with its merge-readiness report.
+   - A stalled session (Part A) is retried with exponential backoff: `min(10000 * 2^(attempt - 1), agent.max_retry_backoff_ms)`. A task waiting out its backoff is never picked up as a regular candidate, and a due retry is dispatched only while the scheduler runs and a slot is free (otherwise it stays due for the next tick).
+   - Any other failed attempt ends in `Failed` and waits for an explicit retry (UI, API or `POST /tasks/{id}/retry`), so a broken setup cannot burn tokens in an endless retry loop.
 
 ---
 
@@ -69,8 +70,8 @@ Designed for modern hybrid laptops such as the **ASUS ROG Zephyrus G16** (AMD Ry
 - **Adaptive Concurrency**:
   - **AC Power**: Default up to `2` concurrent coding agents (configurable up to workflow limit).
   - **Battery Power**: Default capped at `1` concurrent coding agent.
-  - **High Memory Pressure (`>85%` RAM used)**: New task dispatches pause automatically until memory pressure subsides.
-  - **Thermal / High CPU Load (`>90%` sustained)**: Concurrency throttles down to `1`.
+  - **High Memory Pressure (`>=88%` RAM used by default, `resource_policy.high_memory_threshold_percent`)**: New task dispatches, retries included, pause automatically until memory pressure subsides.
+  - **Thermal / High CPU Load (`>=92%` by default, `resource_policy.high_cpu_threshold_percent`)**: Concurrency is halved (minimum `1`) while `reduce_on_thermal_throttle` is set.
 
 ---
 

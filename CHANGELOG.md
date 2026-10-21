@@ -37,6 +37,18 @@ First release. Replace "Unreleased" with the release date in the commit that is 
 - Timed-out lifecycle hooks and validation commands terminate their whole process tree (for example
   `node` started by `npm test`), not only the shell.
 
+- A stalled task is retried only after its backoff delay: it was picked up again as a regular
+  queued task on the next scheduler tick. Due retries also respect a paused scheduler, host
+  resource pressure and the concurrency limit; they no longer start beyond it.
+- Token counts and cost estimates are no longer inflated: the runtime totals added every usage
+  report of a session (Codex sends many, each with the running total), and a multi-turn Codex task
+  counted its earlier turns again on every turn. Stream events now carry the session's cumulative
+  usage, turn outcomes that turn's usage, and only growth is counted. The first turn of a resumed
+  Codex thread may still include the thread's earlier usage if the app server reports it.
+- GitHub and Linear issue listings read every page (up to 10 pages: 1,000 GitHub or 500 Linear
+  issues) instead of only the first 100 or 50 issues, so newer issues of a large backlog are
+  dispatched and terminal workspaces are cleaned up.
+
 - Restarting the desktop app or the CLI right after a crash no longer fails or attaches to the dead
   runtime: Windows releases a terminated process's file lock with a delay, and a process that had
   exited could still be reported as running. A lock left by an exited owner is now waited for (up to

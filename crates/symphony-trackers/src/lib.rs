@@ -7,6 +7,13 @@ use std::time::Duration;
 use symphony_core::{
     BlockerRef, ChangedFileSummary, Issue, ReviewCommentEvaluation, SymphonyError, SymphonyResult,
 };
+use tracing::warn;
+
+/// Pages fetched per issue listing before giving up on the rest, so a huge backlog (e.g. every
+/// closed issue of an old repository during startup cleanup) cannot stall a scheduler tick.
+const MAX_ISSUE_PAGES: usize = 10;
+const GITHUB_PAGE_SIZE: usize = 100;
+const LINEAR_PAGE_SIZE: usize = 50;
 
 #[async_trait]
 pub trait TrackerAdapter: Send + Sync {
@@ -570,40 +577,51 @@ impl TrackerAdapter for GitHubTracker {
             _ => "open",
         };
 
-        let url = format!(
-            "{}/repos/{}/issues?state={api_state}&per_page=100&sort=created&direction=asc",
-            self.api_url, self.repo
-        );
+        let mut out = Vec::new();
+        for page in 1..=MAX_ISSUE_PAGES {
+            let url = format!(
+                "{}/repos/{}/issues?state={api_state}&per_page={GITHUB_PAGE_SIZE}&page={page}&sort=created&direction=asc",
+                self.api_url, self.repo
+            );
 
-        let resp = self
-            .apply_headers(self.client.get(&url))
-            .send()
-            .await
-            .map_err(|e| SymphonyError::TrackerError {
-                code: "github_api_request".to_string(),
+            let resp = self
+                .apply_headers(self.client.get(&url))
+                .send()
+                .await
+                .map_err(|e| SymphonyError::TrackerError {
+                    code: "github_api_request".to_string(),
+                    message: e.to_string(),
+                })?;
+
+            if !resp.status().is_success() {
+                return Err(SymphonyError::TrackerError {
+                    code: format!("github_http_{}", resp.status().as_u16()),
+                    message: resp.text().await.unwrap_or_default(),
+                });
+            }
+
+            let items: Vec<Value> = resp.json().await.map_err(|e| SymphonyError::TrackerError {
+                code: "github_payload_error".to_string(),
                 message: e.to_string(),
             })?;
 
-        if !resp.status().is_success() {
-            return Err(SymphonyError::TrackerError {
-                code: format!("github_http_{}", resp.status().as_u16()),
-                message: resp.text().await.unwrap_or_default(),
-            });
-        }
-
-        let items: Vec<Value> = resp.json().await.map_err(|e| SymphonyError::TrackerError {
-            code: "github_payload_error".to_string(),
-            message: e.to_string(),
-        })?;
-
-        let mut out = Vec::new();
-        for item in &items {
-            if let Some(issue) = self.normalize_issue(item) {
-                if !issue.id.is_empty() {
-                    out.push(issue);
+            for item in &items {
+                if let Some(issue) = self.normalize_issue(item) {
+                    if !issue.id.is_empty() {
+                        out.push(issue);
+                    }
                 }
             }
+            // A short page is the last one (pull requests count towards the page size too).
+            if items.len() < GITHUB_PAGE_SIZE {
+                return Ok(out);
+            }
         }
+        warn!(
+            repo = %self.repo,
+            pages = MAX_ISSUE_PAGES,
+            "GitHub issue listing truncated; only the oldest issues are considered"
+        );
         Ok(out)
     }
 
@@ -1047,31 +1065,48 @@ impl TrackerAdapter for LinearTracker {
             return Ok(Vec::new());
         }
 
-        let body = self
-            .graphql(
-                LINEAR_COLLECTION_QUERY,
-                json!({
-                    "projectSlug": self.project_slug,
-                    "stateNames": state_names,
-                    "first": 50,
-                    "relationFirst": 50,
-                    "after": Value::Null
-                }),
-            )
-            .await?;
+        let mut out = Vec::new();
+        let mut after = Value::Null;
+        for _ in 0..MAX_ISSUE_PAGES {
+            let body = self
+                .graphql(
+                    LINEAR_COLLECTION_QUERY,
+                    json!({
+                        "projectSlug": self.project_slug,
+                        "stateNames": state_names,
+                        "first": LINEAR_PAGE_SIZE,
+                        "relationFirst": 50,
+                        "after": after
+                    }),
+                )
+                .await?;
 
-        let nodes = body
-            .get("data")
-            .and_then(|d| d.get("issues"))
-            .and_then(|i| i.get("nodes"))
-            .and_then(|n| n.as_array())
-            .cloned()
-            .unwrap_or_default();
+            let issues = body.pointer("/data/issues");
+            let nodes = issues
+                .and_then(|i| i.get("nodes"))
+                .and_then(|n| n.as_array())
+                .cloned()
+                .unwrap_or_default();
+            out.extend(nodes.iter().filter_map(|n| self.normalize_issue(n)));
 
-        Ok(nodes
-            .iter()
-            .filter_map(|n| self.normalize_issue(n))
-            .collect())
+            let has_next = issues
+                .and_then(|i| i.pointer("/pageInfo/hasNextPage"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let cursor = issues
+                .and_then(|i| i.pointer("/pageInfo/endCursor"))
+                .and_then(|v| v.as_str());
+            match cursor {
+                Some(cursor) if has_next => after = json!(cursor),
+                _ => return Ok(out),
+            }
+        }
+        warn!(
+            project = %self.project_slug,
+            pages = MAX_ISSUE_PAGES,
+            "Linear issue listing truncated; only the first pages are considered"
+        );
+        Ok(out)
     }
 
     async fn fetch_issue_states_by_ids(&self, issue_ids: &[String]) -> SymphonyResult<Vec<Issue>> {

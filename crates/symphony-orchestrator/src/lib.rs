@@ -1735,10 +1735,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         // 1. Reconcile active runs (Part A: Stall detection, Part B: Tracker state refresh)
         self.reconcile_active_runs().await?;
 
-        // 2. Process due retries
-        self.process_due_retries().await?;
-
-        // 3. Check if scheduler is paused or delayed by hardware pressure
+        // 2. Check if scheduler is paused or delayed by hardware pressure. Due retries are
+        // dispatches too, so they wait here like new candidates (SPEC.md Section 8.4).
         if self.is_scheduler_paused().await {
             return Ok(());
         }
@@ -1751,6 +1749,13 @@ Please implement the requested changes cleanly in the current Git workspace, run
             );
             return Ok(());
         }
+
+        // 3. Process due retries first; those without a free slot stay due for the next tick.
+        let running_count = self.memory.read().await.running.len() as u32;
+        self.process_due_retries(
+            hw.effective_max_concurrency.saturating_sub(running_count) as usize
+        )
+        .await?;
 
         let running_count = self.memory.read().await.running.len() as u32;
         if running_count >= hw.effective_max_concurrency {
@@ -1788,6 +1793,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     && !mem.claimed_issue_ids.contains(&task.issue.id)
                     && !mem.completed_issue_ids.contains(&task.issue.id)
                     && !mem.running.contains_key(&task.id)
+                    // A task waiting out its retry backoff is `Queued` too; the retry dispatches it.
+                    && !mem.retry_attempts.contains_key(&task.id)
                 {
                     eligible_tasks.push(task);
                 }
@@ -1909,13 +1916,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
         Ok(())
     }
 
-    async fn process_due_retries(&self) -> SymphonyResult<()> {
+    /// Dispatch up to `available_slots` due retries, oldest due first.
+    async fn process_due_retries(&self, available_slots: usize) -> SymphonyResult<()> {
         let now = Utc::now();
         let due_task_ids: Vec<String> = {
             let mem = self.memory.read().await;
-            mem.retry_attempts
+            let mut due: Vec<&RetryEntry> = mem
+                .retry_attempts
                 .values()
                 .filter(|r| r.due_at <= now)
+                .collect();
+            due.sort_by_key(|r| r.due_at);
+            due.into_iter()
+                .take(available_slots)
                 .map(|r| r.task_id.clone())
                 .collect()
         };
@@ -2261,9 +2274,26 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let event_task_id = task.id.clone();
         let event_identifier = task.issue.identifier.clone();
         let event_provider = task.provider;
+        let event_model = task.model.clone();
+        // Tokens of the task's earlier attempts, so the live session shows the task's total.
+        let usage_before_attempt = TokenUsage {
+            input_tokens: task.input_tokens,
+            output_tokens: task.output_tokens,
+            total_tokens: task.total_tokens,
+        };
 
         tokio::spawn(async move {
-            while let Some(ev) = stream_rx.recv().await {
+            // Session usage already credited to the runtime totals. Events report cumulative
+            // session usage (possibly the same value many times), so only the growth counts.
+            let mut credited = TokenUsage::default();
+            while let Some(mut ev) = stream_rx.recv().await {
+                if let Some(session_usage) = ev.usage {
+                    orch_events
+                        .credit_live_usage(session_usage.since(&credited), event_model.as_deref())
+                        .await;
+                    credited = credited.max(&session_usage);
+                    ev.usage = Some(usage_before_attempt.plus(&session_usage));
+                }
                 orch_events
                     .handle_agent_stream_event(
                         &event_task_id,
@@ -2665,6 +2695,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
         .await;
     }
 
+    /// Add tokens consumed since the last report to the runtime totals.
+    async fn credit_live_usage(&self, delta: TokenUsage, model: Option<&str>) {
+        if delta == TokenUsage::default() {
+            return;
+        }
+        let mut mem = self.memory.write().await;
+        let totals = &mut mem.codex_totals;
+        totals.input_tokens = totals.input_tokens.saturating_add(delta.input_tokens);
+        totals.output_tokens = totals.output_tokens.saturating_add(delta.output_tokens);
+        totals.total_tokens = totals.total_tokens.saturating_add(delta.total_tokens);
+        totals.estimated_cost_usd += delta.estimate_cost_usd(model);
+    }
+
     async fn handle_agent_stream_event(
         &self,
         task_id: &str,
@@ -2691,21 +2734,6 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     handle.session.output_tokens = usage.output_tokens;
                     handle.session.total_tokens = usage.total_tokens;
                 }
-            }
-            if let Some(ref usage) = ev.usage {
-                mem.codex_totals.input_tokens = mem
-                    .codex_totals
-                    .input_tokens
-                    .saturating_add(usage.input_tokens);
-                mem.codex_totals.output_tokens = mem
-                    .codex_totals
-                    .output_tokens
-                    .saturating_add(usage.output_tokens);
-                mem.codex_totals.total_tokens = mem
-                    .codex_totals
-                    .total_tokens
-                    .saturating_add(usage.total_tokens);
-                mem.codex_totals.estimated_cost_usd += usage.estimate_cost_usd(None);
             }
             if let Some(ref rl) = ev.rate_limits {
                 mem.latest_rate_limits = Some(rl.clone());
@@ -2857,6 +2885,23 @@ mod tests {
         assert_eq!(finished.status, TaskStatus::HumanReview);
         assert!(finished.total_tokens > 0);
 
+        // The live runtime totals count each token once, like the task (and so like the totals
+        // rebuilt from the tasks after a restart). Stream events are applied asynchronously.
+        let mut live_total = 0;
+        for _ in 0..100 {
+            live_total = orch
+                .state_snapshot()
+                .await
+                .unwrap()
+                .codex_totals
+                .total_tokens;
+            if live_total == finished.total_tokens {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(live_total, finished.total_tokens);
+
         let detail = orch.issue_detail("SYM-1").await.unwrap();
         assert_eq!(detail.validation_results.len(), 1);
         assert!(detail.validation_results[0].passed);
@@ -2873,6 +2918,164 @@ mod tests {
         assert!(approved_pr.human_approved);
         let completed_task = orch.get_task(&task.id).await.unwrap();
         assert_eq!(completed_task.status, TaskStatus::Completed);
+    }
+
+    /// An orchestrator with one manual project whose hardware policy always allows exactly one
+    /// concurrent agent, independent of the host's load, and one task that is not yet queued.
+    async fn single_slot_orchestrator(temp: &TempDir) -> (SymphonyOrchestrator, Task) {
+        let storage = Storage::connect_in_memory().await.unwrap();
+        let mut settings = storage.get_settings().await.unwrap();
+        settings.resource_policy = symphony_core::ResourcePolicy {
+            max_concurrent_on_ac: 1,
+            max_concurrent_on_battery: 1,
+            high_memory_threshold_percent: 101.0,
+            high_cpu_threshold_percent: 101.0,
+            reduce_on_thermal_throttle: false,
+        };
+        storage.save_settings(&settings).await.unwrap();
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        let orch = SymphonyOrchestrator::new(storage, None, secrets)
+            .await
+            .unwrap();
+        orch.create_project(Project {
+            id: "proj-retry".into(),
+            name: "Retry Repo".into(),
+            repo_path: temp.path().join("repo").to_string_lossy().to_string(),
+            default_branch: "main".into(),
+            workspace_root: temp.path().join("workspaces").to_string_lossy().to_string(),
+            workflow_path: None,
+            preferred_provider: ProviderKind::Simulated,
+            preferred_model: None,
+            tracker_kind: "manual".into(),
+            github_repo: None,
+            linear_project_slug: None,
+            required_labels: Vec::new(),
+            auto_dispatch: false,
+            max_concurrent_agents: 1,
+            validation_commands: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+        let task = orch
+            .create_manual_task(
+                "proj-retry".into(),
+                Some("SYM-RETRY".into()),
+                "Retry scheduling".into(),
+                None,
+                Some(1),
+                Some(ProviderKind::Simulated),
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .unwrap();
+        (orch, task)
+    }
+
+    async fn make_retry_due(orch: &SymphonyOrchestrator, task_id: &str) {
+        let mut mem = orch.memory.write().await;
+        mem.retry_attempts.get_mut(task_id).unwrap().due_at =
+            Utc::now() - chrono::Duration::seconds(1);
+    }
+
+    #[tokio::test]
+    async fn test_retry_backoff_is_not_bypassed_by_candidate_selection() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.schedule_retry(&task.id, false, Some("Stall timeout exceeded".into()))
+            .await
+            .unwrap();
+
+        // The task is `Queued` but still inside its backoff window: no tick may start it.
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        let waiting = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(waiting.status, TaskStatus::Queued);
+        assert_eq!(waiting.attempt_count, 0);
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+
+        make_retry_due(&orch, &task.id).await;
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 1);
+        assert!(!orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+    }
+
+    #[tokio::test]
+    async fn test_due_retry_waits_for_resumed_scheduler_and_free_slot() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.schedule_retry(&task.id, false, None).await.unwrap();
+        make_retry_due(&orch, &task.id).await;
+
+        orch.set_scheduler_paused(true).await.unwrap();
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 0);
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+        orch.set_scheduler_paused(false).await.unwrap();
+
+        // Occupy the only slot with another run: the due retry stays due instead of exceeding it.
+        let (cancel_tx, _cancel_rx) = oneshot::channel::<String>();
+        let busy = LiveSession {
+            session_id: "busy".into(),
+            thread_id: String::new(),
+            turn_id: "turn-1".into(),
+            task_id: "busy-task".into(),
+            issue_id: "busy-issue".into(),
+            issue_identifier: "SYM-BUSY".into(),
+            issue_title: "Occupies the slot".into(),
+            project_id: "proj-retry".into(),
+            provider: ProviderKind::Simulated,
+            model: None,
+            workspace_path: String::new(),
+            branch_name: String::new(),
+            pid: None,
+            phase: RunAttemptPhase::StreamingTurn,
+            attempt_number: 1,
+            turn_count: 1,
+            started_at: Utc::now(),
+            last_event: None,
+            last_message: None,
+            last_event_at: Some(Utc::now()),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+        };
+        orch.memory.write().await.running.insert(
+            "busy-task".into(),
+            ActiveWorkerHandle {
+                session: busy,
+                cancel_tx,
+            },
+        );
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 0);
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+
+        orch.memory.write().await.running.remove("busy-task");
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 1);
     }
 
     #[tokio::test]
