@@ -1,0 +1,389 @@
+//! Process lifecycle of the one-shot CLI drivers (Claude Code, OpenCode), exercised with fake agent
+//! executables: an abandoned (cancelled or stalled) turn must not leave the agent or the tools it
+//! started running in the workspace, a chatty stderr must not block the agent, and the turn
+//! timeout applies.
+#![cfg(unix)]
+
+use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde_json::json;
+use symphony_agents::{start_agent_session, AgentLaunchConfig, AgentStreamEvent, AutoApprovalGate};
+use symphony_core::domain::ProviderKind;
+use symphony_core::error::SymphonyError;
+use tokio::sync::mpsc;
+
+/// The executed script is written by a separate `cp` process: a file this multi-threaded test
+/// process writes itself can still be open for writing in a child that another test is forking at
+/// that moment, and executing it then fails with ETXTBSY ("Text file busy").
+fn fake_agent(dir: &Path, body: &str) -> PathBuf {
+    let source = dir.join("fake-agent.src");
+    std::fs::write(&source, format!("#!/bin/sh\n{body}\n")).unwrap();
+    let path = dir.join("fake-agent.sh");
+    let copied = std::process::Command::new("cp")
+        .arg(&source)
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(copied.success(), "cp failed: {copied}");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+fn config(
+    provider: ProviderKind,
+    command: &Path,
+    workspace: &Path,
+    turn_timeout_ms: u64,
+) -> AgentLaunchConfig {
+    AgentLaunchConfig {
+        provider,
+        command: command.display().to_string(),
+        model: None,
+        workspace_path: workspace.to_path_buf(),
+        task_id: "task-1".into(),
+        issue_identifier: "ISSUE-1".into(),
+        issue_title: "Lifecycle".into(),
+        approval_policy: json!("never"),
+        thread_sandbox: json!("workspace-write"),
+        turn_sandbox_policy: None,
+        read_timeout_ms: 5_000,
+        turn_timeout_ms,
+        extra_env: HashMap::new(),
+        dynamic_tools: Vec::new(),
+        require_human_approval_for_requests: false,
+    }
+}
+
+/// Alive and not a zombie (a killed process stays a zombie until its parent reaps it). Uses
+/// `/proc` where it exists and `ps` elsewhere; when neither can tell, the process counts as
+/// running, so a termination assertion can never pass vacuously.
+fn running(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks for existence.
+    if unsafe { libc::kill(pid, 0) } != 0 {
+        return false;
+    }
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        return !stat.contains(") Z ");
+    }
+    match std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+    {
+        Ok(out) => {
+            let state = String::from_utf8_lossy(&out.stdout);
+            let state = state.trim();
+            !state.is_empty() && !state.starts_with('Z')
+        }
+        Err(_) => true,
+    }
+}
+
+async fn read_pid(path: &Path) -> i32 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            if let Ok(pid) = raw.trim().parse() {
+                return pid;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the fake agent never started its tool"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn assert_terminated(pid: i32) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while running(pid) {
+        assert!(Instant::now() < deadline, "process {pid} is still running");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn abandoned_turn_kills_the_agent_tree(provider: ProviderKind) {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("ws");
+    std::fs::create_dir(&workspace).unwrap();
+    let pid_file = dir.path().join("tool.pid");
+    // The "agent" starts a long-running tool, reports progress and keeps working.
+    let agent = fake_agent(
+        dir.path(),
+        &format!(
+            "sleep 300 &\necho $! > '{}'\necho '{{\"type\":\"assistant\",\"session_id\":\"s-1\"}}'\nsleep 300",
+            pid_file.display()
+        ),
+    );
+    let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(64);
+    let mut session = start_agent_session(
+        config(provider, &agent, &workspace, 600_000),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+
+    // Same shape as the orchestrator: the turn future is dropped when cancellation wins.
+    let tool_pid = {
+        let turn = session.run_turn("work", tx);
+        tokio::pin!(turn);
+        let tool_pid = tokio::select! {
+            result = &mut turn => panic!("the turn must still be running: {result:?}"),
+            pid = read_pid(&pid_file) => pid,
+        };
+        // Wait until the agent produced output, so it is definitely mid-turn.
+        let _ = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        assert!(running(tool_pid));
+        tool_pid
+    };
+    let agent_pid = session.pid().expect("agent pid") as i32;
+    session.cancel().await.unwrap();
+
+    assert_terminated(tool_pid).await;
+    assert_terminated(agent_pid).await;
+}
+
+#[tokio::test]
+async fn cancelled_claude_code_turn_kills_the_agent_and_its_tools() {
+    abandoned_turn_kills_the_agent_tree(ProviderKind::ClaudeCode).await;
+}
+
+#[tokio::test]
+async fn cancelled_opencode_turn_kills_the_agent_and_its_tools() {
+    abandoned_turn_kills_the_agent_tree(ProviderKind::OpenCode).await;
+}
+
+#[tokio::test]
+async fn a_chatty_stderr_does_not_block_the_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    // ~2 MiB on stderr: far beyond a pipe buffer, so an undrained pipe would block the agent.
+    let agent = fake_agent(
+        dir.path(),
+        "i=0; while [ $i -lt 2048 ]; do head -c 1023 /dev/zero | tr '\\0' x >&2; echo >&2; i=$((i+1)); done\necho '{\"type\":\"result\",\"result\":\"done\",\"session_id\":\"s-2\"}'",
+    );
+    let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(16);
+    // Keep the event channel moving, like the orchestrator's event pump.
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut session = start_agent_session(
+        config(ProviderKind::ClaudeCode, &agent, dir.path(), 60_000),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(30), session.run_turn("work", tx))
+        .await
+        .expect("the agent must not block on a full stderr pipe")
+        .unwrap();
+    assert!(outcome.succeeded);
+    assert_eq!(outcome.assistant_messages, vec!["done".to_string()]);
+}
+
+#[tokio::test]
+async fn the_turn_timeout_applies_to_cli_agents() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = fake_agent(dir.path(), "sleep 300");
+    let (tx, _rx) = mpsc::channel::<AgentStreamEvent>(16);
+    let mut session = start_agent_session(
+        // The drivers enforce a 5 s floor.
+        config(ProviderKind::OpenCode, &agent, dir.path(), 1),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let started = Instant::now();
+    let err = session.run_turn("work", tx).await.unwrap_err();
+    assert!(matches!(err, SymphonyError::TurnTimeout(1)), "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(20));
+    let agent_pid = session.pid().expect("agent pid") as i32;
+    assert_terminated(agent_pid).await;
+}
+
+#[tokio::test]
+async fn a_stalled_event_consumer_cannot_extend_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    // Far more events than the channel holds, then the agent keeps running.
+    let agent = fake_agent(
+        dir.path(),
+        "i=0; while [ $i -lt 200 ]; do echo '{\"type\":\"assistant\",\"session_id\":\"s-3\"}'; i=$((i+1)); done\nsleep 300",
+    );
+    // Nobody reads `_rx`: every send blocks once the 4 slots are full.
+    let (tx, _rx) = mpsc::channel::<AgentStreamEvent>(4);
+    let mut session = start_agent_session(
+        config(ProviderKind::ClaudeCode, &agent, dir.path(), 1),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let err = tokio::time::timeout(Duration::from_secs(30), session.run_turn("work", tx))
+        .await
+        .expect("a blocked event send must not outlive the turn timeout")
+        .unwrap_err();
+    assert!(matches!(err, SymphonyError::TurnTimeout(1)), "{err:?}");
+    assert_terminated(session.pid().expect("agent pid") as i32).await;
+}
+
+#[tokio::test]
+async fn stderr_keeps_draining_while_the_event_consumer_is_stalled() {
+    let dir = tempfile::tempdir().unwrap();
+    // ~2 MiB of stderr and no stdout events: only stderr could block it.
+    let agent = fake_agent(
+        dir.path(),
+        "i=0; while [ $i -lt 2048 ]; do head -c 1023 /dev/zero | tr '\\0' x >&2; echo >&2; i=$((i+1)); done\nexit 0",
+    );
+    // Nobody reads `_rx`: stderr events fill the 4 slots and the rest must be dropped, not awaited.
+    let (tx, _rx) = mpsc::channel::<AgentStreamEvent>(4);
+    let mut session = start_agent_session(
+        config(ProviderKind::OpenCode, &agent, dir.path(), 600_000),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(30), session.run_turn("work", tx))
+        .await
+        .expect("a stalled event pump must not stop stderr from draining")
+        .unwrap();
+    assert!(outcome.succeeded);
+}
+
+#[tokio::test]
+async fn invalid_utf8_on_stderr_does_not_stop_the_draining() {
+    let dir = tempfile::tempdir().unwrap();
+    // A non-UTF-8 line first; a reader that gave up there would kill the agent with SIGPIPE.
+    let agent = fake_agent(
+        dir.path(),
+        "printf '\\377\\376 not utf-8\\n' >&2\ni=0; while [ $i -lt 256 ]; do head -c 1023 /dev/zero | tr '\\0' x >&2; echo >&2; i=$((i+1)); done\nexit 0",
+    );
+    let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(16);
+    let events = tokio::spawn(async move {
+        let mut stderr_lines = 0;
+        while let Some(event) = rx.recv().await {
+            if event.event_type == "agent/stderr" {
+                stderr_lines += 1;
+            }
+        }
+        stderr_lines
+    });
+    let mut session = start_agent_session(
+        config(ProviderKind::ClaudeCode, &agent, dir.path(), 600_000),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(30), session.run_turn("work", tx))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        outcome.succeeded,
+        "the agent must not die of a closed stderr pipe"
+    );
+    drop(session);
+    assert!(
+        events.await.unwrap() > 1,
+        "lines after the invalid one are still forwarded"
+    );
+}
+
+/// Runs a fake agent that writes `stderr_script` and returns the forwarded stderr messages.
+async fn stderr_messages(stderr_script: &str) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = fake_agent(dir.path(), &format!("{stderr_script}\nexit 0"));
+    let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(1024);
+    let events = tokio::spawn(async move {
+        let mut messages = Vec::new();
+        while let Some(event) = rx.recv().await {
+            if event.event_type == "agent/stderr" {
+                messages.push(event.message.unwrap_or_default());
+            }
+        }
+        messages
+    });
+    let mut session = start_agent_session(
+        config(ProviderKind::ClaudeCode, &agent, dir.path(), 600_000),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(30), session.run_turn("work", tx))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(outcome.succeeded);
+    drop(session);
+    events.await.unwrap()
+}
+
+#[tokio::test]
+async fn long_stderr_lines_split_only_at_whitespace() {
+    // ~200 KiB of words without a newline, with a multi-byte character and a secret in every word.
+    let secret = "ghp_".to_string() + &"Q".repeat(36);
+    let messages = stderr_messages(&format!(
+        "i=0; while [ $i -lt 4000 ]; do printf 'é-%s-tail ' '{secret}' >&2; i=$((i+1)); done"
+    ))
+    .await;
+    assert!(
+        messages.len() >= 8,
+        "forwarded in pieces: {}",
+        messages.len()
+    );
+    for message in &messages {
+        assert!(
+            message.len() <= 16 * 1024 + 64,
+            "piece of {} bytes",
+            message.len()
+        );
+        assert!(!message.contains('\u{fffd}'), "no character is split");
+        assert!(
+            !message.contains("ghp_"),
+            "no secret survives, whole or in part"
+        );
+    }
+    assert_eq!(
+        messages
+            .iter()
+            .map(|m| m.matches("é-[REDACTED]-tail").count())
+            .sum::<usize>(),
+        4000
+    );
+}
+
+#[tokio::test]
+async fn unbroken_stderr_is_bounded_and_never_cut() {
+    // 256 KiB without whitespace: one notice after 64 KiB, never split; the rest of that line is
+    // dropped too (it could hold the tail of a secret cut by the omission). The next line is kept.
+    let messages =
+        stderr_messages("{ head -c 262144 /dev/zero | tr '\\0' x; printf '\\nnext line\\n'; } >&2")
+            .await;
+    assert_eq!(
+        messages,
+        [
+            "[agent stderr line omitted: 65536 bytes without whitespace]",
+            "next line"
+        ]
+    );
+}

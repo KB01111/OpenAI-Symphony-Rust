@@ -3,3 +3,12 @@ packages:
   - "packages/*"
 allowBuilds:
   esbuild: true
+# Security overrides for exact transitive pins whose parents have no fixed release yet. Each one is
+# scoped to the vulnerable versions, so it disappears as soon as a parent moves on; remove it then.
+# - lodash: @openai/apps-sdk-ui@0.2.2 pins 4.17.21 (GHSA-xxjr-mmjv-4gpg and later advisories; fixed in
+#   4.18.x). The SDK only imports `lodash/clamp` and `lodash/round`.
+# - js-yaml: @hey-api/json-schema-ref-parser pins 4.2.0 (quadratic CPU on crafted YAML; fixed in
+#   4.3.2). Build-time only; `pnpm generate:api` output is unchanged.
+overrides:
+  "lodash@<4.17.24": "^4.18.1"
+  "js-yaml@>=4.0.0 <4.3.2": "^4.3.2"

@@ -910,7 +910,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         if is_directory {
             // Resolve the checkout root: a subdirectory of a repository is inside the work tree,
             // but worktrees are created from the root (which holds `.git`).
-            let out = tokio::process::Command::new("git")
+            let out = symphony_workspaces::git_command()
                 .arg("-C")
                 .arg(&path)
                 .args(["rev-parse", "--show-toplevel"])
@@ -924,7 +924,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 }
             }
             if is_git_repository {
-                if let Ok(o) = tokio::process::Command::new("git")
+                if let Ok(o) = symphony_workspaces::git_command()
                     .arg("-C")
                     .arg(&path)
                     .args(["symbolic-ref", "--short", "HEAD"])

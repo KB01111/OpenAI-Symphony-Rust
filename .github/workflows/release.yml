@@ -1,0 +1,217 @@
+name: Release (Windows)
+
+# Builds a release from a version tag (`v2.1.0`) and publishes it as a DRAFT GitHub release, so a
+# maintainer reviews the notes and assets before anything is public. Re-run it for an existing tag
+# with "Run workflow".
+#
+# Optional Authenticode signing: set the repository secrets WINDOWS_CERTIFICATE (base64 of a .pfx)
+# and WINDOWS_CERTIFICATE_PASSWORD. Without them the assets are built, tested and attached with
+# "UNSIGNED" in their names; unsigned builds trigger SmartScreen and are for verification only.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build (e.g. v2.1.0)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Line tables for release builds: on Windows they go into the PDB (the .exe is unchanged), which
+  # symbolizes panic backtraces from user log files.
+  CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  windows-release:
+    name: Build, verify and draft the release
+    runs-on: windows-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write # create/update the draft release
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      # No build caches in this job: a release must not restore anything written by other runs.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          # setup-node v5 enables the pnpm cache automatically ("packageManager"); not for releases.
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check the tag, the manifests and the dated CHANGELOG section agree
+        shell: pwsh
+        run: |
+          $version = node scripts/release-version.mjs --tag $env:RELEASE_TAG --notes "$env:RUNNER_TEMP/release-notes.md"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Rust tests (including Windows-only native tests)
+        run: cargo test --workspace --locked
+
+      - name: Frontend tests
+        run: pnpm test
+
+      - name: Prepare Authenticode signing (optional)
+        id: signing
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE) {
+            Write-Host "::warning::WINDOWS_CERTIFICATE is not set: building UNSIGNED release assets."
+            "signed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx -Force
+          if (-not $cert.HasPrivateKey) { throw 'the signing certificate has no private key' }
+          # Tauri signs the app executable and the installer with the imported certificate.
+          $config = @{ bundle = @{ windows = @{
+            certificateThumbprint = $cert.Thumbprint
+            digestAlgorithm = 'sha256'
+            timestampUrl = 'http://timestamp.digicert.com'
+          } } } | ConvertTo-Json -Depth 5
+          $configPath = Join-Path $env:RUNNER_TEMP 'tauri.signing.json'
+          Set-Content -Path $configPath -Value $config -Encoding utf8
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe not found' }
+          "signed=true" >> $env:GITHUB_OUTPUT
+          "thumbprint=$($cert.Thumbprint)" >> $env:GITHUB_OUTPUT
+          "config=$configPath" >> $env:GITHUB_OUTPUT
+          "signtool=$($signtool.FullName)" >> $env:GITHUB_OUTPUT
+
+      # Step outputs reach scripts through the environment, never through template expansion.
+      - name: Build the desktop app and NSIS installer
+        shell: pwsh
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+          SIGNING_CONFIG: ${{ steps.signing.outputs.config }}
+        run: |
+          $extra = @()
+          if ($env:SIGNED -eq 'true') { $extra = @('--config', $env:SIGNING_CONFIG) }
+          pnpm --filter @symphony/desktop tauri build --bundles nsis @extra
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build the CLI
+        run: cargo build -p symphony-cli --release --locked
+
+      - name: Sign the CLI
+        if: steps.signing.outputs.signed == 'true'
+        shell: pwsh
+        env:
+          SIGNTOOL: ${{ steps.signing.outputs.signtool }}
+          THUMBPRINT: ${{ steps.signing.outputs.thumbprint }}
+        run: |
+          & $env:SIGNTOOL sign /sha1 $env:THUMBPRINT /fd sha256 /tr http://timestamp.digicert.com /td sha256 target/release/symphony-cli.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Native Windows runtime smoke test (release binaries)
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/windows-native-smoke.ps1 -DesktopExe target/release/symphony-desktop.exe -CliExe target/release/symphony-cli.exe
+
+      - name: Stage assets and checksums
+        shell: pwsh
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+        run: |
+          $signed = $env:SIGNED -eq 'true'
+          $suffix = if ($signed) { '' } else { '-UNSIGNED' }
+          $installer = Get-ChildItem target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer not found' }
+          $out = New-Item -ItemType Directory -Force -Path dist-release
+          Copy-Item $installer.FullName (Join-Path $out "Symphony-Desktop_$($env:RELEASE_VERSION)_x64-setup$suffix.exe")
+          Copy-Item target/release/symphony-cli.exe (Join-Path $out "symphony-cli_$($env:RELEASE_VERSION)_windows-x64$suffix.exe")
+          foreach ($file in Get-ChildItem $out -Filter '*.exe') {
+            if ($signed) {
+              $sig = Get-AuthenticodeSignature $file.FullName
+              if ($sig.Status -ne 'Valid') { throw "$($file.Name): signature status $($sig.Status)" }
+            }
+          }
+          Get-ChildItem $out -Filter '*.exe' | Sort-Object Name | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          } | Set-Content -Path (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
+          Get-Content (Join-Path $out 'SHA256SUMS.txt')
+          if (-not $signed) {
+            $notes = Get-Content "$env:RUNNER_TEMP/release-notes.md" -Raw
+            $warning = "> **Unsigned build.** These assets are not Authenticode-signed and trigger SmartScreen. Do not publish this draft; configure signing and re-run the release workflow.`n`n"
+            Set-Content -Path "$env:RUNNER_TEMP/release-notes.md" -Value ($warning + $notes) -Encoding utf8
+          }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: symphony-release-${{ env.RELEASE_TAG }}
+          path: dist-release/*
+          if-no-files-found: error
+          retention-days: 30
+
+      # Not published: PDBs let maintainers symbolize panic backtraces from user log files.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: symphony-release-${{ env.RELEASE_TAG }}-symbols
+          path: target/release/*.pdb
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create or update the draft GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = Get-ChildItem dist-release | ForEach-Object { $_.FullName }
+          # $LASTEXITCODE only holds the last native command: check every gh call that matters.
+          function Invoke-Gh { gh @args; if ($LASTEXITCODE -ne 0) { throw "gh $($args -join ' ') failed ($LASTEXITCODE)" } }
+          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            $draft = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json isDraft --jq .isDraft
+            if ($LASTEXITCODE -ne 0) { throw 'could not read the existing release' }
+            if ($draft -ne 'true') { throw "release $env:RELEASE_TAG is already published; assets were not replaced" }
+            Invoke-Gh release upload $env:RELEASE_TAG @assets --clobber --repo $env:GITHUB_REPOSITORY
+            # --clobber only replaces assets of the same name: after the upload succeeded (a failed
+            # upload leaves the previous set intact), remove everything this run does not
+            # produce (e.g. the -UNSIGNED files of an earlier unsigned run of a now signed release).
+            $staged = Get-ChildItem dist-release | ForEach-Object Name
+            $existing = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json assets --jq '.assets[].name'
+            if ($LASTEXITCODE -ne 0) { throw 'could not list the existing release assets' }
+            foreach ($name in @($existing)) {
+              if ($name -and $staged -notcontains $name) {
+                Invoke-Gh release delete-asset $env:RELEASE_TAG $name --yes --repo $env:GITHUB_REPOSITORY
+              }
+            }
+            Invoke-Gh release edit $env:RELEASE_TAG --notes-file "$env:RUNNER_TEMP/release-notes.md" --repo $env:GITHUB_REPOSITORY
+          } else {
+            $pre = if ($env:RELEASE_VERSION -match '-') { @('--prerelease') } else { @() }
+            Invoke-Gh release create $env:RELEASE_TAG @assets --draft --verify-tag @pre `
+              --title "Symphony Desktop $env:RELEASE_VERSION" `
+              --notes-file "$env:RUNNER_TEMP/release-notes.md" --repo $env:GITHUB_REPOSITORY
+          }
+
+      - name: Remove the signing certificate
+        if: always() && steps.signing.outputs.thumbprint != ''
+        shell: pwsh
+        env:
+          THUMBPRINT: ${{ steps.signing.outputs.thumbprint }}
+        run: Remove-Item "Cert:\CurrentUser\My\$env:THUMBPRINT" -Force -ErrorAction SilentlyContinue

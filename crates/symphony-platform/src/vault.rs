@@ -119,6 +119,11 @@ pub struct SecretStore {
     cache: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
+/// Owner of a vault value in the redaction registry.
+fn vault_owner(key: &str) -> String {
+    format!("vault:{key}")
+}
+
 impl SecretStore {
     /// Open (or create) the vault in `app_data_dir`, migrating a legacy vault if necessary.
     ///
@@ -151,6 +156,9 @@ impl SecretStore {
             Ok(envelope) => store.decode_envelope(&envelope)?,
             Err(_) => store.migrate_legacy(&raw)?,
         };
+        for (key, value) in &entries {
+            symphony_core::redaction::register_secret(&vault_owner(key), value);
+        }
         *store.cache.lock().expect("secret cache mutex") = entries;
         Ok(store)
     }
@@ -322,9 +330,19 @@ impl SecretStore {
         let removed = if value.trim().is_empty() {
             next.remove(key)
         } else {
+            // Masked before it is persisted: it is a secret whether or not storing it succeeds.
+            symphony_core::redaction::register_secret(&vault_owner(key), value);
             next.insert(key.to_string(), value.trim().to_string())
         };
         let result = self.persist(&next);
+        // The value this key no longer holds (the replaced one on success, the new one on failure)
+        // is retired, not forgotten: until it is revoked at its provider it can still be valid, and
+        // agent output may still contain it. A value another source still holds stays in use.
+        let stored = if result.is_ok() { &next } else { &*guard };
+        match stored.get(key) {
+            Some(current) => symphony_core::redaction::register_secret(&vault_owner(key), current),
+            None => symphony_core::redaction::release_secret(&vault_owner(key)),
+        }
         // Zeroize the copy that is being discarded: `next` on failure, the old map on success.
         let mut discarded = match result {
             Ok(()) => std::mem::replace(&mut *guard, next),
@@ -348,8 +366,14 @@ impl SecretStore {
     }
 
     pub fn get_secret(&self, key: &str) -> Option<String> {
-        self.get_vault_secret(key)
-            .or_else(|| std::env::var(key).ok().filter(|s| !s.is_empty()))
+        self.get_vault_secret(key).or_else(|| {
+            let value = std::env::var(key).ok().filter(|s| !s.is_empty());
+            // An environment credential is as secret as a vault one: mask it in logs too.
+            if let Some(value) = &value {
+                symphony_core::redaction::register_secret(&format!("env:{key}"), value);
+            }
+            value
+        })
     }
 
     pub fn delete_secret(&self, key: &str) -> SymphonyResult<()> {
@@ -649,6 +673,51 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn replaced_and_deleted_credentials_stay_masked() {
+        use symphony_core::redaction::redact_secrets;
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::new(dir.path()).unwrap();
+        let (old, new) = ("vault-old-Yt2Qp9", "vault-new-Lm4Zx7");
+        store.set_secret("ACME_KEY", old).unwrap();
+        store.set_secret("ACME_KEY", new).unwrap();
+        assert_eq!(
+            redact_secrets(old, &[]),
+            "[REDACTED]",
+            "a rotated value may still be valid"
+        );
+        assert_eq!(redact_secrets(new, &[]), "[REDACTED]");
+        store.delete_secret("ACME_KEY").unwrap();
+        assert_eq!(redact_secrets(new, &[]), "[REDACTED]");
+    }
+
+    #[test]
+    fn a_value_still_stored_under_another_key_stays_masked() {
+        use symphony_core::redaction::{forget_secret, redact_secrets};
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::new(dir.path()).unwrap();
+        let (shared, only) = ("shared-value-Hq8Vb2", "revoked-only-Tz5Kd1");
+        store.set_secret("REMOTE", shared).unwrap();
+        store.set_secret("PROVIDER_KEY", shared).unwrap();
+        store.set_secret("OTHER", only).unwrap();
+        // E.g. a revoked remote token whose value is also a provider credential.
+        store.delete_secret("REMOTE").unwrap();
+        forget_secret(shared);
+        assert_eq!(
+            redact_secrets(shared, &[]),
+            "[REDACTED]",
+            "still a provider key"
+        );
+        store.delete_secret("OTHER").unwrap();
+        assert_eq!(
+            redact_secrets(only, &[]),
+            "[REDACTED]",
+            "deleted: retired, still masked"
+        );
+        forget_secret(only);
+        assert_eq!(redact_secrets(only, &[]), only);
     }
 
     #[test]

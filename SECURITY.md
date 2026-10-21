@@ -152,3 +152,42 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   (`crates/symphony-platform/src/secure_fs.rs`).
 - **Autostart**: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` is written through the registry API
   and read back; a rejected or unpersisted change is an error, and the settings revert to the actual state.
+
+## 6. Agent and Subprocess Lifecycle
+
+- Every agent (Codex, Claude Code, OpenCode), lifecycle hook and validation command runs as an owned
+  **process tree** (`symphony_workspaces::process::ProcessTree`): a Windows Job Object with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (the kernel also kills the tree when the host crashes), a dedicated
+  process group on Unix. Cancelling, stall- or turn-timing-out a task terminates the agent and everything it
+  started, and when an agent, hook or validation finishes normally the processes it left running in the
+  background are ended too, so nothing keeps editing a workspace after Symphony has stopped tracking it.
+- Agent stderr is always drained (and redacted before it is logged or streamed), so an agent cannot block on
+  a full pipe; `turn_timeout_ms` applies to every driver.
+- Subprocesses never open console windows on Windows (`CREATE_NO_WINDOW`).
+
+## 7. Diagnostic Logs
+
+- Desktop and CLI write daily files to `<data_dir>/logs/<desktop|cli>-YYYY-MM-DD.log`, created owner-only
+  through `secure_fs` (an existing file that others can read is refused, never appended to).
+- Every line, on disk and on stdout, passes through `redact_secrets`: the GitHub, OpenAI, Linear and bearer
+  token patterns plus every secret registered at runtime (`symphony_core::redaction::register_secret`: each generated local or
+  remote API token, a supplied `--token`, and every credential vault value). Panics are logged with location
+  and backtrace.
+- Retention: the newest 14 files per component, at most 50 MiB per file and day.
+
+## 8. Supply Chain and Releases
+
+- `deny.toml` (`cargo deny check` in `.github/workflows/supply-chain.yml`): RustSec vulnerabilities, unsound
+  and yanked crates fail anywhere in the graph (`unsound = "all"`); unmaintained crates fail when they are direct dependencies;
+  licenses must be on the reviewed allowlist; crates come only from crates.io. `pnpm audit --audit-level
+  moderate` covers the npm graph. Both run on dependency changes, on `main` and weekly; Dependabot proposes
+  updates for Cargo, npm and GitHub Actions.
+- Security overrides in `pnpm-workspace.yaml` are scoped to the vulnerable versions of exact transitive pins
+  and documented there. Accepted findings: `katex` < 0.18.2 (low; reached through `@openai/apps-sdk-ui`
+  markdown rendering, whose parents require `^0.16`) and RUSTSEC-2024-0429 (unsound `glib` 0.18
+  `VariantStrIter`, only in Tauri's Linux GTK stack, unused by Symphony; listed in `deny.toml`).
+- Workflow actions are pinned to commit SHAs, tokens are read-only except where a job publishes, and the
+  release job restores no caches.
+- Releases (`.github/workflows/release.yml`) are built from a version tag, tested, smoke-tested natively,
+  Authenticode-signed when a certificate is configured, checksummed (`SHA256SUMS.txt`) and published as a
+  **draft** for human review. Unsigned builds are labelled `UNSIGNED` and must not be distributed.

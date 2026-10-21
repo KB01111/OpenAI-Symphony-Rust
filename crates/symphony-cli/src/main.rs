@@ -6,10 +6,12 @@ use symphony_core::{
     workflow::{ServiceConfig, WorkflowDefinition},
 };
 use symphony_orchestrator::SymphonyOrchestrator;
-use symphony_platform::{default_app_data_dir, RuntimeDiscovery, SecretStore, SingleInstanceGuard};
+use symphony_platform::{
+    default_app_data_dir, logging::init_logging, RuntimeDiscovery, SecretStore, SingleInstanceGuard,
+};
 use symphony_server::{
     default_local_origins, generate_access_token, start_http_server, RemoteAccessManager,
-    ServerConfig, API_VERSION,
+    ServerConfig, API_VERSION, LOCAL_API_TOKEN_OWNER,
 };
 use symphony_storage::Storage;
 
@@ -83,16 +85,10 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,symphony=debug".into()),
-        )
-        .init();
-
     let cli = Cli::parse();
 
     if let Some(Commands::Validate { path }) = cli.command {
+        let _ = init_logging(None, "cli");
         let def = WorkflowDefinition::load_from_path(&path)?;
         let cfg = ServiceConfig::from_workflow(&def)?;
         cfg.validate_for_dispatch()?;
@@ -105,6 +101,11 @@ async fn main() -> anyhow::Result<()> {
 
     let data_dir = cli.data_dir.clone().unwrap_or_else(default_app_data_dir);
     std::fs::create_dir_all(&data_dir)?;
+    match init_logging(Some(&data_dir), "cli") {
+        Ok(Some(dir)) => tracing::info!(log_dir = %dir.display(), "Writing diagnostic logs"),
+        Ok(None) => {}
+        Err(err) => tracing::warn!("{err}; logging to stdout only"),
+    }
 
     // One runtime (desktop or CLI) owns a data directory at a time: single authoritative scheduler.
     let _instance_guard = SingleInstanceGuard::acquire(&data_dir)?;
@@ -232,6 +233,7 @@ async fn main() -> anyhow::Result<()> {
         Some(_) => anyhow::bail!("--token / SYMPHONY_API_TOKEN must be at least 16 characters"),
         None => generate_access_token(),
     };
+    symphony_core::redaction::register_secret(LOCAL_API_TOKEN_OWNER, &token);
     let mut allowed_origins = default_local_origins();
     allowed_origins.extend(cli.allow_origins.iter().cloned());
     let is_loopback = cli.host == "127.0.0.1" || cli.host == "localhost" || cli.host == "::1";

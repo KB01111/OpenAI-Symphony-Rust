@@ -18,7 +18,9 @@ version = "2.0.0"
 edition = "2021"
 license = "MIT"
 authors = ["Symphony Desktop Contributors"]
-repository = "https://github.com/openai/symphony"
+repository = "https://github.com/KB01111/OpenAI-Symphony-Rust"
+# Internal crates of the desktop app; never published to crates.io.
+publish = false
 
 [workspace.dependencies]
 tokio = { version = "1.43", features = ["full"] }
@@ -66,3 +68,11 @@ symphony-agents = { path = "crates/symphony-agents" }
 symphony-platform = { path = "crates/symphony-platform" }
 symphony-orchestrator = { path = "crates/symphony-orchestrator" }
 symphony-server = { path = "crates/symphony-server" }
+
+# Shipped binaries (desktop host, CLI). Thin LTO and a single codegen unit trade build time for
+# smaller, faster binaries; panics still unwind so a failing task cannot take the runtime down.
+# Windows release binaries carry no symbols: the release workflow keeps the matching PDB files as a
+# build artifact, which turn the addresses in a logged panic backtrace into function names.
+[profile.release]
+lto = "thin"
+codegen-units = 1

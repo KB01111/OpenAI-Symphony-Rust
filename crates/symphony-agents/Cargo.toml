@@ -3,6 +3,7 @@ name = "symphony-agents"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 symphony-core = { path = "../symphony-core" }
@@ -15,3 +16,9 @@ chrono.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
 futures.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

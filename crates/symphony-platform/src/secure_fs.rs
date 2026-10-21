@@ -38,6 +38,13 @@ pub fn read_private_file(path: &Path) -> io::Result<Vec<u8>> {
     imp::read_private_file(path)
 }
 
+/// Open `path` for appending, creating it owner-only if it does not exist. An existing file is
+/// checked through the opened handle itself (symlinks / reparse points are refused), so it cannot
+/// be swapped between the check and the writes; one that others can access is rejected.
+pub fn open_private_append(path: &Path) -> io::Result<File> {
+    imp::open_private_append(path)
+}
+
 /// Create `dir` (and parents) if missing. A directory created here is owner-only on Unix; an
 /// existing directory is left as is, since the files inside it are protected individually.
 pub fn ensure_dir(dir: &Path) -> io::Result<()> {
@@ -148,6 +155,27 @@ mod imp {
 
     pub fn verify_private_file(path: &Path) -> io::Result<()> {
         check_metadata(path, &std::fs::symlink_metadata(path)?)
+    }
+
+    pub fn open_private_append(path: &Path) -> io::Result<File> {
+        match OpenOptions::new()
+            .append(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+        {
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                let file = OpenOptions::new()
+                    .append(true)
+                    // O_NONBLOCK: a FIFO planted at `path` must not block the open.
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(path)?;
+                check_metadata(path, &file.metadata()?)?;
+                Ok(file)
+            }
+            other => other,
+        }
     }
 
     pub fn read_private_file(path: &Path) -> io::Result<Vec<u8>> {
@@ -299,6 +327,55 @@ mod imp {
     }
 
     pub fn create_private_file(path: &Path) -> io::Result<File> {
+        create_with_owner_only_dacl(path, GENERIC_READ | GENERIC_WRITE, 0)
+    }
+
+    pub fn open_private_append(path: &Path) -> io::Result<File> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_APPEND_DATA, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, SYNCHRONIZE,
+        };
+        // Appending only; other processes may append (a second instance) or prune (delete) too.
+        let access = FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE;
+        let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+        match create_with_owner_only_dacl(path, access, share) {
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                let file = std::fs::OpenOptions::new()
+                    .access_mode(access)
+                    .share_mode(share)
+                    .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                    .open(path)?;
+                let meta = file.metadata()?;
+                if meta.file_type().is_symlink() || !meta.is_file() {
+                    return Err(insecure(path, "not a regular file"));
+                }
+                let handle = file.as_raw_handle() as HANDLE;
+                check_descriptor(path, |owner, dacl, sd| {
+                    // SAFETY: `handle` is open with READ_CONTROL for the duration of the call.
+                    unsafe {
+                        GetSecurityInfo(
+                            handle,
+                            SE_FILE_OBJECT,
+                            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                            owner,
+                            null_mut(),
+                            dacl,
+                            null_mut(),
+                            sd,
+                        )
+                    }
+                })?;
+                Ok(file)
+            }
+            other => other,
+        }
+    }
+
+    /// Create `path` (it must not exist) with a protected owner-only DACL applied atomically by
+    /// `CreateFileW`.
+    fn create_with_owner_only_dacl(path: &Path, access: u32, share: u32) -> io::Result<File> {
         let user = CurrentUser::query()?;
         let sddl = wide(OsStr::new(&owner_only_sddl(&user)?));
         let path_w = wide(path.as_os_str());
@@ -323,8 +400,8 @@ mod imp {
             };
             let handle = CreateFileW(
                 path_w.as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
-                0,
+                access,
+                share,
                 &attributes,
                 CREATE_NEW,
                 FILE_ATTRIBUTE_NORMAL,
@@ -498,6 +575,45 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn open_private_append_creates_private_and_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        {
+            use std::io::Write;
+            open_private_append(&path)
+                .unwrap()
+                .write_all(b"one\n")
+                .unwrap();
+            open_private_append(&path)
+                .unwrap()
+                .write_all(b"two\n")
+                .unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
+        verify_private_file(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_private_append_refuses_shared_files_and_symlinks() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared");
+        std::fs::write(&shared, b"x").unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(open_private_append(&shared).is_err());
+        let private = dir.path().join("private");
+        std::fs::write(&private, b"x").unwrap();
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&private, &link).unwrap();
+        assert!(
+            open_private_append(&link).is_err(),
+            "symlinks are never followed"
+        );
     }
 
     #[test]

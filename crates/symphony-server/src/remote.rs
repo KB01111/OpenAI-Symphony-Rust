@@ -635,11 +635,16 @@ impl RemoteAccessManager {
         // it, so nothing that can fail runs after the vault write.
         let settings = self.orchestrator.storage().get_settings().await?;
         let token = generate_access_token();
+        let previous = self.stored_token();
         self.orchestrator
             .secret_store()
             .set_secret(REMOTE_TOKEN_KEY, &token)?;
-        // The previous token stops working now.
+        // The previous token stops working now, so it no longer needs masking in logs (unless
+        // another source, e.g. a credential or environment variable, holds the same value).
         self.set_token(&inner, Some(token.clone()));
+        if let Some(previous) = previous {
+            symphony_core::redaction::forget_secret(&previous);
+        }
         let status = self.apply_locked(&mut inner, &settings).await;
         info!("Remote access token rotated");
         Ok(RemoteTokenIssued { token, status })
@@ -649,11 +654,15 @@ impl RemoteAccessManager {
     pub async fn revoke_token(&self) -> Result<RemoteAccessStatus> {
         let mut inner = self.inner.lock().await;
         let settings = self.orchestrator.storage().get_settings().await?;
+        let previous = self.stored_token();
         self.orchestrator
             .secret_store()
             .delete_secret(REMOTE_TOKEN_KEY)?;
         // Every remote request is rejected from here on (an absent token rejects all requests).
         self.set_token(&inner, None);
+        if let Some(previous) = previous {
+            symphony_core::redaction::forget_secret(&previous);
+        }
         let status = self.apply_locked(&mut inner, &settings).await;
         info!("Remote access token revoked");
         Ok(status)

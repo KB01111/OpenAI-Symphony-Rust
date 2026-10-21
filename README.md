@@ -141,6 +141,28 @@ pnpm --filter @symphony/desktop e2e
 
 ---
 
+## Logs & Troubleshooting
+
+- Logs: `%LOCALAPPDATA%\symphony-desktop\logs\desktop-YYYY-MM-DD.log` (desktop) and `cli-YYYY-MM-DD.log`
+  (CLI), or `<data_dir>\logs` with `--data-dir` / `SYMPHONY_DATA_DIR`. They are owner-only, secrets are
+  redacted, 14 days are kept. Set `RUST_LOG` (e.g. `RUST_LOG=debug`) for more detail.
+- Settings → Diagnostics → *Export diagnostics* produces a redacted bundle for bug reports.
+- An unreadable credential vault is never replaced silently: use the desktop recovery dialog or
+  `symphony-cli --quarantine-credential-vault`.
+
+## Releases
+
+Releases are cut by pushing a `vX.Y.Z` tag after the version in every manifest and a dated `CHANGELOG.md`
+section match it (`node scripts/release-version.mjs --tag vX.Y.Z`). The release workflow builds, tests,
+smoke-tests and drafts the GitHub release; see [CONTRIBUTING.md](./CONTRIBUTING.md#releasing) and
+[docs/PRODUCTION_READINESS.md](./docs/PRODUCTION_READINESS.md).
+
+## License
+
+[MIT](./LICENSE).
+
+---
+
 ## Documentation Index
 
 - [docs/UI_ARCHITECTURE.md](./docs/UI_ARCHITECTURE.md) — Desktop UI architecture, contracts, discovery and streaming.
@@ -149,6 +171,8 @@ pnpm --filter @symphony/desktop e2e
 - [docs/UI_IMPLEMENTATION_REPORT.md](./docs/UI_IMPLEMENTATION_REPORT.md) — 2.0 implementation report and evidence.
 - [docs/POST_MERGE_STABILIZATION.md](./docs/POST_MERGE_STABILIZATION.md) — Post-merge security/reliability findings, fixes and verification.
 - [docs/WINDOWS_NATIVE_SMOKE_TEST.md](./docs/WINDOWS_NATIVE_SMOKE_TEST.md) — Automated and manual native Windows 11 validation.
+- [docs/PRODUCTION_READINESS.md](./docs/PRODUCTION_READINESS.md) — Release gates, operations and the remaining owner actions.
+- [CHANGELOG.md](./CHANGELOG.md) — Release notes (the release workflow publishes the tagged section).
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Detailed architecture, Symphony `SPEC.md` compliance, and component design.
 - [SECURITY.md](./SECURITY.md) — Threat model, workspace isolation invariants, credential handling, and sandboxing.
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — Development standards, testing matrix, and PR workflow.

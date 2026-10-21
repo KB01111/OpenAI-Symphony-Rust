@@ -1,0 +1,36 @@
+# Weekly dependency updates. Minor and patch updates are grouped per ecosystem to keep the PR count
+# manageable; major updates arrive individually because they need review. Security updates are
+# raised immediately regardless of this schedule. Nothing is ignored (ignore rules would also
+# suppress security updates): the exactly pinned API generators (utoipa, @hey-api/*) get PRs too,
+# and the "Generated contracts are up to date" check fails any bump that changes the contract
+# until `pnpm generate:api` output is committed with it.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      github-actions:
+        patterns: ["*"]
