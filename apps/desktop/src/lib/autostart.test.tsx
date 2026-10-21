@@ -98,7 +98,8 @@ describe("login autostart with an unknown outcome", () => {
     await act(async () => {
       await result.current.mutateAsync({ ...stored, polling_interval_ms: 5000 });
     });
-    expect(calls).toHaveLength(3);
+    // Every retry asks Windows for the saved preference, never the inverted one.
+    expect(calls).toEqual([{ enabled: true }, { enabled: false }, { enabled: false }]);
   });
 });
 

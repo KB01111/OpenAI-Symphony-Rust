@@ -353,11 +353,11 @@ export function useSaveSettings() {
         } catch (error) {
           // The host reports the registry state it observed after the failure. Store that state
           // so the switch never shows an autostart that is not registered. When it is unknown,
-          // restore the last confirmed value (the one before this change) and mark the native
-          // state unknown so the next save retries.
+          // restore the last confirmed native state (else the value before this change) and mark
+          // the native state unknown so the next save retries.
           const observed = observedAutostart(error);
           appliedAutostart = observed ?? "unknown";
-          const restore = observed ?? previous?.start_background_runtime_on_login;
+          const restore = observed ?? (typeof applied === "boolean" ? applied : previous?.start_background_runtime_on_login);
           if (restore !== undefined && restore !== wanted) {
             const reverted = await client
               .saveSettings({ ...saved, start_background_runtime_on_login: restore })

@@ -81,7 +81,7 @@ export const settingsMessages = defineMessages({
       manage: "Manage providers"
     },
     remote: {
-      intro: "Optional listener for the Symphony Remote companion. It has its own access token and can only monitor tasks, projects and pull requests, create, dispatch, cancel and retry tasks, decide agent approvals, refresh trackers and pause or resume the scheduler.",
+      intro: "Optional listener for the Symphony Remote companion. It has its own access token and can only monitor tasks, projects, tracker issues and pull requests, create, dispatch, cancel and retry tasks, decide agent approvals, refresh trackers and pause or resume the scheduler.",
       enabled: "Enable remote API",
       bind: "Bind address",
       bindHint: "Loopback only (127.0.0.1, ::1 or localhost). Reach it from other devices through a TLS reverse proxy or an encrypted tunnel.",
@@ -261,7 +261,7 @@ export const settingsMessages = defineMessages({
       manage: "Hantera leverantörer"
     },
     remote: {
-      intro: "Valfri lyssnare för följeappen Symphony Remote. Den har en egen åtkomsttoken och kan bara övervaka uppgifter, projekt och pull requests, skapa, starta, avbryta och försöka igen med uppgifter, besluta om agentgodkännanden, uppdatera spårare och pausa eller återuppta schemaläggaren.",
+      intro: "Valfri lyssnare för följeappen Symphony Remote. Den har en egen åtkomsttoken och kan bara övervaka uppgifter, projekt, spårarärenden och pull requests, skapa, starta, avbryta och försöka igen med uppgifter, besluta om agentgodkännanden, uppdatera spårare och pausa eller återuppta schemaläggaren.",
       enabled: "Aktivera fjärr-API",
       bind: "Bindningsadress",
       bindHint: "Endast loopback (127.0.0.1, ::1 eller localhost). Nå den från andra enheter via en omvänd proxy med TLS eller en krypterad tunnel.",
