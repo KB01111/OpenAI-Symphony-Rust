@@ -109,7 +109,7 @@ fn install_panic_hook() {
         let thread = std::thread::current();
         eprintln!(
             "thread '{}' panicked at {location}:\n{payload}\n{}",
-            thread.name().unwrap_or("<unnamed>"),
+            redact_secrets(thread.name().unwrap_or("<unnamed>"), &[]),
             redact_secrets(&backtrace.to_string(), &[])
         );
     }));

@@ -337,12 +337,9 @@ impl SecretStore {
         for v in discarded.values_mut() {
             v.zeroize();
         }
+        // A replaced or deleted credential stays registered for redaction: until it is revoked
+        // at its provider it can still be valid, and agent output may still contain it.
         if let Some(mut old) = removed {
-            // A replaced or deleted credential stops being masked (and its registry copy is
-            // wiped) unless another key still holds the same value.
-            if result.is_ok() && old.trim() != value.trim() && !guard.values().any(|v| *v == old) {
-                symphony_core::redaction::unregister_secret(&old);
-            }
             old.zeroize();
         }
         result?;
@@ -667,24 +664,21 @@ mod tests {
     }
 
     #[test]
-    fn replaced_credentials_stop_being_masked_and_current_ones_are() {
+    fn replaced_and_deleted_credentials_stay_masked() {
         use symphony_core::redaction::redact_secrets;
         let dir = tempfile::tempdir().unwrap();
         let store = SecretStore::new(dir.path()).unwrap();
         let (old, new) = ("vault-old-Yt2Qp9", "vault-new-Lm4Zx7");
         store.set_secret("ACME_KEY", old).unwrap();
-        store.set_secret("OTHER_KEY", "vault-shared-Hh5k").unwrap();
-        store.set_secret("THIRD_KEY", "vault-shared-Hh5k").unwrap();
         store.set_secret("ACME_KEY", new).unwrap();
         assert_eq!(
             redact_secrets(old, &[]),
-            old,
-            "a replaced value is no longer registered"
+            "[REDACTED]",
+            "a rotated value may still be valid"
         );
         assert_eq!(redact_secrets(new, &[]), "[REDACTED]");
-        // Deleting one of two keys with the same value keeps it masked.
-        store.delete_secret("OTHER_KEY").unwrap();
-        assert_eq!(redact_secrets("vault-shared-Hh5k", &[]), "[REDACTED]");
+        store.delete_secret("ACME_KEY").unwrap();
+        assert_eq!(redact_secrets(new, &[]), "[REDACTED]");
     }
 
     #[test]

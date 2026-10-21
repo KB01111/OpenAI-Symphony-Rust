@@ -25,6 +25,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Line tables for release builds: on Windows they go into the PDB (the .exe is unchanged), which
+  # symbolizes panic backtraces from user log files.
+  CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
@@ -170,7 +173,7 @@ jobs:
         with:
           name: symphony-release-${{ env.RELEASE_TAG }}-symbols
           path: target/release/*.pdb
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 90
 
       - name: Create or update the draft GitHub release
