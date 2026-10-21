@@ -16,9 +16,19 @@ use symphony_core::domain::ProviderKind;
 use symphony_core::error::SymphonyError;
 use tokio::sync::mpsc;
 
+/// The executed script is written by a separate `cp` process: a file this multi-threaded test
+/// process writes itself can still be open for writing in a child that another test is forking at
+/// that moment, and executing it then fails with ETXTBSY ("Text file busy").
 fn fake_agent(dir: &Path, body: &str) -> PathBuf {
+    let source = dir.join("fake-agent.src");
+    std::fs::write(&source, format!("#!/bin/sh\n{body}\n")).unwrap();
     let path = dir.join("fake-agent.sh");
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    let copied = std::process::Command::new("cp")
+        .arg(&source)
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(copied.success(), "cp failed: {copied}");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
 }
@@ -125,7 +135,7 @@ async fn abandoned_turn_kills_the_agent_tree(provider: ProviderKind) {
         let turn = session.run_turn("work", tx);
         tokio::pin!(turn);
         let tool_pid = tokio::select! {
-            _ = &mut turn => panic!("the turn must still be running"),
+            result = &mut turn => panic!("the turn must still be running: {result:?}"),
             pid = read_pid(&pid_file) => pid,
         };
         // Wait until the agent produced output, so it is definitely mid-turn.
