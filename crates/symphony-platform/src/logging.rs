@@ -10,10 +10,10 @@
 //! - at most [`MAX_LOG_FILE_BYTES`] per file and day, so a runaway loop cannot fill the disk;
 //! - panics are logged (message, location, backtrace) before the default hook runs.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use chrono::{Local, NaiveDate};
 use symphony_core::redaction::redact_secrets;
@@ -28,34 +28,16 @@ use crate::secure_fs;
 pub const LOG_RETENTION_FILES: usize = 14;
 /// Size limit of one daily file; later entries of that day are dropped.
 pub const MAX_LOG_FILE_BYTES: u64 = 50 * 1024 * 1024;
+/// How long to wait before retrying a log file that could not be opened (e.g. a transient error at
+/// the midnight rollover); until then events reach stdout only.
+const REOPEN_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 /// Filter used when `RUST_LOG` is not set.
 pub const DEFAULT_LOG_FILTER: &str = "info,symphony=debug";
 
-/// Secrets known only at runtime (API tokens, vault values) that pattern-based redaction cannot
-/// recognise. Every log line, on stdout and on disk, is redacted against them.
-static RUNTIME_SECRETS: RwLock<Vec<String>> = RwLock::new(Vec::new());
-
-/// Redact `secret` from every log line written from now on. Values shorter than 6 characters are
-/// ignored (as by [`redact_secrets`]), so common words are never masked.
-pub fn redact_from_logs(secret: &str) {
-    let secret = secret.trim();
-    if secret.len() < 6 {
-        return;
-    }
-    if let Ok(mut known) = RUNTIME_SECRETS.write() {
-        if !known.iter().any(|k| k == secret) {
-            known.push(secret.to_string());
-        }
-    }
-}
-
-/// `line` with pattern-matched and registered secrets replaced by `[REDACTED]`.
+/// `line` with pattern-matched and registered secrets
+/// ([`symphony_core::redaction::register_secret`]) replaced by `[REDACTED]`.
 fn redact_line(line: &[u8]) -> String {
-    let text = String::from_utf8_lossy(line);
-    match RUNTIME_SECRETS.read() {
-        Ok(known) => redact_secrets(&text, &known),
-        Err(_) => redact_secrets(&text, &[]),
-    }
+    redact_secrets(&String::from_utf8_lossy(line), &[])
 }
 
 /// Directory holding the log files of a data directory.
@@ -138,6 +120,8 @@ struct State {
     day: Option<NaiveDate>,
     file: Option<File>,
     written: u64,
+    /// Earliest retry after a failed open.
+    retry_at: Option<std::time::Instant>,
 }
 
 impl DailyLogFiles {
@@ -150,6 +134,7 @@ impl DailyLogFiles {
             day: None,
             file: None,
             written: 0,
+            retry_at: None,
         };
         state.roll_to(Local::now().date_naive())?;
         Ok(Self {
@@ -166,9 +151,12 @@ impl DailyLogFiles {
         let Ok(mut state) = self.inner.lock() else {
             return;
         };
-        if state.day != Some(today) && state.roll_to(today).is_err() {
-            // Keep the process running; stdout still gets the event.
+        let now = std::time::Instant::now();
+        let reopen = state.file.is_none() && state.retry_at.is_none_or(|at| now >= at);
+        if (state.day != Some(today) || reopen) && state.roll_to(today).is_err() {
+            // Keep the process running (stdout still gets the event) and retry later.
             state.file = None;
+            state.retry_at = Some(now + REOPEN_RETRY);
         }
         let redacted = redact_line(buf);
         state.append(redacted.as_bytes());
@@ -181,18 +169,12 @@ impl State {
         self.file = None;
         self.written = 0;
         let path = DailyLogFiles::path_for(&self.dir, &self.prefix, day);
-        let file = if path.exists() {
-            // Never append to a file someone else could read (or swapped in).
-            secure_fs::verify_private_file(&path)?;
-            OpenOptions::new().append(true).open(&path)?
-        } else {
-            // Created owner-only, then reopened for appending like an existing file: another
-            // process (e.g. a second desktop instance before it exits) may append concurrently.
-            drop(secure_fs::create_private_file(&path)?);
-            OpenOptions::new().append(true).open(&path)?
-        };
+        // Created owner-only, or verified through the opened handle (never by path, so the file
+        // cannot be swapped in between); a file someone else can read is refused.
+        let file = secure_fs::open_private_append(&path)?;
         self.written = file.metadata().map(|m| m.len()).unwrap_or(0);
         self.file = Some(file);
+        self.retry_at = None;
         prune(&self.dir, &self.prefix, LOG_RETENTION_FILES);
         Ok(())
     }
@@ -332,13 +314,12 @@ mod tests {
         let files = DailyLogFiles::open(dir.path(), "cli").unwrap();
         // A 64-hex API token matches no pattern; only registration can catch it.
         let token = "4f1c".repeat(16);
-        redact_from_logs(&token);
-        redact_from_logs("abc"); // too short to register
+        symphony_core::redaction::register_secret(&token);
         let today = Local::now().date_naive();
-        files.write_event(format!("token={token} abc\n").as_bytes(), today);
+        files.write_event(format!("token={token}\n").as_bytes(), today);
         let written =
             std::fs::read_to_string(DailyLogFiles::path_for(dir.path(), "cli", today)).unwrap();
-        assert_eq!(written, "token=[REDACTED] abc\n");
+        assert_eq!(written, "token=[REDACTED]\n");
     }
 
     #[test]
@@ -366,6 +347,25 @@ mod tests {
         // Other components and unrelated files are never touched.
         assert!(dir.path().join("cli-notes.txt").exists());
         assert!(dir.path().join("desktop-2026-01-01.log").exists());
+    }
+
+    #[test]
+    fn a_failed_rollover_is_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = DailyLogFiles::open(dir.path(), "cli").unwrap();
+        let next = day("2099-01-01");
+        let path = DailyLogFiles::path_for(dir.path(), "cli", next);
+        // Something occupies the new day's path: the rollover fails.
+        std::fs::create_dir(&path).unwrap();
+        files.write_event(b"lost\n", next);
+        assert!(files.inner.lock().unwrap().file.is_none());
+        std::fs::remove_dir(&path).unwrap();
+        // Before the retry delay nothing is attempted; afterwards the file is opened again.
+        files.write_event(b"still lost\n", next);
+        assert!(!path.exists());
+        files.inner.lock().unwrap().retry_at = Some(std::time::Instant::now());
+        files.write_event(b"kept\n", next);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "kept\n");
     }
 
     #[test]

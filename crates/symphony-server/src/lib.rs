@@ -102,7 +102,7 @@ pub fn generate_access_token() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     let token = hex::encode(bytes);
-    symphony_platform::logging::redact_from_logs(&token);
+    symphony_core::redaction::register_secret(&token);
     token
 }
 

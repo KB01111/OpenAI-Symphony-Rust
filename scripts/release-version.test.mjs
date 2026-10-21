@@ -60,6 +60,14 @@ test("the release tag must match the version", () => {
   assert.match(checkVersions(versions, "").errors.join(" "), /must look like/);
 });
 
+test("pre-release and build metadata are valid versions", () => {
+  for (const version of ["2.1.0-beta.1", "2.1.0+build.7", "2.1.0-rc.1+sha.5114f85"]) {
+    const versions = [{ file: "Cargo.toml", version }];
+    assert.deepEqual(checkVersions(versions, `v${version}`).errors, [], version);
+  }
+  assert.equal(checkVersions([{ file: "a", version: "2.1.0+" }]).ok, false);
+});
+
 test("malformed versions are rejected", () => {
   const result = checkVersions([{ file: "a", version: "two" }, { file: "b", version: null }]);
   assert.equal(result.ok, false);

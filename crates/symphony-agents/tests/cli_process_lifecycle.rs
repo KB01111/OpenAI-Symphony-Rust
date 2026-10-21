@@ -213,3 +213,71 @@ async fn a_stalled_event_consumer_cannot_extend_the_turn() {
     assert!(matches!(err, SymphonyError::TurnTimeout(1)), "{err:?}");
     assert_terminated(session.pid().expect("agent pid") as i32).await;
 }
+
+#[tokio::test]
+async fn stderr_keeps_draining_while_the_event_consumer_is_stalled() {
+    let dir = tempfile::tempdir().unwrap();
+    // ~2 MiB of stderr and no stdout events: only stderr could block it.
+    let agent = fake_agent(
+        dir.path(),
+        "i=0; while [ $i -lt 2048 ]; do head -c 1023 /dev/zero | tr '\\0' x >&2; echo >&2; i=$((i+1)); done\nexit 0",
+    );
+    // Nobody reads `_rx`: stderr events fill the 4 slots and the rest must be dropped, not awaited.
+    let (tx, _rx) = mpsc::channel::<AgentStreamEvent>(4);
+    let mut session = start_agent_session(
+        config(ProviderKind::OpenCode, &agent, dir.path(), 600_000),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(30), session.run_turn("work", tx))
+        .await
+        .expect("a stalled event pump must not stop stderr from draining")
+        .unwrap();
+    assert!(outcome.succeeded);
+}
+
+#[tokio::test]
+async fn invalid_utf8_on_stderr_does_not_stop_the_draining() {
+    let dir = tempfile::tempdir().unwrap();
+    // A non-UTF-8 line first; a reader that gave up there would kill the agent with SIGPIPE.
+    let agent = fake_agent(
+        dir.path(),
+        "printf '\\377\\376 not utf-8\\n' >&2\ni=0; while [ $i -lt 256 ]; do head -c 1023 /dev/zero | tr '\\0' x >&2; echo >&2; i=$((i+1)); done\nexit 0",
+    );
+    let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(16);
+    let events = tokio::spawn(async move {
+        let mut stderr_lines = 0;
+        while let Some(event) = rx.recv().await {
+            if event.event_type == "agent/stderr" {
+                stderr_lines += 1;
+            }
+        }
+        stderr_lines
+    });
+    let mut session = start_agent_session(
+        config(ProviderKind::ClaudeCode, &agent, dir.path(), 600_000),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(30), session.run_turn("work", tx))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        outcome.succeeded,
+        "the agent must not die of a closed stderr pipe"
+    );
+    drop(session);
+    assert!(
+        events.await.unwrap() > 1,
+        "lines after the invalid one are still forwarded"
+    );
+}

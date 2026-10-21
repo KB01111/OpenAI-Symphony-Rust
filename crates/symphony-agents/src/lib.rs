@@ -858,27 +858,31 @@ impl AgentSession for CodexAppServerSession {
 }
 
 /// Forward a child's stderr as redacted `agent/stderr` events (and debug logs). Reading it also
-/// keeps the pipe drained: an unread stderr pipe fills up and blocks the agent forever.
+/// keeps the pipe drained: an unread stderr pipe fills up and blocks the agent forever. Events are
+/// therefore offered without waiting: while the event pump is full, stderr lines reach the log
+/// but not the timeline, and the pipe keeps draining.
 fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<AgentStreamEvent>) {
     tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let redacted = redact_secrets(&line, &[]);
+        let mut reader = BufReader::new(stderr);
+        let mut raw = Vec::new();
+        // Raw bytes, decoded lossily: invalid UTF-8 must not stop the draining.
+        while matches!(reader.read_until(b'\n', &mut raw).await, Ok(n) if n > 0) {
+            let line = String::from_utf8_lossy(&raw);
+            let redacted = redact_secrets(line.trim_end_matches(['\r', '\n']), &[]);
+            raw.clear();
             tracing::debug!(target: "agent_stderr", pid = ?pid, "{}", redacted);
-            let _ = event_tx
-                .send(AgentStreamEvent {
-                    event_type: "agent/stderr".into(),
-                    timestamp: Utc::now(),
-                    session_id: None,
-                    thread_id: None,
-                    turn_id: None,
-                    pid,
-                    message: Some(redacted.clone()),
-                    usage: None,
-                    rate_limits: None,
-                    raw: json!({ "stderr": redacted }),
-                })
-                .await;
+            let _ = event_tx.try_send(AgentStreamEvent {
+                event_type: "agent/stderr".into(),
+                timestamp: Utc::now(),
+                session_id: None,
+                thread_id: None,
+                turn_id: None,
+                pid,
+                message: Some(redacted.clone()),
+                usage: None,
+                rate_limits: None,
+                raw: json!({ "stderr": redacted }),
+            });
         }
     });
 }
@@ -939,11 +943,18 @@ impl CliTurnProcess {
     }
 
     /// Next stdout line; `Ok(None)` at end of output. Fails (and kills the tree) once
-    /// `turn_timeout_ms` has elapsed since the turn started.
+    /// `turn_timeout_ms` has elapsed since the turn started, or when stdout cannot be read (a
+    /// broken stream must not pass for a complete, successful turn).
     async fn next_line(&mut self) -> Result<Option<String>> {
         match tokio::time::timeout_at(self.deadline, self.lines.next_line()).await {
             Ok(Ok(line)) => Ok(line),
-            Ok(Err(_)) => Ok(None),
+            Ok(Err(err)) => {
+                self.tree.kill();
+                Err(SymphonyError::AgentProtocolError {
+                    code: "stdout_read_failed".into(),
+                    message: format!("Could not read the agent's output: {err}"),
+                })
+            }
             Err(_) => {
                 self.tree.kill();
                 Err(SymphonyError::TurnTimeout(self.timeout_ms))

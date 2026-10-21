@@ -18,8 +18,14 @@ all-features = true
 # zbus/zvariant, anymap2 and proc-macro-error under Tauri/GTK, unsafe-libyaml under serde_yaml) have
 # no maintained replacement we control and are tracked through Dependabot instead.
 unmaintained = "workspace"
+unsound = "all"
 yanked = "deny"
-ignore = []
+ignore = [
+    # glib 0.18 VariantStrIter unsoundness: only in Tauri's Linux GTK stack (gtk 0.18 is pinned by
+    # Tauri 2), absent from the shipped Windows build; Symphony never uses VariantStrIter. Remove
+    # when Tauri moves to gtk-rs >= 0.20.
+    { id = "RUSTSEC-2024-0429", reason = "Linux-only Tauri GTK dependency; VariantStrIter unused" },
+]
 
 [licenses]
 # Permissive licenses compatible with distributing the MIT-licensed binaries. MPL-2.0 is file-level

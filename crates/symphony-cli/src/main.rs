@@ -230,7 +230,7 @@ async fn main() -> anyhow::Result<()> {
     // silently replaced (clients configured with it could never authenticate).
     let token = match cli.token.clone() {
         Some(t) if t.len() >= 16 => {
-            symphony_platform::logging::redact_from_logs(&t);
+            symphony_core::redaction::register_secret(&t);
             t
         }
         Some(_) => anyhow::bail!("--token / SYMPHONY_API_TOKEN must be at least 16 characters"),

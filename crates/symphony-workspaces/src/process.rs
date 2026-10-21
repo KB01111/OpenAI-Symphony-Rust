@@ -15,6 +15,8 @@ use tokio::process::{Child, Command};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
 
 /// Never show a console window for this command (Windows); no-op elsewhere.
 pub fn hide_console_window(cmd: &mut Command) -> &mut Command {
@@ -27,7 +29,13 @@ pub fn hide_console_window(cmd: &mut Command) -> &mut Command {
 /// console window, and on Unix its own process group (so a signal reaches the whole tree and the
 /// terminal's Ctrl+C is handled by the host's graceful shutdown instead). The child is also
 /// killed when its handle is dropped.
+///
+/// On Windows the child is created **suspended**, so it cannot start anything before it is in
+/// its job: always pass the spawned child to [`ProcessTree::attach`] immediately, which resumes it.
 pub fn prepare_tree_command(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+    #[cfg(not(windows))]
     hide_console_window(cmd);
     #[cfg(unix)]
     cmd.process_group(0);
@@ -50,7 +58,7 @@ impl ProcessTree {
     pub fn attach(child: &Child) -> Self {
         #[cfg(windows)]
         {
-            let job = child.raw_handle().and_then(|handle| {
+            let mut job = child.raw_handle().and_then(|handle| {
                 JobHandle::kill_on_close_for(handle)
                     .map_err(|err| {
                         tracing::warn!(
@@ -60,6 +68,16 @@ impl ProcessTree {
                     })
                     .ok()
             });
+            // Only now, inside its job, may the suspended child run and start other processes.
+            if let Some(pid) = child.id() {
+                if let Err(err) = resume_process(pid) {
+                    tracing::error!(error = %err, "Could not resume the subprocess; terminating it");
+                    match job.take() {
+                        Some(job) => job.terminate(),
+                        None => terminate_process(child),
+                    }
+                }
+            }
             Self { job }
         }
         #[cfg(unix)]
@@ -196,6 +214,58 @@ async fn read_to_end<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>) -> Vec<u8
         let _ = pipe.read_to_end(&mut buf).await;
     }
     buf
+}
+
+/// Resume every thread of a process created with `CREATE_SUSPENDED` (it has exactly one).
+#[cfg(windows)]
+fn resume_process(pid: u32) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    // SAFETY: snapshot and thread handles are checked and closed exactly once; THREADENTRY32 is
+    // plain data whose dwSize is set before the first call, as the API requires.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut resumed = 0;
+        let mut more = Thread32First(snapshot, &mut entry) != 0;
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if !thread.is_null() {
+                    if ResumeThread(thread) != u32::MAX {
+                        resumed += 1;
+                    }
+                    CloseHandle(thread);
+                }
+            }
+            more = Thread32Next(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+        if resumed == 0 {
+            return Err(std::io::Error::other(
+                "no thread of the process could be resumed",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn terminate_process(child: &Child) {
+    if let Some(handle) = child.raw_handle() {
+        // SAFETY: the handle belongs to the live tokio `Child`.
+        unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(handle as _, 1);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -470,6 +540,19 @@ mod windows_tests {
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_suspended_tree_child_is_resumed_and_runs() {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/C", "echo resumed"])
+            .stdout(std::process::Stdio::piped());
+        let out = output_with_timeout(&mut cmd, Duration::from_secs(30))
+            .await
+            .expect("a child left suspended would never finish")
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "resumed");
     }
 
     #[tokio::test]

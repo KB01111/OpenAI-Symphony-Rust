@@ -14,7 +14,8 @@ import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+// MAJOR.MINOR.PATCH with optional pre-release and build metadata (semver.org).
+const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 /** Version of `[workspace.package]` in the root Cargo.toml, or null. */
 export function readCargoWorkspaceVersion(cargoToml) {
