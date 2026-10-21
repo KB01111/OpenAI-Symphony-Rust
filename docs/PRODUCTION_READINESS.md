@@ -54,9 +54,18 @@ These cannot be done from the repository and are deliberately not faked:
   owner-only key file instead of an OS keychain, and agent trees are tracked by process group (a host killed
   with SIGKILL cannot clean up; Windows Job Objects can).
 - **Remote access** has no built-in TLS: put it behind a TLS reverse proxy or an encrypted tunnel.
-- **Dependencies**: `katex` < 0.18.2 (low severity, reached through `@openai/apps-sdk-ui`); unmaintained
+- **Dependencies**: unmaintained
   transitive crates under Tauri/GTK and `serde_yaml` (no maintained drop-in yet). Tracked by the weekly
   supply-chain run and Dependabot.
 - **Manual-only native behaviour**: tray, folder picker, notifications, window-state restore and sign-in
   autostart (see the manual checklist).
 - **iOS companion** is validated as a web build; no native iOS packaging.
+
+## 5. Dependency upgrades that need an upstream release
+
+Dependabot keeps proposing these; close the PRs until the blocker is gone (`dependabot.yml` deliberately has
+no ignore rules, because they would also suppress security updates).
+
+| Upgrade | Blocker | Unblocked when |
+| --- | --- | --- |
+| TypeScript 7 in `packages/shared-types` | TypeScript 7 (the native compiler) no longer ships the JavaScript compiler API that `@hey-api/openapi-ts` (0.99) uses to generate the API client, so `pnpm generate:api` fails with it. Every other package uses TypeScript 7; `packages/shared-types`, which owns the generator, stays on TypeScript 6 so the generator's `typescript` peer resolves there. | `@hey-api/openapi-ts` supports TypeScript 7; then move `packages/shared-types` to TypeScript 7 too. |

@@ -96,7 +96,7 @@ describe("ReviewsPage", () => {
     expect(within(dialog).getByText(/marks the task as completed/)).toBeInTheDocument();
     expect(runtime.calls.filter((c) => c.method === "POST")).toHaveLength(0);
 
-    const confirm = within(dialog).getByRole("button", { name: "Record approval" });
+    const confirm = await within(dialog).findByRole("button", { name: "Record approval" });
     fireEvent.click(confirm);
     fireEvent.click(confirm);
 
@@ -111,7 +111,7 @@ describe("ReviewsPage", () => {
     renderWithProviders(<ReviewsPage />, { runtime, route: "/reviews/pr-ready", path: "/reviews/:reviewId" });
     fireEvent.click(await screen.findByRole("button", { name: "Record human approval" }));
     const dialog = await screen.findByRole("alertdialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
     expect(runtime.calls.filter((c) => c.method === "POST")).toHaveLength(0);
   });

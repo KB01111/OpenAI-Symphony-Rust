@@ -136,7 +136,7 @@ describe("ExecutionPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
     const dialog = await screen.findByRole("alertdialog");
     expect(rt.calls.some((c) => c.path === "/tasks/t1/cancel")).toBe(false);
-    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel run" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Cancel run" }));
     await waitFor(() => expect(rt.calls.filter((c) => c.method === "POST" && c.path === "/tasks/t1/cancel")).toHaveLength(1));
   });
 

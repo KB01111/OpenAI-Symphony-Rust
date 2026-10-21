@@ -63,7 +63,7 @@ describe("AgentsPage", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /Cancel run/ })[0]!);
     const dialog = await screen.findByRole("alertdialog");
     expect(runtime.calls.some((c) => c.path === "/tasks/t7/cancel")).toBe(false);
-    const confirm = within(dialog).getByRole("button", { name: "Cancel run" });
+    const confirm = await within(dialog).findByRole("button", { name: "Cancel run" });
     // Both clicks land in one frame, before the pending state can disable the button.
     act(() => {
       fireEvent.click(confirm);

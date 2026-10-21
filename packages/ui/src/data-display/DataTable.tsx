@@ -1,11 +1,18 @@
 import React, { useMemo, useRef, useState } from "react";
 import {
+  createSortedRowModel,
   flexRender,
-  getCoreRowModel,
-  getSortedRowModel,
-  useReactTable,
-  type ColumnDef,
+  rowSortingFeature,
+  sortFn_alphanumeric,
+  sortFn_basic,
+  sortFn_datetime,
+  sortFn_text,
+  tableFeatures,
+  useTable,
+  type CellData,
+  type ColumnDef as TableColumnDef,
   type Row,
+  type RowData,
   type SortingState
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -21,9 +28,21 @@ function fromInteractiveChild(e: React.SyntheticEvent<HTMLElement>): boolean {
   return interactive !== null && interactive !== e.currentTarget && e.currentTarget.contains(interactive);
 }
 
-export type { ColumnDef, SortingState } from "@tanstack/react-table";
+/**
+ * Sorting with the built-in functions TanStack Table picks automatically for a column (`sortFn:
+ * "auto"`): alphanumeric and plain text for strings, datetime for dates, basic otherwise.
+ */
+const features = tableFeatures({
+  rowSortingFeature,
+  sortedRowModel: createSortedRowModel(),
+  sortFns: { alphanumeric: sortFn_alphanumeric, text: sortFn_text, datetime: sortFn_datetime, basic: sortFn_basic }
+});
+type Features = typeof features;
 
-export interface DataTableProps<T> {
+export type ColumnDef<T extends RowData, V extends CellData = CellData> = TableColumnDef<Features, T, V>;
+export type { SortingState } from "@tanstack/react-table";
+
+export interface DataTableProps<T extends RowData> {
   data: ReadonlyArray<T>;
   columns: ColumnDef<T, unknown>[];
   getRowId: (row: T) => string;
@@ -43,7 +62,7 @@ export interface DataTableProps<T> {
  * shadcn Table + TanStack Table with sortable headers, keyboard row activation (Enter/Space) and
  * windowed rendering for large datasets.
  */
-export function DataTable<T>({
+export function DataTable<T extends RowData>({
   data,
   columns,
   getRowId,
@@ -57,14 +76,13 @@ export function DataTable<T>({
   rowHeight = 32
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>(initialSorting);
-  const table = useReactTable({
+  const table = useTable({
+    features,
     data: data as T[],
     columns,
     state: { sorting },
     onSortingChange: setSorting,
-    getRowId: (row) => getRowId(row),
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel()
+    getRowId: (row) => getRowId(row)
   });
   const rows = table.getRowModel().rows;
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -79,12 +97,12 @@ export function DataTable<T>({
   const items = virtual ? virtualizer.getVirtualItems() : null;
   const padTop = items && items.length > 0 ? items[0]!.start : 0;
   const padBottom = items && items.length > 0 ? virtualizer.getTotalSize() - items[items.length - 1]!.end : 0;
-  const visibleRows: Row<T>[] = useMemo(
+  const visibleRows: Row<Features, T>[] = useMemo(
     () => (items ? items.map((i) => rows[i.index]!).filter(Boolean) : rows),
     [items, rows]
   );
 
-  const renderRow = (row: Row<T>) => {
+  const renderRow = (row: Row<Features, T>) => {
     const element = (
       <TableRow
         key={row.id}
@@ -102,7 +120,7 @@ export function DataTable<T>({
           }
         }}
       >
-        {row.getVisibleCells().map((cell) => (
+        {row.getAllCells().map((cell) => (
           <TableCell key={cell.id} className="py-1">
             {flexRender(cell.column.columnDef.cell, cell.getContext())}
           </TableCell>

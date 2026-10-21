@@ -3,6 +3,9 @@
 
 @import "tailwindcss";
 @import "@openai/apps-sdk-ui/css";
+/* KaTeX 0.18 (pnpm-workspace.yaml override) renamed layout classes the SDK's bundled 0.16 stylesheet
+   styles; its own stylesheet, in the same layer and after the SDK's, restores math layout. */
+@import "katex/dist/katex.min.css" layer(base);
 @import "../../../../packages/ui/src/tokens/tokens.css";
 
 @source "../../../../packages/ui/src";

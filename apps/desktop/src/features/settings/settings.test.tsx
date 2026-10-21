@@ -137,7 +137,7 @@ describe("RemoteSection", () => {
     fireEvent.click(screen.getByRole("button", { name: m.revoke }));
     const dialog = await screen.findByRole("alertdialog");
     expect(runtime.calls.some((c) => c.method === "DELETE")).toBe(false);
-    fireEvent.click(within(dialog).getByRole("button", { name: m.revoke }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: m.revoke }));
     await waitFor(() => expect(runtime.calls.some((c) => c.method === "DELETE" && c.path === "/remote-access/token")).toBe(true));
     expect(await screen.findByText(m.states.token_missing!)).toBeInTheDocument();
   });

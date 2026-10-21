@@ -42,13 +42,13 @@ describe("AddRepositoryDialog", () => {
     const dialog = await screen.findByRole("dialog", { name: "Add repository" });
 
     fireEvent.change(within(dialog).getByLabelText(/^Repository path/), { target: { value: "/nope" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Validate" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Validate" }));
     expect(await within(dialog).findByText("The selected path does not exist.")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Continue" })).toBeDisabled();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Choose another folder" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Choose another folder" }));
     fireEvent.change(within(dialog).getByLabelText(/^Repository path/), { target: { value: "/src/app/sub" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Validate" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Validate" }));
     const next = await within(dialog).findByRole("button", { name: "Continue" });
     await waitFor(() => expect(next).toBeEnabled());
     fireEvent.click(next);
@@ -75,7 +75,7 @@ describe("ProjectsPage", () => {
     renderWithProviders(<ProjectsPage />, { runtime, route: "/projects/p1", path: "/projects/:projectId" });
     fireEvent.click(await screen.findByRole("button", { name: /Delete/ }));
     const dialog = await screen.findByRole("alertdialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: /Delete|Remove/ }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: /Delete|Remove/ }));
     expect((await screen.findAllByText(/Project has a running task/)).length).toBeGreaterThan(0);
     expect(runtime.calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
   });

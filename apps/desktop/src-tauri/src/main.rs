@@ -446,6 +446,39 @@ async fn start_embedded_runtime(
     })
 }
 
+enum RuntimeOwner {
+    This(SingleInstanceGuard),
+    Other(RuntimeDiscovery),
+}
+
+/// Become the owner of the data directory, or find the runtime that owns it. That runtime may
+/// still be starting (it takes the lock before its API listens) or may exit while we wait, so both
+/// are checked until one succeeds.
+async fn claim_or_find_runtime(data_dir: &Path) -> Result<RuntimeOwner, String> {
+    // Only lock contention is worth waiting for; any other error is an I/O failure.
+    let contended = |result: Result<SingleInstanceGuard, SymphonyError>| match result {
+        Ok(guard) => Ok(Some(guard)),
+        Err(SymphonyError::InvalidConfig(_)) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    };
+    if let Some(guard) = contended(SingleInstanceGuard::acquire(data_dir))? {
+        return Ok(RuntimeOwner::This(guard));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if let Some(found) = RuntimeDiscovery::read_live(data_dir) {
+            return Ok(RuntimeOwner::Other(found));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("Another Symphony runtime holds the data directory lock but did not publish its endpoint".to_string());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        if let Some(guard) = contended(SingleInstanceGuard::try_acquire(data_dir))? {
+            return Ok(RuntimeOwner::This(guard));
+        }
+    }
+}
+
 fn main() {
     // Same override as `symphony-cli --data-dir` / `SYMPHONY_DATA_DIR`, so the desktop and
     // the CLI agree on the data directory (and isolated native smoke tests are possible).
@@ -483,20 +516,17 @@ fn main() {
             std::fs::create_dir_all(&data_dir)?;
 
             let state = tauri::async_runtime::block_on(async {
-                match SingleInstanceGuard::acquire(&data_dir) {
-                    Ok(guard) => start_embedded_runtime(&handle, data_dir.clone(), guard).await,
-                    Err(_) => match RuntimeDiscovery::read_live(&data_dir) {
-                        Some(found) => {
-                            tracing::info!(base_url = %found.base_url, owner = %found.owner, "Attaching to existing Symphony runtime");
-                            Ok(DesktopAppState {
-                                mode: RuntimeMode::Attached,
-                                base_url: found.base_url,
-                                token: found.token,
-                                discovery_error: None,
-                            })
-                        }
-                        None => Err("Another Symphony runtime holds the data directory lock but did not publish its endpoint".to_string()),
-                    },
+                match claim_or_find_runtime(&data_dir).await? {
+                    RuntimeOwner::This(guard) => start_embedded_runtime(&handle, data_dir.clone(), guard).await,
+                    RuntimeOwner::Other(found) => {
+                        tracing::info!(base_url = %found.base_url, owner = %found.owner, "Attaching to existing Symphony runtime");
+                        Ok(DesktopAppState {
+                            mode: RuntimeMode::Attached,
+                            base_url: found.base_url,
+                            token: found.token,
+                            discovery_error: None,
+                        })
+                    }
                 }
             })
             .map_err(Box::<dyn std::error::Error>::from)?;

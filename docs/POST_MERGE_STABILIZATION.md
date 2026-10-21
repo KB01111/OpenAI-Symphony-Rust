@@ -78,13 +78,15 @@ mobile `connection.test.ts`.
 | --- | --- | --- |
 | Dependabot run 39487565760 could not raise `@vitest/mocker` 3.2.7 to the fixed 4.1.11 because all four packages pinned `vitest ^3`. | Verified defect | `vitest` upgraded to `^4.1.11` in `apps/desktop`, `apps/mobile`, `packages/api-client`, `packages/ui` (no overrides). The lockfile resolves one `@vitest/mocker@4.1.11`. 4.1.11 (Aug 2026) was chosen over the 5-day-old 4.1.12. No test or config changes were needed with Vite 6.4, React 19 and TypeScript 5.8. |
 
-**Remaining advisories** (`pnpm audit`, documented, not suppressed; out of scope for this upgrade):
+**Remaining advisories** at the time (`pnpm audit`, documented, not suppressed; out of scope for this upgrade).
+All three have since been fixed with scoped overrides in `pnpm-workspace.yaml` (katex together with its own
+stylesheet, see the comment there).
 
 | Package | Severity | Path | Notes |
 | --- | --- | --- | --- |
-| lodash 4.17.21 | high + 2 moderate | `@openai/apps-sdk-ui` → lodash | Fixed in ≥ 4.17.24; needs an in-range refresh or an Apps SDK UI update. |
-| js-yaml 4.2.0 | 3 high (CPU) | `@hey-api/openapi-ts` → `@hey-api/json-schema-ref-parser` → js-yaml | Build-time only (client generation from a committed, trusted document). |
-| katex 0.16.47 | low | `@openai/apps-sdk-ui` → rehype-katex / remark-math → katex | Fixed in 0.18.2, outside the parents' current range. |
+| lodash 4.17.21 | high + 2 moderate | `@openai/apps-sdk-ui` → lodash | Fixed: override to 4.18.x. |
+| js-yaml 4.2.0 | 3 high (CPU) | `@hey-api/openapi-ts` → `@hey-api/json-schema-ref-parser` → js-yaml | Fixed: override to ≥ 4.3.2. |
+| katex 0.16.47 | low | `@openai/apps-sdk-ui` → rehype-katex / remark-math → katex | Fixed: override to 0.18.x plus KaTeX's own stylesheet (0.18 renamed layout classes). |
 
 ### 1.5 API contract versioning — P1
 

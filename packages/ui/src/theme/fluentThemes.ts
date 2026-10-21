@@ -71,8 +71,10 @@ const sharedOverrides: Partial<Theme> = {
   colorStatusWarningForeground1: "var(--warning)",
   colorStatusSuccessForeground1: "var(--success)",
   borderRadiusMedium: "var(--radius)",
-  borderRadiusLarge: "calc(var(--radius) + 2px)",
-  borderRadiusXLarge: "calc(var(--radius) + 6px)"
+  // Flat `var()` references only: Fluent drops token values with nested parentheses such as
+  // `calc(var(--radius) + 2px)`, so the arithmetic lives in tokens.css.
+  borderRadiusLarge: "var(--radius-lg)",
+  borderRadiusXLarge: "var(--radius-xl)"
 };
 
 export const symphonyDarkTheme: Theme = { ...createDarkTheme(symphonyBrand), ...sharedOverrides };

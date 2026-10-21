@@ -2843,8 +2843,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Wait for async worker to finish
-        for _ in 0..40 {
+        // Wait for async worker to finish (generous: git and agent subprocesses start slowly on
+        // loaded Windows runners).
+        for _ in 0..300 {
             let t = orch.get_task(&task.id).await.unwrap();
             if t.status == TaskStatus::HumanReview {
                 break;
@@ -3023,7 +3024,8 @@ rl.on('line', (line) => {
             approval_policy: Value::String("never".into()),
             thread_sandbox: Value::String("workspace-write".into()),
             turn_sandbox_policy: None,
-            read_timeout_ms: 5_000,
+            // A cold `node` start can take seconds on a loaded Windows runner.
+            read_timeout_ms: 30_000,
             turn_timeout_ms: 15_000,
             extra_env: HashMap::new(),
             dynamic_tools: Vec::new(),
