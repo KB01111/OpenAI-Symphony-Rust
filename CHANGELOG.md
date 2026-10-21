@@ -49,7 +49,7 @@ First release. Replace "Unreleased" with the release date in the commit that is 
 - GitHub and Linear issue listings follow pagination instead of stopping at the first 100 or 50
   issues, so newer issues of a large backlog are dispatched. Candidate listings read up to 100
   pages; the terminal-state listing used for startup workspace cleanup reads up to 10 pages,
-  newest closed GitHub issues first.
+  most recently closed GitHub issues first.
 
 - Restarting the desktop app or the CLI right after a crash no longer fails or attaches to the dead
   runtime: Windows releases a terminated process's file lock with a delay, and a process that had

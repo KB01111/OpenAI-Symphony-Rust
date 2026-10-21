@@ -569,12 +569,17 @@ impl GitHubTracker {
         };
 
         // Candidates oldest first (SPEC.md Section 8.2); a closed-only listing (terminal cleanup)
-        // newest first, since recently closed issues are the ones that may still have workspaces.
-        let direction = if api_state == "closed" { "desc" } else { "asc" };
+        // most recently updated first: closing an issue updates it, and recently closed issues
+        // are the ones that may still have workspaces.
+        let order = if api_state == "closed" {
+            "sort=updated&direction=desc"
+        } else {
+            "sort=created&direction=asc"
+        };
         let mut out = Vec::new();
         for page in 1..=max_pages {
             let url = format!(
-                "{}/repos/{}/issues?state={api_state}&per_page={GITHUB_PAGE_SIZE}&page={page}&sort=created&direction={direction}",
+                "{}/repos/{}/issues?state={api_state}&per_page={GITHUB_PAGE_SIZE}&page={page}&{order}",
                 self.api_url, self.repo
             );
 

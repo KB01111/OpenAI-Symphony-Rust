@@ -215,7 +215,7 @@ async fn github_candidates_are_read_beyond_the_listing_limit() {
 }
 
 #[tokio::test]
-async fn github_closed_listing_reads_newest_first() {
+async fn github_closed_listing_reads_recently_closed_first() {
     let (base, requests) = serve(Box::new(|_, _| json!([]))).await;
     let tracker = GitHubTracker::new(Some(base), "owner/repo".into(), None, None);
 
@@ -235,11 +235,11 @@ async fn github_closed_listing_reads_newest_first() {
         .map(|(target, _)| target.clone())
         .collect();
     assert!(
-        targets[0].contains("state=closed") && targets[0].contains("direction=desc"),
+        targets[0].contains("state=closed") && targets[0].contains("sort=updated&direction=desc"),
         "{targets:?}"
     );
     assert!(
-        targets[1].contains("state=open") && targets[1].contains("direction=asc"),
+        targets[1].contains("state=open") && targets[1].contains("sort=created&direction=asc"),
         "{targets:?}"
     );
 }
