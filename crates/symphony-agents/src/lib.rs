@@ -863,9 +863,9 @@ impl AgentSession for CodexAppServerSession {
 /// but not the timeline, and the pipe keeps draining.
 fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<AgentStreamEvent>) {
     use tokio::io::AsyncReadExt;
-    // A line longer than this (an agent writing without newlines) is forwarded in pieces split at
-    // whitespace: a token or secret never contains whitespace, so redaction always sees it whole,
-    // and whitespace is ASCII, so no UTF-8 character is cut either.
+    // A line longer than this (an agent writing without newlines) is forwarded in pieces, cut only
+    // where redacting each piece is as good as redacting the whole line
+    // (`redaction_safe_split`: at ASCII whitespace, so no UTF-8 character is cut either).
     const MAX_STDERR_LINE: usize = 16 * 1024;
     // A run without any whitespace this long is replaced by a notice instead of being cut, which
     // keeps memory bounded without ever splitting a secret.
@@ -905,7 +905,7 @@ fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<
                 emit(&pending);
                 pending.clear();
             } else if pending.len() >= MAX_STDERR_LINE {
-                if let Some(split) = pending.iter().rposition(|b| *b == b' ' || *b == b'\t') {
+                if let Some(split) = symphony_core::redaction::redaction_safe_split(&pending) {
                     let rest = pending.split_off(split + 1);
                     emit(&pending);
                     pending = rest;

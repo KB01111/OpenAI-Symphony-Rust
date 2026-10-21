@@ -350,7 +350,13 @@ impl SecretStore {
     /// Value stored in the vault only (no environment fallback).
     pub fn get_vault_secret(&self, key: &str) -> Option<String> {
         let guard = self.cache.lock().expect("secret cache mutex");
-        guard.get(key).filter(|v| !v.is_empty()).cloned()
+        let value = guard.get(key).filter(|v| !v.is_empty()).cloned();
+        // Every use refreshes the redaction registration, so a credential in use is never among
+        // the oldest entries the bounded registry drops.
+        if let Some(value) = &value {
+            symphony_core::redaction::register_secret(value);
+        }
+        value
     }
 
     pub fn get_secret(&self, key: &str) -> Option<String> {
