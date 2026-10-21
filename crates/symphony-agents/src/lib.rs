@@ -870,7 +870,8 @@ fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<
             let line = String::from_utf8_lossy(&raw);
             let redacted = redact_secrets(line.trim_end_matches(['\r', '\n']), &[]);
             raw.clear();
-            tracing::debug!(target: "agent_stderr", pid = ?pid, "{}", redacted);
+            // Under `symphony::` so the default filter (`symphony=debug`) keeps it in the log files.
+            tracing::debug!(target: "symphony::agent_stderr", pid = ?pid, "{}", redacted);
             let _ = event_tx.try_send(AgentStreamEvent {
                 event_type: "agent/stderr".into(),
                 timestamp: Utc::now(),

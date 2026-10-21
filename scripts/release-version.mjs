@@ -87,8 +87,10 @@ export function changelogSection(changelog, version) {
 /** Release date (`YYYY-MM-DD`) on the `## [<version>]` heading, or null (e.g. "Unreleased"). */
 export function changelogReleaseDate(changelog, version) {
   const line = changelog.split(/\r?\n/).find((l) => l.startsWith(`## [${version}]`));
-  const date = line?.match(/^## \[[^\]]+\]\s+-\s+(\d{4}-\d{2}-\d{2})\s*$/);
-  return date ? date[1] : null;
+  const date = line?.match(/^## \[[^\]]+\]\s+-\s+(\d{4}-\d{2}-\d{2})\s*$/)?.[1];
+  // Only real calendar dates (2026-02-30 and 2026-99-99 are rejected).
+  const parsed = date ? new Date(`${date}T00:00:00Z`) : null;
+  return parsed && !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(date) ? date : null;
 }
 
 function main() {

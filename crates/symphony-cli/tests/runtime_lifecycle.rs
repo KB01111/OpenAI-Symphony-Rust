@@ -160,9 +160,13 @@ fn runtime_publishes_private_discovery_coordinates_one_scheduler_and_recovers() 
         .expect("log directory")
         .map(|e| e.unwrap().path())
         .collect();
-    assert_eq!(logs.len(), 1, "one daily file: {logs:?}");
-    secure_fs::verify_private_file(&logs[0]).expect("the log file must be owner-only");
-    let log = std::fs::read_to_string(&logs[0]).unwrap();
+    // One daily file, or two if the runs straddled local midnight.
+    assert!((1..=2).contains(&logs.len()), "daily files: {logs:?}");
+    let mut log = String::new();
+    for file in &logs {
+        secure_fs::verify_private_file(file).expect("the log file must be owner-only");
+        log.push_str(&std::fs::read_to_string(file).unwrap());
+    }
     assert!(
         log.contains("Symphony"),
         "the runtime logged to the file: {log}"

@@ -100,6 +100,8 @@ test("release notes come from the matching CHANGELOG section only", () => {
   assert.equal(changelogSection(md, "2.0.0"), "- old");
   assert.equal(changelogSection(md, "2.0.1"), null);
   // "2.1.0" must not match "2.1.01" or a regex wildcard.
+  assert.equal(changelogSection("## [2.1.01]\n- no", "2.1.0"), null);
+  assert.equal(changelogSection("## [2.1.0-rc.1]\n- no", "2.1.0"), null);
   assert.equal(changelogSection("## [2x1x0]\n- no", "2.1.0"), null);
 });
 
@@ -107,6 +109,9 @@ test("only a dated heading is releasable", () => {
   assert.equal(changelogReleaseDate("## [2.1.0] - 2026-10-21\n- x", "2.1.0"), "2026-10-21");
   assert.equal(changelogReleaseDate("## [2.1.0] - Unreleased\n- x", "2.1.0"), null);
   assert.equal(changelogReleaseDate("## [2.1.0]\n- x", "2.1.0"), null);
+  assert.equal(changelogReleaseDate("## [2.1.0] - 2026-99-99\n- x", "2.1.0"), null);
+  assert.equal(changelogReleaseDate("## [2.1.0] - 2026-02-30\n- x", "2.1.0"), null);
+  assert.equal(changelogReleaseDate("## [2.1.0] - 2028-02-29\n- x", "2.1.0"), "2028-02-29");
 });
 
 test("the repository's CHANGELOG documents the current version", () => {

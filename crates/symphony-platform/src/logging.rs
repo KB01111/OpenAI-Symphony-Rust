@@ -88,9 +88,10 @@ pub fn init_logging(data_dir: Option<&Path>, component: &str) -> Result<Option<P
     outcome
 }
 
-/// Log panics through `tracing` (so they reach the log files), then run the previous hook.
+/// Log panics through `tracing` (so they reach the log files) and print a redacted report to
+/// stderr. The default hook is replaced, not chained: it would print the raw payload, which may
+/// contain a credential, to stderr (often persisted by service managers).
 fn install_panic_hook() {
-    let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let payload = info
             .payload()
@@ -103,8 +104,14 @@ fn install_panic_hook() {
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_default();
         let backtrace = std::backtrace::Backtrace::force_capture();
-        tracing::error!(target: "panic", %location, %backtrace, "panic: {payload}");
-        previous(info);
+        let payload = redact_secrets(&payload, &[]);
+        tracing::error!(target: "symphony::panic", %location, %backtrace, "panic: {payload}");
+        let thread = std::thread::current();
+        eprintln!(
+            "thread '{}' panicked at {location}:\n{payload}\n{}",
+            thread.name().unwrap_or("<unnamed>"),
+            redact_secrets(&backtrace.to_string(), &[])
+        );
     }));
 }
 

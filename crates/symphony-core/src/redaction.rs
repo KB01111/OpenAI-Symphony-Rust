@@ -1,5 +1,6 @@
 use regex::Regex;
 use std::sync::{OnceLock, RwLock};
+use zeroize::Zeroize;
 
 /// Secrets known only at runtime (API tokens, credential vault values) that the patterns below
 /// cannot recognise. Every [`redact_secrets`] call masks them, wherever its output goes (log files,
@@ -19,6 +20,17 @@ pub fn register_secret(secret: &str) {
     if let Ok(mut known) = REGISTERED_SECRETS.write() {
         if !known.iter().any(|k| k == secret) {
             known.push(secret.to_string());
+        }
+    }
+}
+
+/// Stop masking `secret` (a credential that was replaced or deleted) and wipe the registry's copy,
+/// so revoked credentials do not stay resident for the rest of the process.
+pub fn unregister_secret(secret: &str) {
+    let secret = secret.trim();
+    if let Ok(mut known) = REGISTERED_SECRETS.write() {
+        if let Some(index) = known.iter().position(|k| k == secret) {
+            known.swap_remove(index).zeroize();
         }
     }
 }
@@ -71,6 +83,11 @@ mod tests {
         assert_eq!(
             redact_secrets(&format!("auth {key} abc"), &[]),
             "auth [REDACTED] abc"
+        );
+        unregister_secret(key);
+        assert_eq!(
+            redact_secrets(&format!("auth {key}"), &[]),
+            format!("auth {key}")
         );
     }
 }

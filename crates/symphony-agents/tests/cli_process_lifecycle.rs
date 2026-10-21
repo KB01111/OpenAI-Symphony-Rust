@@ -48,14 +48,28 @@ fn config(
     }
 }
 
-/// Alive and not a zombie (a killed process stays a zombie until its parent reaps it).
+/// Alive and not a zombie (a killed process stays a zombie until its parent reaps it). Uses
+/// `/proc` where it exists and `ps` elsewhere; when neither can tell, the process counts as
+/// running, so a termination assertion can never pass vacuously.
 fn running(pid: i32) -> bool {
     // SAFETY: signal 0 only checks for existence.
     if unsafe { libc::kill(pid, 0) } != 0 {
         return false;
     }
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-    !stat.is_empty() && !stat.contains(") Z ")
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        return !stat.contains(") Z ");
+    }
+    match std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+    {
+        Ok(out) => {
+            let state = String::from_utf8_lossy(&out.stdout);
+            let state = state.trim();
+            !state.is_empty() && !state.starts_with('Z')
+        }
+        Err(_) => true,
+    }
 }
 
 async fn read_pid(path: &Path) -> i32 {

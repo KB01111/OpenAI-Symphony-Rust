@@ -338,6 +338,11 @@ impl SecretStore {
             v.zeroize();
         }
         if let Some(mut old) = removed {
+            // A replaced or deleted credential stops being masked (and its registry copy is
+            // wiped) unless another key still holds the same value.
+            if result.is_ok() && old.trim() != value.trim() && !guard.values().any(|v| *v == old) {
+                symphony_core::redaction::unregister_secret(&old);
+            }
             old.zeroize();
         }
         result?;
@@ -352,8 +357,14 @@ impl SecretStore {
     }
 
     pub fn get_secret(&self, key: &str) -> Option<String> {
-        self.get_vault_secret(key)
-            .or_else(|| std::env::var(key).ok().filter(|s| !s.is_empty()))
+        self.get_vault_secret(key).or_else(|| {
+            let value = std::env::var(key).ok().filter(|s| !s.is_empty());
+            // An environment credential is as secret as a vault one: mask it in logs too.
+            if let Some(value) = &value {
+                symphony_core::redaction::register_secret(value);
+            }
+            value
+        })
     }
 
     pub fn delete_secret(&self, key: &str) -> SymphonyResult<()> {
@@ -653,6 +664,27 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn replaced_credentials_stop_being_masked_and_current_ones_are() {
+        use symphony_core::redaction::redact_secrets;
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::new(dir.path()).unwrap();
+        let (old, new) = ("vault-old-Yt2Qp9", "vault-new-Lm4Zx7");
+        store.set_secret("ACME_KEY", old).unwrap();
+        store.set_secret("OTHER_KEY", "vault-shared-Hh5k").unwrap();
+        store.set_secret("THIRD_KEY", "vault-shared-Hh5k").unwrap();
+        store.set_secret("ACME_KEY", new).unwrap();
+        assert_eq!(
+            redact_secrets(old, &[]),
+            old,
+            "a replaced value is no longer registered"
+        );
+        assert_eq!(redact_secrets(new, &[]), "[REDACTED]");
+        // Deleting one of two keys with the same value keeps it masked.
+        store.delete_secret("OTHER_KEY").unwrap();
+        assert_eq!(redact_secrets("vault-shared-Hh5k", &[]), "[REDACTED]");
     }
 
     #[test]

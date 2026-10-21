@@ -191,8 +191,12 @@ pub async fn output_with_timeout(
     // The tree is gone, so the pipes reach EOF unless a process escaped it (e.g. `setsid`).
     let collected = tokio::time::timeout_at(deadline, async {
         (
-            stdout.await.unwrap_or_default(),
-            stderr.await.unwrap_or_default(),
+            stdout
+                .await
+                .unwrap_or_else(|e| Err(std::io::Error::other(e))),
+            stderr
+                .await
+                .unwrap_or_else(|e| Err(std::io::Error::other(e))),
         )
     })
     .await;
@@ -200,20 +204,23 @@ pub async fn output_with_timeout(
         Ok(output) => output,
         Err(_) => return None,
     };
-    Some(Ok(std::process::Output {
-        status,
-        stdout,
-        stderr,
+    // A failed capture is an error, not a partial but "successful" output.
+    Some(stdout.and_then(|stdout| {
+        Ok(std::process::Output {
+            status,
+            stdout,
+            stderr: stderr?,
+        })
     }))
 }
 
-async fn read_to_end<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>) -> Vec<u8> {
+async fn read_to_end<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>) -> std::io::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
     let mut buf = Vec::new();
     if let Some(mut pipe) = pipe {
-        let _ = pipe.read_to_end(&mut buf).await;
+        pipe.read_to_end(&mut buf).await?;
     }
-    buf
+    Ok(buf)
 }
 
 /// Resume every thread of a process created with `CREATE_SUSPENDED` (it has exactly one).
@@ -340,9 +347,39 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn pid_alive(pid: i32) -> bool {
+    /// Alive and not a zombie (a killed process stays a zombie until its parent reaps it). Uses
+    /// `/proc` where it exists and `ps` elsewhere; when neither can tell, the process counts as
+    /// running, so a termination assertion can never pass vacuously.
+    fn running(pid: i32) -> bool {
         // SAFETY: signal 0 only checks for existence.
-        unsafe { libc::kill(pid, 0) == 0 }
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return false;
+        }
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            return !stat.contains(") Z ");
+        }
+        match std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+        {
+            Ok(out) => {
+                let state = String::from_utf8_lossy(&out.stdout);
+                let state = state.trim();
+                !state.is_empty() && !state.starts_with('Z')
+            }
+            Err(_) => true,
+        }
+    }
+
+    async fn assert_terminated(pid: i32) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while running(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "process {pid} is still running"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     #[tokio::test]
@@ -368,26 +405,13 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
-        assert!(pid_alive(grandchild));
+        assert!(running(grandchild));
 
         // Same drop order as the agent sessions: the tree first, while the leader is unreaped.
         drop(tree);
         drop(child);
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while pid_alive(grandchild) {
-            // A killed grandchild is a zombie until its (also killed) parent is reaped by init.
-            let stat =
-                std::fs::read_to_string(format!("/proc/{grandchild}/stat")).unwrap_or_default();
-            if stat.is_empty() || stat.contains(") Z ") {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "grandchild {grandchild} survived the tree"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        assert_terminated(grandchild).await;
     }
 
     #[tokio::test]
@@ -421,19 +445,7 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let stat =
-                std::fs::read_to_string(format!("/proc/{grandchild}/stat")).unwrap_or_default();
-            if !pid_alive(grandchild) || stat.is_empty() || stat.contains(") Z ") {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "grandchild survived the timeout"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        assert_terminated(grandchild).await;
     }
 
     #[tokio::test]
@@ -460,19 +472,7 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let stat =
-                std::fs::read_to_string(format!("/proc/{background}/stat")).unwrap_or_default();
-            if !pid_alive(background) || stat.is_empty() || stat.contains(") Z ") {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the background process outlived its finished leader"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        assert_terminated(background).await;
     }
 }
 

@@ -70,8 +70,9 @@ symphony-orchestrator = { path = "crates/symphony-orchestrator" }
 symphony-server = { path = "crates/symphony-server" }
 
 # Shipped binaries (desktop host, CLI). Thin LTO and a single codegen unit trade build time for
-# smaller, faster binaries; panics still unwind so a failing task cannot take the runtime down, and
-# the symbol table is kept so panic backtraces in the log files stay readable.
+# smaller, faster binaries; panics still unwind so a failing task cannot take the runtime down.
+# Windows release binaries carry no symbols: the release workflow keeps the matching PDB files as a
+# build artifact, which turn the addresses in a logged panic backtrace into function names.
 [profile.release]
 lto = "thin"
 codegen-units = 1
