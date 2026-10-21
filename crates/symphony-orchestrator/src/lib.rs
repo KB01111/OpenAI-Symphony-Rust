@@ -253,6 +253,10 @@ pub struct SymphonyOrchestrator {
     event_tx: broadcast::Sender<AgentEvent>,
     refresh_tx: mpsc::Sender<()>,
     refresh_rx: Arc<Mutex<mpsc::Receiver<()>>>,
+    /// Serializes the decisions that start a task with manual status changes, so a scheduler
+    /// tick working from a snapshot cannot start a task that was just moved by hand. Taken before
+    /// `memory`, never while holding it.
+    dispatch_lock: Arc<Mutex<()>>,
 }
 
 impl SymphonyOrchestrator {
@@ -356,6 +360,7 @@ impl SymphonyOrchestrator {
             event_tx,
             refresh_tx,
             refresh_rx: Arc::new(Mutex::new(refresh_rx)),
+            dispatch_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -1053,6 +1058,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
     }
 
     pub async fn transition_task(&self, task_id: &str, next: TaskStatus) -> SymphonyResult<Task> {
+        let _dispatch_guard = self.dispatch_lock.lock().await;
         let mut task = self.get_task(task_id).await?;
         if next == TaskStatus::Running && task.status != TaskStatus::Running {
             return Err(SymphonyError::InvalidStateTransition {
@@ -1967,13 +1973,15 @@ Please implement the requested changes cleanly in the current Git workspace, run
             if dispatched >= available_slots {
                 break;
             }
+            // Checked, claimed and started as one step against manual status changes.
+            let _dispatch_guard = self.dispatch_lock.lock().await;
             match self.get_task(&task_id).await {
                 Ok(task)
                     if !task.issue.dispatchable || task.issue.is_todo_blocked(&terminal_states) =>
                 {
                     continue;
                 }
-                // Moved by hand since the snapshot: `transition_task` dropped the retry.
+                // Moved by hand since the snapshot (which also dropped the retry).
                 Ok(task) if task.status != TaskStatus::Queued => continue,
                 Ok(_) => {}
                 // The task is gone: nothing left to retry.
@@ -1982,8 +1990,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     continue;
                 }
             }
-            // Claim the retry: only an entry that is still registered may start (a manual move
-            // removes it under the same lock).
+            // Claim the retry: only an entry that is still registered may start.
             if self
                 .memory
                 .write()
@@ -1994,7 +2001,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             {
                 continue;
             }
-            let _ = self.dispatch_task_now(&task_id).await;
+            let _ = self.dispatch_task_locked(&task_id).await;
             dispatched += 1;
         }
         Ok(())
@@ -2046,6 +2053,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
     /// Dispatch a single task immediately into an isolated Git worktree and start the AI provider session
     pub async fn dispatch_task_now(&self, task_id: &str) -> SymphonyResult<Task> {
+        let _dispatch_guard = self.dispatch_lock.lock().await;
+        self.dispatch_task_locked(task_id).await
+    }
+
+    /// `dispatch_task_now` for a caller that already holds `dispatch_lock`.
+    async fn dispatch_task_locked(&self, task_id: &str) -> SymphonyResult<Task> {
         let mut task = self.get_task(task_id).await?;
         let project = self
             .storage
