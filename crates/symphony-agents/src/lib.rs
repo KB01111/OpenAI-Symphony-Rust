@@ -951,14 +951,27 @@ impl CliTurnProcess {
         }
     }
 
-    /// Wait for the agent to exit (still bounded by the turn timeout).
-    async fn wait(mut self) -> Result<std::process::ExitStatus> {
-        match tokio::time::timeout_at(self.deadline, self.child.wait()).await {
-            Ok(status) => {
-                let status = status?;
-                self.tree.release();
-                Ok(status)
+    /// Forward an event, bounded by the same deadline: a consumer that stops reading must not keep
+    /// the turn (and its agent) alive past `turn_timeout_ms`. A closed receiver is ignored.
+    async fn send(
+        &mut self,
+        event_tx: &mpsc::Sender<AgentStreamEvent>,
+        event: AgentStreamEvent,
+    ) -> Result<()> {
+        match tokio::time::timeout_at(self.deadline, event_tx.send(event)).await {
+            Ok(_) => Ok(()),
+            Err(_) => {
+                self.tree.kill();
+                Err(SymphonyError::TurnTimeout(self.timeout_ms))
             }
+        }
+    }
+
+    /// Wait for the agent to exit (still bounded by the turn timeout); tools it left running in
+    /// the background are ended with it.
+    async fn wait(mut self) -> Result<std::process::ExitStatus> {
+        match tokio::time::timeout_at(self.deadline, self.tree.wait(&mut self.child)).await {
+            Ok(status) => Ok(status?),
             Err(_) => {
                 self.tree.kill();
                 Err(SymphonyError::TurnTimeout(self.timeout_ms))
@@ -1073,20 +1086,23 @@ impl AgentSession for ClaudeCodeSession {
                 if let Some(ref t) = text {
                     messages.push(t.clone());
                 }
-                let _ = event_tx
-                    .send(AgentStreamEvent {
-                        event_type: format!("claude/{}", msg_type),
-                        timestamp: Utc::now(),
-                        session_id: Some(discovered_session.clone()),
-                        thread_id: Some(discovered_session.clone()),
-                        turn_id: Some("turn-1".into()),
-                        pid: self.pid,
-                        message: text,
-                        usage: Some(usage),
-                        rate_limits: None,
-                        raw: val,
-                    })
-                    .await;
+                process
+                    .send(
+                        &event_tx,
+                        AgentStreamEvent {
+                            event_type: format!("claude/{}", msg_type),
+                            timestamp: Utc::now(),
+                            session_id: Some(discovered_session.clone()),
+                            thread_id: Some(discovered_session.clone()),
+                            turn_id: Some("turn-1".into()),
+                            pid: self.pid,
+                            message: text,
+                            usage: Some(usage),
+                            rate_limits: None,
+                            raw: val,
+                        },
+                    )
+                    .await?;
             }
         }
 
@@ -1231,20 +1247,23 @@ impl AgentSession for OpenCodeSession {
                 if let Some(ref t) = text {
                     messages.push(t.clone());
                 }
-                let _ = event_tx
-                    .send(AgentStreamEvent {
-                        event_type: "opencode/event".into(),
-                        timestamp: Utc::now(),
-                        session_id: Some(discovered_session.clone()),
-                        thread_id: Some(discovered_session.clone()),
-                        turn_id: Some("turn-1".into()),
-                        pid: self.pid,
-                        message: text,
-                        usage: Some(usage),
-                        rate_limits: None,
-                        raw: val,
-                    })
-                    .await;
+                process
+                    .send(
+                        &event_tx,
+                        AgentStreamEvent {
+                            event_type: "opencode/event".into(),
+                            timestamp: Utc::now(),
+                            session_id: Some(discovered_session.clone()),
+                            thread_id: Some(discovered_session.clone()),
+                            turn_id: Some("turn-1".into()),
+                            pid: self.pid,
+                            message: text,
+                            usage: Some(usage),
+                            rate_limits: None,
+                            raw: val,
+                        },
+                    )
+                    .await?;
             }
         }
 

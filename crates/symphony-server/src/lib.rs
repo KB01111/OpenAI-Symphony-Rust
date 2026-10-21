@@ -95,12 +95,15 @@ pub fn default_local_origins() -> Vec<String> {
     .collect()
 }
 
-/// Generate a random 256-bit hex access token.
+/// Generate a random 256-bit hex access token. It is registered for log redaction, so neither
+/// the local nor a remote token can reach a log line.
 pub fn generate_access_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
-    hex::encode(bytes)
+    let token = hex::encode(bytes);
+    symphony_platform::logging::redact_from_logs(&token);
+    token
 }
 
 /// Which clients a listener serves.

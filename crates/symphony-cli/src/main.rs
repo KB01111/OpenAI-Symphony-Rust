@@ -229,7 +229,10 @@ async fn main() -> anyhow::Result<()> {
     // A supplied token is used as-is; a too-short one is a configuration error rather than being
     // silently replaced (clients configured with it could never authenticate).
     let token = match cli.token.clone() {
-        Some(t) if t.len() >= 16 => t,
+        Some(t) if t.len() >= 16 => {
+            symphony_platform::logging::redact_from_logs(&t);
+            t
+        }
         Some(_) => anyhow::bail!("--token / SYMPHONY_API_TOKEN must be at least 16 characters"),
         None => generate_access_token(),
     };

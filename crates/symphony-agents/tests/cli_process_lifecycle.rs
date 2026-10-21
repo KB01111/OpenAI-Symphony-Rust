@@ -186,3 +186,30 @@ async fn the_turn_timeout_applies_to_cli_agents() {
     let agent_pid = session.pid().expect("agent pid") as i32;
     assert_terminated(agent_pid).await;
 }
+
+#[tokio::test]
+async fn a_stalled_event_consumer_cannot_extend_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    // Far more events than the channel holds, then the agent keeps running.
+    let agent = fake_agent(
+        dir.path(),
+        "i=0; while [ $i -lt 200 ]; do echo '{\"type\":\"assistant\",\"session_id\":\"s-3\"}'; i=$((i+1)); done\nsleep 300",
+    );
+    // Nobody reads `_rx`: every send blocks once the 4 slots are full.
+    let (tx, _rx) = mpsc::channel::<AgentStreamEvent>(4);
+    let mut session = start_agent_session(
+        config(ProviderKind::ClaudeCode, &agent, dir.path(), 1),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let err = tokio::time::timeout(Duration::from_secs(30), session.run_turn("work", tx))
+        .await
+        .expect("a blocked event send must not outlive the turn timeout")
+        .unwrap_err();
+    assert!(matches!(err, SymphonyError::TurnTimeout(1)), "{err:?}");
+    assert_terminated(session.pid().expect("agent pid") as i32).await;
+}

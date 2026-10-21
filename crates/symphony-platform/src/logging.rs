@@ -13,7 +13,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::{Local, NaiveDate};
 use symphony_core::redaction::redact_secrets;
@@ -31,6 +31,33 @@ pub const MAX_LOG_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// Filter used when `RUST_LOG` is not set.
 pub const DEFAULT_LOG_FILTER: &str = "info,symphony=debug";
 
+/// Secrets known only at runtime (API tokens, vault values) that pattern-based redaction cannot
+/// recognise. Every log line, on stdout and on disk, is redacted against them.
+static RUNTIME_SECRETS: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+/// Redact `secret` from every log line written from now on. Values shorter than 6 characters are
+/// ignored (as by [`redact_secrets`]), so common words are never masked.
+pub fn redact_from_logs(secret: &str) {
+    let secret = secret.trim();
+    if secret.len() < 6 {
+        return;
+    }
+    if let Ok(mut known) = RUNTIME_SECRETS.write() {
+        if !known.iter().any(|k| k == secret) {
+            known.push(secret.to_string());
+        }
+    }
+}
+
+/// `line` with pattern-matched and registered secrets replaced by `[REDACTED]`.
+fn redact_line(line: &[u8]) -> String {
+    let text = String::from_utf8_lossy(line);
+    match RUNTIME_SECRETS.read() {
+        Ok(known) => redact_secrets(&text, &known),
+        Err(_) => redact_secrets(&text, &[]),
+    }
+}
+
 /// Directory holding the log files of a data directory.
 pub fn log_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("logs")
@@ -41,7 +68,9 @@ pub fn log_dir(data_dir: &Path) -> PathBuf {
 /// could not be opened (logging then continues on stdout only, and the caller should report it).
 pub fn init_logging(data_dir: Option<&Path>, component: &str) -> Result<Option<PathBuf>, String> {
     let filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| DEFAULT_LOG_FILTER.into());
-    let stdout_layer = tracing_subscriber::fmt::layer().with_filter(filter());
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_writer(RedactedStdout)
+        .with_filter(filter());
 
     let (file_layer, outcome) = match data_dir {
         None => (None, Ok(None)),
@@ -141,7 +170,7 @@ impl DailyLogFiles {
             // Keep the process running; stdout still gets the event.
             state.file = None;
         }
-        let redacted = redact_secrets(&String::from_utf8_lossy(buf), &[]);
+        let redacted = redact_line(buf);
         state.append(redacted.as_bytes());
     }
 }
@@ -179,8 +208,11 @@ impl State {
         let result = if (bytes.len() as u64) < remaining {
             file.write_all(bytes).map(|_| bytes.len() as u64)
         } else {
+            // The notice is cut to the remaining budget, so the file never exceeds the cap; the
+            // file is then full and nothing else is written today.
             let notice = b"[log size limit reached; further entries for today are dropped]\n";
-            file.write_all(notice).map(|_| remaining)
+            let fitting = &notice[..notice.len().min(remaining as usize)];
+            file.write_all(fitting).map(|_| remaining)
         };
         match result {
             Ok(n) => self.written += n,
@@ -216,6 +248,28 @@ fn is_daily_log_name(name: &str, prefix: &str) -> bool {
         .and_then(|rest| rest.strip_prefix('-'))
         .and_then(|rest| rest.strip_suffix(".log"))
         .is_some_and(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok())
+}
+
+/// Stdout with the same redaction as the files (service managers often persist stdout).
+struct RedactedStdout;
+
+impl Write for RedactedStdout {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        io::stdout().write_all(redact_line(buf).as_bytes())?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::stdout().flush()
+    }
+}
+
+impl<'a> MakeWriter<'a> for RedactedStdout {
+    type Writer = RedactedStdout;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        RedactedStdout
+    }
 }
 
 /// Writer handed to `tracing_subscriber` for one event.
@@ -273,6 +327,21 @@ mod tests {
     }
 
     #[test]
+    fn registered_runtime_secrets_are_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = DailyLogFiles::open(dir.path(), "cli").unwrap();
+        // A 64-hex API token matches no pattern; only registration can catch it.
+        let token = "4f1c".repeat(16);
+        redact_from_logs(&token);
+        redact_from_logs("abc"); // too short to register
+        let today = Local::now().date_naive();
+        files.write_event(format!("token={token} abc\n").as_bytes(), today);
+        let written =
+            std::fs::read_to_string(DailyLogFiles::path_for(dir.path(), "cli", today)).unwrap();
+        assert_eq!(written, "token=[REDACTED] abc\n");
+    }
+
+    #[test]
     fn a_new_day_rolls_over_and_old_files_are_pruned() {
         let dir = tempfile::tempdir().unwrap();
         for d in 1..=20 {
@@ -309,10 +378,9 @@ mod tests {
         files.write_event(b"neither does this one\n", today);
         let content =
             std::fs::read_to_string(DailyLogFiles::path_for(dir.path(), "cli", today)).unwrap();
-        assert_eq!(
-            content,
-            "[log size limit reached; further entries for today are dropped]\n"
-        );
+        // Only the 10 bytes left in the budget are used, even by the notice.
+        assert_eq!(content, "[log size ");
+        assert_eq!(files.inner.lock().unwrap().written, MAX_LOG_FILE_BYTES);
     }
 
     #[cfg(unix)]

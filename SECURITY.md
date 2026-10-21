@@ -159,7 +159,8 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   **process tree** (`symphony_workspaces::process::ProcessTree`): a Windows Job Object with
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (the kernel also kills the tree when the host crashes), a dedicated
   process group on Unix. Cancelling, stall- or turn-timing-out a task terminates the agent and everything it
-  started, so nothing keeps editing a workspace after Symphony has stopped tracking it.
+  started, and when an agent, hook or validation finishes normally the processes it left running in the
+  background are ended too, so nothing keeps editing a workspace after Symphony has stopped tracking it.
 - Agent stderr is always drained (and redacted before it is logged or streamed), so an agent cannot block on
   a full pipe; `turn_timeout_ms` applies to every driver.
 - Subprocesses never open console windows on Windows (`CREATE_NO_WINDOW`).
@@ -168,8 +169,10 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
 
 - Desktop and CLI write daily files to `<data_dir>/logs/<desktop|cli>-YYYY-MM-DD.log`, created owner-only
   through `secure_fs` (an existing file that others can read is refused, never appended to).
-- Every line passes through `redact_secrets` (GitHub, OpenAI, Linear and bearer token patterns); the local
-  and remote API tokens and vault values are never logged. Panics are logged with location and backtrace.
+- Every line, on disk and on stdout, passes through `redact_secrets`: the GitHub, OpenAI, Linear and bearer
+  token patterns plus every secret registered at runtime (`logging::redact_from_logs`: each generated local or
+  remote API token, a supplied `--token`, and every credential vault value). Panics are logged with location
+  and backtrace.
 - Retention: the newest 14 files per component, at most 50 MiB per file and day.
 
 ## 8. Supply Chain and Releases

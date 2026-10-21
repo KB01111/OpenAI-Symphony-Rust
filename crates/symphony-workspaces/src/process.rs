@@ -77,9 +77,8 @@ impl ProcessTree {
 
     /// Terminate every process in the tree now. Idempotent.
     ///
-    /// On Unix this must run while the group leader has not been reaped yet (i.e. before
-    /// `Child::wait`/`Child::kill` return), otherwise the id could in theory belong to a new group;
-    /// call [`ProcessTree::release`] once the child has been waited for.
+    /// On Unix this must run while the group leader has not been reaped yet, otherwise the group
+    /// id could in theory have been reused; [`ProcessTree::wait`] takes care of that.
     pub fn kill(&mut self) {
         #[cfg(windows)]
         if let Some(job) = self.job.take() {
@@ -94,14 +93,44 @@ impl ProcessTree {
         }
     }
 
-    /// Stop tracking the tree after its leader exited normally and was waited for. On Windows the
-    /// job is still closed, which ends processes the agent left running in the background.
-    pub fn release(&mut self) {
+    /// Wait for `child` (the tree's leader) to exit, end whatever it left running in its tree
+    /// (background tools must not keep editing a workspace after the turn or hook is over), then
+    /// reap it. Cancel-safe: dropping the future leaves the leader unreaped, so [`kill`] (or
+    /// `Drop`) still targets the right processes.
+    ///
+    /// [`kill`]: ProcessTree::kill
+    pub async fn wait(&mut self, child: &mut Child) -> std::io::Result<std::process::ExitStatus> {
+        #[cfg(unix)]
+        if let Some(pid) = self.pgid {
+            // Observe the exit without reaping: while the leader is a zombie its id cannot be
+            // reused, so signalling the group afterwards cannot hit an unrelated process.
+            let _ = tokio::task::spawn_blocking(move || wait_for_exit_without_reaping(pid)).await;
+            self.kill();
+        }
+        let status = child.wait().await;
         #[cfg(windows)]
         self.kill();
-        #[cfg(unix)]
-        {
-            self.pgid = None;
+        status
+    }
+}
+
+/// Block until `pid` (our child) has exited, leaving it unreaped (`WNOWAIT`).
+#[cfg(unix)]
+fn wait_for_exit_without_reaping(pid: i32) {
+    loop {
+        // SAFETY: zero-initialised siginfo_t is valid output storage for waitid.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: plain syscall on our own child.
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if rc == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return;
         }
     }
 }
@@ -113,31 +142,60 @@ impl Drop for ProcessTree {
 }
 
 /// Spawn `cmd` (stdout/stderr should be piped) as a process tree and collect its output. Returns
-/// `None` when `limit` elapses first; the whole tree is then killed before the child is reaped, so
-/// a timed-out hook or validation command cannot leave e.g. `node` running behind `npm test`.
+/// `None` when `limit` elapses first. Either way the whole tree ends with the command: on a
+/// timeout it is killed before the leader is reaped, and processes the command left running in
+/// the background are ended when it exits, so a hook or validation cannot leave e.g. `node`
+/// running behind `npm test`.
 pub async fn output_with_timeout(
     cmd: &mut Command,
     limit: std::time::Duration,
 ) -> Option<std::io::Result<std::process::Output>> {
+    let deadline = tokio::time::Instant::now() + limit;
     prepare_tree_command(cmd);
-    let child = match cmd.spawn() {
+    let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(err) => return Some(Err(err)),
     };
     let mut tree = ProcessTree::attach(&child);
-    // Pinned outside `select!` so the child is still owned (unreaped) when the timer wins.
-    let output = child.wait_with_output();
-    tokio::pin!(output);
-    tokio::select! {
-        res = &mut output => {
-            tree.release();
-            Some(res)
-        }
-        _ = tokio::time::sleep(limit) => {
+    let stdout = tokio::spawn(read_to_end(child.stdout.take()));
+    let stderr = tokio::spawn(read_to_end(child.stderr.take()));
+
+    let status = match tokio::time::timeout_at(deadline, tree.wait(&mut child)).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(err)) => return Some(Err(err)),
+        Err(_) => {
             tree.kill();
-            None
+            stdout.abort();
+            stderr.abort();
+            return None;
         }
+    };
+    // The tree is gone, so the pipes reach EOF unless a process escaped it (e.g. `setsid`).
+    let collected = tokio::time::timeout_at(deadline, async {
+        (
+            stdout.await.unwrap_or_default(),
+            stderr.await.unwrap_or_default(),
+        )
+    })
+    .await;
+    let (stdout, stderr) = match collected {
+        Ok(output) => output,
+        Err(_) => return None,
+    };
+    Some(Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    }))
+}
+
+async fn read_to_end<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.read_to_end(&mut buf).await;
     }
+    buf
 }
 
 #[cfg(windows)]
@@ -309,18 +367,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn released_tree_leaves_finished_processes_alone() {
+    async fn a_finished_leader_takes_its_background_processes_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("background.pid");
+        // The leader exits successfully but leaves a detached background "tool" behind.
         let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg("exit 0");
+        cmd.arg("-c").arg(format!(
+            "sleep 300 >/dev/null 2>&1 & echo $! > '{}'; exit 0",
+            pid_file.display()
+        ));
         prepare_tree_command(&mut cmd);
         let mut child = cmd.spawn().unwrap();
         let mut tree = ProcessTree::attach(&child);
-        assert!(child.wait().await.unwrap().success());
-        tree.release();
+        assert!(tree.wait(&mut child).await.unwrap().success());
         assert!(
             tree.pgid.is_none(),
-            "a reaped group id must not be signalled later"
+            "a reaped group id must never be signalled later"
         );
+
+        let background: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let stat =
+                std::fs::read_to_string(format!("/proc/{background}/stat")).unwrap_or_default();
+            if !pid_alive(background) || stat.is_empty() || stat.contains(") Z ") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the background process outlived its finished leader"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }
 

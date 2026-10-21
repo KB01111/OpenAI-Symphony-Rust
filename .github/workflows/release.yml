@@ -48,6 +48,8 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
+          # setup-node v5 enables the pnpm cache automatically ("packageManager"); not for releases.
+          package-manager-cache: false
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -99,11 +101,15 @@ jobs:
           "config=$configPath" >> $env:GITHUB_OUTPUT
           "signtool=$($signtool.FullName)" >> $env:GITHUB_OUTPUT
 
+      # Step outputs reach scripts through the environment, never through template expansion.
       - name: Build the desktop app and NSIS installer
         shell: pwsh
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+          SIGNING_CONFIG: ${{ steps.signing.outputs.config }}
         run: |
           $extra = @()
-          if ('${{ steps.signing.outputs.signed }}' -eq 'true') { $extra = @('--config', '${{ steps.signing.outputs.config }}') }
+          if ($env:SIGNED -eq 'true') { $extra = @('--config', $env:SIGNING_CONFIG) }
           pnpm --filter @symphony/desktop tauri build --bundles nsis @extra
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
@@ -113,8 +119,11 @@ jobs:
       - name: Sign the CLI
         if: steps.signing.outputs.signed == 'true'
         shell: pwsh
+        env:
+          SIGNTOOL: ${{ steps.signing.outputs.signtool }}
+          THUMBPRINT: ${{ steps.signing.outputs.thumbprint }}
         run: |
-          & '${{ steps.signing.outputs.signtool }}' sign /sha1 '${{ steps.signing.outputs.thumbprint }}' /fd sha256 /tr http://timestamp.digicert.com /td sha256 target/release/symphony-cli.exe
+          & $env:SIGNTOOL sign /sha1 $env:THUMBPRINT /fd sha256 /tr http://timestamp.digicert.com /td sha256 target/release/symphony-cli.exe
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Native Windows runtime smoke test (release binaries)
@@ -123,8 +132,10 @@ jobs:
 
       - name: Stage assets and checksums
         shell: pwsh
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
         run: |
-          $signed = '${{ steps.signing.outputs.signed }}' -eq 'true'
+          $signed = $env:SIGNED -eq 'true'
           $suffix = if ($signed) { '' } else { '-UNSIGNED' }
           $installer = Get-ChildItem target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
           if (-not $installer) { throw 'NSIS installer not found' }
@@ -160,21 +171,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $assets = Get-ChildItem dist-release | ForEach-Object { $_.FullName }
+          # $LASTEXITCODE only holds the last native command: check every gh call that matters.
+          function Invoke-Gh { gh @args; if ($LASTEXITCODE -ne 0) { throw "gh $($args -join ' ') failed ($LASTEXITCODE)" } }
           gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
             $draft = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json isDraft --jq .isDraft
+            if ($LASTEXITCODE -ne 0) { throw 'could not read the existing release' }
             if ($draft -ne 'true') { throw "release $env:RELEASE_TAG is already published; assets were not replaced" }
-            gh release upload $env:RELEASE_TAG @assets --clobber --repo $env:GITHUB_REPOSITORY
-            gh release edit $env:RELEASE_TAG --notes-file "$env:RUNNER_TEMP/release-notes.md" --repo $env:GITHUB_REPOSITORY
+            Invoke-Gh release upload $env:RELEASE_TAG @assets --clobber --repo $env:GITHUB_REPOSITORY
+            Invoke-Gh release edit $env:RELEASE_TAG --notes-file "$env:RUNNER_TEMP/release-notes.md" --repo $env:GITHUB_REPOSITORY
           } else {
             $pre = if ($env:RELEASE_VERSION -match '-') { @('--prerelease') } else { @() }
-            gh release create $env:RELEASE_TAG @assets --draft --verify-tag @pre `
+            Invoke-Gh release create $env:RELEASE_TAG @assets --draft --verify-tag @pre `
               --title "Symphony Desktop $env:RELEASE_VERSION" `
               --notes-file "$env:RUNNER_TEMP/release-notes.md" --repo $env:GITHUB_REPOSITORY
           }
-          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Remove the signing certificate
         if: always() && steps.signing.outputs.thumbprint != ''
         shell: pwsh
-        run: Remove-Item "Cert:\CurrentUser\My\${{ steps.signing.outputs.thumbprint }}" -Force -ErrorAction SilentlyContinue
+        env:
+          THUMBPRINT: ${{ steps.signing.outputs.thumbprint }}
+        run: Remove-Item "Cert:\CurrentUser\My\$env:THUMBPRINT" -Force -ErrorAction SilentlyContinue

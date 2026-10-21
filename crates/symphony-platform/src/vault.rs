@@ -151,6 +151,9 @@ impl SecretStore {
             Ok(envelope) => store.decode_envelope(&envelope)?,
             Err(_) => store.migrate_legacy(&raw)?,
         };
+        for value in entries.values() {
+            crate::logging::redact_from_logs(value);
+        }
         *store.cache.lock().expect("secret cache mutex") = entries;
         Ok(store)
     }
@@ -322,6 +325,7 @@ impl SecretStore {
         let removed = if value.trim().is_empty() {
             next.remove(key)
         } else {
+            crate::logging::redact_from_logs(value);
             next.insert(key.to_string(), value.trim().to_string())
         };
         let result = self.persist(&next);
