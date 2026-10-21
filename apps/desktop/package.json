@@ -33,7 +33,7 @@
     "@tauri-apps/api": "^2.12.4",
     "codemirror": "^6.0.2",
     "lucide-react": "^0.487.0",
-    "motion": "^12.6.2",
+    "motion": "^14.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.4.0",
