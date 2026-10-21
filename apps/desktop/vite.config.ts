@@ -3,6 +3,9 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { readRuntimeDiscovery } from "@symphony/api-client/node";
 
+/** Must match `DEV_DISCOVERY_HEADER` in `packages/api-client/src/transport/discovery.ts`. */
+const DEV_DISCOVERY_HEADER = "X-Symphony-Discovery";
+
 /**
  * Development-only runtime discovery for browser sessions (`pnpm dev`, Playwright): serves the
  * local runtime's `runtime.json` endpoint + token at `/__symphony/runtime`. Not part of
@@ -14,8 +17,11 @@ function symphonyDevDiscovery(): Plugin {
     apply: "serve",
     configureServer(server) {
       server.middlewares.use("/__symphony/runtime", (req, res) => {
-        // Only same-origin requests from the dev page itself may read the token:
+        // Only same-origin scripts on the dev page itself may read the token:
         // - loopback Host header (blocks DNS rebinding),
+        // - the custom `X-Symphony-Discovery` header: a top-level navigation or <img>/<script>
+        //   load cannot send it, and a cross-origin script cannot send it without a CORS
+        //   preflight (which the Origin check below fails),
         // - browsers mark cross-site/same-site requests with Sec-Fetch-Site,
         // - an Origin header, when present, must be this dev server.
         const hostHeader = req.headers.host ?? "";
@@ -23,7 +29,13 @@ function symphonyDevDiscovery(): Plugin {
         const fetchSite = req.headers["sec-fetch-site"];
         const origin = req.headers.origin;
         const sameOrigin = origin === undefined || origin === `http://${hostHeader}`;
-        if ((host !== "localhost" && host !== "127.0.0.1") || (fetchSite !== undefined && fetchSite !== "same-origin") || !sameOrigin) {
+        const marked = req.headers[DEV_DISCOVERY_HEADER.toLowerCase()] === "1";
+        if (
+          (host !== "localhost" && host !== "127.0.0.1") ||
+          !marked ||
+          (fetchSite !== undefined && fetchSite !== "same-origin") ||
+          !sameOrigin
+        ) {
           res.statusCode = 403;
           res.end();
           return;

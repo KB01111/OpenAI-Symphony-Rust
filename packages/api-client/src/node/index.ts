@@ -2,7 +2,7 @@
  * Node-only helpers (Vite dev-server discovery plugin, integration tests). Not part of the
  * browser entry point because it uses the filesystem.
  */
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -35,10 +35,24 @@ function processAlive(pid: number): boolean {
   }
 }
 
-/** Read `<dataDir>/runtime.json` if its owning process is alive. */
+/**
+ * On Unix, a discovery file must be owned by this user and not readable by anyone else — the same
+ * rule the Rust runtime applies — so a record planted by another account is never trusted. (On
+ * Windows the runtime enforces an owner-only DACL when it writes the file.)
+ */
+async function isPrivateToCurrentUser(path: string): Promise<boolean> {
+  if (process.platform === "win32" || typeof process.getuid !== "function") return true;
+  // `lstat`: a symlink is never trusted, even one pointing at a private file.
+  const info = await lstat(path);
+  return info.isFile() && info.uid === process.getuid() && (info.mode & 0o077) === 0;
+}
+
+/** Read `<dataDir>/runtime.json` if it is private to this user and its owning process is alive. */
 export async function readRuntimeDiscovery(dataDir = defaultDataDir()): Promise<RuntimeDiscoveryRecord | null> {
   try {
-    const record = JSON.parse(await readFile(join(dataDir, "runtime.json"), "utf8")) as RuntimeDiscoveryRecord;
+    const path = join(dataDir, "runtime.json");
+    if (!(await isPrivateToCurrentUser(path))) return null;
+    const record = JSON.parse(await readFile(path, "utf8")) as RuntimeDiscoveryRecord;
     return processAlive(record.pid) ? record : null;
   } catch {
     return null;

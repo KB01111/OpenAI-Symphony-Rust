@@ -8,6 +8,15 @@
 //! - CORS is restricted to an explicit origin allowlist (the Tauri webview and the Vite dev server
 //!   by default) instead of `*`.
 //! - Tokens are compared in constant time and never logged.
+//! - The optional remote companion listener ([`remote`]) uses its own token and serves only a
+//!   restricted subset of operations ([`remote::REMOTE_OPERATIONS`]).
+
+pub mod remote;
+
+pub use remote::{
+    RemoteAccessManager, RemoteAccessStatus, RemoteListenerState, RemoteTokenIssued, TokenSlot,
+    REMOTE_OPERATIONS, REMOTE_TOKEN_KEY,
+};
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -94,6 +103,15 @@ pub fn generate_access_token() -> String {
     hex::encode(bytes)
 }
 
+/// Which clients a listener serves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiScope {
+    /// Local administration (desktop webview, CLI tools): every operation.
+    Local,
+    /// Remote companion: only [`remote::REMOTE_OPERATIONS`].
+    Remote,
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind_host: String,
@@ -104,6 +122,9 @@ pub struct ServerConfig {
     pub allowed_origins: Vec<String>,
     /// Workspace root used for projects registered without an explicit one.
     pub default_workspace_root: Option<PathBuf>,
+    pub scope: ApiScope,
+    /// Remote listener manager exposed through the local-only `/remote-access` endpoints.
+    pub remote_access: Option<Arc<RemoteAccessManager>>,
 }
 
 impl ServerConfig {
@@ -114,6 +135,8 @@ impl ServerConfig {
             access_token,
             allowed_origins: default_local_origins(),
             default_workspace_root: None,
+            scope: ApiScope::Local,
+            remote_access: None,
         }
     }
 }
@@ -121,9 +144,12 @@ impl ServerConfig {
 #[derive(Clone)]
 pub struct ServerState {
     pub orchestrator: Arc<SymphonyOrchestrator>,
-    pub access_token: Option<Arc<String>>,
+    /// Token required on protected routes; `None` disables authentication (tests only).
+    pub auth: Option<TokenSlot>,
+    pub scope: ApiScope,
     pub default_workspace_root: Option<PathBuf>,
     pub started_at: DateTime<Utc>,
+    pub remote_access: Option<Arc<RemoteAccessManager>>,
 }
 
 // ============================================================================
@@ -308,6 +334,7 @@ pub struct StreamControlEvent {
         (name = "providers", description = "Coding agent providers"),
         (name = "credentials", description = "Credential vault (key names only)"),
         (name = "diagnostics", description = "Redacted diagnostics export"),
+        (name = "remote-access", description = "Remote companion listener and its access token (local administration only)"),
     ),
     // The shared error body plus types that travel over the event stream or document string
     // fields; no JSON operation references them directly.
@@ -339,6 +366,13 @@ const OPTIONAL_FIELD_SCHEMAS: &[&str] = &[
     "ProjectUpdate",
 ];
 
+/// Individual properties added after 2.0 that older clients may omit from request bodies
+/// (`#[serde(default)]` on the Rust side). Keeping them optional keeps the change non-breaking.
+const OPTIONAL_PROPERTIES: &[(&str, &str)] = &[("AppSettings", "remote_allowed_origins")];
+
+/// OpenAPI extension that marks whether an operation is available on the remote listener.
+pub const REMOTE_EXTENSION: &str = "x-symphony-remote";
+
 /// Completes the generated document: bearer security on protected operations, the shared error
 /// response, response descriptions and exact `required` lists.
 struct ApiContract;
@@ -362,7 +396,12 @@ impl Modify for ApiContract {
                 continue;
             }
             if let RefOr::T(Schema::Object(object)) = schema {
-                object.required = object.properties.keys().cloned().collect();
+                object.required = object
+                    .properties
+                    .keys()
+                    .filter(|prop| !OPTIONAL_PROPERTIES.contains(&(name.as_str(), prop.as_str())))
+                    .cloned()
+                    .collect();
             }
         }
 
@@ -377,16 +416,25 @@ impl Modify for ApiContract {
             .build();
         for (path, item) in openapi.paths.paths.iter_mut() {
             let protected = !PUBLIC_PATHS.contains(&path.as_str());
-            for operation in [
-                &mut item.get,
-                &mut item.put,
-                &mut item.post,
-                &mut item.delete,
-                &mut item.patch,
+            let relative = path.strip_prefix("/api/v1").unwrap_or(path).to_string();
+            for (method, operation) in [
+                (Method::GET, &mut item.get),
+                (Method::PUT, &mut item.put),
+                (Method::POST, &mut item.post),
+                (Method::DELETE, &mut item.delete),
+                (Method::PATCH, &mut item.patch),
             ]
             .into_iter()
-            .flatten()
+            .filter_map(|(m, op)| op.as_mut().map(|op| (m, op)))
             {
+                operation.extensions = Some(
+                    utoipa::openapi::extensions::ExtensionsBuilder::new()
+                        .add(
+                            REMOTE_EXTENSION,
+                            remote::remote_operation_allowed(&method, &relative),
+                        )
+                        .build(),
+                );
                 operation
                     .responses
                     .responses
@@ -462,6 +510,11 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(delete_credential_handler))
         .routes(routes!(export_diagnostics_handler))
         .routes(routes!(issue_detail_handler))
+        .routes(routes!(get_remote_access_handler))
+        .routes(routes!(
+            rotate_remote_token_handler,
+            revoke_remote_token_handler
+        ))
         // Undocumented compatibility routes: the legacy task alias and the SPEC.md Section
         // 13.7.2 `/api/v1/<issue_identifier>` catch-all (registered last-resort by axum).
         .route("/tasks/id/{id}", get(get_task_by_id_handler))
@@ -482,15 +535,35 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 }
 
 pub fn build_router(orchestrator: Arc<SymphonyOrchestrator>, config: &ServerConfig) -> Router {
-    let state = ServerState {
-        orchestrator,
-        access_token: config
+    build_router_inner(orchestrator, config, None)
+}
+
+/// Build a router; `token` overrides `config.access_token` with a live, replaceable token (the
+/// remote listener's). A remote-scope router always requires a token, even an absent one.
+pub(crate) fn build_router_inner(
+    orchestrator: Arc<SymphonyOrchestrator>,
+    config: &ServerConfig,
+    token: Option<TokenSlot>,
+) -> Router {
+    let auth = match (token, config.scope) {
+        (Some(slot), _) => Some(slot),
+        (None, ApiScope::Remote) => Some(TokenSlot::new(None)),
+        (None, ApiScope::Local) => config
             .access_token
             .clone()
             .filter(|t| !t.trim().is_empty())
-            .map(Arc::new),
+            .map(|t| TokenSlot::new(Some(t))),
+    };
+    let state = ServerState {
+        orchestrator,
+        auth,
+        scope: config.scope,
         default_workspace_root: config.default_workspace_root.clone(),
         started_at: Utc::now(),
+        remote_access: match config.scope {
+            ApiScope::Local => config.remote_access.clone(),
+            ApiScope::Remote => None,
+        },
     };
 
     let origins: Vec<HeaderValue> = config
@@ -515,17 +588,27 @@ pub fn build_router(orchestrator: Arc<SymphonyOrchestrator>, config: &ServerConf
         .max_age(Duration::from_secs(600));
 
     let (public, protected) = api_routes();
+    // Route layers run last-added first: authentication, then the remote scope check.
+    let protected = match config.scope {
+        ApiScope::Local => protected,
+        ApiScope::Remote => {
+            protected.route_layer(middleware::from_fn(remote::enforce_remote_scope))
+        }
+    };
     let protected = protected.route_layer(middleware::from_fn_with_state(
         state.clone(),
         require_bearer_token,
     ));
     let (api, _) = public.merge(protected).split_for_parts();
 
-    Router::new()
+    let router = Router::new()
         .route("/", get(root_handler))
-        .nest("/api/v1", api)
-        .layer(cors)
-        .with_state(state)
+        .nest("/api/v1", api);
+    let router = match config.scope {
+        ApiScope::Local => router,
+        ApiScope::Remote => router.layer(middleware::from_fn(remote::reject_cleartext_forwarding)),
+    };
+    router.layer(cors).with_state(state)
 }
 
 pub async fn start_http_server(
@@ -564,14 +647,18 @@ async fn require_bearer_token(
     request: Request,
     next: Next,
 ) -> Response {
-    if let Some(expected) = &state.access_token {
+    if let Some(slot) = &state.auth {
         let provided = request
             .headers()
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.strip_prefix("Bearer "))
             .unwrap_or("");
-        if !token_matches(expected, provided.trim()) {
+        // A revoked (absent) token rejects every request.
+        let valid = slot
+            .current()
+            .is_some_and(|expected| token_matches(&expected, provided.trim()));
+        if !valid {
             return api_error(
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
@@ -582,7 +669,7 @@ async fn require_bearer_token(
     next.run(request).await
 }
 
-fn api_error(status: StatusCode, code: &str, message: impl Into<String>) -> Response {
+pub(crate) fn api_error(status: StatusCode, code: &str, message: impl Into<String>) -> Response {
     (
         status,
         Json(ApiErrorBody {
@@ -674,7 +761,7 @@ async fn runtime_handler(State(state): State<ServerState>) -> Json<RuntimeInfo> 
         service: "symphony-orchestrator".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         api_version: API_VERSION,
-        auth_required: state.access_token.is_some(),
+        auth_required: state.auth.is_some(),
         started_at: state.started_at,
         event_stream: "/api/v1/events".into(),
     })
@@ -807,9 +894,47 @@ async fn sse_events_handler(State(state): State<ServerState>, headers: HeaderMap
         Ok(ev) => agent_event_to_sse(&ev),
         Err(BroadcastStreamRecvError::Lagged(_)) => control_event("resync", Some("lagged")),
     });
+    // End the stream when the token it was opened with is rotated or revoked. Subscribe first,
+    // then confirm the presented token is still current: a rotation between the auth middleware
+    // and this point is either seen here (401) or by the subscription (stream ends).
+    let token_changed = {
+        let mut rx = state.auth.as_ref().map(TokenSlot::subscribe);
+        if let (Some(rx), Some(slot)) = (rx.as_mut(), state.auth.as_ref()) {
+            rx.mark_unchanged();
+            let presented = headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.strip_prefix("Bearer "))
+                .unwrap_or("")
+                .trim();
+            if !slot
+                .current()
+                .is_some_and(|current| token_matches(&current, presented))
+            {
+                return api_error(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "A valid Bearer token is required",
+                );
+            }
+        }
+        async move {
+            match rx {
+                Some(mut rx) => {
+                    let _ = rx.changed().await;
+                }
+                None => futures::future::pending::<()>().await,
+            }
+        }
+    };
     let combined: std::pin::Pin<
         Box<dyn Stream<Item = std::result::Result<SseEvent, Infallible>> + Send>,
-    > = Box::pin(stream::iter(initial).chain(live).map(Ok));
+    > = Box::pin(
+        stream::iter(initial)
+            .chain(live)
+            .take_until(Box::pin(token_changed))
+            .map(Ok),
+    );
 
     Sse::new(combined)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
@@ -1433,10 +1558,11 @@ fn validate_settings(settings: &AppSettings) -> std::result::Result<(), String> 
     if settings
         .extra_env_vars
         .keys()
-        .any(|k| ALLOWED_CREDENTIAL_KEYS.contains(&k.as_str()) || k == "SYMPHONY_REMOTE_TOKEN")
+        .any(|k| ALLOWED_CREDENTIAL_KEYS.contains(&k.as_str()) || k == REMOTE_TOKEN_KEY)
     {
         return Err("Secrets must be stored through the credential vault, not settings".into());
     }
+    remote::validate_remote_settings(settings)?;
     Ok(())
 }
 
@@ -1458,6 +1584,11 @@ async fn put_settings_handler(
     match state.orchestrator.storage().save_settings(&settings).await {
         Ok(()) => {
             state.orchestrator.invalidate_provider_cache().await;
+            // Apply remote-access changes to the running listener right away; the effective
+            // state (including bind failures) is reported by `GET /remote-access`.
+            if let Some(remote) = &state.remote_access {
+                remote.apply_persisted(&settings).await;
+            }
             Json(settings).into_response()
         }
         Err(e) => error_response(e),
@@ -1599,6 +1730,67 @@ async fn export_diagnostics_handler(State(state): State<ServerState>) -> Respons
         )
             .into_response(),
         Err(e) => error_response(e),
+    }
+}
+
+// ============================================================================
+// Remote access (local administration only)
+// ============================================================================
+
+fn remote_unavailable() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "remote_access_unavailable",
+        "This runtime host does not manage a remote listener",
+    )
+}
+
+/// Persisted remote-access settings together with the listener's effective state.
+#[utoipa::path(
+    get,
+    path = "/remote-access",
+    operation_id = "getRemoteAccess",
+    tag = "remote-access",
+    responses((status = 200, body = RemoteAccessStatus))
+)]
+async fn get_remote_access_handler(State(state): State<ServerState>) -> Response {
+    match &state.remote_access {
+        Some(remote) => Json(remote.status().await).into_response(),
+        None => remote_unavailable(),
+    }
+}
+
+/// Generate a new remote access token (256 random bits), replacing any previous one. The token
+/// is returned once and cannot be read back; open remote sessions using the old token end.
+#[utoipa::path(
+    post,
+    path = "/remote-access/token",
+    operation_id = "rotateRemoteAccessToken",
+    tag = "remote-access",
+    responses((status = 200, body = RemoteTokenIssued))
+)]
+async fn rotate_remote_token_handler(State(state): State<ServerState>) -> Response {
+    match &state.remote_access {
+        Some(remote) => match remote.rotate_token().await {
+            Ok(issued) => ([(header::CACHE_CONTROL, "no-store")], Json(issued)).into_response(),
+            Err(e) => error_response(e),
+        },
+        None => remote_unavailable(),
+    }
+}
+
+/// Revoke the remote access token and stop the remote listener.
+#[utoipa::path(
+    delete,
+    path = "/remote-access/token",
+    operation_id = "revokeRemoteAccessToken",
+    tag = "remote-access",
+    responses((status = 200, body = RemoteAccessStatus))
+)]
+async fn revoke_remote_token_handler(State(state): State<ServerState>) -> Response {
+    match &state.remote_access {
+        Some(remote) => respond(remote.revoke_token().await),
+        None => remote_unavailable(),
     }
 }
 

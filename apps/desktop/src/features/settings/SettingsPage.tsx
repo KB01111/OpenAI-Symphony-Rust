@@ -36,7 +36,7 @@ type EditableSettings = Pick<
   | "remote_api_enabled"
   | "remote_bind_address"
   | "remote_port"
->;
+> & { remote_allowed_origins: string[] };
 
 function editable(s: AppSettings): EditableSettings {
   return {
@@ -48,7 +48,8 @@ function editable(s: AppSettings): EditableSettings {
     resource_policy: { ...s.resource_policy },
     remote_api_enabled: s.remote_api_enabled,
     remote_bind_address: s.remote_bind_address,
-    remote_port: s.remote_port
+    remote_port: s.remote_port,
+    remote_allowed_origins: [...(s.remote_allowed_origins ?? [])]
   };
 }
 
@@ -60,7 +61,10 @@ function sameEditable(a: AppSettings, b: AppSettings): boolean {
       ? (Object.keys(x.resource_policy) as (keyof AppSettings["resource_policy"])[]).every((k) =>
           Object.is(x.resource_policy[k], y.resource_policy[k])
         )
-      : Object.is(x[key], y[key])
+      : key === "remote_allowed_origins"
+        ? x.remote_allowed_origins.length === y.remote_allowed_origins.length &&
+          x.remote_allowed_origins.every((origin, i) => origin === y.remote_allowed_origins[i])
+        : Object.is(x[key], y[key])
   );
 }
 

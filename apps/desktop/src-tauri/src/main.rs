@@ -13,12 +13,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
+use symphony_core::SymphonyError;
 use symphony_orchestrator::SymphonyOrchestrator;
 use symphony_platform::{
-    configure_windows_autostart, RuntimeDiscovery, SecretStore, SingleInstanceGuard,
+    autostart_command, configure_windows_autostart, default_app_data_dir,
+    windows_autostart_command, RuntimeDiscovery, SecretStore, SingleInstanceGuard,
 };
 use symphony_server::{
-    default_local_origins, generate_access_token, start_http_server, ServerConfig, API_VERSION,
+    generate_access_token, start_http_server, RemoteAccessManager, ServerConfig, API_VERSION,
 };
 use symphony_storage::Storage;
 use tauri::{
@@ -47,6 +49,9 @@ struct DesktopAppState {
     mode: RuntimeMode,
     base_url: String,
     token: String,
+    /// Why `runtime.json` could not be published, if it could not. The desktop keeps working
+    /// over IPC, but CLI tools cannot attach until the data directory is fixed.
+    discovery_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -56,6 +61,7 @@ struct LocalApiConfig {
     api_version: u32,
     /// `embedded` or `attached`.
     mode: &'static str,
+    discovery_error: Option<String>,
 }
 
 #[tauri::command]
@@ -68,6 +74,7 @@ fn get_local_api_config(state: State<'_, DesktopAppState>) -> LocalApiConfig {
             RuntimeMode::Embedded { .. } => "embedded",
             RuntimeMode::Attached => "attached",
         },
+        discovery_error: state.discovery_error.clone(),
     }
 }
 
@@ -119,12 +126,29 @@ async fn pick_repository_folder(app: AppHandle) -> Option<String> {
 }
 
 /// Register or remove the per-user login autostart entry (Windows `HKCU\...\Run`).
-/// Returns whether autostart is supported on this platform.
+/// Returns whether autostart is supported on this platform. A registry write that Windows
+/// rejects (or that does not persist) is returned as an error, so the UI never reports success
+/// for an entry that does not exist.
 #[tauri::command]
+///
+/// On failure the error starts with `autostart_state=<enabled|disabled|unknown>;`: the state the
+/// registry was observed in afterwards, so the UI records reality instead of guessing.
 fn set_autostart(enabled: bool) -> Result<bool, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    configure_windows_autostart(enabled, &exe).map_err(|e| e.to_string())?;
-    Ok(cfg!(windows))
+    match configure_windows_autostart(enabled, &exe) {
+        Ok(()) => Ok(cfg!(windows)),
+        Err(err) => {
+            // Only an entry that launches this executable counts as enabled; a stale entry for
+            // another path is reported as unknown so the UI does not claim working autostart.
+            let observed = match windows_autostart_command() {
+                Ok(Some(command)) if command == autostart_command(&exe) => "enabled",
+                Ok(Some(_)) => "unknown",
+                Ok(None) => "disabled",
+                Err(_) => "unknown",
+            };
+            Err(format!("autostart_state={observed}; {err}"))
+        }
+    }
 }
 
 /// Stop the runtime and exit, bypassing close-to-tray.
@@ -204,10 +228,77 @@ fn setup_tray(app: &AppHandle, embedded: bool) -> tauri::Result<()> {
     Ok(())
 }
 
-fn data_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .map(|d| d.join("symphony-desktop"))
-        .unwrap_or_else(|| std::env::temp_dir().join("symphony-desktop"))
+/// Ask the user whether to move an unreadable credential vault aside. Returns `true` to move it
+/// aside and continue with an empty vault, `false` to quit. Never decides silently.
+#[cfg(windows)]
+fn confirm_vault_quarantine(message: &str, locale: &str) -> bool {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONERROR, MB_YESNO,
+    };
+    let wide = |s: &str| -> Vec<u16> { OsStr::new(s).encode_wide().chain(Some(0)).collect() };
+    let (text, title) = vault_quarantine_prompt(message, locale);
+    let (text, title) = (wide(&text), wide(title));
+    // SAFETY: both strings are NUL-terminated UTF-16 and outlive the call.
+    let choice = unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_YESNO | MB_ICONERROR | MB_DEFBUTTON2,
+        )
+    };
+    choice == IDYES
+}
+
+/// Text and title of the vault quarantine prompt in the user's language (`en` | `sv`).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn vault_quarantine_prompt(message: &str, locale: &str) -> (String, &'static str) {
+    if locale == "sv" {
+        (
+            format!(
+                "Symphony kunde inte öppna sitt lösenordsvalv:\n\n{message}\n\nFlytta undan det \
+                 oläsbara valvet och fortsätt med ett tomt valv? Den gamla filen sparas bredvid som \
+                 credentials.vault.corrupt-<tid>, och du behöver ange dina API-nycklar igen.\n\n\
+                 Välj Nej för att avsluta utan att ändra något."
+            ),
+            "Symphony Desktop: lösenordsvalv",
+        )
+    } else {
+        (
+            format!(
+                "Symphony could not open its credential vault:\n\n{message}\n\nMove the unreadable \
+                 vault aside and continue with an empty vault? The old file is kept next to it as \
+                 credentials.vault.corrupt-<time>, and you will need to re-enter your API keys.\n\n\
+                 Choose No to quit without changing anything."
+            ),
+            "Symphony Desktop: credential vault",
+        )
+    }
+}
+
+#[cfg(not(windows))]
+fn confirm_vault_quarantine(_message: &str, _locale: &str) -> bool {
+    // Development hosts: no native prompt; use `symphony-cli --quarantine-credential-vault`.
+    false
+}
+
+/// Open the credential vault. An unreadable vault is never replaced silently: the user either
+/// moves it aside explicitly or the app stops with the error.
+fn open_secret_store(data_dir: &Path, locale: &str) -> Result<SecretStore, String> {
+    match SecretStore::new(data_dir) {
+        Ok(store) => Ok(store),
+        Err(SymphonyError::CredentialVault(message)) => {
+            tracing::error!(error = %message, "Credential vault could not be opened");
+            if !confirm_vault_quarantine(&message, locale) {
+                return Err(format!("Credential vault could not be opened: {message}"));
+            }
+            SecretStore::quarantine_vault(data_dir).map_err(|e| e.to_string())?;
+            SecretStore::new(data_dir).map_err(|e| e.to_string())
+        }
+        Err(other) => Err(other.to_string()),
+    }
 }
 
 /// Native notification for events an operator should act on while the window is not focused.
@@ -241,8 +332,8 @@ async fn start_embedded_runtime(
     let storage = Storage::connect(&data_dir.join("symphony.sqlite"))
         .await
         .map_err(|e| format!("Failed to initialize SQLite storage: {e}"))?;
-    let secret_store = SecretStore::new(&data_dir).map_err(|e| e.to_string())?;
     let mut settings = storage.get_settings().await.unwrap_or_default();
+    let secret_store = open_secret_store(&data_dir, &settings.locale)?;
     // Settings saved before 2.0 carry the old default remote port, which is the local API's port.
     // Migrate that legacy value to the new default and persist it, so the listener, `GET /settings`
     // and the settings form all agree on the port actually used.
@@ -267,8 +358,11 @@ async fn start_embedded_runtime(
     orchestrator.start_background_loops();
 
     let token = generate_access_token();
+    let remote_access =
+        RemoteAccessManager::new(orchestrator.clone(), Some(data_dir.join("workspaces")));
     let local_config = ServerConfig {
         default_workspace_root: Some(data_dir.join("workspaces")),
+        remote_access: Some(remote_access.clone()),
         ..ServerConfig::local(DEFAULT_LOCAL_PORT, Some(token.clone()))
     };
     // Preferred port first; an ephemeral fallback is discovered by clients via IPC/runtime.json.
@@ -286,40 +380,39 @@ async fn start_embedded_runtime(
         .map_err(|e| format!("Failed to bind local API: {e}"))?,
     };
     let base_url = format!("http://127.0.0.1:{}", addr.port());
-    let _ = RuntimeDiscovery {
+    // Publish the endpoint for CLI tools and a second desktop instance. Failure is surfaced (log,
+    // notification, `discovery_error` in the IPC config) but never worked around insecurely:
+    // without an owner-only file, nothing is published.
+    let discovery_error = match (RuntimeDiscovery {
         base_url: base_url.clone(),
         token: token.clone(),
         pid: std::process::id(),
         api_version: API_VERSION,
         owner: "symphony-desktop".into(),
-    }
-    .write(&data_dir);
-
-    // Optional authenticated remote listener for the mobile companion / Lumen.
-    if settings.remote_api_enabled {
-        match secret_store.get_secret("SYMPHONY_REMOTE_TOKEN") {
-            Some(_) if settings.remote_port == addr.port() => tracing::warn!(
-                port = settings.remote_port,
-                "Remote API port equals the local API port; choose a different remote port. \
-                 Remote listener not started"
-            ),
-            Some(remote_token) if remote_token.len() >= 16 => {
-                let remote = ServerConfig {
-                    bind_host: settings.remote_bind_address.clone(),
-                    port: settings.remote_port,
-                    access_token: Some(remote_token),
-                    allowed_origins: default_local_origins(),
-                    default_workspace_root: Some(data_dir.join("workspaces")),
-                };
-                if let Err(e) = start_http_server(orchestrator.clone(), remote).await {
-                    tracing::warn!(error = %e, "Remote API listener failed to start");
-                }
-            }
-            _ => tracing::warn!(
-                "Remote API is enabled but SYMPHONY_REMOTE_TOKEN (>=16 chars) is not configured; \
-                 remote listener not started"
-            ),
+    })
+    .write(&data_dir)
+    {
+        Ok(_) => None,
+        Err(err) => {
+            RuntimeDiscovery::remove(&data_dir);
+            let message = err.to_string();
+            tracing::error!(error = %message, "Runtime discovery file was not published");
+            let _ = app
+                .notification()
+                .builder()
+                .title("Symphony runtime discovery unavailable")
+                .body("CLI tools cannot attach to this runtime. Open Settings > Application for details.")
+                .show();
+            Some(message)
         }
+    };
+
+    // Optional remote companion listener: disabled by default, reconfigured live whenever the
+    // settings or the remote access token change. Its effective state is `GET /remote-access`.
+    remote_access.set_local_port(addr.port());
+    let remote = remote_access.apply(&settings).await;
+    if remote.enabled {
+        tracing::info!(state = ?remote.state, error = ?remote.error, "Remote companion access");
     }
 
     // Forward orchestrator events to the webview and raise native notifications.
@@ -348,6 +441,7 @@ async fn start_embedded_runtime(
         },
         base_url,
         token,
+        discovery_error,
     })
 }
 
@@ -370,7 +464,12 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let handle = app.handle().clone();
-            let data_dir = data_dir();
+            // Same override as `symphony-cli --data-dir` / `SYMPHONY_DATA_DIR`, so the desktop and
+            // the CLI agree on the data directory (and isolated native smoke tests are possible).
+            let data_dir = std::env::var_os("SYMPHONY_DATA_DIR")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(default_app_data_dir);
             std::fs::create_dir_all(&data_dir)?;
 
             let state = tauri::async_runtime::block_on(async {
@@ -383,6 +482,7 @@ fn main() {
                                 mode: RuntimeMode::Attached,
                                 base_url: found.base_url,
                                 token: found.token,
+                                discovery_error: None,
                             })
                         }
                         None => Err("Another Symphony runtime holds the data directory lock but did not publish its endpoint".to_string()),

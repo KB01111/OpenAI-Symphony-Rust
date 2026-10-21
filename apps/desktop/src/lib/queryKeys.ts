@@ -21,5 +21,6 @@ export const qk = {
   providers: ["providers"] as const,
   credentials: ["credentials"] as const,
   runtime: ["runtime"] as const,
+  remoteAccess: ["remote-access"] as const,
   recentEvents: ["recent-events"] as const
 };

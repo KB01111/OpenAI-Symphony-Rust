@@ -47,8 +47,13 @@ jobs:
       - name: Check API contract invariants (OpenAPI document and task state machine)
         run: cargo test -p symphony-server --test openapi_contract --test state_machine_contract --locked
 
-      - name: Build desktop app (frontend + Tauri host, release, no installer)
-        run: pnpm --filter @symphony/desktop tauri build --no-bundle
+      # Unsigned NSIS installer for release verification only. No signing secrets are used; the
+      # artifact name says UNSIGNED and it must not be distributed as a production build.
+      - name: Build desktop app (frontend + Tauri host, release, unsigned NSIS installer)
+        run: pnpm --filter @symphony/desktop tauri build --bundles nsis
+
+      - name: Build the CLI (release)
+        run: cargo build -p symphony-cli --release --locked
 
       - name: Smoke-check the native binary exists
         shell: pwsh
@@ -57,9 +62,24 @@ jobs:
           if (-not (Test-Path $exe)) { throw "missing $exe" }
           "{0:N1} MB" -f ((Get-Item $exe).Length / 1MB)
 
+      # Runs the real release binaries: runtime start, owner-only DACLs in a world-writable data
+      # directory, authenticated API, DPAPI vault persistence across restart, single scheduler
+      # (CLI + second desktop instance), crash recovery without orphans, and attach mode.
+      - name: Native Windows runtime smoke test
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/windows-native-smoke.ps1 -DesktopExe target/release/symphony-desktop.exe -CliExe target/release/symphony-cli.exe
+
       - name: Upload native binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: symphony-desktop-windows
           path: target/release/symphony-desktop.exe
+          retention-days: 7
+
+      - name: Upload unsigned installer (verification only)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: symphony-desktop-windows-installer-UNSIGNED
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
           retention-days: 7

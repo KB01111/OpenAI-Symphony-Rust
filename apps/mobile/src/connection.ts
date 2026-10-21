@@ -79,14 +79,22 @@ export function browserStorage(): StorageBackends {
   return { local: pick("localStorage"), session: pick("sessionStorage") };
 }
 
-export type UrlProblem = "empty" | "invalid" | "unsupported_scheme";
+export type UrlProblem = "empty" | "invalid" | "unsupported_scheme" | "insecure_scheme";
+
+/** Hosts on this device, where plain `http://` never leaves the machine. */
+export function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === "localhost" || h === "[::1]" || h === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+}
 
 export type NormalizedUrl = { ok: true; url: string } | { ok: false; problem: UrlProblem };
 
 /**
  * Normalise user input into the runtime base URL (`scheme://host[:port][/prefix]`):
- * trims whitespace, defaults to `http://` when no scheme is given, rejects non-HTTP schemes,
- * drops query/fragment, trailing slashes and a pasted `/api/v1` suffix (the client adds it).
+ * trims whitespace, defaults to `https://` when no scheme is given (`http://` for loopback hosts),
+ * rejects non-HTTP schemes and plain `http://` to any other host — the bearer token must never
+ * cross a network unencrypted — and drops query/fragment, trailing slashes and a pasted `/api/v1`
+ * suffix (the client adds it).
  */
 export function normalizeBaseUrl(input: string): NormalizedUrl {
   const trimmed = input.trim();
@@ -98,7 +106,8 @@ export function normalizeBaseUrl(input: string): NormalizedUrl {
   }
   let parsed: URL;
   try {
-    parsed = new URL(hasScheme ? trimmed : `http://${trimmed}`);
+    parsed = new URL(hasScheme ? trimmed : `https://${trimmed}`);
+    if (!hasScheme && isLoopbackHost(parsed.hostname)) parsed = new URL(`http://${trimmed}`);
   } catch {
     return { ok: false, problem: "invalid" };
   }
@@ -106,6 +115,9 @@ export function normalizeBaseUrl(input: string): NormalizedUrl {
     return { ok: false, problem: "unsupported_scheme" };
   }
   if (!parsed.hostname) return { ok: false, problem: "invalid" };
+  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+    return { ok: false, problem: "insecure_scheme" };
+  }
   if (parsed.username || parsed.password) return { ok: false, problem: "invalid" };
   let path = parsed.pathname.replace(/\/+$/, "");
   path = path.replace(/\/api\/v1$/i, "").replace(/\/+$/, "");
@@ -120,9 +132,19 @@ export function loadConnection(backends: StorageBackends): ConnectionSettings | 
   if (!baseUrl && legacyHost) {
     const migrated = normalizeBaseUrl(legacyHost);
     if (migrated.ok) baseUrl = migrated.url;
+    // A legacy host that is no longer acceptable (e.g. plain http:// to another device) is
+    // dropped, and so is any token saved alongside it.
+    else forgetToken(backends);
   }
   if (legacyHost !== null) safeRemove(local, STORAGE_KEYS.legacyHost);
   if (!baseUrl) return null;
+  // A URL saved by an older companion may be plain http:// to another device; never reuse it,
+  // and do not leave the token that went with it on the device either.
+  if (!normalizeBaseUrl(baseUrl).ok) {
+    forgetToken(backends);
+    safeRemove(local, STORAGE_KEYS.baseUrl);
+    return null;
+  }
 
   const remember = safeGet(local, STORAGE_KEYS.remember) === "true";
   const token = remember ? safeGet(local, STORAGE_KEYS.token) : safeGet(session, STORAGE_KEYS.token);

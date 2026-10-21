@@ -314,6 +314,23 @@ export class SymphonyClient {
   }
 
   // --------------------------------------------------------------------------------------------
+  // Remote companion access (local administration only)
+  // --------------------------------------------------------------------------------------------
+
+  /** Persisted remote-access settings plus the listener's effective state. */
+  getRemoteAccess(signal?: AbortSignal) {
+    return this.call((o) => api.getRemoteAccess(o), signal);
+  }
+  /** Generate a new remote access token; the response is the only time it is returned. */
+  rotateRemoteAccessToken() {
+    return this.call((o) => api.rotateRemoteAccessToken(o));
+  }
+  /** Revoke the remote access token and stop the remote listener. */
+  revokeRemoteAccessToken() {
+    return this.call((o) => api.revokeRemoteAccessToken(o));
+  }
+
+  // --------------------------------------------------------------------------------------------
   // Streaming
   // --------------------------------------------------------------------------------------------
 

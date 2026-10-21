@@ -1018,6 +1018,9 @@ pub struct AppSettings {
     pub remote_api_enabled: bool,
     pub remote_bind_address: String,
     pub remote_port: u16,
+    /// Browser origins (besides the companion app) allowed to call the remote listener, e.g. a
+    /// self-hosted companion at `https://companion.example.com`. Never `*`.
+    pub remote_allowed_origins: Vec<String>,
     pub onboarding_completed: bool,
     pub extra_env_vars: HashMap<String, String>,
     /// Per-provider default model preference (`ProviderKind` -> model id).
@@ -1038,6 +1041,7 @@ impl Default for AppSettings {
             remote_api_enabled: false,
             remote_bind_address: "127.0.0.1".to_string(),
             remote_port: 47821,
+            remote_allowed_origins: Vec::new(),
             onboarding_completed: false,
             extra_env_vars: HashMap::new(),
             provider_default_models: HashMap::new(),

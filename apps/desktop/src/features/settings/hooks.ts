@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { isTauri, nativeHost } from "@symphony/api-client";
 import { useClient } from "../../runtime/RuntimeProvider.js";
 import { qk } from "../../lib/queryKeys.js";
 
@@ -40,4 +41,45 @@ export function useExportDiagnostics() {
   });
 
   return { ...mutation, bundle };
+}
+
+/** `GET /remote-access` — persisted remote settings plus the listener's effective state. */
+export function useRemoteAccess() {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.remoteAccess,
+    queryFn: ({ signal }) => client.getRemoteAccess(signal),
+    refetchInterval: 15_000
+  });
+}
+
+/** Generate (or rotate) the remote access token. The token is only in the mutation result. */
+export function useRotateRemoteToken() {
+  const client = useClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.rotateRemoteAccessToken(),
+    onSuccess: (issued) => qc.setQueryData(qk.remoteAccess, issued.status)
+  });
+}
+
+export function useRevokeRemoteToken() {
+  const client = useClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.revokeRemoteAccessToken(),
+    onSuccess: (status) => qc.setQueryData(qk.remoteAccess, status)
+  });
+}
+
+/**
+ * Desktop host IPC configuration (`get_local_api_config`), for host-side problems the HTTP API
+ * cannot report, such as an unpublished discovery file. `null` outside the desktop host.
+ */
+export function useNativeHostConfig() {
+  return useQuery({
+    queryKey: ["native-host-config"],
+    queryFn: () => (isTauri() ? nativeHost.getLocalApiConfig() : Promise.resolve(null)),
+    staleTime: Infinity
+  });
 }

@@ -6,9 +6,10 @@ use symphony_core::{
     workflow::{ServiceConfig, WorkflowDefinition},
 };
 use symphony_orchestrator::SymphonyOrchestrator;
-use symphony_platform::{RuntimeDiscovery, SecretStore, SingleInstanceGuard};
+use symphony_platform::{default_app_data_dir, RuntimeDiscovery, SecretStore, SingleInstanceGuard};
 use symphony_server::{
-    default_local_origins, generate_access_token, start_http_server, ServerConfig, API_VERSION,
+    default_local_origins, generate_access_token, start_http_server, RemoteAccessManager,
+    ServerConfig, API_VERSION,
 };
 use symphony_storage::Storage;
 
@@ -49,6 +50,12 @@ struct Cli {
     /// always allowed)
     #[arg(long = "allow-origin")]
     allow_origins: Vec<String>,
+
+    /// Move an unreadable credential vault aside (`credentials.vault.corrupt-<timestamp>`) and
+    /// start with an empty one. Without this flag an unreadable vault stops the runtime, so no
+    /// credential is ever discarded silently.
+    #[arg(long)]
+    quarantine_credential_vault: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -96,11 +103,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let data_dir = cli.data_dir.clone().unwrap_or_else(|| {
-        dirs::data_local_dir()
-            .map(|d| d.join("symphony-desktop"))
-            .unwrap_or_else(|| std::env::temp_dir().join("symphony-desktop"))
-    });
+    let data_dir = cli.data_dir.clone().unwrap_or_else(default_app_data_dir);
     std::fs::create_dir_all(&data_dir)?;
 
     // One runtime (desktop or CLI) owns a data directory at a time: single authoritative scheduler.
@@ -110,7 +113,20 @@ async fn main() -> anyhow::Result<()> {
         .db_path
         .unwrap_or_else(|| data_dir.join("symphony.sqlite"));
     let storage = Storage::connect(&db_path).await?;
-    let secret_store = SecretStore::new(&data_dir)?;
+    // `--quarantine-credential-vault` only acts on a vault that cannot be opened; a readable
+    // vault is used as is, so leaving the flag in a service definition is harmless.
+    let secret_store = match SecretStore::new(&data_dir) {
+        Err(symphony_core::SymphonyError::CredentialVault(message))
+            if cli.quarantine_credential_vault =>
+        {
+            tracing::error!(error = %message, "Credential vault unreadable; moving it aside as requested");
+            if let Some(moved) = SecretStore::quarantine_vault(&data_dir)? {
+                eprintln!("Moved the credential vault aside to {}", moved.display());
+            }
+            SecretStore::new(&data_dir)?
+        }
+        other => other?,
+    };
 
     // Precedence: --workflow, ./WORKFLOW.md, then a workflow previously saved to the data dir.
     let data_dir_workflow = data_dir.join("WORKFLOW.md");
@@ -226,12 +242,14 @@ async fn main() -> anyhow::Result<()> {
              encrypted; terminate TLS in front of this server for remote access."
         );
     }
+    let remote_access =
+        RemoteAccessManager::new(orchestrator.clone(), Some(data_dir.join("workspaces")));
     let server_config = ServerConfig {
         bind_host: cli.host.clone(),
-        port,
-        access_token: Some(token.clone()),
         allowed_origins,
         default_workspace_root: Some(data_dir.join("workspaces")),
+        remote_access: Some(remote_access.clone()),
+        ..ServerConfig::local(port, Some(token.clone()))
     };
     let (addr, _handle) = match start_http_server(orchestrator.clone(), server_config.clone()).await
     {
@@ -268,8 +286,32 @@ async fn main() -> anyhow::Result<()> {
         discovery_path.display()
     );
 
+    // Optional remote companion listener (disabled by default; reconfigured live by the API).
+    remote_access.set_local_port(addr.port());
+    let mut settings = match orchestrator.storage().get_settings().await {
+        Ok(settings) => settings,
+        Err(err) => {
+            tracing::warn!(error = %err, "Could not read saved settings; remote access stays off until they are saved again");
+            Default::default()
+        }
+    };
+    // Settings saved before 2.0 carry the old default remote port, which is the local API's
+    // default port. Migrate it only when it actually collides with the port this runtime bound,
+    // so a deliberately chosen 4780 (with the local API elsewhere) is left alone.
+    if settings.remote_port == 4780 && addr.port() == 4780 {
+        settings.remote_port = symphony_core::domain::AppSettings::default().remote_port;
+        if let Err(err) = orchestrator.storage().save_settings(&settings).await {
+            tracing::warn!(error = %err, "Could not persist the migrated remote API port");
+        }
+    }
+    let remote = remote_access.apply(&settings).await;
+    if remote.enabled {
+        tracing::info!(state = ?remote.state, error = ?remote.error, "Remote companion access");
+    }
+
     wait_for_shutdown_signal().await;
     tracing::info!("Shutting down Symphony Engine gracefully...");
+    remote_access.shutdown().await;
     RuntimeDiscovery::remove(&data_dir);
     Ok(())
 }

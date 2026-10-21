@@ -62,6 +62,11 @@ export type AppSettings = {
     remote_api_enabled: boolean;
     remote_bind_address: string;
     remote_port: number;
+    /**
+     * Browser origins (besides the companion app) allowed to call the remote listener, e.g. a
+     * self-hosted companion at `https://companion.example.com`. Never `*`.
+     */
+    remote_allowed_origins?: Array<string>;
     onboarding_completed: boolean;
     extra_env_vars: {
         [key: string]: string;
@@ -470,6 +475,48 @@ export type RefreshResponse = {
     coalesced: boolean;
     requested_at: string;
     operations: Array<string>;
+};
+
+/**
+ * Remote access configuration (persisted settings) together with what is actually running.
+ */
+export type RemoteAccessStatus = {
+    /**
+     * `remote_api_enabled` from the settings.
+     */
+    enabled: boolean;
+    bind_address: string;
+    port: number;
+    /**
+     * Browser origins allowed in addition to the companion app's own origin.
+     */
+    allowed_origins: Array<string>;
+    /**
+     * Whether a remote access token exists. The token itself is never returned here.
+     */
+    token_configured: boolean;
+    state: RemoteListenerState;
+    /**
+     * Address the listener is bound to while `state` is `running`.
+     */
+    listening_on: string | null;
+    error: string | null;
+};
+
+/**
+ * Effective state of the remote listener.
+ */
+export type RemoteListenerState = 'disabled' | 'token_missing' | 'running' | 'failed' | 'unavailable';
+
+/**
+ * Response of a token rotation: the new token, shown once.
+ */
+export type RemoteTokenIssued = {
+    /**
+     * New remote access token. Store it in the companion app now; it cannot be read back.
+     */
+    token: string;
+    status: RemoteAccessStatus;
 };
 
 /**
@@ -1925,3 +1972,78 @@ export type GetIssueDetailResponses = {
 };
 
 export type GetIssueDetailResponse = GetIssueDetailResponses[keyof GetIssueDetailResponses];
+
+export type GetRemoteAccessData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/remote-access';
+};
+
+export type GetRemoteAccessErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type GetRemoteAccessError = GetRemoteAccessErrors[keyof GetRemoteAccessErrors];
+
+export type GetRemoteAccessResponses = {
+    /**
+     * OK
+     */
+    200: RemoteAccessStatus;
+};
+
+export type GetRemoteAccessResponse = GetRemoteAccessResponses[keyof GetRemoteAccessResponses];
+
+export type RevokeRemoteAccessTokenData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/remote-access/token';
+};
+
+export type RevokeRemoteAccessTokenErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type RevokeRemoteAccessTokenError = RevokeRemoteAccessTokenErrors[keyof RevokeRemoteAccessTokenErrors];
+
+export type RevokeRemoteAccessTokenResponses = {
+    /**
+     * OK
+     */
+    200: RemoteAccessStatus;
+};
+
+export type RevokeRemoteAccessTokenResponse = RevokeRemoteAccessTokenResponses[keyof RevokeRemoteAccessTokenResponses];
+
+export type RotateRemoteAccessTokenData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/remote-access/token';
+};
+
+export type RotateRemoteAccessTokenErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type RotateRemoteAccessTokenError = RotateRemoteAccessTokenErrors[keyof RotateRemoteAccessTokenErrors];
+
+export type RotateRemoteAccessTokenResponses = {
+    /**
+     * OK
+     */
+    200: RemoteTokenIssued;
+};
+
+export type RotateRemoteAccessTokenResponse = RotateRemoteAccessTokenResponses[keyof RotateRemoteAccessTokenResponses];

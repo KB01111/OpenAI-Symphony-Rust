@@ -37,7 +37,8 @@
               }
             }
           }
-        }
+        },
+        "x-symphony-remote": true
       }
     },
     "/api/v1/runtime": {
@@ -67,7 +68,8 @@
               }
             }
           }
-        }
+        },
+        "x-symphony-remote": true
       }
     },
     "/api/v1/state": {
@@ -102,7 +104,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/refresh": {
@@ -137,7 +140,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/events": {
@@ -188,7 +192,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/events/recent": {
@@ -239,7 +244,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/scheduler/pause": {
@@ -274,7 +280,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/scheduler/resume": {
@@ -309,7 +316,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/projects": {
@@ -347,7 +355,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       },
       "post": {
         "tags": [
@@ -390,7 +399,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/projects/validate": {
@@ -435,7 +445,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/projects/{id}": {
@@ -481,7 +492,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       },
       "delete": {
         "tags": [
@@ -518,7 +530,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       },
       "patch": {
         "tags": [
@@ -572,7 +585,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/tasks": {
@@ -628,7 +642,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       },
       "post": {
         "tags": [
@@ -671,7 +686,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/tasks/{id}": {
@@ -717,7 +733,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/tasks/{id}/status": {
@@ -773,7 +790,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/tasks/{id}/dispatch": {
@@ -819,7 +837,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/tasks/{id}/cancel": {
@@ -882,7 +901,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/tasks/{id}/retry": {
@@ -928,7 +948,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/tasks/{id}/events": {
@@ -987,7 +1008,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/tasks/{id}/attempts": {
@@ -1036,7 +1058,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/tasks/{id}/validations": {
@@ -1085,7 +1108,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/tasks/{id}/diff": {
@@ -1131,7 +1155,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/approvals": {
@@ -1179,7 +1204,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/approvals/{id}/decide": {
@@ -1235,7 +1261,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/prs": {
@@ -1283,7 +1310,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/prs/{id}": {
@@ -1329,7 +1357,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
       }
     },
     "/api/v1/prs/{id}/approve-merge": {
@@ -1375,7 +1404,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/worktrees": {
@@ -1413,7 +1443,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/workflow": {
@@ -1448,7 +1479,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       },
       "put": {
         "tags": [
@@ -1491,7 +1523,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/workflow/preview": {
@@ -1537,7 +1570,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/settings": {
@@ -1572,7 +1606,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       },
       "put": {
         "tags": [
@@ -1615,7 +1650,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/providers": {
@@ -1663,7 +1699,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/credentials": {
@@ -1698,7 +1735,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       },
       "post": {
         "tags": [
@@ -1741,7 +1779,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/credentials/{key}": {
@@ -1780,7 +1819,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/diagnostics/export": {
@@ -1815,7 +1855,8 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": false
       }
     },
     "/api/v1/issues/{issue_identifier}": {
@@ -1861,7 +1902,117 @@
           {
             "bearer_auth": []
           }
-        ]
+        ],
+        "x-symphony-remote": true
+      }
+    },
+    "/api/v1/remote-access": {
+      "get": {
+        "tags": [
+          "remote-access"
+        ],
+        "summary": "Persisted remote-access settings together with the listener's effective state.",
+        "operationId": "getRemoteAccess",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAccessStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
+    "/api/v1/remote-access/token": {
+      "post": {
+        "tags": [
+          "remote-access"
+        ],
+        "summary": "Generate a new remote access token (256 random bits), replacing any previous one. The token\nis returned once and cannot be read back; open remote sessions using the old token end.",
+        "operationId": "rotateRemoteAccessToken",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteTokenIssued"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      },
+      "delete": {
+        "tags": [
+          "remote-access"
+        ],
+        "summary": "Revoke the remote access token and stop the remote listener.",
+        "operationId": "revokeRemoteAccessToken",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAccessStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
       }
     }
   },
@@ -2075,6 +2226,14 @@
             "format": "int32",
             "default": 47821,
             "minimum": 0
+          },
+          "remote_allowed_origins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Browser origins (besides the companion app) allowed to call the remote listener, e.g. a\nself-hosted companion at `https://companion.example.com`. Never `*`.",
+            "default": []
           },
           "onboarding_completed": {
             "type": "boolean",
@@ -3682,6 +3841,89 @@
           }
         }
       },
+      "RemoteAccessStatus": {
+        "type": "object",
+        "description": "Remote access configuration (persisted settings) together with what is actually running.",
+        "required": [
+          "enabled",
+          "bind_address",
+          "port",
+          "allowed_origins",
+          "token_configured",
+          "state",
+          "listening_on",
+          "error"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "`remote_api_enabled` from the settings."
+          },
+          "bind_address": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "allowed_origins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Browser origins allowed in addition to the companion app's own origin."
+          },
+          "token_configured": {
+            "type": "boolean",
+            "description": "Whether a remote access token exists. The token itself is never returned here."
+          },
+          "state": {
+            "$ref": "#/components/schemas/RemoteListenerState"
+          },
+          "listening_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Address the listener is bound to while `state` is `running`."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RemoteListenerState": {
+        "type": "string",
+        "description": "Effective state of the remote listener.",
+        "enum": [
+          "disabled",
+          "token_missing",
+          "running",
+          "failed",
+          "unavailable"
+        ]
+      },
+      "RemoteTokenIssued": {
+        "type": "object",
+        "description": "Response of a token rotation: the new token, shown once.",
+        "required": [
+          "token",
+          "status"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "New remote access token. Store it in the companion app now; it cannot be read back."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RemoteAccessStatus"
+          }
+        }
+      },
       "RepositoryValidation": {
         "type": "object",
         "description": "Result of validating a local repository before project registration.",
@@ -4858,6 +5100,10 @@
     {
       "name": "diagnostics",
       "description": "Redacted diagnostics export"
+    },
+    {
+      "name": "remote-access",
+      "description": "Remote companion listener and its access token (local administration only)"
     }
   ]
 }

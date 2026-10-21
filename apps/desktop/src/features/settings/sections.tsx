@@ -14,12 +14,24 @@ import {
   RadioGroup,
   SpinButton,
   Spinner,
-  Switch
+  Switch,
+  Textarea
 } from "@fluentui/react-components";
-import { Download, FileJson, LogOut } from "lucide-react";
+import { Download, FileJson, KeyRound, LogOut, ShieldOff } from "lucide-react";
 import { errorMessage, isTauri, nativeHost } from "@symphony/api-client";
 import { ALL_PROVIDERS, formatMessage, type AppSettings, type Locale, type ProviderKind } from "@symphony/shared-types";
-import { ConfirmDialog, ErrorState, KeyValueList, LoadingRows, Skeleton, TimeAgo, useNotify, type Density, type ThemeMode } from "@symphony/ui";
+import {
+  ConfirmDialog,
+  ErrorState,
+  KeyValueList,
+  LoadingRows,
+  SdkCopyButton,
+  Skeleton,
+  TimeAgo,
+  useNotify,
+  type Density,
+  type ThemeMode
+} from "@symphony/ui";
 import { useMutation } from "@tanstack/react-query";
 import { paths } from "../../app/routes.js";
 import { useLocale, useMessages, useT } from "../../lib/i18n.js";
@@ -27,9 +39,16 @@ import { useCredentials, useProviders, useRuntimeState } from "../../lib/queries
 import { useRuntime } from "../../runtime/RuntimeProvider.js";
 import { CredentialRow } from "../providers/CredentialControls.js";
 import { PROVIDER_CREDENTIAL_KEYS } from "../providers/ProviderCard.js";
-import { useExportDiagnostics, useRuntimeInfo } from "./hooks.js";
+import {
+  useExportDiagnostics,
+  useNativeHostConfig,
+  useRemoteAccess,
+  useRevokeRemoteToken,
+  useRotateRemoteToken,
+  useRuntimeInfo
+} from "./hooks.js";
 import { settingsMessages } from "./messages.js";
-import { formatBytes, isLoopback, type SettingsErrors } from "./validation.js";
+import { formatBytes, parseOrigins, type SettingsErrors } from "./validation.js";
 
 export type SectionId = keyof (typeof settingsMessages)["en"]["sections"];
 
@@ -343,9 +362,120 @@ export const DefaultsSection: React.FC<FormSectionProps> = ({ draft, update }) =
 // Remote access
 // ---------------------------------------------------------------------------------------------
 
+const RemoteStatusPanel: React.FC = () => {
+  const m = useMessages(settingsMessages);
+  const status = useRemoteAccess();
+  if (status.isPending) return <Skeleton className="h-16 w-full" />;
+  if (status.isError) {
+    return <ErrorState title={m.remote.statusLoadError} message={errorMessage(status.error)} onRetry={() => void status.refetch()} />;
+  }
+  const s = status.data;
+  const tone = s.state === "running" ? "text-success" : s.state === "failed" ? "text-destructive" : "text-muted-foreground";
+  return (
+    <div className="space-y-1 rounded-md border border-border bg-surface-sunken p-3" role="group" aria-label={m.remote.status}>
+      <div className="text-xs font-semibold uppercase tracking-wide text-subtle-foreground">{m.remote.status}</div>
+      <p className={`text-sm font-medium ${tone}`} role="status" data-testid="remote-state">
+        {m.remote.states[s.state] ?? s.state}
+        {s.listening_on ? <span className="ml-2 font-mono text-xs text-muted-foreground">{formatMessage(m.remote.listeningOn, { address: s.listening_on })}</span> : null}
+      </p>
+      {s.error ? <p className="text-xs text-destructive">{s.error}</p> : null}
+      <p className="text-xs text-muted-foreground">{m.remote.applyHint}</p>
+    </div>
+  );
+};
+
+const RemoteTokenControls: React.FC = () => {
+  const m = useMessages(settingsMessages);
+  const t = useT();
+  const notify = useNotify();
+  const status = useRemoteAccess();
+  const rotate = useRotateRemoteToken();
+  const revoke = useRevokeRemoteToken();
+  const [issued, setIssued] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<"rotate" | "revoke" | null>(null);
+  const configured = status.data?.token_configured ?? false;
+  const fail = (error: unknown) => notify("error", m.remote.tokenFailed, errorMessage(error));
+  const runRotate = () =>
+    rotate.mutate(undefined, {
+      onSuccess: (result) => setIssued(result.token),
+      onError: fail,
+      onSettled: () => setConfirm(null)
+    });
+
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium text-foreground">{m.remote.token}</div>
+      <p className="text-xs text-muted-foreground">{configured ? m.remote.tokenConfigured : m.remote.tokenMissing}</p>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          appearance={configured ? "secondary" : "primary"}
+          icon={rotate.isPending ? <Spinner size="tiny" /> : <KeyRound className="size-4" />}
+          disabled={rotate.isPending || status.isPending || status.isError}
+          onClick={() => (configured ? setConfirm("rotate") : runRotate())}
+        >
+          {configured ? m.remote.rotate : m.remote.generate}
+        </Button>
+        {configured ? (
+          <Button icon={<ShieldOff className="size-4" />} disabled={revoke.isPending || status.isError} onClick={() => setConfirm("revoke")}>
+            {m.remote.revoke}
+          </Button>
+        ) : null}
+      </div>
+      {issued ? (
+        <MessageBar intent="success" layout="multiline">
+          <MessageBarBody>
+            <MessageBarTitle>{m.remote.issuedTitle}</MessageBarTitle>
+            <span className="block">{m.remote.issuedBody}</span>
+            <span className="mt-2 flex items-center gap-2">
+              <Input readOnly value={issued} aria-label={m.remote.token} className="w-full font-mono" spellCheck={false} />
+              <SdkCopyButton copyValue={issued} aria-label={m.remote.copy} size="sm" variant="ghost" color="secondary" />
+            </span>
+            <Button className="mt-2" size="small" onClick={() => setIssued(null)}>
+              {m.remote.done}
+            </Button>
+          </MessageBarBody>
+        </MessageBar>
+      ) : null}
+      <ConfirmDialog
+        open={confirm === "rotate"}
+        onOpenChange={(open) => setConfirm(open ? "rotate" : null)}
+        title={m.remote.rotateTitle}
+        description={m.remote.rotateDescription}
+        confirmLabel={m.remote.rotate}
+        pending={rotate.isPending}
+        onConfirm={runRotate}
+      />
+      <ConfirmDialog
+        open={confirm === "revoke"}
+        onOpenChange={(open) => setConfirm(open ? "revoke" : null)}
+        title={m.remote.revokeTitle}
+        description={m.remote.revokeDescription}
+        confirmLabel={m.remote.revoke}
+        cancelLabel={t.common.cancel}
+        destructive
+        pending={revoke.isPending}
+        onConfirm={() =>
+          revoke.mutate(undefined, {
+            onSuccess: () => setIssued(null),
+            onError: fail,
+            onSettled: () => setConfirm(null)
+          })
+        }
+      />
+    </div>
+  );
+};
+
 export const RemoteSection: React.FC<FormSectionProps> = ({ draft, errors, update }) => {
   const m = useMessages(settingsMessages);
-  const exposed = draft.remote_api_enabled && draft.remote_bind_address.trim() !== "" && !isLoopback(draft.remote_bind_address);
+  const origins = draft.remote_allowed_origins ?? [];
+  const [originsText, setOriginsText] = useState(() => origins.join("\n"));
+  // Keep the text in sync when the draft changes from outside (Reset, a save, a refetch), while
+  // preserving the user's own formatting (blank lines, commas) as long as it parses to the draft.
+  const parsedText = parseOrigins(originsText);
+  if (parsedText.length !== origins.length || parsedText.some((o, i) => o !== origins[i])) {
+    setOriginsText(origins.join("\n"));
+  }
   return (
     <SettingsSection id="remote" intro={m.remote.intro}>
       <MessageBar intent={draft.remote_api_enabled ? "warning" : "info"} layout="multiline">
@@ -354,33 +484,56 @@ export const RemoteSection: React.FC<FormSectionProps> = ({ draft, errors, updat
           {m.remote.warning}
         </MessageBarBody>
       </MessageBar>
-      <Switch
-        label={m.remote.enabled}
-        checked={draft.remote_api_enabled}
-        onChange={(_, d) => update((s) => ({ ...s, remote_api_enabled: d.checked }))}
-      />
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field
-          label={m.remote.bind}
-          hint={m.remote.bindHint}
-          validationMessage={errors.remote_bind_address ?? (exposed ? m.remote.exposed : undefined)}
-          validationState={errors.remote_bind_address ? "error" : exposed ? "warning" : "none"}
-        >
-          <Input
-            value={draft.remote_bind_address}
-            spellCheck={false}
-            className="font-mono"
-            onChange={(_, d) => update((s) => ({ ...s, remote_bind_address: d.value }))}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="space-y-3">
+          <Switch
+            label={m.remote.enabled}
+            checked={draft.remote_api_enabled}
+            onChange={(_, d) => update((s) => ({ ...s, remote_api_enabled: d.checked }))}
           />
-        </Field>
-        <NumberField
-          label={m.remote.port}
-          value={draft.remote_port}
-          min={1}
-          max={65535}
-          error={errors.remote_port}
-          onChange={(v) => update((s) => ({ ...s, remote_port: v }))}
-        />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field
+              label={m.remote.bind}
+              hint={m.remote.bindHint}
+              validationMessage={errors.remote_bind_address}
+              validationState={errors.remote_bind_address ? "error" : "none"}
+            >
+              <Input
+                value={draft.remote_bind_address}
+                spellCheck={false}
+                className="font-mono"
+                onChange={(_, d) => update((s) => ({ ...s, remote_bind_address: d.value }))}
+              />
+            </Field>
+            <NumberField
+              label={m.remote.port}
+              value={draft.remote_port}
+              min={1}
+              max={65535}
+              error={errors.remote_port}
+              onChange={(v) => update((s) => ({ ...s, remote_port: v }))}
+            />
+          </div>
+          <Field
+            label={m.remote.origins}
+            hint={m.remote.originsHint}
+            validationMessage={errors.remote_allowed_origins}
+            validationState={errors.remote_allowed_origins ? "error" : "none"}
+          >
+            <Textarea
+              value={originsText}
+              spellCheck={false}
+              className="font-mono"
+              resize="vertical"
+              onChange={(_, d) => {
+                setOriginsText(d.value);
+                update((s) => ({ ...s, remote_allowed_origins: parseOrigins(d.value) }));
+              }}
+            />
+          </Field>
+          <RemoteTokenControls />
+        </div>
+        <RemoteStatusPanel />
       </div>
     </SettingsSection>
   );
@@ -483,9 +636,18 @@ export const ApplicationSection: React.FC = () => {
   });
   const desktop = isTauri();
   const mode = runtime.mode ? (m.application.modes[runtime.mode] ?? runtime.mode) : t.common.unknown;
+  const discoveryError = useNativeHostConfig().data?.discovery_error;
 
   return (
     <SettingsSection id="application" intro={m.application.intro}>
+      {discoveryError ? (
+        <MessageBar intent="warning" layout="multiline">
+          <MessageBarBody>
+            <MessageBarTitle>{m.application.discoveryErrorTitle}</MessageBarTitle>
+            {formatMessage(m.application.discoveryError, { error: discoveryError })}
+          </MessageBarBody>
+        </MessageBar>
+      ) : null}
       {info.isPending ? (
         <LoadingRows rows={4} />
       ) : info.isError ? (

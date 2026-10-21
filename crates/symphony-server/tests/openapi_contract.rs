@@ -141,11 +141,18 @@ fn response_schemas_require_every_field() {
         "WorkflowDocument",
     ] {
         let schema = &doc["components"]["schemas"][name];
+        // Fields added after 2.0 to schemas that are also request bodies stay optional so older
+        // clients can keep omitting them (the server still always serializes them).
+        let added_later: &[&str] = match name {
+            "AppSettings" => &["remote_allowed_origins"],
+            _ => &[],
+        };
         let props: HashSet<&str> = schema["properties"]
             .as_object()
             .unwrap_or_else(|| panic!("{name} has no properties"))
             .keys()
             .map(String::as_str)
+            .filter(|p| !added_later.contains(p))
             .collect();
         let required: HashSet<&str> = schema["required"]
             .as_array()
