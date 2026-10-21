@@ -862,35 +862,67 @@ impl AgentSession for CodexAppServerSession {
 /// therefore offered without waiting: while the event pump is full, stderr lines reach the log
 /// but not the timeline, and the pipe keeps draining.
 fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<AgentStreamEvent>) {
+    use tokio::io::AsyncReadExt;
+    // A line longer than this (an agent writing without newlines) is forwarded in pieces split at
+    // whitespace: a token or secret never contains whitespace, so redaction always sees it whole,
+    // and whitespace is ASCII, so no UTF-8 character is cut either.
+    const MAX_STDERR_LINE: usize = 16 * 1024;
+    // A run without any whitespace this long is replaced by a notice instead of being cut, which
+    // keeps memory bounded without ever splitting a secret.
+    const MAX_UNBROKEN: usize = 64 * 1024;
+
+    let emit = move |bytes: &[u8]| {
+        let line = String::from_utf8_lossy(bytes);
+        let redacted = redact_secrets(line.trim_end_matches(['\r', '\n']), &[]);
+        // Under `symphony::` so the default filter (`symphony=debug`) keeps it in the log files.
+        tracing::debug!(target: "symphony::agent_stderr", pid = ?pid, "{}", redacted);
+        let _ = event_tx.try_send(AgentStreamEvent {
+            event_type: "agent/stderr".into(),
+            timestamp: Utc::now(),
+            session_id: None,
+            thread_id: None,
+            turn_id: None,
+            pid,
+            message: Some(redacted.clone()),
+            usage: None,
+            rate_limits: None,
+            raw: json!({ "stderr": redacted }),
+        });
+    };
+
     tokio::spawn(async move {
-        // Lines longer than this (an agent writing without newlines) are forwarded in pieces, so
-        // memory stays bounded.
-        const MAX_STDERR_LINE: u64 = 16 * 1024;
-        use tokio::io::AsyncReadExt;
         let mut reader = BufReader::new(stderr);
-        let mut raw = Vec::new();
+        let mut pending = Vec::new();
         // Raw bytes, decoded lossily: invalid UTF-8 must not stop the draining.
         while matches!(
-            (&mut reader).take(MAX_STDERR_LINE).read_until(b'\n', &mut raw).await,
+            (&mut reader)
+                .take(MAX_STDERR_LINE as u64)
+                .read_until(b'\n', &mut pending)
+                .await,
             Ok(n) if n > 0
         ) {
-            let line = String::from_utf8_lossy(&raw);
-            let redacted = redact_secrets(line.trim_end_matches(['\r', '\n']), &[]);
-            raw.clear();
-            // Under `symphony::` so the default filter (`symphony=debug`) keeps it in the log files.
-            tracing::debug!(target: "symphony::agent_stderr", pid = ?pid, "{}", redacted);
-            let _ = event_tx.try_send(AgentStreamEvent {
-                event_type: "agent/stderr".into(),
-                timestamp: Utc::now(),
-                session_id: None,
-                thread_id: None,
-                turn_id: None,
-                pid,
-                message: Some(redacted.clone()),
-                usage: None,
-                rate_limits: None,
-                raw: json!({ "stderr": redacted }),
-            });
+            if pending.ends_with(b"\n") {
+                emit(&pending);
+                pending.clear();
+            } else if pending.len() >= MAX_STDERR_LINE {
+                if let Some(split) = pending.iter().rposition(|b| *b == b' ' || *b == b'\t') {
+                    let rest = pending.split_off(split + 1);
+                    emit(&pending);
+                    pending = rest;
+                } else if pending.len() >= MAX_UNBROKEN {
+                    emit(
+                        format!(
+                            "[{} bytes of agent stderr without whitespace omitted]",
+                            pending.len()
+                        )
+                        .as_bytes(),
+                    );
+                    pending.clear();
+                }
+            }
+        }
+        if !pending.is_empty() {
+            emit(&pending);
         }
     });
 }

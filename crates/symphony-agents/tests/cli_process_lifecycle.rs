@@ -296,23 +296,19 @@ async fn invalid_utf8_on_stderr_does_not_stop_the_draining() {
     );
 }
 
-#[tokio::test]
-async fn stderr_without_newlines_is_forwarded_in_bounded_pieces() {
+/// Runs a fake agent that writes `stderr_script` and returns the forwarded stderr messages.
+async fn stderr_messages(stderr_script: &str) -> Vec<String> {
     let dir = tempfile::tempdir().unwrap();
-    // 256 KiB on stderr without a single newline.
-    let agent = fake_agent(
-        dir.path(),
-        "head -c 262144 /dev/zero | tr '\\0' x >&2\nexit 0",
-    );
+    let agent = fake_agent(dir.path(), &format!("{stderr_script}\nexit 0"));
     let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(1024);
     let events = tokio::spawn(async move {
-        let mut pieces = Vec::new();
+        let mut messages = Vec::new();
         while let Some(event) = rx.recv().await {
             if event.event_type == "agent/stderr" {
-                pieces.push(event.message.unwrap_or_default().len());
+                messages.push(event.message.unwrap_or_default());
             }
         }
-        pieces
+        messages
     });
     let mut session = start_agent_session(
         config(ProviderKind::ClaudeCode, &agent, dir.path(), 600_000),
@@ -329,8 +325,49 @@ async fn stderr_without_newlines_is_forwarded_in_bounded_pieces() {
         .unwrap();
     assert!(outcome.succeeded);
     drop(session);
-    let pieces = events.await.unwrap();
-    assert!(pieces.len() >= 16, "forwarded in pieces: {pieces:?}");
-    assert!(pieces.iter().all(|len| *len <= 16 * 1024), "{pieces:?}");
-    assert_eq!(pieces.iter().sum::<usize>(), 262_144);
+    events.await.unwrap()
+}
+
+#[tokio::test]
+async fn long_stderr_lines_split_only_at_whitespace() {
+    // ~200 KiB of words without a newline, with a multi-byte character and a secret in every word.
+    let secret = "ghp_".to_string() + &"Q".repeat(36);
+    let messages = stderr_messages(&format!(
+        "i=0; while [ $i -lt 4000 ]; do printf 'é-%s-tail ' '{secret}' >&2; i=$((i+1)); done"
+    ))
+    .await;
+    assert!(
+        messages.len() >= 8,
+        "forwarded in pieces: {}",
+        messages.len()
+    );
+    for message in &messages {
+        assert!(
+            message.len() <= 16 * 1024 + 64,
+            "piece of {} bytes",
+            message.len()
+        );
+        assert!(!message.contains('\u{fffd}'), "no character is split");
+        assert!(
+            !message.contains("ghp_"),
+            "no secret survives, whole or in part"
+        );
+    }
+    assert_eq!(
+        messages
+            .iter()
+            .map(|m| m.matches("é-[REDACTED]-tail").count())
+            .sum::<usize>(),
+        4000
+    );
+}
+
+#[tokio::test]
+async fn unbroken_stderr_is_bounded_and_never_cut() {
+    // 256 KiB without newlines or whitespace: replaced by notices (64 KiB each), never split.
+    let messages = stderr_messages("head -c 262144 /dev/zero | tr '\\0' x >&2").await;
+    assert_eq!(
+        messages,
+        vec!["[65536 bytes of agent stderr without whitespace omitted]".to_string(); 4]
+    );
 }
