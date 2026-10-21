@@ -1067,7 +1067,14 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 task.issue.identifier
             )));
         }
+        let status_changes = task.status != next;
         task.transition_to(next)?;
+        if status_changes {
+            // Moving the task by hand supersedes a scheduled retry (a move within the same column
+            // keeps it, so it cannot skip the backoff).
+            task.next_retry_at = None;
+            self.memory.write().await.retry_attempts.remove(task_id);
+        }
         self.storage.upsert_task(&task).await?;
 
         self.emit_event(
@@ -2033,6 +2040,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
         task.attempt_count += 1;
         task.status = TaskStatus::Running;
+        // The retry (if any) is consumed; a stale time would otherwise be restored after a restart.
+        task.next_retry_at = None;
         task.current_phase = Some(RunAttemptPhase::PreparingWorkspace);
         task.started_at = Some(Utc::now());
         task.updated_at = Utc::now();
@@ -3028,7 +3037,9 @@ mod tests {
 
         make_retry_due(&orch, &task.id).await;
         orch.reconcile_and_dispatch_tick().await.unwrap();
-        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 1);
+        let dispatched = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(dispatched.attempt_count, 1);
+        assert_eq!(dispatched.next_retry_at, None);
         assert!(!orch
             .memory
             .read()
@@ -3094,6 +3105,36 @@ mod tests {
             .contains_key(&task_id));
         orch.reconcile_and_dispatch_tick().await.unwrap();
         assert_eq!(orch.get_task(&task_id).await.unwrap().attempt_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_moving_a_task_by_hand_supersedes_its_retry() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.schedule_retry(&task.id, false, None).await.unwrap();
+
+        // A move within the same column keeps the backoff.
+        orch.transition_task(&task.id, TaskStatus::Queued)
+            .await
+            .unwrap();
+        assert!(orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+
+        let blocked = orch
+            .transition_task(&task.id, TaskStatus::Blocked)
+            .await
+            .unwrap();
+        assert_eq!(blocked.next_retry_at, None);
+        assert!(!orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
     }
 
     #[tokio::test]
