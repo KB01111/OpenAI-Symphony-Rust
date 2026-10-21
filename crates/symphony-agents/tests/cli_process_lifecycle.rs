@@ -364,10 +364,16 @@ async fn long_stderr_lines_split_only_at_whitespace() {
 
 #[tokio::test]
 async fn unbroken_stderr_is_bounded_and_never_cut() {
-    // 256 KiB without newlines or whitespace: replaced by notices (64 KiB each), never split.
-    let messages = stderr_messages("head -c 262144 /dev/zero | tr '\\0' x >&2").await;
+    // 256 KiB without whitespace: one notice after 64 KiB, never split; the rest of that line is
+    // dropped too (it could hold the tail of a secret cut by the omission). The next line is kept.
+    let messages =
+        stderr_messages("{ head -c 262144 /dev/zero | tr '\\0' x; printf '\\nnext line\\n'; } >&2")
+            .await;
     assert_eq!(
         messages,
-        vec!["[65536 bytes of agent stderr without whitespace omitted]".to_string(); 4]
+        [
+            "[agent stderr line omitted: 65536 bytes without whitespace]",
+            "next line"
+        ]
     );
 }

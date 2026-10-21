@@ -87,10 +87,20 @@ pub fn retire_secret(secret: &str) {
     }
 }
 
+/// Stop masking `secret`: only for a value Symphony itself has invalidated (a rotated or revoked
+/// remote access token), which is worthless once revoked and must not use up the retired bound
+/// that keeps replaced provider credentials masked.
+pub fn forget_secret(secret: &str) {
+    if let (Some(secret), Ok(mut registry)) = (significant(secret), REGISTERED_SECRETS.write()) {
+        registry.live.retain(|k| k != secret);
+        registry.retired.retain(|k| k != secret);
+    }
+}
+
 /// Where a too-long `line` may be cut so that redacting each piece separately is as good as
 /// redacting the whole line. Returns the index of a space or tab to cut after, or `None` when no
 /// such point exists. A cut never falls
-/// - between `Bearer` and its token (the bearer pattern needs both), or
+/// - between `Bearer` (also at the end of a word) and its token (the bearer pattern needs both), or
 /// - inside a registered secret, nor right before the start of one that may continue past the end
 ///   of `line` (registered secrets can contain whitespace; the other patterns cannot).
 pub fn redaction_safe_split(line: &[u8]) -> Option<usize> {
@@ -113,7 +123,10 @@ pub fn redaction_safe_split(line: &[u8]) -> Option<usize> {
             .iter()
             .rposition(is_space)
             .map_or(0, |i| i + 1);
-        let after_bearer = line[word_start..word_end].eq_ignore_ascii_case(b"bearer");
+        // The bearer pattern has no word boundary: "Authorization:Bearer <token>" matches too.
+        let word = &line[word_start..word_end];
+        let after_bearer =
+            word.len() >= 6 && word[word.len() - 6..].eq_ignore_ascii_case(b"bearer");
         if !after_bearer && !spaced.iter().any(|secret| cuts(line, cut, secret)) {
             return Some(split);
         }
@@ -173,6 +186,8 @@ mod tests {
         // The last whitespace follows "Bearer": cut before "Bearer" instead.
         assert_eq!(redaction_safe_split(b"auth: Bearer  abc"), Some(5));
         assert_eq!(redaction_safe_split(b"x BEARER abc"), Some(1));
+        assert_eq!(redaction_safe_split(b"x Authorization:Bearer abc"), Some(1));
+        assert_eq!(redaction_safe_split(b"Authorization:bearer abc"), None);
         assert_eq!(redaction_safe_split(b"Bearer abc"), None);
         assert_eq!(redaction_safe_split(b"unbroken"), None);
     }
@@ -221,6 +236,15 @@ mod tests {
             !registry.iter().any(|k| k == "short"),
             "too short to register"
         );
+    }
+
+    #[test]
+    fn forgotten_secrets_are_no_longer_masked() {
+        let revoked = "revoked-remote-token-Q7w";
+        register_secret(revoked);
+        assert_eq!(redact_secrets(revoked, &[]), "[REDACTED]");
+        forget_secret(revoked);
+        assert_eq!(redact_secrets(revoked, &[]), revoked);
     }
 
     #[test]

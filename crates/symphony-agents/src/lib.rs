@@ -867,8 +867,9 @@ fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<
     // where redacting each piece is as good as redacting the whole line
     // (`redaction_safe_split`: at ASCII whitespace, so no UTF-8 character is cut either).
     const MAX_STDERR_LINE: usize = 16 * 1024;
-    // A run without any whitespace this long is replaced by a notice instead of being cut, which
-    // keeps memory bounded without ever splitting a secret.
+    // A run this long without a safe split point is replaced by a notice instead of being cut,
+    // which keeps memory bounded. The rest of that line is dropped too: emitting it could expose
+    // the unredactable tail of a secret that straddled the omitted part.
     const MAX_UNBROKEN: usize = 64 * 1024;
 
     let emit = move |bytes: &[u8]| {
@@ -893,6 +894,7 @@ fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr);
         let mut pending = Vec::new();
+        let mut omitting_rest_of_line = false;
         // Raw bytes, decoded lossily: invalid UTF-8 must not stop the draining.
         while matches!(
             (&mut reader)
@@ -901,7 +903,10 @@ fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<
                 .await,
             Ok(n) if n > 0
         ) {
-            if pending.ends_with(b"\n") {
+            if omitting_rest_of_line {
+                omitting_rest_of_line = !pending.ends_with(b"\n");
+                pending.clear();
+            } else if pending.ends_with(b"\n") {
                 emit(&pending);
                 pending.clear();
             } else if pending.len() >= MAX_STDERR_LINE {
@@ -912,12 +917,13 @@ fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<
                 } else if pending.len() >= MAX_UNBROKEN {
                     emit(
                         format!(
-                            "[{} bytes of agent stderr without whitespace omitted]",
+                            "[agent stderr line omitted: {} bytes without whitespace]",
                             pending.len()
                         )
                         .as_bytes(),
                     );
                     pending.clear();
+                    omitting_rest_of_line = true;
                 }
             }
         }
