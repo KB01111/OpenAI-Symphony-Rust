@@ -1528,6 +1528,16 @@ impl AgentSession for SimulatedAgentSession {
                 total_tokens: 160,
             };
             self.completed_usage.add(&failed_usage);
+            // Stream the usage like every other turn: runtime totals are credited from events.
+            let failed = self.stream_event(
+                "turn/failed",
+                &session_id,
+                &turn_id,
+                "Simulated turn failure triggered by prompt".into(),
+                Some(self.completed_usage),
+                json!({ "status": "failed", "usage": failed_usage }),
+            );
+            let _ = event_tx.send(failed).await;
             return Ok(self.outcome(
                 turn_id,
                 session_id,

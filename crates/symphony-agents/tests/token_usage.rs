@@ -190,3 +190,25 @@ async fn simulated_turns_report_session_usage() {
     // Intermediate reports of the second turn include the first turn as well.
     assert_cumulative(&reported_usage(&mut rx), first.usage.plus(&second.usage));
 }
+
+#[tokio::test]
+async fn a_failed_simulated_turn_streams_its_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(64);
+    let mut session = start_agent_session(
+        config(ProviderKind::Simulated, String::new(), dir.path()),
+        None,
+        None,
+        Arc::new(AutoApprovalGate),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+
+    let outcome = session.run_turn("SIMULATE_FAILURE", tx).await.unwrap();
+
+    assert!(!outcome.succeeded);
+    assert_eq!(outcome.usage, usage(120, 40));
+    // Runtime totals are credited from stream events, so the failed turn's usage must be in one.
+    assert_cumulative(&reported_usage(&mut rx), usage(120, 40));
+}
