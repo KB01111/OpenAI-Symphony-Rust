@@ -48,7 +48,7 @@ TaskStatus::allowed_transitions  ───────────────�
   protected routes, path parameters, required fields). `tests/state_machine_contract.rs` does the same
   for `packages/shared-types/src/generated/stateMachine.ts`.
 - `@hey-api/openapi-ts` (pinned to an exact version) generates `packages/shared-types/src/generated/openapi/`
-  (`packages/shared-types/openapi-ts.config.ts`). `@symphony/shared-types` re-exports the types;
+  (`tools/api-generator/openapi-ts.config.ts`). `@symphony/shared-types` re-exports the types;
   `@symphony/shared-types/api` exposes the SDK functions.
 - `pnpm generate:api` regenerates all three artifacts on any OS. The `API contract` workflow fails when
   they are stale and runs `oasdiff breaking` (pinned, checksum-verified) against the base branch; an

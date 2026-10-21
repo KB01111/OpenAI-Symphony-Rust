@@ -59,6 +59,8 @@ OpenAI-Symphony-Rust/
 │   ├── shared-types/       # Rust-generated API contracts, state machine table, EN/SV i18n
 │   ├── api-client/         # Typed HTTP client, authenticated SSE, Tauri IPC bridge (`SymphonyClient`)
 │   └── ui/                 # Symphony design system: tokens, Fluent v9 + shadcn/ui + Apps SDK UI
+├── tools/
+│   └── api-generator/      # Hey API generator for packages/shared-types (pinned to TypeScript 6)
 ├── WORKFLOW.md             # Repository Symphony workflow configuration
 ├── ARCHITECTURE.md         # System architecture & SPEC.md compliance document
 ├── SECURITY.md             # Security boundaries, sandboxing, and secret isolation
