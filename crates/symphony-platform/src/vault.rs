@@ -329,6 +329,19 @@ impl SecretStore {
             next.insert(key.to_string(), value.trim().to_string())
         };
         let result = self.persist(&next);
+        // The value no longer stored (the replaced one on success, the new one on failure) is
+        // retired, not forgotten: until it is revoked at its provider it can still be valid, and
+        // agent output may still contain it. A value also stored under another key stays live.
+        let current = if result.is_ok() { &next } else { &*guard };
+        let no_longer_stored = match &result {
+            Ok(()) => removed.as_deref(),
+            Err(_) => Some(value),
+        };
+        if let Some(unused) = no_longer_stored {
+            if !current.values().any(|v| v == unused.trim()) {
+                symphony_core::redaction::retire_secret(unused);
+            }
+        }
         // Zeroize the copy that is being discarded: `next` on failure, the old map on success.
         let mut discarded = match result {
             Ok(()) => std::mem::replace(&mut *guard, next),
@@ -337,8 +350,6 @@ impl SecretStore {
         for v in discarded.values_mut() {
             v.zeroize();
         }
-        // A replaced or deleted credential stays registered for redaction: until it is revoked
-        // at its provider it can still be valid, and agent output may still contain it.
         if let Some(mut old) = removed {
             old.zeroize();
         }
@@ -350,13 +361,7 @@ impl SecretStore {
     /// Value stored in the vault only (no environment fallback).
     pub fn get_vault_secret(&self, key: &str) -> Option<String> {
         let guard = self.cache.lock().expect("secret cache mutex");
-        let value = guard.get(key).filter(|v| !v.is_empty()).cloned();
-        // Every use refreshes the redaction registration, so a credential in use is never among
-        // the oldest entries the bounded registry drops.
-        if let Some(value) = &value {
-            symphony_core::redaction::register_secret(value);
-        }
-        value
+        guard.get(key).filter(|v| !v.is_empty()).cloned()
     }
 
     pub fn get_secret(&self, key: &str) -> Option<String> {
