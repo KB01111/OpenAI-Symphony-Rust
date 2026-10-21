@@ -14,7 +14,8 @@
     5. single scheduler: the CLI refuses to start a second runtime; a second desktop instance exits,
     6. shutdown and recovery: no orphaned Symphony processes; the lock is released after a crash,
     7. attachment: a desktop started while the CLI owns the data directory attaches without
-       taking over (runtime.json still belongs to the CLI).
+       taking over (runtime.json still belongs to the CLI),
+    8. the windowless desktop writes an owner-only log file without the token or credentials.
 
   Behaviour that needs an interactive user (tray menu, folder picker, notifications, window-state
   restore, login autostart at sign-in) is covered by docs/WINDOWS_NATIVE_SMOKE_TEST.md.
@@ -127,6 +128,14 @@ try {
   $vaultText = Get-Content $vault -Raw
   if ($vaultText.Contains($secret)) { Fail 'the vault contains the plaintext secret' }
   if (-not $vaultText.Contains('windows-dpapi-user')) { Fail 'the vault is not DPAPI-protected' }
+
+  Step 'Persistent desktop log (the release build has no console)'
+  $desktopLog = Wait-Until { Get-ChildItem (Join-Path $data 'logs') -Filter 'desktop-*.log' -ErrorAction SilentlyContinue | Select-Object -First 1 } 'a desktop log file'
+  Assert-OwnerOnly $desktopLog.FullName
+  $logText = Get-Content $desktopLog.FullName -Raw
+  if (-not $logText.Contains('Symphony Desktop starting')) { Fail 'the desktop log does not record the start' }
+  if ($logText.Contains($record.token)) { Fail 'the desktop log contains the API token' }
+  if ($logText.Contains($secret)) { Fail 'the desktop log contains a credential' }
 
   Step 'Single scheduler: the CLI must refuse the owned data directory'
   # Expected to fail: do not let its stderr turn into a terminating error.

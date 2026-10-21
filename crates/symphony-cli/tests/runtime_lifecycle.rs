@@ -153,6 +153,18 @@ fn runtime_publishes_private_discovery_coordinates_one_scheduler_and_recovers() 
     let output = kill_and_collect_output(restarted);
     assert!(!is_process_alive(restarted_pid));
     assert!(!output.contains(&fresh.token));
+
+    // 6. Persistent log files (the only record of a windowless desktop build): owner-only, written
+    //    by both runs, and free of either token.
+    let logs: Vec<_> = std::fs::read_dir(symphony_platform::logging::log_dir(&data_dir))
+        .expect("log directory")
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(logs.len(), 1, "one daily file: {logs:?}");
+    secure_fs::verify_private_file(&logs[0]).expect("the log file must be owner-only");
+    let log = std::fs::read_to_string(&logs[0]).unwrap();
+    assert!(log.contains("Symphony"), "the runtime logged to the file: {log}");
+    assert!(!log.contains(&record.token) && !log.contains(&fresh.token));
 }
 
 #[cfg(unix)]

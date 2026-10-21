@@ -16,7 +16,7 @@ use serde::Serialize;
 use symphony_core::SymphonyError;
 use symphony_orchestrator::SymphonyOrchestrator;
 use symphony_platform::{
-    autostart_command, configure_windows_autostart, default_app_data_dir,
+    autostart_command, configure_windows_autostart, default_app_data_dir, logging::init_logging,
     windows_autostart_command, RuntimeDiscovery, SecretStore, SingleInstanceGuard,
 };
 use symphony_server::{
@@ -446,12 +446,27 @@ async fn start_embedded_runtime(
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,symphony=debug".into()),
-        )
-        .init();
+    // Same override as `symphony-cli --data-dir` / `SYMPHONY_DATA_DIR`, so the desktop and
+    // the CLI agree on the data directory (and isolated native smoke tests are possible).
+    let data_dir = std::env::var_os("SYMPHONY_DATA_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_app_data_dir);
+    // The release build has no console (GUI subsystem), so the log files are the only record.
+    let logging = match std::fs::create_dir_all(&data_dir) {
+        Ok(()) => init_logging(Some(&data_dir), "desktop"),
+        Err(e) => init_logging(None, "desktop")
+            .and(Err(format!("Could not create {}: {e}", data_dir.display()))),
+    };
+    match logging {
+        Ok(Some(dir)) => tracing::info!(
+            log_dir = %dir.display(),
+            version = env!("CARGO_PKG_VERSION"),
+            "Symphony Desktop starting"
+        ),
+        Ok(None) => {}
+        Err(err) => tracing::warn!("{err}; logging to stdout only"),
+    }
 
     let start_hidden = std::env::args().any(|a| a == "--background");
 
@@ -464,12 +479,6 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let handle = app.handle().clone();
-            // Same override as `symphony-cli --data-dir` / `SYMPHONY_DATA_DIR`, so the desktop and
-            // the CLI agree on the data directory (and isolated native smoke tests are possible).
-            let data_dir = std::env::var_os("SYMPHONY_DATA_DIR")
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(default_app_data_dir);
             std::fs::create_dir_all(&data_dir)?;
 
             let state = tauri::async_runtime::block_on(async {

@@ -4755,7 +4755,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -4800,7 +4799,6 @@ dependencies = [
  "tauri-plugin-window-state",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "windows-sys 0.61.2",
 ]
 
@@ -4844,6 +4842,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tracing",
+ "tracing-subscriber",
  "windows-sys 0.61.2",
  "zeroize",
 ]

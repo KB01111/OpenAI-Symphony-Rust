@@ -7,6 +7,7 @@ use symphony_core::{HardwareSnapshot, ResourcePolicy, SymphonyError, SymphonyRes
 use sysinfo::System;
 use tracing::info;
 
+pub mod logging;
 pub mod secure_fs;
 mod vault;
 
