@@ -358,6 +358,7 @@ async fn start_embedded_runtime(
     orchestrator.start_background_loops();
 
     let token = generate_access_token();
+    symphony_core::redaction::register_secret(symphony_server::LOCAL_API_TOKEN_OWNER, &token);
     let remote_access =
         RemoteAccessManager::new(orchestrator.clone(), Some(data_dir.join("workspaces")));
     let local_config = ServerConfig {

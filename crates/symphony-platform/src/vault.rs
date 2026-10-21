@@ -119,6 +119,11 @@ pub struct SecretStore {
     cache: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
+/// Owner of a vault value in the redaction registry.
+fn vault_owner(key: &str) -> String {
+    format!("vault:{key}")
+}
+
 impl SecretStore {
     /// Open (or create) the vault in `app_data_dir`, migrating a legacy vault if necessary.
     ///
@@ -151,8 +156,8 @@ impl SecretStore {
             Ok(envelope) => store.decode_envelope(&envelope)?,
             Err(_) => store.migrate_legacy(&raw)?,
         };
-        for value in entries.values() {
-            symphony_core::redaction::register_secret(value);
+        for (key, value) in &entries {
+            symphony_core::redaction::register_secret(&vault_owner(key), value);
         }
         *store.cache.lock().expect("secret cache mutex") = entries;
         Ok(store)
@@ -325,22 +330,18 @@ impl SecretStore {
         let removed = if value.trim().is_empty() {
             next.remove(key)
         } else {
-            symphony_core::redaction::register_secret(value);
+            // Masked before it is persisted: it is a secret whether or not storing it succeeds.
+            symphony_core::redaction::register_secret(&vault_owner(key), value);
             next.insert(key.to_string(), value.trim().to_string())
         };
         let result = self.persist(&next);
-        // The value no longer stored (the replaced one on success, the new one on failure) is
-        // retired, not forgotten: until it is revoked at its provider it can still be valid, and
-        // agent output may still contain it. A value also stored under another key stays live.
-        let current = if result.is_ok() { &next } else { &*guard };
-        let no_longer_stored = match &result {
-            Ok(()) => removed.as_deref(),
-            Err(_) => Some(value),
-        };
-        if let Some(unused) = no_longer_stored {
-            if !current.values().any(|v| v == unused.trim()) {
-                symphony_core::redaction::retire_secret(unused);
-            }
+        // The value this key no longer holds (the replaced one on success, the new one on failure)
+        // is retired, not forgotten: until it is revoked at its provider it can still be valid, and
+        // agent output may still contain it. A value another source still holds stays in use.
+        let stored = if result.is_ok() { &next } else { &*guard };
+        match stored.get(key) {
+            Some(current) => symphony_core::redaction::register_secret(&vault_owner(key), current),
+            None => symphony_core::redaction::release_secret(&vault_owner(key)),
         }
         // Zeroize the copy that is being discarded: `next` on failure, the old map on success.
         let mut discarded = match result {
@@ -369,7 +370,7 @@ impl SecretStore {
             let value = std::env::var(key).ok().filter(|s| !s.is_empty());
             // An environment credential is as secret as a vault one: mask it in logs too.
             if let Some(value) = &value {
-                symphony_core::redaction::register_secret(value);
+                symphony_core::redaction::register_secret(&format!("env:{key}"), value);
             }
             value
         })
@@ -377,16 +378,6 @@ impl SecretStore {
 
     pub fn delete_secret(&self, key: &str) -> SymphonyResult<()> {
         self.set_secret(key, "")
-    }
-
-    /// Stop masking `value` in logs after Symphony itself invalidated it (a rotated or revoked
-    /// remote access token), unless the vault still stores it under any key. Checked under the
-    /// vault lock, so a concurrent `set_secret` of the same value cannot be unmasked.
-    pub fn forget_invalidated_secret(&self, value: &str) {
-        let guard = self.cache.lock().expect("secret cache mutex");
-        if !guard.values().any(|v| v == value.trim()) {
-            symphony_core::redaction::forget_secret(value);
-        }
     }
 
     pub fn list_configured_keys(&self) -> Vec<String> {
@@ -703,23 +694,29 @@ mod tests {
     }
 
     #[test]
-    fn invalidated_values_still_stored_elsewhere_stay_masked() {
-        use symphony_core::redaction::redact_secrets;
+    fn a_value_still_stored_under_another_key_stays_masked() {
+        use symphony_core::redaction::{forget_secret, redact_secrets};
         let dir = tempfile::tempdir().unwrap();
         let store = SecretStore::new(dir.path()).unwrap();
         let (shared, only) = ("shared-value-Hq8Vb2", "revoked-only-Tz5Kd1");
         store.set_secret("REMOTE", shared).unwrap();
         store.set_secret("PROVIDER_KEY", shared).unwrap();
         store.set_secret("OTHER", only).unwrap();
+        // E.g. a revoked remote token whose value is also a provider credential.
         store.delete_secret("REMOTE").unwrap();
-        store.forget_invalidated_secret(shared);
+        forget_secret(shared);
         assert_eq!(
             redact_secrets(shared, &[]),
             "[REDACTED]",
             "still a provider key"
         );
         store.delete_secret("OTHER").unwrap();
-        store.forget_invalidated_secret(only);
+        assert_eq!(
+            redact_secrets(only, &[]),
+            "[REDACTED]",
+            "deleted: retired, still masked"
+        );
+        forget_secret(only);
         assert_eq!(redact_secrets(only, &[]), only);
     }
 

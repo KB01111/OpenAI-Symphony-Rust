@@ -95,16 +95,18 @@ pub fn default_local_origins() -> Vec<String> {
     .collect()
 }
 
-/// Generate a random 256-bit hex access token. It is registered for log redaction, so neither
-/// the local nor a remote token can reach a log line.
+/// Generate a random 256-bit hex access token. Whoever keeps it registers it for log redaction
+/// under its owner: [`LOCAL_API_TOKEN_OWNER`] for the local API token, the credential vault for a
+/// remote token.
 pub fn generate_access_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
-    let token = hex::encode(bytes);
-    symphony_core::redaction::register_secret(&token);
-    token
+    hex::encode(bytes)
 }
+
+/// Redaction-registry owner of the local API token (`symphony_core::redaction::register_secret`).
+pub const LOCAL_API_TOKEN_OWNER: &str = "local-api-token";
 
 /// Which clients a listener serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

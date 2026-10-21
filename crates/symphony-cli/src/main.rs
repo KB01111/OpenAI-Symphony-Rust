@@ -11,7 +11,7 @@ use symphony_platform::{
 };
 use symphony_server::{
     default_local_origins, generate_access_token, start_http_server, RemoteAccessManager,
-    ServerConfig, API_VERSION,
+    ServerConfig, API_VERSION, LOCAL_API_TOKEN_OWNER,
 };
 use symphony_storage::Storage;
 
@@ -229,13 +229,11 @@ async fn main() -> anyhow::Result<()> {
     // A supplied token is used as-is; a too-short one is a configuration error rather than being
     // silently replaced (clients configured with it could never authenticate).
     let token = match cli.token.clone() {
-        Some(t) if t.len() >= 16 => {
-            symphony_core::redaction::register_secret(&t);
-            t
-        }
+        Some(t) if t.len() >= 16 => t,
         Some(_) => anyhow::bail!("--token / SYMPHONY_API_TOKEN must be at least 16 characters"),
         None => generate_access_token(),
     };
+    symphony_core::redaction::register_secret(LOCAL_API_TOKEN_OWNER, &token);
     let mut allowed_origins = default_local_origins();
     allowed_origins.extend(cli.allow_origins.iter().cloned());
     let is_loopback = cli.host == "127.0.0.1" || cli.host == "localhost" || cli.host == "::1";

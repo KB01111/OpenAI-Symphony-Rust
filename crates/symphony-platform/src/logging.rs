@@ -321,7 +321,7 @@ mod tests {
         let files = DailyLogFiles::open(dir.path(), "cli").unwrap();
         // A 64-hex API token matches no pattern; only registration can catch it.
         let token = "4f1c".repeat(16);
-        symphony_core::redaction::register_secret(&token);
+        symphony_core::redaction::register_secret("test:log-token", &token);
         let today = Local::now().date_naive();
         files.write_event(format!("token={token}\n").as_bytes(), today);
         let written =
