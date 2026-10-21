@@ -1096,9 +1096,18 @@ impl TrackerAdapter for LinearTracker {
             let cursor = issues
                 .and_then(|i| i.pointer("/pageInfo/endCursor"))
                 .and_then(|v| v.as_str());
+            if !has_next {
+                return Ok(out);
+            }
+            // A next page without a new cursor would refetch the same page (or end silently).
             match cursor {
-                Some(cursor) if has_next => after = json!(cursor),
-                _ => return Ok(out),
+                Some(cursor) if after.as_str() != Some(cursor) => after = json!(cursor),
+                _ => {
+                    return Err(SymphonyError::TrackerError {
+                        code: "linear_pagination_error".to_string(),
+                        message: "Linear reported another page without a new endCursor".to_string(),
+                    })
+                }
             }
         }
         warn!(

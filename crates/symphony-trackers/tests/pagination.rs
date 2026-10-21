@@ -168,3 +168,28 @@ async fn linear_listing_follows_the_cursor() {
         .collect();
     assert_eq!(afters, vec![Value::Null, json!("cursor-1")]);
 }
+
+#[tokio::test]
+async fn linear_listing_rejects_a_cursor_that_does_not_advance() {
+    let (base, requests) = serve(Box::new(|_, _| {
+        json!({ "data": { "issues": {
+            "nodes": [{ "id": "sym-1", "identifier": "SYM-1", "title": "t", "state": { "name": "Todo" } }],
+            "pageInfo": { "hasNextPage": true, "endCursor": "stuck" }
+        } } })
+    }))
+    .await;
+    let tracker = LinearTracker::new(
+        Some(base),
+        "project".into(),
+        Some("lin_api_test".into()),
+        Vec::new(),
+    );
+
+    let err = tracker
+        .fetch_issues_by_states(&["Todo".into()])
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("endCursor"), "{err}");
+    assert_eq!(requests.lock().unwrap().len(), 2);
+}

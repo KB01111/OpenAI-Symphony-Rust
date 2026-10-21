@@ -1522,6 +1522,12 @@ impl AgentSession for SimulatedAgentSession {
             .await;
 
         if prompt.contains("SIMULATE_FAILURE") {
+            let failed_usage = TokenUsage {
+                input_tokens: 120,
+                output_tokens: 40,
+                total_tokens: 160,
+            };
+            self.completed_usage.add(&failed_usage);
             return Ok(self.outcome(
                 turn_id,
                 session_id,
@@ -1531,11 +1537,7 @@ impl AgentSession for SimulatedAgentSession {
                     "simulated_error",
                     "Simulated turn failure triggered by prompt".into(),
                 )),
-                TokenUsage {
-                    input_tokens: 120,
-                    output_tokens: 40,
-                    total_tokens: 160,
-                },
+                failed_usage,
                 vec!["Encountered simulated failure.".into()],
             ));
         }
