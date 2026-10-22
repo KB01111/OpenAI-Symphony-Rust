@@ -9,9 +9,13 @@
 //! the `get_local_api_config` command. IPC commands are narrowly scoped: none of them executes
 //! arbitrary commands or touches arbitrary paths.
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+mod native_text;
+mod updates;
 
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use native_text::NativeLocale;
 use serde::Serialize;
 use symphony_core::SymphonyError;
 use symphony_orchestrator::SymphonyOrchestrator;
@@ -25,8 +29,8 @@ use symphony_server::{
 use symphony_storage::Storage;
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WindowEvent,
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, State, WindowEvent, Wry,
 };
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
@@ -38,7 +42,6 @@ enum RuntimeMode {
     /// This process owns the orchestrator and its scheduler.
     Embedded {
         orchestrator: Arc<SymphonyOrchestrator>,
-        data_dir: PathBuf,
         _instance_guard: SingleInstanceGuard,
     },
     /// Another process (e.g. `symphony-cli serve`) owns the data directory; the UI attaches to it.
@@ -47,6 +50,8 @@ enum RuntimeMode {
 
 struct DesktopAppState {
     mode: RuntimeMode,
+    /// The data directory this host and its runtime use (also when attached to another runtime).
+    data_dir: PathBuf,
     base_url: String,
     token: String,
     /// Why `runtime.json` could not be published, if it could not. The desktop keeps working
@@ -98,20 +103,9 @@ async fn open_task_workspace(
 
 fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
     if !path.is_dir() {
-        return Err("Workspace directory no longer exists".into());
+        return Err("Directory does not exist".into());
     }
-    let program = if cfg!(windows) {
-        "explorer"
-    } else if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    std::process::Command::new(program)
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Failed to open file manager: {e}"))
+    open_in_default_app(path)
 }
 
 /// Native folder picker for repository registration. Returns `None` when cancelled.
@@ -157,6 +151,99 @@ fn exit_application(app: AppHandle) {
     app.exit(0);
 }
 
+/// Tray widgets whose text follows the interface language.
+struct TrayItems {
+    tray: TrayIcon<Wry>,
+    show: MenuItem<Wry>,
+    pause: MenuItem<Wry>,
+    resume: MenuItem<Wry>,
+    quit: MenuItem<Wry>,
+}
+
+/// Language of everything the host itself displays (tray, notifications). The webview reports
+/// changes through `set_native_locale`; the embedded runtime seeds it from the saved settings.
+#[derive(Default)]
+struct NativeUi {
+    locale: Mutex<NativeLocale>,
+    tray: Mutex<Option<TrayItems>>,
+}
+
+impl NativeUi {
+    fn locale(&self) -> NativeLocale {
+        *self.locale.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn set_locale(&self, locale: NativeLocale) {
+        *self.locale.lock().unwrap_or_else(|e| e.into_inner()) = locale;
+        if let Some(items) = self.tray.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            let text = native_text::tray_text(locale);
+            let _ = items.show.set_text(text.show);
+            let _ = items.pause.set_text(text.pause);
+            let _ = items.resume.set_text(text.resume);
+            let _ = items.quit.set_text(text.quit);
+            let _ = items.tray.set_tooltip(Some(text.tooltip));
+        }
+    }
+}
+
+fn native_locale(app: &AppHandle) -> NativeLocale {
+    app.try_state::<NativeUi>()
+        .map(|ui| ui.locale())
+        .unwrap_or_default()
+}
+
+/// Switch the language of the tray menu and native notifications (`en` | `sv`).
+#[tauri::command]
+fn set_native_locale(ui: State<'_, NativeUi>, locale: String) -> Result<(), String> {
+    let locale =
+        NativeLocale::parse(&locale).ok_or_else(|| format!("unsupported locale '{locale}'"))?;
+    ui.set_locale(locale);
+    Ok(())
+}
+
+/// Open the application data directory (database, backups, workspaces) in the file manager.
+/// Takes no path: it is always the directory this host runs with.
+#[tauri::command]
+fn open_data_directory(state: State<'_, DesktopAppState>) -> Result<String, String> {
+    reveal_in_file_manager(&state.data_dir)?;
+    Ok(state.data_dir.to_string_lossy().to_string())
+}
+
+/// Open the diagnostic log directory in the file manager. Takes no path.
+#[tauri::command]
+fn open_log_directory(state: State<'_, DesktopAppState>) -> Result<String, String> {
+    let dir = symphony_platform::logging::log_dir(&state.data_dir);
+    reveal_in_file_manager(&dir)?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// Ask GitHub for the newest release. Only runs when the user asks; nothing is downloaded.
+#[tauri::command]
+async fn check_for_updates() -> Result<updates::UpdateCheck, String> {
+    updates::check(env!("CARGO_PKG_VERSION")).await
+}
+
+/// Open the project's releases page in the default browser. The URL is a constant.
+#[tauri::command]
+fn open_releases_page() -> Result<(), String> {
+    open_in_default_app(updates::RELEASES_URL)
+}
+
+fn open_in_default_app(target: impl AsRef<std::ffi::OsStr>) -> Result<(), String> {
+    let program = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(target)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to open {program}: {e}"))
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         let _ = window.unminimize();
@@ -172,29 +259,19 @@ fn main_window_focused(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-fn setup_tray(app: &AppHandle, embedded: bool) -> tauri::Result<()> {
-    let show_item = MenuItem::with_id(app, "show", "Open Symphony Desktop", true, None::<&str>)?;
-    let pause_item = MenuItem::with_id(
-        app,
-        "pause_scheduler",
-        "Pause task dispatching",
-        embedded,
-        None::<&str>,
-    )?;
-    let resume_item = MenuItem::with_id(
-        app,
-        "resume_scheduler",
-        "Resume task dispatching",
-        embedded,
-        None::<&str>,
-    )?;
-    let quit_item = MenuItem::with_id(app, "quit", "Stop runtime and exit", true, None::<&str>)?;
+fn setup_tray(app: &AppHandle, embedded: bool, locale: NativeLocale) -> tauri::Result<()> {
+    let text = native_text::tray_text(locale);
+    let show_item = MenuItem::with_id(app, "show", text.show, true, None::<&str>)?;
+    let pause_item = MenuItem::with_id(app, "pause_scheduler", text.pause, embedded, None::<&str>)?;
+    let resume_item =
+        MenuItem::with_id(app, "resume_scheduler", text.resume, embedded, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", text.quit, true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_item, &pause_item, &resume_item, &quit_item])?;
 
     let mut tray_builder = TrayIconBuilder::with_id("symphony-tray")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Symphony Desktop")
+        .tooltip(text.tooltip)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
             id @ ("pause_scheduler" | "resume_scheduler") => {
@@ -224,7 +301,16 @@ fn setup_tray(app: &AppHandle, embedded: bool) -> tauri::Result<()> {
     if let Some(icon) = app.default_window_icon() {
         tray_builder = tray_builder.icon(icon.clone());
     }
-    tray_builder.build(app)?;
+    let tray = tray_builder.build(app)?;
+    if let Some(ui) = app.try_state::<NativeUi>() {
+        *ui.tray.lock().unwrap_or_else(|e| e.into_inner()) = Some(TrayItems {
+            tray,
+            show: show_item,
+            pause: pause_item,
+            resume: resume_item,
+            quit: quit_item,
+        });
+    }
     Ok(())
 }
 
@@ -303,19 +389,19 @@ fn open_secret_store(data_dir: &Path, locale: &str) -> Result<SecretStore, Strin
 
 /// Native notification for events an operator should act on while the window is not focused.
 fn notify_for_event(app: &AppHandle, event: &symphony_core::domain::AgentEvent) {
-    let title = match event.event_type.as_str() {
-        "approval/requested" => "Approval required",
-        "attempt/succeeded" => "Ready for review",
-        "attempt/failed" => "Agent run failed",
-        _ => return,
+    let locale = native_locale(app);
+    let Some(title) = native_text::notification_title(locale, event.event_type.as_str()) else {
+        return;
     };
     if main_window_focused(app) {
         return;
     }
-    let body = match &event.issue_identifier {
-        Some(id) => format!("{id}: {}", event.message),
-        None => event.message.clone(),
-    };
+    let body = native_text::notification_body(
+        locale,
+        event.event_type.as_str(),
+        event.issue_identifier.as_deref(),
+        &event.message,
+    );
     let _ = app
         .notification()
         .builder()
@@ -333,6 +419,9 @@ async fn start_embedded_runtime(
         .await
         .map_err(|e| format!("Failed to initialize SQLite storage: {e}"))?;
     let mut settings = storage.get_settings().await.unwrap_or_default();
+    if let Some(ui) = app.try_state::<NativeUi>() {
+        ui.set_locale(NativeLocale::from_setting(&settings.locale));
+    }
     let secret_store = open_secret_store(&data_dir, &settings.locale)?;
     // Settings saved before 2.0 carry the old default remote port, which is the local API's port.
     // Migrate that legacy value to the new default and persist it, so the listener, `GET /settings`
@@ -399,12 +488,8 @@ async fn start_embedded_runtime(
             RuntimeDiscovery::remove(&data_dir);
             let message = err.to_string();
             tracing::error!(error = %message, "Runtime discovery file was not published");
-            let _ = app
-                .notification()
-                .builder()
-                .title("Symphony runtime discovery unavailable")
-                .body("CLI tools cannot attach to this runtime. Open Settings > Application for details.")
-                .show();
+            let (title, body) = native_text::discovery_unavailable(native_locale(app));
+            let _ = app.notification().builder().title(title).body(body).show();
             Some(message)
         }
     };
@@ -438,9 +523,9 @@ async fn start_embedded_runtime(
     Ok(DesktopAppState {
         mode: RuntimeMode::Embedded {
             orchestrator,
-            data_dir,
             _instance_guard: guard,
         },
+        data_dir,
         base_url,
         token,
         discovery_error,
@@ -515,6 +600,8 @@ fn main() {
         .setup(move |app| {
             let handle = app.handle().clone();
             std::fs::create_dir_all(&data_dir)?;
+            // Registered first: the runtime start seeds its language, the tray stores its items.
+            app.manage(NativeUi::default());
 
             let state = tauri::async_runtime::block_on(async {
                 match claim_or_find_runtime(&data_dir).await? {
@@ -523,6 +610,7 @@ fn main() {
                         tracing::info!(base_url = %found.base_url, owner = %found.owner, "Attaching to existing Symphony runtime");
                         Ok(DesktopAppState {
                             mode: RuntimeMode::Attached,
+                            data_dir: data_dir.clone(),
                             base_url: found.base_url,
                             token: found.token,
                             discovery_error: None,
@@ -534,7 +622,7 @@ fn main() {
 
             let embedded = matches!(state.mode, RuntimeMode::Embedded { .. });
             app.manage(state);
-            setup_tray(app.handle(), embedded)?;
+            setup_tray(app.handle(), embedded, native_locale(app.handle()))?;
 
             if start_hidden {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
@@ -570,15 +658,20 @@ fn main() {
             open_task_workspace,
             pick_repository_folder,
             set_autostart,
-            exit_application
+            exit_application,
+            set_native_locale,
+            open_data_directory,
+            open_log_directory,
+            check_for_updates,
+            open_releases_page
         ])
         .build(tauri::generate_context!())
         .expect("Error while building Symphony Desktop")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app.try_state::<DesktopAppState>() {
-                    if let RuntimeMode::Embedded { data_dir, .. } = &state.mode {
-                        RuntimeDiscovery::remove(data_dir);
+                    if matches!(state.mode, RuntimeMode::Embedded { .. }) {
+                        RuntimeDiscovery::remove(&state.data_dir);
                     }
                 }
             }

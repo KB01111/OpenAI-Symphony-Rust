@@ -1,12 +1,13 @@
 # Windows 11 Native Smoke Test
 
-Symphony Desktop's native behaviour is validated in three layers. Only the first two run in CI; the
-third needs a person at a Windows 11 desktop and must be done before a release.
+Symphony Desktop's native behaviour is validated in four layers. Only the first three run in CI; the
+last needs a person at a Windows 11 desktop and must be done before a release.
 
 | Layer | Where | Covers |
 | --- | --- | --- |
 | Rust tests | `cargo test --workspace` on `windows-latest` (`ci.yml`) | `crates/symphony-platform/tests/windows_native.rs`: owner-only DACL on `runtime.json` and the vault (also inside a world-writable directory), replacement of an untrusted discovery file, DPAPI vault round-trip, HKCU autostart write/read-back/remove. `crates/symphony-cli/tests/runtime_lifecycle.rs`: discovery, authenticated API, single scheduler, crash recovery, no token in logs, explicit vault quarantine. |
 | Automated native smoke | `scripts/windows-native-smoke.ps1` (`desktop-native.yml`, after `tauri build`) | The release `symphony-desktop.exe` and `symphony-cli.exe`: runtime start in `--background` mode, DACLs in a world-writable `SYMPHONY_DATA_DIR`, token-protected API, remote access off by default, DPAPI vault persistence across restart, CLI refused while the desktop owns the data directory, second desktop instance exits, crash and recovery without orphaned processes, desktop attach mode while the CLI owns the runtime. |
+| Installer smoke | `scripts/windows-installer-smoke.ps1` (`desktop-native.yml` and `release.yml`, after the native smoke) | The NSIS installer on a clean per-user profile: silent install, the uninstall entry (name, version, publisher), the **installed** app passing the native smoke test above, upgrade over the installed app, silent uninstall, user data in `%LOCALAPPDATA%\symphony-desktop` surviving. Shortcuts are only warned about. |
 | Manual (below) | A Windows 11 machine | Tray, window lifecycle and state restore, folder picker, Explorer integration, notifications, autostart at sign-in, installer. |
 
 Run the automated smoke test locally (PowerShell 7, from the repository root):
@@ -91,5 +92,18 @@ Record the Windows build (`winver`), the commit and pass/fail for each step.
 17. **Upgrade keeps data** — Install the previous build, create data, install this one over it: projects,
     tasks and history are intact and a `symphony.sqlite.pre-migration-v*.bak` was written. Uninstall and
     record whether `%LOCALAPPDATA%\symphony-desktop` survives (`docs/DATA_BACKUP.md` says it should).
-18. **Shutdown** — Exit from the tray. Task Manager shows no `symphony-desktop.exe` or `symphony-cli.exe`
+18. **Language of native UI** — Settings → Appearance → switch to Svenska: the tray menu (right-click the
+    icon) is Swedish at once (*Öppna Symphony Desktop*, *Pausa uppgiftsutskick* …), and a notification
+    (step 11) is Swedish. Switch back: both are English again. Restart: the tray starts in the saved language.
+19. **Folders, shortcuts, updates** — Settings → Application: *Open data folder* and *Open log folder* open
+    Explorer on the data directory the app runs with (the fresh `SYMPHONY_DATA_DIR` folder if you started it
+    from the prepared shell, otherwise `%LOCALAPPDATA%\symphony-desktop`) and its `logs` subfolder. *Show keyboard shortcuts* (also `F1`
+    and `Ctrl+/`) lists the shortcuts, and each one works. *Check for updates* with network access reports
+    *up to date* (or an available version with *Open release page*); with the network off it shows an error,
+    never *up to date*.
+20. **Installer details** — The installer offers English and Swedish, shows the license and the Symphony
+    artwork, installs per user without an administrator prompt, creates a Start Menu entry with the Symphony
+    icon, and the uninstall entry in *Settings → Apps* shows the publisher and version. (CI already covers
+    silent install/upgrade/uninstall: `scripts/windows-installer-smoke.ps1`.)
+21. **Shutdown** — Exit from the tray. Task Manager shows no `symphony-desktop.exe` or `symphony-cli.exe`
     left behind, and `runtime.json` has been removed.

@@ -47,6 +47,7 @@ export interface UiState {
   paletteMode: "all" | "projects";
   newTaskOpen: boolean;
   addProjectOpen: boolean;
+  shortcutsOpen: boolean;
 
   setSidebarCollapsed(collapsed: boolean): void;
   setActiveProject(id: string | null): void;
@@ -66,6 +67,7 @@ export interface UiState {
   closePalette(): void;
   setNewTaskOpen(open: boolean): void;
   setAddProjectOpen(open: boolean): void;
+  setShortcutsOpen(open: boolean): void;
 }
 
 export const DEFAULT_TASK_FILTERS: TaskFilters = { search: "", statuses: [], providers: [], priority: null };
@@ -91,6 +93,7 @@ export const useUiStore = create<UiState>()(
       paletteMode: "all",
       newTaskOpen: false,
       addProjectOpen: false,
+      shortcutsOpen: false,
 
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
       setActiveProject: (activeProjectId) => set({ activeProjectId }),
@@ -109,7 +112,8 @@ export const useUiStore = create<UiState>()(
       openPalette: (paletteMode = "all") => set({ paletteOpen: true, paletteMode }),
       closePalette: () => set({ paletteOpen: false }),
       setNewTaskOpen: (newTaskOpen) => set({ newTaskOpen }),
-      setAddProjectOpen: (addProjectOpen) => set({ addProjectOpen })
+      setAddProjectOpen: (addProjectOpen) => set({ addProjectOpen }),
+      setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen })
     }),
     {
       name: "symphony.ui.v2",

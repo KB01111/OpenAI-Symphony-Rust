@@ -157,6 +157,15 @@ pnpm --filter @symphony/desktop e2e
 - An unreadable credential vault is never replaced silently: use the desktop recovery dialog or
   `symphony-cli --quarantine-credential-vault`.
 
+## Installing (Windows 11)
+
+Download `Symphony-Desktop_<version>_x64-setup.exe` from the
+[Releases](https://github.com/KB01111/OpenAI-Symphony-Rust/releases) page and run it; it installs per user (no
+administrator rights) and offers English or Swedish. Verify the download against `SHA256SUMS.txt`. A build
+whose name contains `UNSIGNED` is not Authenticode-signed: Windows SmartScreen warns about it, and it is meant
+for testing. `symphony-cli_<version>_windows-x64.exe` is the standalone runtime/CLI. Every commit on `main` also
+produces an unsigned installer as a workflow artifact (`desktop-native`).
+
 ## Releases
 
 Releases are cut by pushing a `vX.Y.Z` tag after the version in every manifest and a dated `CHANGELOG.md`

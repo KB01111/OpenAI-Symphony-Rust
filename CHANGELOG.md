@@ -40,6 +40,20 @@ First release. Replace "Unreleased" with the release date in the commit that is 
 - Supply-chain checks: `cargo deny` (advisories, licenses, sources), `pnpm audit` for production
   dependencies, Dependabot for Cargo, npm and GitHub Actions.
 - Installer metadata (publisher, description, per-user NSIS install) and an optimized release profile.
+- **Windows installer**: a real application icon set (multi-size `.ico`, Start Menu/Store logos), an NSIS
+  installer in English and Swedish with a language selector, license page, branded header/sidebar images and
+  a Start Menu folder; only the NSIS bundle is built. The installer is tested in CI
+  (`scripts/windows-installer-smoke.ps1`): silent install, the *installed* app passes the native runtime
+  smoke test, upgrade over itself, silent uninstall, and user data survives. The release workflow can also
+  publish straight from CI (manual run with `publish`; unsigned builds only as an explicit pre-release), and
+  every commit on `main` produces an unsigned installer artifact.
+- **Check for updates** (Settings → Application): an explicit lookup of the newest GitHub release. It never
+  runs on its own, downloads nothing and opens the releases page; signed in-app updates still need the
+  update-signing key described in `docs/RELEASING.md`.
+- **Open data folder / Open log folder** (Settings → Application) and a **Keyboard shortcuts** help dialog
+  (`F1`, `Ctrl+/`, the command palette or Settings).
+- The tray menu and native notifications follow the interface language (English/Swedish) instead of being
+  English only.
 
 ### Fixed
 

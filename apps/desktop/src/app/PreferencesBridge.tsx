@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { isTauri, nativeHost } from "@symphony/api-client";
 import { isLocale, type Locale } from "@symphony/shared-types";
 import { useSaveSettings, useSettings } from "../lib/queries.js";
 import type { ThemeMode } from "@symphony/ui";
@@ -53,6 +54,14 @@ export function PreferencesBridge(): null {
     const nextLocale: Locale = locale;
     mutate((latest) => ({ ...latest, theme, locale: nextLocale }));
   }, [themeMode, locale, mutate]);
+
+  // The desktop host owns the tray menu and notifications; keep their language in step with the UI.
+  useEffect(() => {
+    if (!isTauri()) return;
+    nativeHost.setNativeLocale(locale).catch(() => {
+      // Cosmetic: the tray and notifications keep their previous language.
+    });
+  }, [locale]);
 
   return null;
 }

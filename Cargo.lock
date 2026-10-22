@@ -4665,6 +4665,8 @@ name = "symphony-desktop"
 version = "2.0.0"
 dependencies = [
  "anyhow",
+ "reqwest 0.12.28",
+ "semver",
  "serde",
  "serde_json",
  "symphony-core",

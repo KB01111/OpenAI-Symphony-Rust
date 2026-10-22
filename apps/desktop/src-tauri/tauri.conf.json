@@ -50,7 +50,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "nsis"
+    ],
     "publisher": "Symphony Desktop Contributors",
     "copyright": "Copyright (c) Symphony Desktop Contributors. MIT License.",
     "category": "DeveloperTool",
@@ -58,13 +60,32 @@
     "longDescription": "Symphony Desktop schedules coding agents (Codex, Claude Code, OpenCode) against GitHub and Linear issues in isolated Git worktrees, with approvals, validation and merge readiness checks.",
     "homepage": "https://github.com/KB01111/OpenAI-Symphony-Rust",
     "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
       "icons/icon.png",
       "icons/icon.ico"
     ],
     "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "languages": [
+          "English",
+          "Swedish"
+        ],
+        "displayLanguageSelector": true,
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp",
+        "startMenuFolder": "Symphony Desktop",
+        "compression": "lzma"
       }
-    }
+    },
+    "license": "MIT",
+    "licenseFile": "../../../LICENSE"
   }
 }

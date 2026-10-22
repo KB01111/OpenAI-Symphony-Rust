@@ -12,6 +12,7 @@ import { useUiStore } from "../store/uiStore.js";
 import { useGlobalShortcuts } from "../hooks/useGlobalShortcuts.js";
 import { useSettings } from "../lib/queries.js";
 import { CommandPalette } from "../features/command-palette/CommandPalette.js";
+import { ShortcutsDialog } from "../features/shortcuts/ShortcutsDialog.js";
 import { ActivityDrawer } from "./ActivityDrawer.js";
 import { CommandBar } from "./CommandBar.js";
 import { ContextInspector } from "./ContextInspector.js";
@@ -114,6 +115,7 @@ export const DesktopShell: React.FC = () => {
       <StatusBar />
 
       <CommandPalette />
+      <ShortcutsDialog />
       <Suspense fallback={null}>
         {newTaskOpen ? <NewTaskDialog /> : null}
         {addProjectOpen ? <AddRepositoryDialog /> : null}

@@ -17,7 +17,7 @@ import {
   Switch,
   Textarea
 } from "@fluentui/react-components";
-import { DatabaseBackup, Download, FileJson, KeyRound, LogOut, ShieldOff } from "lucide-react";
+import { DatabaseBackup, Download, ExternalLink, FileJson, FolderOpen, Keyboard, KeyRound, LogOut, RefreshCw, ShieldOff } from "lucide-react";
 import { SymphonyApiError, errorMessage, isTauri, nativeHost } from "@symphony/api-client";
 import { ALL_PROVIDERS, formatMessage, type AppSettings, type Locale, type ProviderKind } from "@symphony/shared-types";
 import {
@@ -35,12 +35,14 @@ import {
 import { useMutation } from "@tanstack/react-query";
 import { paths } from "../../app/routes.js";
 import { useLocale, useMessages, useT } from "../../lib/i18n.js";
+import { useUiStore } from "../../store/uiStore.js";
 import { useCredentials, useProviders, useRuntimeState } from "../../lib/queries.js";
 import { useRuntime } from "../../runtime/RuntimeProvider.js";
 import { CredentialRow } from "../providers/CredentialControls.js";
 import { PROVIDER_CREDENTIAL_KEYS } from "../providers/ProviderCard.js";
 import {
   useBackups,
+  useCheckForUpdates,
   useCreateBackup,
   useExportDiagnostics,
   useNativeHostConfig,
@@ -689,6 +691,93 @@ export const DiagnosticsSection: React.FC = () => {
 // Application
 // ---------------------------------------------------------------------------------------------
 
+/** Desktop only: reveal the data and log folders in Explorer (the host takes no path). */
+const FolderActions: React.FC = () => {
+  const m = useMessages(settingsMessages);
+  const notify = useNotify();
+  const open = useMutation({
+    mutationFn: (which: "data" | "logs") => (which === "data" ? nativeHost.openDataDirectory() : nativeHost.openLogDirectory()),
+    onError: (error) => notify("error", m.application.openFailed, errorMessage(error))
+  });
+  return (
+    <div className="space-y-2 border-t border-border pt-3">
+      <h3 className="text-sm font-medium text-foreground">{m.application.folders}</h3>
+      <p className="text-xs text-muted-foreground">{m.application.foldersHint}</p>
+      <div className="flex flex-wrap gap-2">
+        <Button icon={<FolderOpen className="size-4" />} disabled={open.isPending} onClick={() => open.mutate("data")}>
+          {m.application.openData}
+        </Button>
+        <Button icon={<FolderOpen className="size-4" />} disabled={open.isPending} onClick={() => open.mutate("logs")}>
+          {m.application.openLogs}
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+/** Desktop only: an explicit lookup of the newest GitHub release; installing stays manual. */
+const UpdateCheck: React.FC = () => {
+  const m = useMessages(settingsMessages);
+  const notify = useNotify();
+  const check = useCheckForUpdates();
+  const openReleases = useMutation({
+    mutationFn: () => nativeHost.openReleasesPage(),
+    onError: (error) => notify("error", m.application.openReleasesFailed, errorMessage(error))
+  });
+  const result = check.data;
+  return (
+    <div className="space-y-2 border-t border-border pt-3">
+      <h3 className="text-sm font-medium text-foreground">{m.application.updates}</h3>
+      <p className="text-xs text-muted-foreground">{m.application.updatesHint}</p>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          icon={check.isPending ? <Spinner size="tiny" /> : <RefreshCw className="size-4" />}
+          disabled={check.isPending}
+          onClick={() => check.mutate()}
+        >
+          {check.isPending ? m.application.checking : m.application.checkUpdates}
+        </Button>
+      </div>
+      <div aria-live="polite">
+        {check.isError ? (
+          <MessageBar intent="error" layout="multiline">
+            <MessageBarBody>
+              <MessageBarTitle>{m.application.checkFailed}</MessageBarTitle>
+              {errorMessage(check.error)}
+            </MessageBarBody>
+          </MessageBar>
+        ) : result ? (
+          <MessageBar intent={result.update_available ? "info" : "success"} layout="multiline">
+            <MessageBarBody>
+              {result.latest === null
+                ? m.application.noReleases
+                : result.update_available
+                  ? formatMessage(result.prerelease ? m.application.updateAvailablePre : m.application.updateAvailable, {
+                      version: result.latest,
+                      current: result.current
+                    })
+                  : formatMessage(m.application.upToDate, { version: result.current })}
+            </MessageBarBody>
+          </MessageBar>
+        ) : null}
+      </div>
+      {result?.update_available ? (
+        <div className="space-y-2">
+          {result.notes ? (
+            <details className="rounded-md border border-border p-2 text-sm">
+              <summary className="cursor-pointer text-xs font-medium">{m.application.releaseNotes}</summary>
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap font-sans text-xs">{result.notes}</pre>
+            </details>
+          ) : null}
+          <Button appearance="primary" icon={<ExternalLink className="size-4" />} disabled={openReleases.isPending} onClick={() => openReleases.mutate()}>
+            {m.application.openReleases}
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 export const ApplicationSection: React.FC = () => {
   const m = useMessages(settingsMessages);
   const t = useT();
@@ -703,6 +792,7 @@ export const ApplicationSection: React.FC = () => {
   const desktop = isTauri();
   const mode = runtime.mode ? (m.application.modes[runtime.mode] ?? runtime.mode) : t.common.unknown;
   const discoveryError = useNativeHostConfig().data?.discovery_error;
+  const setShortcutsOpen = useUiStore((s) => s.setShortcutsOpen);
 
   return (
     <SettingsSection id="application" intro={m.application.intro}>
@@ -731,6 +821,14 @@ export const ApplicationSection: React.FC = () => {
           ]}
         />
       )}
+      <div className="border-t border-border pt-3">
+        <h3 className="mb-2 text-sm font-medium text-foreground">{m.application.shortcuts}</h3>
+        <Button icon={<Keyboard className="size-4" />} onClick={() => setShortcutsOpen(true)}>
+          {m.application.showShortcuts}
+        </Button>
+      </div>
+      {desktop ? <FolderActions /> : null}
+      {desktop ? <UpdateCheck /> : null}
       {desktop ? (
         <div className="border-t border-border pt-3">
           <Button icon={<LogOut className="size-4" />} onClick={() => setConfirmExit(true)} disabled={exit.isPending}>

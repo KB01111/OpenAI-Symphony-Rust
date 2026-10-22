@@ -13,6 +13,17 @@ export interface LocalApiConfig {
   discovery_error?: string | null;
 }
 
+/** Result of an explicit "check for updates" (`check_for_updates`). */
+export interface UpdateCheck {
+  current: string;
+  /** Newest published version; `null` when no release is published yet. */
+  latest: string | null;
+  update_available: boolean;
+  prerelease: boolean;
+  published_at: string | null;
+  notes: string | null;
+}
+
 interface TauriInternals {
   invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 }
@@ -43,7 +54,17 @@ export const nativeHost = {
    * not persist the registry change, so callers never report an entry that does not exist.
    */
   setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),
-  exitApplication: () => invoke<void>("exit_application")
+  exitApplication: () => invoke<void>("exit_application"),
+  /** Language (`en` | `sv`) of the tray menu and native notifications. */
+  setNativeLocale: (locale: string) => invoke<void>("set_native_locale", { locale }),
+  /** Opens the application data directory in Explorer. Takes no path. Returns the opened path. */
+  openDataDirectory: () => invoke<string>("open_data_directory"),
+  /** Opens the diagnostic log directory in Explorer. Takes no path. Returns the opened path. */
+  openLogDirectory: () => invoke<string>("open_log_directory"),
+  /** Asks GitHub for the newest release. Only runs on request; nothing is downloaded. */
+  checkForUpdates: () => invoke<UpdateCheck>("check_for_updates"),
+  /** Opens the project's releases page in the default browser (a fixed URL). */
+  openReleasesPage: () => invoke<void>("open_releases_page")
 };
 
 export type NativeHost = typeof nativeHost;
