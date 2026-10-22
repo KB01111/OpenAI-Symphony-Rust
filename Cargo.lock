@@ -4765,8 +4765,10 @@ name = "symphony-storage"
 version = "2.0.0"
 dependencies = [
  "chrono",
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "sqlx",
  "symphony-core",
  "tempfile",

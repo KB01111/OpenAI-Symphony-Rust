@@ -17,8 +17,8 @@ import {
   Switch,
   Textarea
 } from "@fluentui/react-components";
-import { Download, FileJson, KeyRound, LogOut, ShieldOff } from "lucide-react";
-import { errorMessage, isTauri, nativeHost } from "@symphony/api-client";
+import { DatabaseBackup, Download, FileJson, KeyRound, LogOut, ShieldOff } from "lucide-react";
+import { SymphonyApiError, errorMessage, isTauri, nativeHost } from "@symphony/api-client";
 import { ALL_PROVIDERS, formatMessage, type AppSettings, type Locale, type ProviderKind } from "@symphony/shared-types";
 import {
   ConfirmDialog,
@@ -40,6 +40,8 @@ import { useRuntime } from "../../runtime/RuntimeProvider.js";
 import { CredentialRow } from "../providers/CredentialControls.js";
 import { PROVIDER_CREDENTIAL_KEYS } from "../providers/ProviderCard.js";
 import {
+  useBackups,
+  useCreateBackup,
   useExportDiagnostics,
   useNativeHostConfig,
   useRemoteAccess,
@@ -59,6 +61,7 @@ export const SECTION_IDS: ReadonlyArray<SectionId> = [
   "defaults",
   "remote",
   "integrations",
+  "backups",
   "diagnostics",
   "application"
 ];
@@ -578,6 +581,69 @@ export const IntegrationsSection: React.FC = () => {
           {m.integrations.openProviders}
         </Link>
       </p>
+    </SettingsSection>
+  );
+};
+
+// ---------------------------------------------------------------------------------------------
+// Backups
+// ---------------------------------------------------------------------------------------------
+
+export const BackupsSection: React.FC = () => {
+  const m = useMessages(settingsMessages);
+  const locale = useLocale();
+  const notify = useNotify();
+  const backups = useBackups();
+  const create = useCreateBackup();
+  const onCreate = () =>
+    create.mutate(undefined, {
+      onSuccess: (backup) => notify("success", m.backups.created, backup.path),
+      onError: (error) => notify("error", m.backups.createFailed, errorMessage(error))
+    });
+  const unavailable = backups.error instanceof SymphonyApiError && backups.error.code === "backups_unavailable";
+  return (
+    <SettingsSection id="backups" intro={m.backups.intro}>
+      {unavailable ? (
+        <p className="text-sm text-muted-foreground">{m.backups.unavailable}</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              icon={create.isPending ? <Spinner size="tiny" /> : <DatabaseBackup className="size-4" />}
+              disabled={create.isPending}
+              onClick={onCreate}
+            >
+              {create.isPending ? m.backups.creating : m.backups.create}
+            </Button>
+            {backups.data ? (
+              <span className="text-xs text-muted-foreground">{formatMessage(m.backups.directory, { path: backups.data.directory })}</span>
+            ) : null}
+          </div>
+          {backups.isLoading ? <LoadingRows rows={2} /> : null}
+          {backups.isError ? <ErrorState title={m.backups.loadFailed} message={errorMessage(backups.error)} /> : null}
+          {backups.data && backups.data.backups.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{m.backups.empty}</p>
+          ) : null}
+          {backups.data && backups.data.backups.length > 0 ? (
+            <ul className="divide-y divide-border rounded-md border border-border" aria-label={m.backups.listLabel}>
+              {backups.data.backups.map((b) => (
+                <li key={b.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
+                  <TimeAgo iso={b.created_at} />
+                  <span className="text-muted-foreground tabular-nums">{formatBytes(b.size_bytes, locale)}</span>
+                  <span className="text-muted-foreground">
+                    {formatMessage(m.backups.version, { version: b.app_version, schema: b.schema_version })}
+                  </span>
+                  <code className="ms-auto max-w-full truncate font-mono text-xs text-subtle-foreground" title={b.path}>
+                    {b.id}
+                  </code>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      )}
+      <p className="text-xs text-muted-foreground">{m.backups.scope}</p>
+      <p className="text-xs text-muted-foreground">{m.backups.restore}</p>
     </SettingsSection>
   );
 };

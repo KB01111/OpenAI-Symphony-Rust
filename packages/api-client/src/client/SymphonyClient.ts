@@ -314,6 +314,19 @@ export class SymphonyClient {
   }
 
   // --------------------------------------------------------------------------------------------
+  // Backups (local administration only)
+  // --------------------------------------------------------------------------------------------
+
+  /** Existing local backups, newest first, and the directory they are stored in. */
+  listBackups(signal?: AbortSignal) {
+    return this.call((o) => api.listBackups(o), signal);
+  }
+  /** Create a SQLite-consistent backup now. Credentials are never included. */
+  createBackup() {
+    return this.call((o) => api.createBackup(o));
+  }
+
+  // --------------------------------------------------------------------------------------------
   // Remote companion access (local administration only)
   // --------------------------------------------------------------------------------------------
 

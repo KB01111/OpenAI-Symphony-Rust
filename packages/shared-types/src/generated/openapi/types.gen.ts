@@ -108,6 +108,39 @@ export type AttemptSummary = {
 };
 
 /**
+ * Existing backups, newest first, and the directory they live in.
+ */
+export type BackupList = {
+    directory: string;
+    backups: Array<BackupSummary>;
+};
+
+/**
+ * One backup on disk. Credentials are never part of a backup.
+ */
+export type BackupSummary = {
+    /**
+     * Directory name, unique per backup.
+     */
+    id: string;
+    /**
+     * Absolute directory of the backup on this machine.
+     */
+    path: string;
+    created_at: string;
+    app_version: string;
+    /**
+     * Database schema version of the backup.
+     */
+    schema_version: number;
+    size_bytes: number;
+    /**
+     * Whether the active `WORKFLOW.md` is part of the backup.
+     */
+    includes_workflow: boolean;
+};
+
+/**
  * Blocker reference for an Issue (SPEC.md Section 4.1.1)
  */
 export type BlockerRef = {
@@ -1960,6 +1993,56 @@ export type ExportDiagnosticsResponses = {
 };
 
 export type ExportDiagnosticsResponse = ExportDiagnosticsResponses[keyof ExportDiagnosticsResponses];
+
+export type ListBackupsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/backups';
+};
+
+export type ListBackupsErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ListBackupsError = ListBackupsErrors[keyof ListBackupsErrors];
+
+export type ListBackupsResponses = {
+    /**
+     * OK
+     */
+    200: BackupList;
+};
+
+export type ListBackupsResponse = ListBackupsResponses[keyof ListBackupsResponses];
+
+export type CreateBackupData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/backups';
+};
+
+export type CreateBackupErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type CreateBackupError = CreateBackupErrors[keyof CreateBackupErrors];
+
+export type CreateBackupResponses = {
+    /**
+     * Created
+     */
+    201: BackupSummary;
+};
+
+export type CreateBackupResponse = CreateBackupResponses[keyof CreateBackupResponses];
 
 export type GetIssueDetailData = {
     body?: never;

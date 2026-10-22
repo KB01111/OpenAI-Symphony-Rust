@@ -130,6 +130,9 @@ pub struct ServerConfig {
     pub scope: ApiScope,
     /// Remote listener manager exposed through the local-only `/remote-access` endpoints.
     pub remote_access: Option<Arc<RemoteAccessManager>>,
+    /// Directory the local-only `/backups` endpoints write to and list (`<data dir>/backups`);
+    /// `None` when the host cannot manage backups.
+    pub backup_root: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -142,6 +145,7 @@ impl ServerConfig {
             default_workspace_root: None,
             scope: ApiScope::Local,
             remote_access: None,
+            backup_root: None,
         }
     }
 }
@@ -155,6 +159,7 @@ pub struct ServerState {
     pub default_workspace_root: Option<PathBuf>,
     pub started_at: DateTime<Utc>,
     pub remote_access: Option<Arc<RemoteAccessManager>>,
+    pub backup_root: Option<PathBuf>,
 }
 
 // ============================================================================
@@ -339,6 +344,7 @@ pub struct StreamControlEvent {
         (name = "providers", description = "Coding agent providers"),
         (name = "credentials", description = "Credential vault (key names only)"),
         (name = "diagnostics", description = "Redacted diagnostics export"),
+        (name = "backups", description = "SQLite-consistent local backups of the application data (local administration only)"),
         (name = "remote-access", description = "Remote companion listener and its access token (local administration only)"),
     ),
     // The shared error body plus types that travel over the event stream or document string
@@ -514,6 +520,7 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(list_credentials_handler, set_credential_handler))
         .routes(routes!(delete_credential_handler))
         .routes(routes!(export_diagnostics_handler))
+        .routes(routes!(list_backups_handler, create_backup_handler))
         .routes(routes!(issue_detail_handler))
         .routes(routes!(get_remote_access_handler))
         .routes(routes!(
@@ -567,6 +574,10 @@ pub(crate) fn build_router_inner(
         started_at: Utc::now(),
         remote_access: match config.scope {
             ApiScope::Local => config.remote_access.clone(),
+            ApiScope::Remote => None,
+        },
+        backup_root: match config.scope {
+            ApiScope::Local => config.backup_root.clone(),
             ApiScope::Remote => None,
         },
     };
@@ -1734,6 +1745,104 @@ async fn export_diagnostics_handler(State(state): State<ServerState>) -> Respons
             bundle,
         )
             .into_response(),
+        Err(e) => error_response(e),
+    }
+}
+
+// ============================================================================
+// Backups (local administration only)
+// ============================================================================
+
+/// One backup on disk. Credentials are never part of a backup.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct BackupSummary {
+    /// Directory name, unique per backup.
+    pub id: String,
+    /// Absolute directory of the backup on this machine.
+    pub path: String,
+    pub created_at: DateTime<Utc>,
+    pub app_version: String,
+    /// Database schema version of the backup.
+    pub schema_version: i64,
+    pub size_bytes: u64,
+    /// Whether the active `WORKFLOW.md` is part of the backup.
+    pub includes_workflow: bool,
+}
+
+impl From<symphony_storage::backup::BackupInfo> for BackupSummary {
+    fn from(info: symphony_storage::backup::BackupInfo) -> Self {
+        Self {
+            id: info.id,
+            path: info.path.to_string_lossy().into_owned(),
+            created_at: info.created_at,
+            app_version: info.app_version,
+            schema_version: info.schema_version,
+            size_bytes: info.size_bytes,
+            includes_workflow: info.includes_workflow,
+        }
+    }
+}
+
+/// Existing backups, newest first, and the directory they live in.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct BackupList {
+    pub directory: String,
+    pub backups: Vec<BackupSummary>,
+}
+
+fn backups_unavailable() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "backups_unavailable",
+        "This runtime host does not manage backups",
+    )
+}
+
+/// List the local backups.
+#[utoipa::path(
+    get,
+    path = "/backups",
+    operation_id = "listBackups",
+    tag = "backups",
+    responses((status = 200, body = BackupList))
+)]
+async fn list_backups_handler(State(state): State<ServerState>) -> Response {
+    let Some(root) = &state.backup_root else {
+        return backups_unavailable();
+    };
+    match symphony_storage::backup::list_backups(root) {
+        Ok(backups) => Json(BackupList {
+            directory: root.to_string_lossy().into_owned(),
+            backups: backups.into_iter().map(BackupSummary::from).collect(),
+        })
+        .into_response(),
+        Err(e) => error_response(e),
+    }
+}
+
+/// Create a backup now: a transactionally consistent copy of the database (SQLite `VACUUM INTO`,
+/// WAL included) plus the active `WORKFLOW.md`, with a checksum manifest. Credentials are not
+/// included. Restoring is an offline operation (`symphony-cli restore-backup <folder>`).
+#[utoipa::path(
+    post,
+    path = "/backups",
+    operation_id = "createBackup",
+    tag = "backups",
+    responses((status = 201, body = BackupSummary))
+)]
+async fn create_backup_handler(State(state): State<ServerState>) -> Response {
+    let Some(root) = &state.backup_root else {
+        return backups_unavailable();
+    };
+    let workflow = state.orchestrator.workflow_target_path().await;
+    match symphony_storage::backup::create_backup(
+        state.orchestrator.storage(),
+        root,
+        workflow.as_deref(),
+    )
+    .await
+    {
+        Ok(info) => (StatusCode::CREATED, Json(BackupSummary::from(info))).into_response(),
         Err(e) => error_response(e),
     }
 }

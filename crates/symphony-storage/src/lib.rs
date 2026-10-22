@@ -13,6 +13,8 @@ use symphony_core::{
     SymphonyError, SymphonyResult, Task, TaskStatus, ThreadUsageMark, TokenUsage, ValidationResult,
 };
 
+pub mod backup;
+
 #[derive(Clone)]
 pub struct Storage {
     pool: SqlitePool,

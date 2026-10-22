@@ -19,6 +19,7 @@ export const settingsMessages = defineMessages({
       defaults: "Default provider",
       remote: "Remote access",
       integrations: "Integrations",
+      backups: "Backups",
       diagnostics: "Diagnostics",
       application: "Application"
     },
@@ -132,6 +133,21 @@ export const settingsMessages = defineMessages({
         ANTHROPIC_API_KEY: "Claude Code."
       } as Record<string, string>
     },
+    backups: {
+      intro: "Create a consistent copy of your projects, tasks, run history, approvals and settings. Backups are stored on this computer and can be created while agents are running.",
+      create: "Create backup",
+      creating: "Creating backup…",
+      created: "Backup created",
+      createFailed: "Backup failed",
+      loadFailed: "Could not load the backups",
+      listLabel: "Backups",
+      empty: "No backups yet.",
+      directory: "Stored in {path}",
+      version: "Version {version}, schema {schema}",
+      unavailable: "This runtime does not manage backups.",
+      scope: "Included: the database (projects, tasks, run attempts, events, approvals, pull request reviews, validation results, settings) and the active WORKFLOW.md. Not included: API keys and tokens (the credential vault is bound to your Windows account and is never copied into a backup), Git repositories and worktrees, logs.",
+      restore: "To restore, quit Symphony (tray menu: Stop runtime and exit) and run the symphony-cli release download with: symphony-cli restore-backup <folder>. The data it replaces is kept next to the original as .pre-restore-<time>. Check a backup first with: symphony-cli verify-backup <folder>."
+    },
     diagnostics: {
       intro: "Export a redacted JSON bundle (settings, runtime state, recent errors) to attach to a bug report. Secrets are masked by the runtime before export.",
       export: "Export diagnostics",
@@ -199,6 +215,7 @@ export const settingsMessages = defineMessages({
       defaults: "Standardleverantör",
       remote: "Fjärråtkomst",
       integrations: "Integrationer",
+      backups: "Säkerhetskopior",
       diagnostics: "Diagnostik",
       application: "Program"
     },
@@ -311,6 +328,21 @@ export const settingsMessages = defineMessages({
         OPENAI_API_KEY: "OpenAI Codex.",
         ANTHROPIC_API_KEY: "Claude Code."
       } as Record<string, string>
+    },
+    backups: {
+      intro: "Skapa en konsekvent kopia av dina projekt, uppgifter, körhistorik, godkännanden och inställningar. Säkerhetskopiorna sparas på den här datorn och kan skapas medan agenter körs.",
+      create: "Skapa säkerhetskopia",
+      creating: "Skapar säkerhetskopia…",
+      created: "Säkerhetskopia skapad",
+      createFailed: "Säkerhetskopieringen misslyckades",
+      loadFailed: "Kunde inte läsa säkerhetskopiorna",
+      listLabel: "Säkerhetskopior",
+      empty: "Inga säkerhetskopior ännu.",
+      directory: "Sparas i {path}",
+      version: "Version {version}, schema {schema}",
+      unavailable: "Den här körmiljön hanterar inte säkerhetskopior.",
+      scope: "Ingår: databasen (projekt, uppgifter, körförsök, händelser, godkännanden, pull request-granskningar, valideringsresultat, inställningar) och aktiv WORKFLOW.md. Ingår inte: API-nycklar och token (lösenordsvalvet är bundet till ditt Windows-konto och kopieras aldrig in i en säkerhetskopia), Git-repon och arbetsträd, loggar.",
+      restore: "För att återställa: avsluta Symphony (aktivitetsfältets meny: Stoppa körmiljön och avsluta) och kör nedladdningen symphony-cli från utgåvan med: symphony-cli restore-backup <mapp>. Data som ersätts sparas bredvid originalet som .pre-restore-<tid>. Kontrollera en säkerhetskopia först med: symphony-cli verify-backup <mapp>."
     },
     diagnostics: {
       intro: "Exportera ett maskerat JSON-paket (inställningar, körtidstillstånd, senaste fel) att bifoga en felrapport. Hemligheter maskeras av körtiden före export.",
