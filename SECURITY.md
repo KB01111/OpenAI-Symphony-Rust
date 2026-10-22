@@ -101,7 +101,7 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
     the configured Enterprise host) **and** the project's own `owner/name`; any other HTTPS origin is refused.
     A push is refused when `origin` has a separate or additional push URL (`pushurl`/`pushInsteadOf`) or the
     repository's own configuration sets `http.*` redirect/header/proxy/TLS keys, URL rewrites, credential
-    settings, `core.sshCommand`/`gitProxy` or a remote's `receivepack`/`uploadpack` or `protocol.<name>.allow`, and it never follows HTTP redirects, and a scan that cannot run (a failing `git diff`, an unresolvable base commit) blocks
+    settings, `core.sshCommand`/`gitProxy` or a remote's `receivepack` or `protocol.<name>.allow`, and it never follows HTTP redirects, and a scan that cannot run (a failing `git diff`, an unresolvable base commit) blocks
     publishing like a finding does. The endpoint is local-administration only: the remote companion
     listener answers `403 forbidden_scope`.
   - **Known limit**: git *clean filters* (`filter.<name>.clean` selected by `.gitattributes`) still run when
