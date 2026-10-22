@@ -217,10 +217,27 @@ fn open_log_directory(state: State<'_, DesktopAppState>) -> Result<String, Strin
     Ok(dir.to_string_lossy().to_string())
 }
 
-/// Ask GitHub for the newest release. Only runs when the user asks; nothing is downloaded.
+/// Ask GitHub for the newest release (and whether it can be installed in-app). Nothing is
+/// downloaded; the webview supplies no URL.
 #[tauri::command]
-async fn check_for_updates() -> Result<updates::UpdateCheck, String> {
-    updates::check(env!("CARGO_PKG_VERSION")).await
+async fn check_for_updates(
+    app: AppHandle,
+    pending: State<'_, updates::PendingUpdate>,
+) -> Result<updates::UpdateCheck, String> {
+    updates::check_and_stage(&app, &pending).await
+}
+
+/// Download, verify and install the update found by the last `check_for_updates`. Takes no URL or
+/// path. While the embedded runtime has agents running it refuses until `confirmed` is true.
+#[tauri::command]
+async fn install_update(
+    app: AppHandle,
+    state: State<'_, DesktopAppState>,
+    pending: State<'_, updates::PendingUpdate>,
+    confirmed: bool,
+) -> Result<updates::InstallOutcome, String> {
+    // `None` when attached to another runtime: it keeps running when this app is replaced.
+    updates::install(&app, &pending, state.mode_settings(), confirmed).await
 }
 
 /// Open the project's releases page in the default browser. The URL is a constant.
@@ -597,6 +614,9 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        // Registers no webview-callable commands (the capability grants none); the host drives it.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::PendingUpdate::default())
         .setup(move |app| {
             let handle = app.handle().clone();
             std::fs::create_dir_all(&data_dir)?;
@@ -663,6 +683,7 @@ fn main() {
             open_data_directory,
             open_log_directory,
             check_for_updates,
+            install_update,
             open_releases_page
         ])
         .build(tauri::generate_context!())

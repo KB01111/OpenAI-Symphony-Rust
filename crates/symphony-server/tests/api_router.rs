@@ -209,6 +209,52 @@ async fn invalid_requests_map_to_client_errors() {
 }
 
 #[tokio::test]
+async fn a_client_that_omits_the_retention_setting_keeps_the_stored_value() {
+    let (app, _dir) = router().await;
+    let get = |app: axum::Router| async move {
+        json_body(
+            app.oneshot(authed(Method::GET, "/api/v1/settings", None))
+                .await
+                .unwrap(),
+        )
+        .await
+    };
+    let put = |app: axum::Router, body: serde_json::Value| async move {
+        app.oneshot(authed(Method::PUT, "/api/v1/settings", Some(body)))
+            .await
+            .unwrap()
+    };
+
+    let mut settings = get(app.clone()).await;
+    assert_eq!(settings["event_retention_days"], json!(30));
+
+    // A current client saves its own value.
+    settings["event_retention_days"] = json!(0);
+    assert_eq!(
+        put(app.clone(), settings.clone()).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(get(app.clone()).await["event_retention_days"], json!(0));
+
+    // An older client that does not know the field must not reset it to the default.
+    settings["theme"] = json!("dark");
+    settings
+        .as_object_mut()
+        .unwrap()
+        .remove("event_retention_days");
+    let resp = put(app.clone(), settings.clone()).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(json_body(resp).await["event_retention_days"], json!(0));
+    let after = get(app.clone()).await;
+    assert_eq!(after["event_retention_days"], json!(0));
+    assert_eq!(after["theme"], json!("dark"));
+
+    // Out-of-range values are rejected.
+    settings["event_retention_days"] = json!(3651);
+    assert_eq!(put(app, settings).await.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn workflow_config_never_leaks_tracker_tokens() {
     let (app, _dir) = router().await;
     let raw = "---\ntracker:\n  kind: github\n  provider:\n    repo: a/b\n    token: ghp_supersecretvalue123456\n---\nHi {{ issue.identifier }}";

@@ -32,6 +32,15 @@ describe("settings validation (mirror of the runtime's validate_settings)", () =
     );
   });
 
+  it("accepts 0 (keep everything) and up to ten years of activity history, and rejects the rest", () => {
+    for (const days of [0, 1, 30, 3650]) expect(validateSettings(settings({ event_retention_days: days }), v)).toEqual({});
+    // A runtime that predates the setting omits it: that is the default, not an error.
+    expect(validateSettings(settings({ event_retention_days: undefined }), v)).toEqual({});
+    for (const days of [-1, 3651]) expect(validateSettings(settings({ event_retention_days: days }), v)).toHaveProperty("event_retention_days", v.retention);
+    expect(validateSettings(settings({ event_retention_days: 1.5 }), v)).toHaveProperty("event_retention_days", v.integer);
+    expect(serverErrorFields("event_retention_days must be 0 (keep everything) or at most 3650")).toEqual(["event_retention_days"]);
+  });
+
   it("rejects a remote port equal to the local API port", () => {
     expect(validateSettings(settings({ remote_port: 4780 }), v, 4780)).toHaveProperty("remote_port");
     expect(validateSettings(settings({ remote_port: 47821 }), v, 4780)).toEqual({});

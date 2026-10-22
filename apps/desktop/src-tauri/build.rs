@@ -12,6 +12,7 @@ fn main() {
             "open_data_directory",
             "open_log_directory",
             "check_for_updates",
+            "install_update",
             "open_releases_page",
         ]),
     ))

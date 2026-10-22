@@ -99,8 +99,11 @@ Record the Windows build (`winver`), the commit and pass/fail for each step.
     Explorer on the data directory the app runs with (the fresh `SYMPHONY_DATA_DIR` folder if you started it
     from the prepared shell, otherwise `%LOCALAPPDATA%\symphony-desktop`) and its `logs` subfolder. *Show keyboard shortcuts* (also `F1`
     and `Ctrl+/`) lists the shortcuts, and each one works. *Check for updates* with network access reports
-    *up to date* (or an available version with *Open release page*); with the network off it shows an error,
-    never *up to date*.
+    *up to date* (or an available version); with the network off it shows an error, never *up to date*.
+    With a newer signed release published: the banner appears at startup, **Update now** shows download
+    progress, the installer runs in passive mode and the app comes back at the new version with the same
+    projects, tasks and credentials; with tasks running it asks before interrupting them. A release without
+    `latest.json` offers *Open release page* instead.
 20. **Installer details** — The installer offers English and Swedish, shows the license and the Symphony
     artwork, installs per user without an administrator prompt, creates a Start Menu entry with the Symphony
     icon, and the uninstall entry in *Settings → Apps* shows the publisher and version. (CI already covers

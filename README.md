@@ -191,7 +191,7 @@ smoke-tests and drafts the GitHub release; see [CONTRIBUTING.md](./CONTRIBUTING.
 - [docs/PRODUCTION_GAP_AUDIT.md](./docs/PRODUCTION_GAP_AUDIT.md) — Verified defects, gaps and unverified concerns with evidence and status.
 - [docs/PRODUCTION_RELEASE_REPORT.md](./docs/PRODUCTION_RELEASE_REPORT.md) — What was done, what was run, what blocks a release.
 - [docs/DATA_BACKUP.md](./docs/DATA_BACKUP.md) — Data directory, backups, restore and recovery.
-- [docs/RELEASING.md](./docs/RELEASING.md) — Release pipeline, signing, SBOMs and the (unimplemented) updater plan.
+- [docs/RELEASING.md](./docs/RELEASING.md) — Release pipeline, signing, SBOMs and the in-app updater and its signing key.
 - [CHANGELOG.md](./CHANGELOG.md) — Release notes (the release workflow publishes the tagged section).
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Detailed architecture, Symphony `SPEC.md` compliance, and component design.
 - [SECURITY.md](./SECURITY.md) — Threat model, workspace isolation invariants, credential handling, and sandboxing.

@@ -50,9 +50,11 @@ These cannot be done from the repository and are deliberately not faked:
 
 ## 4. Known limitations and accepted risks
 
-- **No auto-update**: users install new versions manually. Tauri's updater needs an update-signing key
-  pair and a hosted manifest; the plan and the owner's steps are in [`RELEASING.md`](./RELEASING.md). No
-  updater code ships until it can be verified with a real key on Windows.
+- **In-app updates need the update key as a repository secret** (`TAURI_SIGNING_PRIVATE_KEY`, see
+  [`RELEASING.md`](./RELEASING.md)); releases built without it have no `latest.json` and send users to the
+  release page. The install path (download, signature check, passive NSIS upgrade, restart) is covered by unit
+  tests for the logic and by CI for the build, but has **not** been exercised end to end on Windows: do it
+  with two real releases before relying on it.
 - **Pull requests are opened, never merged**: *Create pull request* commits, pushes and opens one on explicit
   request; *Refresh status* re-reads its CI and merge state on demand (no background polling).
 - **Not yet verified on Windows 11** for this release candidate: everything in

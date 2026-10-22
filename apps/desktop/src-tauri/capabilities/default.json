@@ -16,6 +16,7 @@
     "allow-open-data-directory",
     "allow-open-log-directory",
     "allow-check-for-updates",
+    "allow-install-update",
     "allow-open-releases-page"
   ]
 }

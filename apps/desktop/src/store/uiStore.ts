@@ -14,6 +14,15 @@ export type DrawerTab = "events" | "agent" | "terminal" | "validations" | "appro
 export type TaskView = "board" | "table";
 export type LogMode = "concise" | "technical";
 
+/** Where an in-app update install stands. Shared by the banner, Settings and the confirm dialog. */
+export type UpdateInstallState =
+  | { phase: "idle" }
+  /** Agents are running: waiting for the user to confirm that they are interrupted. */
+  | { phase: "confirm"; running: number }
+  | { phase: "downloading"; downloaded: number; total: number | null }
+  | { phase: "installing" }
+  | { phase: "error"; message: string };
+
 export interface TaskFilters {
   search: string;
   statuses: TaskStatus[];
@@ -40,8 +49,13 @@ export interface UiState {
   logMode: LogMode;
   lastRoute: string;
   taskFilters: TaskFilters;
+  /** Look for updates at startup and every few hours (desktop only). Off = only on request. */
+  autoCheckUpdates: boolean;
+  /** Version whose banner the user dismissed; a newer version shows the banner again. */
+  dismissedUpdate: string | null;
 
   // session-only
+  updateInstall: UpdateInstallState;
   inspector: InspectorTarget | null;
   paletteOpen: boolean;
   paletteMode: "all" | "projects";
@@ -63,6 +77,9 @@ export interface UiState {
   setLastRoute(route: string): void;
   setTaskFilters(filters: Partial<TaskFilters>): void;
   resetTaskFilters(): void;
+  setAutoCheckUpdates(enabled: boolean): void;
+  dismissUpdate(version: string | null): void;
+  setUpdateInstall(state: UpdateInstallState): void;
   openPalette(mode?: "all" | "projects"): void;
   closePalette(): void;
   setNewTaskOpen(open: boolean): void;
@@ -87,7 +104,10 @@ export const useUiStore = create<UiState>()(
       logMode: "concise",
       lastRoute: "/overview",
       taskFilters: DEFAULT_TASK_FILTERS,
+      autoCheckUpdates: true,
+      dismissedUpdate: null,
 
+      updateInstall: { phase: "idle" },
       inspector: null,
       paletteOpen: false,
       paletteMode: "all",
@@ -109,6 +129,9 @@ export const useUiStore = create<UiState>()(
       setLastRoute: (lastRoute) => set({ lastRoute }),
       setTaskFilters: (filters) => set((s) => ({ taskFilters: { ...s.taskFilters, ...filters } })),
       resetTaskFilters: () => set({ taskFilters: DEFAULT_TASK_FILTERS }),
+      setAutoCheckUpdates: (autoCheckUpdates) => set({ autoCheckUpdates }),
+      dismissUpdate: (dismissedUpdate) => set({ dismissedUpdate }),
+      setUpdateInstall: (updateInstall) => set({ updateInstall }),
       openPalette: (paletteMode = "all") => set({ paletteOpen: true, paletteMode }),
       closePalette: () => set({ paletteOpen: false }),
       setNewTaskOpen: (newTaskOpen) => set({ newTaskOpen }),
@@ -131,7 +154,9 @@ export const useUiStore = create<UiState>()(
         drawerTab: s.drawerTab,
         logMode: s.logMode,
         lastRoute: s.lastRoute,
-        taskFilters: s.taskFilters
+        taskFilters: s.taskFilters,
+        autoCheckUpdates: s.autoCheckUpdates,
+        dismissedUpdate: s.dismissedUpdate
       })
     }
   )

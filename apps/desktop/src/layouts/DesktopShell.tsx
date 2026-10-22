@@ -12,6 +12,7 @@ import { useUiStore } from "../store/uiStore.js";
 import { useGlobalShortcuts } from "../hooks/useGlobalShortcuts.js";
 import { useSettings } from "../lib/queries.js";
 import { CommandPalette } from "../features/command-palette/CommandPalette.js";
+import { UpdateBanner } from "../features/updates/UpdateBanner.js";
 import { ShortcutsDialog } from "../features/shortcuts/ShortcutsDialog.js";
 import { ActivityDrawer } from "./ActivityDrawer.js";
 import { CommandBar } from "./CommandBar.js";
@@ -65,7 +66,10 @@ export const DesktopShell: React.FC = () => {
 
   return (
     <div className="grid h-full grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-background text-foreground">
-      <CommandBar />
+      <div className="min-w-0">
+        <CommandBar />
+        <UpdateBanner />
+      </div>
       <div className="flex min-h-0 min-w-0">
         <Sidebar />
         <ResizablePanelGroup orientation="horizontal" id="symphony-shell-h" {...horizontal} className="min-w-0 flex-1">

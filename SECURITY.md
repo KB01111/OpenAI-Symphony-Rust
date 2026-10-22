@@ -182,8 +182,11 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   `get_local_api_config`, `open_task_workspace` (opens only a task worktree that validates inside its
   project's workspace root), `pick_repository_folder`, `set_autostart`, `exit_application`,
   `set_native_locale` (accepts only `en` or `sv`), `open_data_directory` and `open_log_directory` (no
-  arguments: they open the host's own data/log directory), `check_for_updates` (no arguments: one GET to a
-  compile-time GitHub releases URL, only when the user presses the button; nothing is downloaded or run) and
+  arguments: they open the host's own data/log directory), `check_for_updates` (no arguments: GETs to compile-time
+  GitHub release URLs, at startup and every six hours unless switched off in Settings, or on request; nothing is
+  downloaded), `install_update` (a `confirmed` flag only: downloads the installer named by the release manifest of
+  the last check, verifies its minisign signature against the public key compiled into the app and only then runs
+  it; the webview names no URL or path, and the updater plugin's own commands are not granted to the window) and
   `open_releases_page` (no arguments: opens a constant URL). There is no shell, filesystem or arbitrary
   command bridge.
 - **Single authoritative scheduler**: desktop and CLI share `symphony-runtime.lock` in the data directory.

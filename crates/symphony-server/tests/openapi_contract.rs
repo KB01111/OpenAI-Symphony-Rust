@@ -144,7 +144,7 @@ fn response_schemas_require_every_field() {
         // Fields added after 2.0 to schemas that are also request bodies stay optional so older
         // clients can keep omitting them (the server still always serializes them).
         let added_later: &[&str] = match name {
-            "AppSettings" => &["remote_allowed_origins"],
+            "AppSettings" => &["remote_allowed_origins", "event_retention_days"],
             _ => &[],
         };
         let props: HashSet<&str> = schema["properties"]
