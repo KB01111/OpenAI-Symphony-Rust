@@ -18,7 +18,9 @@ symphony-platform = { path = "../../../crates/symphony-platform" }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
-tauri-plugin-updater = "2"
+# No `zip` feature: it only unpacks macOS/Linux update bundles (we ship an NSIS installer) and drags in a `zip`
+# release with open advisories (RUSTSEC-2026-0367..0369).
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-window-state = "2"
 tauri-plugin-single-instance = "2"
 reqwest.workspace = true
