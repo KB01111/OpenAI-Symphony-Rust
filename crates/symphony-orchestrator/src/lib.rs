@@ -1231,7 +1231,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
         task.current_session_id = None;
         task.last_error = Some(reason.to_string());
         task.updated_at = Utc::now();
-        self.storage.upsert_task(&task).await?;
+        // Only the lifecycle columns: the stopped worker settles its usage concurrently, and a full
+        // row written from the copy read above would put the older totals back.
+        self.storage.update_task_lifecycle(&task).await?;
+        let task = self.get_task(task_id).await?;
 
         {
             let mut mem = self.memory.write().await;
@@ -1261,13 +1264,39 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 task.issue.identifier
             )));
         }
+        // A refused retry must not leave the task Queued for the scheduler to start later.
+        if self.memory.read().await.winding_down.contains(task_id) {
+            return Err(SymphonyError::Conflict(format!(
+                "the previous attempt of {} is still stopping; try again in a moment",
+                task.issue.identifier
+            )));
+        }
         task.status.validate_transition(TaskStatus::Queued)?;
+        let before = (task.status, task.last_error.clone(), task.next_retry_at);
         task.status = TaskStatus::Queued;
         task.last_error = None;
         task.next_retry_at = None;
         task.updated_at = Utc::now();
         self.storage.upsert_task(&task).await?;
-        self.dispatch_task_now(task_id).await
+        match self.dispatch_task_now(task_id).await {
+            Ok(task) => Ok(task),
+            Err(err) => {
+                // Dispatch refused (for instance the previous attempt began stopping meanwhile):
+                // put the task back as it was instead of leaving it queued.
+                if let Ok(mut current) = self.get_task(task_id).await {
+                    let queued_and_idle = current.status == TaskStatus::Queued
+                        && !self.memory.read().await.running.contains_key(task_id);
+                    if queued_and_idle {
+                        current.status = before.0;
+                        current.last_error = before.1;
+                        current.next_retry_at = before.2;
+                        current.updated_at = Utc::now();
+                        let _ = self.storage.upsert_task(&current).await;
+                    }
+                }
+                Err(err)
+            }
+        }
     }
 
     pub async fn resolve_approval(
@@ -1501,14 +1530,33 @@ Please implement the requested changes cleanly in the current Git workspace, run
         workspace: &Path,
         base: Option<&str>,
     ) -> Vec<String> {
-        let (scan_diff, truncated) = self
+        let mut warnings = Vec::new();
+        // A scan that could not run must not read as "nothing found": it blocks publishing like a
+        // finding does.
+        let (scan_diff, truncated) = match self
             .workspaces
-            .collect_diff_since(workspace, SECRET_SCAN_DIFF_BYTES, base)
-            .await;
-        let mut warnings: Vec<String> = detect_secrets_in_added_lines(&scan_diff)
-            .into_iter()
-            .map(|kind| format!("Possible {kind} added by the change."))
-            .collect();
+            .diff_since_checked(workspace, SECRET_SCAN_DIFF_BYTES, base)
+            .await
+        {
+            Ok(result) => result,
+            Err((partial, reason)) => {
+                warnings.push(format!(
+                    "The change could not be scanned for credentials ({reason})."
+                ));
+                (partial, false)
+            }
+        };
+        if base.is_none() {
+            warnings.push(
+                "The commit the branch started from was not found, so commits already made on it were not scanned for credentials."
+                    .to_string(),
+            );
+        }
+        warnings.extend(
+            detect_secrets_in_added_lines(&scan_diff)
+                .into_iter()
+                .map(|kind| format!("Possible {kind} added by the change.")),
+        );
         if truncated {
             warnings.push(format!(
                 "The diff is larger than the {} MiB scanned for credentials; part of it was not checked.",
@@ -1630,7 +1678,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .await;
         if !warnings.is_empty() {
             return Err(SymphonyError::Conflict(format!(
-                "the worktree changed since the review and now has security warnings: {}",
+                "the worktree has security warnings: {}",
                 warnings.join(" ")
             )));
         }
@@ -2490,7 +2538,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         task.next_retry_at = Some(due_at);
         task.last_error = error.clone();
         task.updated_at = Utc::now();
-        self.storage.upsert_task(&task).await?;
+        // Called right after a stalled worker was told to stop: leave its usage columns alone.
+        self.storage.update_task_lifecycle(&task).await?;
 
         let entry = RetryEntry {
             task_id: task.id.clone(),
@@ -4455,6 +4504,12 @@ rl.on('line', (line) => {
                         e.to_string().contains("still stopping")
                             || e.code() == "invalid_state_transition",
                         "unexpected refusal: {e}"
+                    );
+                    // A refused retry must not leave the task queued for the scheduler to start.
+                    assert_ne!(
+                        orch.get_task(&task.id).await.unwrap().status,
+                        TaskStatus::Queued,
+                        "a refused retry left the task queued"
                     );
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }

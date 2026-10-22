@@ -9,7 +9,8 @@ Implementation: `crates/symphony-storage/src/backup.rs` (tests in `crates/sympho
 
 | File | Content | In a backup |
 | --- | --- | --- |
-| `symphony.sqlite` (+ `-wal`, `-shm`) | projects, tasks, run attempts, agent events, approvals, pull request reviews, validation results, settings, provider profiles | yes |
+| `symphony.sqlite` | projects, tasks, run attempts, agent events, approvals, pull request reviews, validation results, settings, provider profiles | yes: one consistent snapshot that includes the committed write-ahead-log content |
+| `symphony.sqlite-wal`, `-shm` | SQLite sidecar files of the running database | no (not copied; the snapshot already contains what they hold) |
 | `WORKFLOW.md` | the active workflow document | yes |
 | `credentials.vault` | API keys and tokens, **DPAPI-protected for your Windows account** | **never** |
 | `runtime.json`, `symphony-runtime.lock` | endpoint and token of the running runtime | no |
@@ -18,6 +19,10 @@ Implementation: `crates/symphony-storage/src/backup.rs` (tests in `crates/sympho
 | `backups\` | the backups themselves | – |
 
 ## What a backup is
+
+Backups are offered for the default database `<data dir>\symphony.sqlite` only. A runtime started with
+`--db-path` (a database elsewhere) does not manage backups, because `restore-backup` restores
+`<data dir>\symphony.sqlite` and could never restore that database.
 
 `POST /api/v1/backups` (Settings → Backups → *Create backup*) writes
 `backups\symphony-backup-<UTC time>\` containing

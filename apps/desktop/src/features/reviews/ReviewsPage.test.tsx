@@ -117,6 +117,21 @@ describe("ReviewsPage", () => {
     expect(screen.getAllByText(/Resolve the merge conflicts/).length).toBeGreaterThan(0);
   });
 
+  it("blocks creating a pull request while the change has security warnings", async () => {
+    const flagged = pullRequest({
+      id: "pr-flagged",
+      pr_number: 0,
+      ci_status: "none",
+      security_warnings: ["Possible GitHub token added by the change."],
+      title: "Flagged"
+    });
+    renderWithProviders(<ReviewsPage />, { runtime: runtimeWith([flagged]), route: "/reviews/pr-flagged", path: "/reviews/:reviewId" });
+    const button = await screen.findByRole("button", { name: "Create pull request" });
+    expect(button).toBeDisabled();
+    expect(screen.queryByText(/Resolve the merge conflicts/)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/security warning/i).length).toBeGreaterThan(0);
+  });
+
   it("surfaces a refused pull request instead of pretending it worked", async () => {
     const local = pullRequest({ id: "pr-local", pr_number: 0, ci_status: "none", title: "Local branch only" });
     const runtime = createMockRuntime({

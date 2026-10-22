@@ -62,8 +62,9 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
      agent's sandbox and approval gate, and an agent reads untrusted text. They are therefore an allowlist,
      checked before anything is sent:
      - **`github_api`**: only `GET`, `POST` and `PATCH`; only paths under `/repos/{owner}/{repo}/` of the
-       project's own repository; reading the repository, creating and editing issues and pull requests,
-       comments and labels. No merge, no review, no deletion, no `PUT`, no secrets/hooks/collaborators, no
+       project's own repository; reading the repository, creating and editing issues, editing pull
+       requests, comments and labels. **No pull request creation** (that is the human-confirmed "Create pull
+       request" action), no merge, no review, no deletion, no `PUT`, no secrets/hooks/collaborators, no
        other repository, no encoded or relative path tricks. It can mutate tracker state (issues, comments,
        pull request text); it cannot merge.
      - **`linear_graphql`**: queries (read-only); mutations limited to `commentCreate`, `commentUpdate`,
@@ -97,8 +98,15 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
     is executed on the user's behalf. The worktree is re-scanned for credentials and conflicts right before
     publishing. The token reaches git through its environment for that one command (not argv, not a config
     file), is scrubbed from error messages, and is only sent to an `https://` origin that is github.com (or
-    the configured Enterprise host) **and** the project's own `owner/name`; any other HTTPS origin is refused. The endpoint is local-administration
-    only: the remote companion listener answers `403 forbidden_scope`.
+    the configured Enterprise host) **and** the project's own `owner/name`; any other HTTPS origin is refused.
+    A push is refused when `origin` has a separate push URL (`pushurl`/`pushInsteadOf`), never follows HTTP
+    redirects, and a scan that cannot run (a failing `git diff`, an unresolvable base commit) blocks
+    publishing like a finding does. The endpoint is local-administration only: the remote companion
+    listener answers `403 forbidden_scope`.
+  - **Known limit**: git *clean filters* (`filter.<name>.clean` selected by `.gitattributes`) still run when
+    Symphony stages files for review and commit, because the filters of a legitimate repository (Git LFS)
+    must keep working. An agent that can write the repository's configuration can also run code as the
+    same user directly, so a worktree is not a sandbox (§1.4); the provider's own sandbox is the control.
   - Merging remains a decision on the Git host. An automatic-merge policy would have to be an explicit,
     separately authorised setting; none exists.
 - **Backups never contain credentials.** The vault is bound to the Windows account (DPAPI) and is excluded

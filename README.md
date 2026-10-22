@@ -124,8 +124,8 @@ cargo run -p symphony-cli -- --quarantine-credential-vault
 
 # Backups (create them in the app: Settings > Backups). Verify and restore are offline operations;
 # see docs/DATA_BACKUP.md. Credentials are never part of a backup.
-cargo run -p symphony-cli -- verify-backup <data dir>\backups\symphony-backup-<time>
-cargo run -p symphony-cli -- --data-dir <data dir> restore-backup <data dir>\backups\symphony-backup-<time>
+cargo run -p symphony-cli -- verify-backup "<data dir>\backups\symphony-backup-<time>"
+cargo run -p symphony-cli -- --data-dir <data dir> restore-backup "<data dir>\backups\symphony-backup-<time>"
 ```
 
 ### 5. Launch Symphony Desktop (Development Mode)

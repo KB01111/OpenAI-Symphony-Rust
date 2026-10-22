@@ -46,6 +46,9 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
 | RV-08 | P2 | Verified defect | An unverified merge could still rate 5/5; a moved pull request head kept the old evidence; reopened PRs stayed "closed"; >100 check runs read as passed | Fixed |
 | BK-02 | P2 | Verified defect (in this branch's first cut) | Restore rollback left files it wrote; saved files could be overwritten by a second restore in the same second; concurrent backups shared a staging directory | Fixed |
 | AG-05 | P2 | Verified defect (in this branch's first cut) | A task cancelled and retried at once could resume from a baseline the old worker was about to move | Fixed |
+| SEC-06 | P1 | Verified defect (in this branch's first cut) | A `pushurl`/`pushInsteadOf` or an HTTP redirect could send the push, with the token, somewhere other than the checked origin; a failing `git diff` or an unresolvable base read as "no credentials found"; the agent GitHub tool could open pull requests without the confirmation | Fixed |
+| AG-06 | P2 | Verified defect (in this branch's first cut) | The stopping side (cancel, stall) rewrote the whole task row and could overwrite usage the worker had just settled; a refused retry left the task queued; a fallback worktree branch name was not the stored task branch | Fixed |
+| BK-03 | P2 | Verified defect (in this branch's first cut) | Restore kept a workflow created after the backup, reported "put back" when rolling back failed, and backups were offered for a custom `--db-path` that restore cannot target | Fixed |
 | REL-01 | P2 | Gap | Release has no SBOM and no source-commit trace | Fixed |
 | REL-02 | P1 | Gap | No updater / update signing | Blocked (owner) |
 | REL-03 | P1 | Gap | Authenticode certificate not configured | Blocked (owner) |
@@ -242,6 +245,18 @@ wrong or out of proportion and are answered on their threads, see below). Verifi
   whose path is the project's `owner/name`; any other HTTPS origin is refused; ssh/local origins use the
   user's own git credentials. The per-URL scope keeps an explicit port. The worktree is re-scanned and
   re-checked for conflicts immediately before publishing (the review is a snapshot).
+- **SEC-06** `push_branch` refuses an `origin` with a separate push URL and sets `http.followRedirects=false`
+  for the push; `diff_since_checked` turns a failing `git diff`/`ls-files` into a warning that blocks
+  publishing, as does an unresolvable base commit; the `github_api` policy no longer allows `POST /pulls`
+  (publishing is the confirmed "Create pull request" action). The base branch used for the merge check and
+  the review is `origin/<base>` when it exists (what the pull request merges into), else the local branch.
+  Residual: git clean filters still run on staging (`SECURITY.md`).
+- **AG-06** `Storage::update_task_lifecycle` writes only lifecycle columns; `cancel_task` and
+  `schedule_retry` use it so settled usage is never overwritten. `retry_task` refuses a task that is still
+  stopping before it persists anything and restores the previous state if dispatch refuses.
+  `prepare_workspace` returns the branch the worktree is really on.
+- **BK-03** restore moves aside a live `WORKFLOW.md` that the backup does not contain and reports every
+  failed rollback step with the path that still holds the data; backups are not offered with `--db-path`.
 - **SEC-05** the agent-facing GitHub client no longer follows redirects (a redirecting answer cannot take
   the host's token to another host).
 - **RV-06** the review, the changed-file list and the credential scan looked at `git diff HEAD` only; an
@@ -304,7 +319,7 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
   of it can be verified without the key and a Windows build, and an updater that fails at startup is worse
   than none, so no runtime code was added. Integration plan and the owner's steps: `docs/RELEASING.md`.
 - **REL-03 (P1, Blocked)**: Authenticode secrets (`WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD`);
-  unsigned builds are labelled `UNSIGNED` and must not be published (already enforced by naming).
+  unsigned builds are labelled `UNSIGNED`; the workflow uploads them to a *draft* release and warns maintainers not to publish them, but nothing blocks publication (no pre-publication signing gate exists).
 - **PROV-01 (P2)**: provider = per project and per task (`preferred_provider`/`model`, task overrides) with
   CLI detection (`detect_provider_statuses`). Missing: multiple named profiles, runtime arguments, compatible
   endpoints (OpenRouter, OpenCode Zen/Go, local), default/fallback policy, rate-limit/cost metadata. Each

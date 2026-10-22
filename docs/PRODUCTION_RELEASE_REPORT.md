@@ -96,6 +96,13 @@ What that run caught, all fixed before this report was finalised:
   hypothesis is a child process forked by a sibling test holding the inherited lock until it execs. The test
   now retries for up to five seconds and fails with a clear message otherwise. Production code was not changed.
 
+A second review round (push URL and redirects, fail-closed credential scan, usage overwrite on cancel, retry
+while stopping, restore edge cases, no PR creation through the agent tool; audit SEC-06, AG-06, BK-03) was
+followed by `cargo test --workspace --locked --no-fail-fast` (no failures), clippy with `-D warnings`,
+`cargo fmt --check`, `pnpm generate:api` (no diff), `pnpm typecheck` and `pnpm test` (desktop 87, ui 10,
+API client 18 + 21, mobile 15, scripts 26), all run locally on Linux. `pnpm build`, `cargo deny`,
+`pnpm audit` and Playwright were not repeated after that round.
+
 The exact final head has not had one uninterrupted green end-to-end run, because the failures above stopped
 the first pass and the fixes were verified per component. The authoritative record is the PR's CI.
 

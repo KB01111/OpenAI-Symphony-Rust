@@ -123,9 +123,15 @@ async fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// Run git and read at most `limit` bytes of stdout without buffering the rest; the child is
-/// killed once the budget is exhausted. Returns the bytes read and whether output was cut off.
-/// Non-zero exit codes are accepted (`git diff --no-index` exits 1 when files differ).
-async fn git_stdout_bounded(cwd: &Path, args: &[&str], limit: usize) -> (Vec<u8>, bool) {
+/// killed once the budget is exhausted. Returns the bytes read, whether output was cut off and
+/// whether git ran and exited with one of `ok_codes` (a command stopped on purpose because its
+/// output overflowed counts as ok; `git diff --no-index` exits 1 when files differ).
+async fn git_stdout_bounded_status(
+    cwd: &Path,
+    args: &[&str],
+    limit: usize,
+    ok_codes: &[i32],
+) -> (Vec<u8>, bool, bool) {
     use tokio::io::AsyncReadExt;
     let child = git_command()
         .arg("-C")
@@ -137,10 +143,10 @@ async fn git_stdout_bounded(cwd: &Path, args: &[&str], limit: usize) -> (Vec<u8>
         .kill_on_drop(true)
         .spawn();
     let Ok(mut child) = child else {
-        return (Vec::new(), false);
+        return (Vec::new(), false, false);
     };
     let Some(stdout) = child.stdout.take() else {
-        return (Vec::new(), false);
+        return (Vec::new(), false, false);
     };
     let mut buf = Vec::new();
     let read = stdout.take(limit as u64 + 1).read_to_end(&mut buf).await;
@@ -149,8 +155,14 @@ async fn git_stdout_bounded(cwd: &Path, args: &[&str], limit: usize) -> (Vec<u8>
         buf.truncate(limit);
         let _ = child.start_kill();
     }
-    let _ = child.wait().await;
-    (buf, overflow)
+    let status = child.wait().await;
+    let ok = read.is_ok()
+        && (overflow
+            || status
+                .ok()
+                .and_then(|s| s.code())
+                .is_some_and(|code| ok_codes.contains(&code)));
+    (buf, overflow, ok)
 }
 
 /// Split NUL-terminated git output (`-z`) into raw, unquoted paths/records.
@@ -414,7 +426,7 @@ impl WorkspaceManager {
         let key = workspace_key_for_identifier(identifier);
         let candidate_path = workspace_root.join(&key);
         let validated_path = validate_workspace_path(&candidate_path, workspace_root)?;
-        let branch_name = branch_name_for_identifier(identifier, custom_branch);
+        let mut branch_name = branch_name_for_identifier(identifier, custom_branch);
 
         let existed = validated_path.exists();
         let mut is_git_worktree = false;
@@ -423,9 +435,21 @@ impl WorkspaceManager {
             if repo.exists() && repo.join(".git").exists() {
                 is_git_worktree = true;
                 if !existed {
-                    self.create_git_worktree(repo, &validated_path, &branch_name, base_branch)
+                    // May be a suffixed name when the task branch is checked out elsewhere.
+                    branch_name = self
+                        .create_git_worktree(repo, &validated_path, &branch_name, base_branch)
                         .await?;
                 } else {
+                    // Report the branch the worktree really is on (an earlier run may have fallen
+                    // back to a suffixed name), since publishing compares against it.
+                    if let Some(current) =
+                        git_stdout(&validated_path, &["rev-parse", "--abbrev-ref", "HEAD"]).await
+                    {
+                        let current = current.trim();
+                        if !current.is_empty() && current != "HEAD" {
+                            branch_name = current.to_string();
+                        }
+                    }
                     debug!(
                         workspace = %validated_path.display(),
                         branch = %branch_name,
@@ -479,7 +503,7 @@ impl WorkspaceManager {
         worktree_path: &Path,
         branch_name: &str,
         base_branch: &str,
-    ) -> SymphonyResult<()> {
+    ) -> SymphonyResult<String> {
         // First prune stale worktree metadata
         let _ = git_command()
             .arg("-C")
@@ -498,6 +522,7 @@ impl WorkspaceManager {
             "HEAD".to_string()
         };
 
+        let mut checked_out = branch_name.to_string();
         let output = git_command()
             .arg("-C")
             .arg(repo_path)
@@ -537,6 +562,7 @@ impl WorkspaceManager {
                             .to_string(),
                     ));
                 }
+                checked_out = fallback_branch;
             } else {
                 return Err(SymphonyError::GitWorktreeError(stderr.trim().to_string()));
             }
@@ -545,10 +571,10 @@ impl WorkspaceManager {
         info!(
             repo = %repo_path.display(),
             worktree = %worktree_path.display(),
-            branch = %branch_name,
+            branch = %checked_out,
             "Created isolated Git worktree"
         );
-        Ok(())
+        Ok(checked_out)
     }
 
     async fn git_ref_exists(repo_path: &Path, git_ref: &str) -> bool {
@@ -647,12 +673,12 @@ impl WorkspaceManager {
     }
 
     /// The commit a change set is reviewed against: where the worktree's branch left `base_branch`
-    /// (`git merge-base`, falling back to `origin/<base_branch>`). `None` when it cannot be found.
+    /// (`git merge-base` with `origin/<base_branch>`, falling back to the local branch). `None` when it cannot be found.
     pub async fn review_base(&self, workspace_path: &Path, base_branch: &str) -> Option<String> {
         if !workspace_path.exists() {
             return None;
         }
-        for candidate in [base_branch.to_string(), format!("origin/{base_branch}")] {
+        for candidate in [format!("origin/{base_branch}"), base_branch.to_string()] {
             if let Some(out) = git_stdout(workspace_path, &["merge-base", "HEAD", &candidate]).await
             {
                 let sha = out.trim().to_string();
@@ -742,25 +768,53 @@ impl WorkspaceManager {
 
     /// [`collect_diff`](Self::collect_diff) against `base` (a commit, typically
     /// [`review_base`](Self::review_base)) instead of `HEAD`, so commits the agent made itself are
-    /// part of the diff next to its uncommitted changes.
+    /// part of the diff next to its uncommitted changes. A git failure yields what was read so far;
+    /// use [`diff_since_checked`](Self::diff_since_checked) where an incomplete diff must be known.
     pub async fn collect_diff_since(
         &self,
         workspace_path: &Path,
         max_bytes: usize,
         base: Option<&str>,
     ) -> (String, bool) {
-        if !workspace_path.exists() {
-            return (String::new(), false);
+        match self
+            .diff_since_checked(workspace_path, max_bytes, base)
+            .await
+        {
+            Ok(result) => result,
+            Err((partial, _)) => (partial, false),
         }
-        let (tracked, mut truncated) =
-            git_stdout_bounded(workspace_path, &["diff", base.unwrap_or("HEAD")], max_bytes).await;
+    }
+
+    /// [`collect_diff_since`](Self::collect_diff_since) that reports a git failure instead of
+    /// returning an empty diff that looks like "nothing changed": `Err((partial diff, reason))`.
+    pub async fn diff_since_checked(
+        &self,
+        workspace_path: &Path,
+        max_bytes: usize,
+        base: Option<&str>,
+    ) -> Result<(String, bool), (String, String)> {
+        if !workspace_path.exists() {
+            return Err((String::new(), "the workspace no longer exists".into()));
+        }
+        let (tracked, mut truncated, ok) = git_stdout_bounded_status(
+            workspace_path,
+            &["diff", base.unwrap_or("HEAD")],
+            max_bytes,
+            &[0],
+        )
+        .await;
         let mut diff = String::from_utf8_lossy(&tracked).into_owned();
-        let untracked = git_stdout(
+        if !ok {
+            return Err((diff, "`git diff` failed".into()));
+        }
+        let Some(untracked) = git_stdout(
             workspace_path,
             &["ls-files", "-z", "--others", "--exclude-standard"],
         )
         .await
-        .unwrap_or_default();
+        else {
+            return Err((diff, "`git ls-files` failed".into()));
+        };
         let paths: Vec<&str> = split_nul(&untracked).collect();
         for (index, path) in paths.iter().enumerate() {
             if truncated || diff.len() >= max_bytes {
@@ -773,17 +827,22 @@ impl WorkspaceManager {
                 break;
             }
             let budget = max_bytes - diff.len();
-            let (bytes, cut) = git_stdout_bounded(
+            // `--no-index` exits 1 when the files differ, which is the normal case here.
+            let (bytes, cut, ok) = git_stdout_bounded_status(
                 workspace_path,
                 &["diff", "--no-index", "--", "/dev/null", path],
                 budget,
+                &[0, 1],
             )
             .await;
             diff.push_str(&String::from_utf8_lossy(&bytes));
+            if !ok {
+                return Err((diff, format!("`git diff` of `{path}` failed")));
+            }
             truncated |= cut;
         }
         let (diff, cut) = truncate_utf8(diff, max_bytes);
-        (diff, truncated || cut)
+        Ok((diff, truncated || cut))
     }
 
     /// Simulate merging the worktree's current state (committed and uncommitted changes, untracked
@@ -801,10 +860,13 @@ impl WorkspaceManager {
         if !workspace_path.exists() {
             return Err("the workspace no longer exists".into());
         }
-        let base = if Self::git_ref_exists(workspace_path, base_ref).await {
-            base_ref.to_string()
-        } else if Self::git_ref_exists(workspace_path, &format!("origin/{base_ref}")).await {
+        // The pull request merges into the remote branch, so its last fetched state is what counts;
+        // a local branch of the same name can be far behind it (or ahead, with unpushed commits
+        // that the push would carry along).
+        let base = if Self::git_ref_exists(workspace_path, &format!("origin/{base_ref}")).await {
             format!("origin/{base_ref}")
+        } else if Self::git_ref_exists(workspace_path, base_ref).await {
+            base_ref.to_string()
         } else {
             return Err(format!("base branch `{base_ref}` was not found"));
         };
@@ -1039,18 +1101,44 @@ impl WorkspaceManager {
         })?
         .trim()
         .to_string();
-        let mut env: Vec<(String, String)> = Vec::new();
+        // `pushurl`/`pushInsteadOf` can send a push somewhere other than the fetch URL that was
+        // checked; the credential below is scoped to the URL git actually pushes to, so refuse.
+        let push_remote = Self::git_checked(
+            workspace_path,
+            &hooks,
+            &[],
+            &["remote", "get-url", "--push", "origin"],
+        )
+        .await
+        .map_err(|_| {
+            SymphonyError::Conflict("the repository has no `origin` remote to push to".into())
+        })?
+        .trim()
+        .to_string();
+        if push_remote != remote {
+            return Err(SymphonyError::Conflict(
+                "`origin` has a separate push URL; refusing to push to a destination other than the one that was checked"
+                    .into(),
+            ));
+        }
+        // Whatever the repository or user configuration says, a push never follows a redirect to
+        // another endpoint.
+        let mut env: Vec<(String, String)> = vec![
+            ("GIT_CONFIG_COUNT".into(), "1".into()),
+            ("GIT_CONFIG_KEY_0".into(), "http.followRedirects".into()),
+            ("GIT_CONFIG_VALUE_0".into(), "false".into()),
+        ];
         if let (Some(token), Some(base)) = (token, https_origin(&remote)) {
             use base64::Engine;
             let credentials =
                 base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
-            env.push(("GIT_CONFIG_COUNT".into(), "1".into()));
+            env[0].1 = "2".into();
             env.push((
-                "GIT_CONFIG_KEY_0".into(),
+                "GIT_CONFIG_KEY_1".into(),
                 format!("http.{base}.extraheader"),
             ));
             env.push((
-                "GIT_CONFIG_VALUE_0".into(),
+                "GIT_CONFIG_VALUE_1".into(),
                 format!("AUTHORIZATION: basic {credentials}"),
             ));
         }
@@ -1749,6 +1837,91 @@ mod tests {
         );
         assert_eq!(https_origin("git@github.com:acme/widgets.git"), None);
         assert_eq!(https_origin("/local/path.git"), None);
+    }
+
+    #[tokio::test]
+    async fn a_push_never_goes_to_a_different_url_than_the_one_that_was_checked() {
+        let dir = tempdir().unwrap();
+        let (repo, wt) = repo_with_worktree(dir.path());
+        let bare = dir.path().join("origin.git");
+        git(dir.path(), &["init", "--bare", bare.to_str().unwrap()]);
+        git(&repo, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        // The repository (an agent can write its config) redirects pushes elsewhere.
+        git(
+            &repo,
+            &[
+                "config",
+                "remote.origin.pushurl",
+                "https://evil.example/acme/widgets.git",
+            ],
+        );
+        std::fs::write(wt.join("new.txt"), "new\n").unwrap();
+        let manager = WorkspaceManager::new();
+        manager
+            .commit_changes(&wt, "task", "msg")
+            .await
+            .unwrap()
+            .unwrap();
+        let err = manager
+            .push_branch(&wt, "task", Some("ghp_secrettokensecrettokensecrettoken12"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, SymphonyError::Conflict(ref m) if m.contains("separate push URL")),
+            "{err}"
+        );
+        // Without the override the same push goes through.
+        git(&repo, &["config", "--unset", "remote.origin.pushurl"]);
+        manager.push_branch(&wt, "task", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_diff_that_cannot_be_read_is_an_error_not_an_empty_diff() {
+        let dir = tempdir().unwrap();
+        let (_repo, wt) = repo_with_worktree(dir.path());
+        let manager = WorkspaceManager::new();
+        std::fs::write(wt.join("new.txt"), "new\n").unwrap();
+        let (diff, truncated) = manager
+            .diff_since_checked(&wt, 1 << 20, Some("HEAD"))
+            .await
+            .unwrap();
+        assert!(diff.contains("+new"), "{diff}");
+        assert!(!truncated);
+        // A base that does not exist makes `git diff` fail: the scan must say so.
+        let err = manager
+            .diff_since_checked(
+                &wt,
+                1 << 20,
+                Some("0000000000000000000000000000000000000000"),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.1.contains("git diff"), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_fallback_branch_is_the_branch_that_is_reported() {
+        let dir = tempdir().unwrap();
+        let (repo, _wt) = repo_with_worktree(dir.path());
+        // `task` is already checked out by the worktree above, so a second workspace for the same
+        // branch falls back to a suffixed name, and that is the name publishing must compare with.
+        let workspace_root = dir.path().join("workspaces");
+        let allocated = WorkspaceManager::new()
+            .prepare_workspace(
+                "SYM-9",
+                &workspace_root,
+                Some(&repo),
+                "main",
+                Some("task"),
+                &HooksConfig::default(),
+            )
+            .await
+            .unwrap();
+        let head = git_stdout(&allocated.path, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .await
+            .unwrap();
+        assert_eq!(allocated.branch_name, head.trim());
+        assert_ne!(allocated.branch_name, "task");
     }
 
     #[tokio::test]

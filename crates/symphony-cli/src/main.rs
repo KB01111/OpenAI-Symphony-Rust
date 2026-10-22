@@ -154,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let custom_database = cli.db_path.is_some();
     let db_path = cli
         .db_path
         .unwrap_or_else(|| data_dir.join("symphony.sqlite"));
@@ -295,7 +296,9 @@ async fn main() -> anyhow::Result<()> {
         allowed_origins,
         default_workspace_root: Some(data_dir.join("workspaces")),
         remote_access: Some(remote_access.clone()),
-        backup_root: Some(data_dir.join("backups")),
+        // `restore-backup` restores <data-dir>/symphony.sqlite only: with a database elsewhere a
+        // backup could be made but never restored, so none is offered.
+        backup_root: (!custom_database).then(|| data_dir.join("backups")),
         ..ServerConfig::local(port, Some(token.clone()))
     };
     let (addr, _handle) = match start_http_server(orchestrator.clone(), server_config.clone()).await

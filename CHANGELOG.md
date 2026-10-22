@@ -107,6 +107,8 @@ First release. Replace "Unreleased" with the release date in the commit that is 
 - The host-side `github_api` and `linear_graphql` agent tools are scoped: GitHub requests are confined to
   the project's own repository and cannot merge, delete or administer; Linear mutations are limited to
   comments, issue updates and PR attachments. Previously any request was forwarded with the host's token.
+  Pull requests are opened only by the confirmed "Create pull request" action; a push never goes to a
+  separate push URL or through a redirect, and a credential scan that cannot run blocks publishing.
 
 - KaTeX raised to 0.18 (GHSA-238p-pmpm-9mq7) with its own stylesheet, so math rendered in agent
   messages keeps its layout; `pnpm audit` reports no known vulnerabilities.

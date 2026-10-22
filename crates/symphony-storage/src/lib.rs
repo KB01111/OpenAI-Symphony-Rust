@@ -382,6 +382,44 @@ impl Storage {
         row.map(row_to_task).transpose()
     }
 
+    /// Persist only the lifecycle columns of `task` (status, session/thread/turn ids, phase, error,
+    /// retry time, update time). For the side that stops a worker: its copy of the task was read
+    /// before the worker settled usage, and [`upsert_task`](Self::upsert_task) would write that
+    /// stale usage back over the settlement.
+    pub async fn update_task_lifecycle(&self, task: &Task) -> SymphonyResult<()> {
+        let result = sqlx::query(
+            "UPDATE tasks SET
+                status = ?2,
+                current_session_id = ?3,
+                current_thread_id = ?4,
+                current_turn_id = ?5,
+                current_phase = ?6,
+                last_error = ?7,
+                next_retry_at = ?8,
+                updated_at = ?9
+             WHERE id = ?1",
+        )
+        .bind(&task.id)
+        .bind(task.status.as_str())
+        .bind(&task.current_session_id)
+        .bind(&task.current_thread_id)
+        .bind(&task.current_turn_id)
+        .bind(task.current_phase.map(|p| p.to_string()))
+        .bind(&task.last_error)
+        .bind(task.next_retry_at.map(|t| t.to_rfc3339()))
+        .bind(task.updated_at.to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(SymphonyError::NotFound(format!(
+                "task {} not found",
+                task.id
+            )));
+        }
+        Ok(())
+    }
+
     /// Add usage to a task's totals in one atomic statement, without touching any other column.
     /// For code that settles usage on behalf of a stopped worker whose in-memory copy of the task
     /// is stale (rewriting the whole row would overwrite a concurrent status change).

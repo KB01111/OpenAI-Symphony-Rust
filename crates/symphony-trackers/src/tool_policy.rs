@@ -4,8 +4,8 @@
 //! the approval gate, and an agent reads untrusted text (issue bodies, comments, files) that can
 //! carry instructions. Without a policy a prompt-injected agent could merge pull requests, delete
 //! issues or reach other repositories the token can see. The policy is an allowlist: it keeps the
-//! tools useful for what an implementation run needs (read the project, comment, update and open
-//! issues and pull requests of the project's own repository) and refuses everything else,
+//! tools useful for what an implementation run needs (read the project, comment, open and update
+//! issues, update pull requests of the project's own repository) and refuses everything else,
 //! including all merges. Merging stays a human decision.
 
 /// Check a `github_api` request against the policy of the project's repository (`owner/name`).
@@ -85,8 +85,9 @@ fn check_repo_route(method: &str, rest: &[&str]) -> Result<(), String> {
                 deny()
             }
         }
-        // Create an issue or a pull request.
-        ("POST", ["issues" | "pulls"]) => Ok(()),
+        // Create an issue. Pull requests are opened only by the explicit "Create pull request"
+        // action, which commits, pushes and asks for confirmation; an agent never opens one here.
+        ("POST", ["issues"]) => Ok(()),
         // Comment on / label an issue or pull request.
         ("POST", ["issues", n, "comments" | "labels"]) if is_number(n) => Ok(()),
         // Review comments on a pull request diff (not reviews: an approving review is a decision).
@@ -199,12 +200,23 @@ fn tokenize(source: &str) -> Result<Vec<Token>, String> {
 pub fn check_linear_document(query: &str) -> Result<(), String> {
     let tokens = tokenize(query)?;
     // Operations are the top-level `query | mutation | subscription` keywords or a bare `{`.
+    // Inside `( … )` (variable definitions and arguments) keywords are names and `{` opens an
+    // object value, so neither starts an operation.
     let mut depth = 0i32;
+    let mut parens = 0i32;
     let mut operations: Vec<(usize, &str)> = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         match token {
+            Token::Punct('(') => parens += 1,
+            Token::Punct(')') => {
+                parens -= 1;
+                if parens < 0 {
+                    return Err("the GraphQL document has unbalanced parentheses".into());
+                }
+            }
             Token::Punct('{') => {
                 if depth == 0
+                    && parens == 0
                     && !matches!(
                         tokens.get(index.wrapping_sub(1)),
                         Some(Token::Punct(')')) | Some(Token::Name(_))
@@ -214,8 +226,13 @@ pub fn check_linear_document(query: &str) -> Result<(), String> {
                 }
                 depth += 1;
             }
-            Token::Punct('}') => depth -= 1,
-            Token::Name(name) if depth == 0 => match name.as_str() {
+            Token::Punct('}') => {
+                depth -= 1;
+                if depth < 0 {
+                    return Err("the GraphQL document has unbalanced braces".into());
+                }
+            }
+            Token::Name(name) if depth == 0 && parens == 0 => match name.as_str() {
                 "query" => operations.push((index, "query")),
                 "mutation" => operations.push((index, "mutation")),
                 "subscription" => operations.push((index, "subscription")),
@@ -224,7 +241,7 @@ pub fn check_linear_document(query: &str) -> Result<(), String> {
             _ => {}
         }
     }
-    if depth != 0 {
+    if depth != 0 || parens != 0 {
         return Err("the GraphQL document has unbalanced braces".into());
     }
     match operations.as_slice() {
@@ -313,7 +330,6 @@ mod tests {
             ("GET", "/repos/acme/widgets/contents/src/lib.rs?ref=main"),
             ("POST", "/repos/acme/widgets/issues/42/comments"),
             ("POST", "/repos/acme/widgets/issues/42/labels"),
-            ("POST", "/repos/acme/widgets/pulls"),
             ("POST", "/repos/acme/widgets/issues"),
             ("PATCH", "/repos/acme/widgets/issues/42"),
             ("PATCH", "/repos/acme/widgets/pulls/7"),
@@ -330,6 +346,8 @@ mod tests {
             // Merging stays a human decision.
             ("PUT", "/repos/acme/widgets/pulls/7/merge"),
             ("POST", "/repos/acme/widgets/merges"),
+            // Publishing a branch is the human-confirmed "Create pull request" action.
+            ("POST", "/repos/acme/widgets/pulls"),
             ("PUT", "/repos/acme/widgets/pulls/7/update-branch"),
             ("POST", "/repos/acme/widgets/pulls/7/reviews"),
             // Destruction and administration.
@@ -381,6 +399,17 @@ mod tests {
         assert!(linear("query { issues(filter: { title: { contains: \"mutation { issueDelete }\" } }) { nodes { id } } }").is_ok());
         assert!(linear("# mutation { issueDelete(id: \"1\") }\nquery { viewer { id } }").is_ok());
         assert!(linear("query { a: viewer { id } }\nfragment F on Issue { id }").is_ok());
+        // Keywords as variable names and object defaults are not further operations.
+        assert!(
+            linear("query Q($query: String!) { issueSearch(query: $query) { nodes { id } } }")
+                .is_ok()
+        );
+        assert!(linear(
+            "query Q($f: IssueFilter = { title: {} }) { issues(filter: $f) { nodes { id } } }"
+        )
+        .is_ok());
+        // Closing more than was opened cannot be used to hide a second operation.
+        assert!(linear("query { a } } mutation { issueDelete(id: \"1\") { success } } {").is_err());
     }
 
     #[test]

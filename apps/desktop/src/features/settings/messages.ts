@@ -146,7 +146,7 @@ export const settingsMessages = defineMessages({
       version: "Version {version}, schema {schema}",
       unavailable: "This runtime does not manage backups.",
       scope: "Included: the database (projects, tasks, run attempts, events, approvals, pull request reviews, validation results, settings) and the active WORKFLOW.md. Not included: API keys and tokens (the credential vault is bound to your Windows account and is never copied into a backup), Git repositories and worktrees, logs.",
-      restore: "To restore, quit Symphony (tray menu: Stop runtime and exit) and run the symphony-cli release download with: symphony-cli restore-backup <folder>. The data it replaces is kept next to the original as .pre-restore-<time>. Check a backup first with: symphony-cli verify-backup <folder>."
+      restore: "To restore, quit Symphony (tray menu: Stop runtime and exit) and run the symphony-cli release download with: symphony-cli [--data-dir <data folder>] restore-backup <folder> (give --data-dir if Symphony was started with a custom data directory). The data it replaces is kept next to the original as .pre-restore-<time>. Check a backup first with: symphony-cli verify-backup <folder>."
     },
     diagnostics: {
       intro: "Export a redacted JSON bundle (settings, runtime state, recent errors) to attach to a bug report. Secrets are masked by the runtime before export.",
@@ -342,7 +342,7 @@ export const settingsMessages = defineMessages({
       version: "Version {version}, schema {schema}",
       unavailable: "Den här körmiljön hanterar inte säkerhetskopior.",
       scope: "Ingår: databasen (projekt, uppgifter, körförsök, händelser, godkännanden, pull request-granskningar, valideringsresultat, inställningar) och aktiv WORKFLOW.md. Ingår inte: API-nycklar och token (lösenordsvalvet är bundet till ditt Windows-konto och kopieras aldrig in i en säkerhetskopia), Git-repon och arbetsträd, loggar.",
-      restore: "För att återställa: avsluta Symphony (aktivitetsfältets meny: Stoppa körmiljön och avsluta) och kör nedladdningen symphony-cli från utgåvan med: symphony-cli restore-backup <mapp>. Data som ersätts sparas bredvid originalet som .pre-restore-<tid>. Kontrollera en säkerhetskopia först med: symphony-cli verify-backup <mapp>."
+      restore: "För att återställa: avsluta Symphony (aktivitetsfältets meny: Stop runtime and exit, som är på engelska) och kör nedladdningen symphony-cli från utgåvan med: symphony-cli [--data-dir <datamapp>] restore-backup <mapp> (ange --data-dir om Symphony startades med en egen datakatalog). Data som ersätts sparas bredvid originalet som .pre-restore-<tid>. Kontrollera en säkerhetskopia först med: symphony-cli verify-backup <mapp>."
     },
     diagnostics: {
       intro: "Exportera ett maskerat JSON-paket (inställningar, körtidstillstånd, senaste fel) att bifoga en felrapport. Hemligheter maskeras av körtiden före export.",

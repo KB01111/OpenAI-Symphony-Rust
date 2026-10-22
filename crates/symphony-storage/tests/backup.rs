@@ -465,3 +465,65 @@ async fn a_failed_restore_into_an_empty_data_directory_leaves_nothing_behind() {
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
+
+#[tokio::test]
+async fn restoring_a_backup_without_a_workflow_sets_a_newer_workflow_aside() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let (storage, _) = storage_with_task(&data, "t").await;
+    // Backed up while the data directory had no workflow of its own.
+    let backup = create_backup(&storage, &data.join("backups"), None)
+        .await
+        .unwrap();
+    storage.pool().close().await;
+    // A workflow created afterwards would otherwise keep being used after the restore.
+    std::fs::write(data.join(WORKFLOW_FILE), "created after the backup").unwrap();
+
+    let report = restore_backup(&backup.path, &data).await.unwrap();
+
+    assert!(
+        !data.join(WORKFLOW_FILE).exists(),
+        "the snapshot had no workflow, so none may remain live"
+    );
+    let kept = report
+        .previous_files
+        .iter()
+        .find(|p| p.to_string_lossy().contains("WORKFLOW.md.pre-restore-"))
+        .expect("the newer workflow is kept, not deleted");
+    assert_eq!(
+        std::fs::read_to_string(kept).unwrap(),
+        "created after the backup"
+    );
+}
+
+#[tokio::test]
+async fn stopping_a_task_from_a_stale_copy_keeps_the_usage_the_worker_settled() {
+    use symphony_core::{TaskStatus, TokenUsage};
+    let dir = tempfile::tempdir().unwrap();
+    let (storage, task) = storage_with_task(&dir.path().join("data"), "t").await;
+    // The stopping side reads the task, then the worker settles usage, then the stopping side writes.
+    let mut stale = storage.get_task(&task.id).await.unwrap().unwrap();
+    storage
+        .add_task_usage(
+            &task.id,
+            &TokenUsage {
+                input_tokens: 70,
+                output_tokens: 30,
+                total_tokens: 100,
+            },
+            0.5,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+    stale.status = TaskStatus::Cancelled;
+    stale.last_error = Some("operator".into());
+    storage.update_task_lifecycle(&stale).await.unwrap();
+
+    let stored = storage.get_task(&task.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, TaskStatus::Cancelled);
+    assert_eq!(stored.last_error.as_deref(), Some("operator"));
+    assert_eq!(stored.total_tokens, 100, "the settled usage survives");
+    assert!(stored.usage_estimated);
+}

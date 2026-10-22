@@ -336,8 +336,10 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
         }
         std::fs::rename(&staged, &live_db)?;
         written.push(live_db.clone());
+        // The workflow is part of the snapshot: one that is not in the backup was created after it,
+        // and would otherwise keep being used (the data directory's copy takes precedence).
+        move_aside(data_dir.join(WORKFLOW_FILE))?;
         if manifest.files.iter().any(|f| f.name == WORKFLOW_FILE) {
-            move_aside(data_dir.join(WORKFLOW_FILE))?;
             let workflow = data_dir.join(WORKFLOW_FILE);
             written.push(workflow.clone());
             std::fs::copy(backup_dir.join(WORKFLOW_FILE), &workflow)?;
@@ -356,15 +358,35 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
         }),
         Err(err) => {
             // Put everything back: remove everything the restore wrote (also where there was no
-            // previous file to restore), then rename the originals back.
-            let _ = std::fs::remove_file(&staged);
+            // previous file to restore), then rename the originals back. A step that fails is
+            // reported with the path that still holds the data: "put back" is only claimed when it
+            // is true.
+            let mut problems: Vec<String> = Vec::new();
+            let mut remove = |path: &Path| match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => problems.push(format!("{} could not be removed ({e})", path.display())),
+            };
+            remove(&staged);
             for file in &written {
-                let _ = std::fs::remove_file(file);
-                let _ = std::fs::remove_file(format!("{}-wal", file.display()));
-                let _ = std::fs::remove_file(format!("{}-shm", file.display()));
+                remove(file);
+                remove(Path::new(&format!("{}-wal", file.display())));
+                remove(Path::new(&format!("{}-shm", file.display())));
             }
             for (original, target) in moved.iter().rev() {
-                let _ = std::fs::rename(target, original);
+                if let Err(e) = std::fs::rename(target, original) {
+                    problems.push(format!(
+                        "{} could not be moved back to {} ({e})",
+                        target.display(),
+                        original.display()
+                    ));
+                }
+            }
+            if !problems.is_empty() {
+                return Err(storage_err(format!(
+                    "the restore failed ({err}) and putting the previous data back was incomplete: {}. Nothing was deleted; the files named above still hold the previous data.",
+                    problems.join("; ")
+                )));
             }
             Err(storage_err(format!(
                 "the restore failed and the previous data was put back: {err}"
