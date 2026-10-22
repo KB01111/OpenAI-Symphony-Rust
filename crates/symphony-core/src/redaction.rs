@@ -201,9 +201,75 @@ pub fn redact_secrets(input: &str, extra_secrets: &[String]) -> String {
     out
 }
 
+/// Kinds of credential that a change set must not introduce, with the pattern that finds them.
+fn secret_patterns() -> &'static [(&'static str, Regex)] {
+    static PATTERNS: OnceLock<Vec<(&'static str, Regex)>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        let table: &[(&str, &str)] = &[
+            ("GitHub token", r"\bgh[pousr]_[A-Za-z0-9_]{20,255}"),
+            (
+                "GitHub fine-grained token",
+                r"\bgithub_pat_[A-Za-z0-9_]{20,255}",
+            ),
+            ("API key (sk-…)", r"\bsk-[A-Za-z0-9_-]{20,255}"),
+            ("Linear API key", r"\blin_api_[A-Za-z0-9_]{20,255}"),
+            ("AWS access key id", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+            ("Slack token", r"\bxox[abprs]-[A-Za-z0-9-]{10,255}"),
+            ("private key", r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----"),
+        ];
+        table
+            .iter()
+            .map(|(name, pattern)| (*name, Regex::new(pattern).expect("valid regex")))
+            .collect()
+    })
+}
+
+/// Kinds of credential found on the **added** lines of a unified diff (removed and context lines
+/// are not what a change introduces). Each kind is listed once, in a stable order.
+pub fn detect_secrets_in_added_lines(diff: &str) -> Vec<&'static str> {
+    let mut found: Vec<&'static str> = Vec::new();
+    for line in diff.lines() {
+        let Some(added) = line.strip_prefix('+') else {
+            continue;
+        };
+        if added.starts_with("++") {
+            // `+++ b/file` header, not content.
+            continue;
+        }
+        for (name, re) in secret_patterns() {
+            if !found.contains(name) && re.is_match(added) {
+                found.push(name);
+            }
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secrets_are_detected_only_on_added_lines() {
+        let diff = "diff --git a/.env b/.env\n--- a/.env\n+++ b/.env\n@@ -1,2 +1,3 @@\n-GITHUB_TOKEN=ghp_oldoldoldoldoldoldoldoldoldoldold12\n context line AKIAABCDEFGHIJKLMNOP\n+AWS=AKIAABCDEFGHIJKLMNOP\n+key = \"-----BEGIN RSA PRIVATE KEY-----\"\n";
+        assert_eq!(
+            detect_secrets_in_added_lines(diff),
+            vec!["AWS access key id", "private key"]
+        );
+        // A removed secret is not a leak; neither is an ordinary change.
+        assert!(detect_secrets_in_added_lines(
+            "-token=ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n+let x = 1;\n"
+        )
+        .is_empty());
+        assert_eq!(
+            detect_secrets_in_added_lines("+token = ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"),
+            vec!["GitHub token"]
+        );
+        assert_eq!(
+            detect_secrets_in_added_lines("+x = \"sk-proj-abcdefghijklmnopqrstuvwxyz0123\"\n+SLACK=xoxb-123456789012-abcdefghijkl\n"),
+            vec!["API key (sk-…)", "Slack token"]
+        );
+    }
 
     #[test]
     fn splits_never_separate_bearer_from_its_token() {

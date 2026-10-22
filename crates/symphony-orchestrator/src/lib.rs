@@ -12,15 +12,19 @@ use symphony_agents::{
     AgentStreamEvent, ApprovalGate, DynamicToolHandler,
 };
 use symphony_core::{
-    compute_backoff_delay_ms, redact_secrets, render_continuation_prompt, render_workflow_prompt,
-    sort_candidate_issues, AgentEvent, ApprovalDecision, ApprovalRequest, ApprovalStatus,
-    CodexTotals, ConflictCheck, HardwareSnapshot, Issue, LiveSession, MergeReadinessReport,
-    OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus, PullRequestReview,
-    RepositoryValidation, RetryEntry, RunAttempt, RunAttemptPhase, RunningSessionSummary,
-    ServiceConfig, StateCounts, SymphonyError, SymphonyResult, Task, TaskDiff, TaskStatus,
-    ThreadUsageMark, TokenUsage, ValidationResult, WorkflowDefinition, WorktreeInfo,
+    compute_backoff_delay_ms, detect_secrets_in_added_lines, redact_secrets,
+    render_continuation_prompt, render_workflow_prompt, sort_candidate_issues, AgentEvent,
+    ApprovalDecision, ApprovalRequest, ApprovalStatus, CodexTotals, ConflictCheck,
+    HardwareSnapshot, Issue, LiveSession, MergeReadinessReport, OrchestratorStateSnapshot, Project,
+    ProviderKind, ProviderStatus, PullRequestReview, RepositoryValidation, RetryEntry, RunAttempt,
+    RunAttemptPhase, RunningSessionSummary, ServiceConfig, StateCounts, SymphonyError,
+    SymphonyResult, Task, TaskDiff, TaskStatus, ThreadUsageMark, TokenUsage, ValidationResult,
+    WorkflowDefinition, WorktreeInfo,
 };
 use symphony_platform::{HardwareMonitor, SecretStore};
+
+/// How much of a change is scanned for credentials before a review is scored.
+const SECRET_SCAN_DIFF_BYTES: usize = 4 * 1024 * 1024;
 
 /// Provider API keys that agent subprocesses may receive from the credential vault.
 pub const PROVIDER_CREDENTIAL_ENV_KEYS: &[&str] = &["OPENAI_API_KEY", "ANTHROPIC_API_KEY"];
@@ -2674,11 +2678,20 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .await
             .unwrap_or_default();
 
-        let mut security_warnings = Vec::new();
-        if diff_preview.contains("PRIVATE KEY") || diff_preview.contains("ghp_") {
-            security_warnings.push(
-                "Potential credential or key pattern detected in workspace diff.".to_string(),
-            );
+        // Scan far more than the preview shows, and say so when even that is not enough.
+        let (scan_diff, scan_truncated) = self
+            .workspaces
+            .collect_diff(&allocated.path, SECRET_SCAN_DIFF_BYTES)
+            .await;
+        let mut security_warnings: Vec<String> = detect_secrets_in_added_lines(&scan_diff)
+            .into_iter()
+            .map(|kind| format!("Possible {kind} added by the change."))
+            .collect();
+        if scan_truncated {
+            security_warnings.push(format!(
+                "The diff is larger than the {} MiB scanned for credentials; part of it was not checked.",
+                SECRET_SCAN_DIFF_BYTES / (1024 * 1024)
+            ));
         }
 
         // What is known about the branch is measured, never assumed: the merge is simulated against
@@ -3466,6 +3479,46 @@ rl.on('line', (line) => {
         );
         assert_eq!(settled.total_tokens, 1500 + 100);
         assert_eq!(settled.thread_usage.unwrap().usage, usage_of(1080, 520));
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_dispatch_requests_start_one_attempt() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.transition_task(&task.id, TaskStatus::Queued)
+            .await
+            .unwrap();
+
+        // Manual dispatches and scheduler ticks race for the same task.
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let orch = orch.clone();
+            let id = task.id.clone();
+            handles.push(tokio::spawn(async move {
+                if i % 2 == 0 {
+                    let _ = orch.dispatch_task_now(&id).await;
+                } else {
+                    let _ = orch.reconcile_and_dispatch_tick().await;
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let started = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(started.attempt_count, 1, "exactly one attempt may start");
+        // Let the attempt run to its end, then check no second one slipped in meanwhile.
+        for _ in 0..300 {
+            let t = orch.get_task(&task.id).await.unwrap();
+            if t.status == TaskStatus::HumanReview || t.status == TaskStatus::Failed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let attempts = orch.storage.list_run_attempts(&task.id).await.unwrap();
+        assert_eq!(attempts.len(), 1, "{attempts:?}");
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 1);
     }
 
     #[tokio::test]

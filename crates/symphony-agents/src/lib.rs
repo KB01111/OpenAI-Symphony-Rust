@@ -1888,12 +1888,27 @@ pub fn extract_token_usage(msg: &Value) -> Option<TokenUsage> {
         .or_else(|| msg.pointer("/params/msg/payload/info/total_token_usage"))
         .or_else(|| msg.get("usage"))?;
 
+    // Anthropic reports prompt-cache traffic next to `input_tokens`, not inside it
+    // (`cache_creation_input_tokens`, `cache_read_input_tokens`); all of it is input the model
+    // consumed. Codex's `cachedInputTokens` is a subset of `inputTokens` and is not added.
     let input = usage_node
         .get("inputTokens")
         .or_else(|| usage_node.get("input_tokens"))
         .or_else(|| usage_node.get("prompt_tokens"))
         .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .saturating_add(
+            usage_node
+                .get("cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        )
+        .saturating_add(
+            usage_node
+                .get("cache_read_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        );
     let output = usage_node
         .get("outputTokens")
         .or_else(|| usage_node.get("output_tokens"))
@@ -1969,6 +1984,31 @@ fn build_tool_user_input_answers(params: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_prompt_cache_tokens_count_as_input_but_codex_cached_tokens_do_not() {
+        // Anthropic usage block as found on Claude Code's `result` line.
+        let claude = json!({
+            "type": "result",
+            "usage": {
+                "input_tokens": 12,
+                "cache_creation_input_tokens": 3000,
+                "cache_read_input_tokens": 40000,
+                "output_tokens": 800
+            }
+        });
+        let usage = extract_token_usage(&claude).unwrap();
+        assert_eq!(usage.input_tokens, 43_012);
+        assert_eq!(usage.output_tokens, 800);
+        assert_eq!(usage.total_tokens, 43_812);
+
+        // Codex's inputTokens already includes cachedInputTokens.
+        let codex = json!({ "params": { "tokenUsage": { "total": {
+            "inputTokens": 1000, "cachedInputTokens": 900, "outputTokens": 50, "totalTokens": 1050 } } } });
+        let usage = extract_token_usage(&codex).unwrap();
+        assert_eq!(usage.input_tokens, 1000);
+        assert_eq!(usage.total_tokens, 1050);
+    }
 
     #[test]
     fn test_extract_token_usage_codex_format() {

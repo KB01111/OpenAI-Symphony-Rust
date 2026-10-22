@@ -145,13 +145,33 @@ jobs:
           $out = New-Item -ItemType Directory -Force -Path dist-release
           Copy-Item $installer.FullName (Join-Path $out "Symphony-Desktop_$($env:RELEASE_VERSION)_x64-setup$suffix.exe")
           Copy-Item target/release/symphony-cli.exe (Join-Path $out "symphony-cli_$($env:RELEASE_VERSION)_windows-x64$suffix.exe")
+          # CycloneDX software bills of materials of what is shipped (npm production dependencies
+          # and the Rust dependency graph of both executables) ...
+          pnpm sbom --sbom-format cyclonedx --prod --out (Join-Path $out 'sbom-npm.cdx.json')
+          if ($LASTEXITCODE -ne 0) { throw 'pnpm sbom failed' }
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          if ($LASTEXITCODE -ne 0) { throw 'installing cargo-cyclonedx failed' }
+          cargo cyclonedx --format json
+          if ($LASTEXITCODE -ne 0) { throw 'cargo cyclonedx failed' }
+          Copy-Item apps/desktop/src-tauri/symphony-desktop.cdx.json (Join-Path $out 'sbom-symphony-desktop.cdx.json')
+          Copy-Item crates/symphony-cli/symphony-cli.cdx.json (Join-Path $out 'sbom-symphony-cli.cdx.json')
+          # ... and the facts that tie these assets to their source commit and to this run.
+          $commit = (git rev-parse HEAD).Trim()
+          @(
+            "version: $($env:RELEASE_VERSION)",
+            "tag: $($env:RELEASE_TAG)",
+            "commit: $commit",
+            "workflow run: $($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID)",
+            "authenticode signed: $signed"
+          ) | Set-Content -Path (Join-Path $out 'BUILD-INFO.txt') -Encoding ascii
           foreach ($file in Get-ChildItem $out -Filter '*.exe') {
             if ($signed) {
               $sig = Get-AuthenticodeSignature $file.FullName
               if ($sig.Status -ne 'Valid') { throw "$($file.Name): signature status $($sig.Status)" }
             }
           }
-          Get-ChildItem $out -Filter '*.exe' | Sort-Object Name | ForEach-Object {
+          # Every published file is covered, the SBOMs and BUILD-INFO.txt included.
+          Get-ChildItem $out -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object Name | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
           } | Set-Content -Path (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
           Get-Content (Join-Path $out 'SHA256SUMS.txt')
