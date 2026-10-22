@@ -233,7 +233,17 @@ describe("Symphony runtime contract (real Axum router)", () => {
     await waitFor(() => eventFor(task.id, "approval/expired"), "approval expired");
     expect((await client.listApprovals(true)).some((a) => a.task_id === task.id)).toBe(false);
 
-    const retried = await client.retryTask(task.id);
+    // The runtime refuses a retry with 409 "still stopping; try again in a moment" until the
+    // cancelled attempt's worker has wound down. That window is longer on a slow runner, so retry
+    // exactly that refusal (any other error still fails the test).
+    const retried = await waitFor(async () => {
+      try {
+        return await client.retryTask(task.id);
+      } catch (error) {
+        if (error instanceof SymphonyApiError && error.status === 409 && /still stopping/.test(error.message)) return undefined;
+        throw error;
+      }
+    }, "retry accepted once the cancelled attempt has stopped");
     expect(retried.status).toBe("running");
     expect(retried.attempt_count).toBe(2);
     const approval = await waitFor(
