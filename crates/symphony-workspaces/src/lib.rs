@@ -58,9 +58,10 @@ impl Drop for SafeHooksDir {
     }
 }
 
-/// Repository-local git settings that change where a push goes or how it authenticates (key names
+/// Repository-local git settings that change where a push goes, how it authenticates, how its TLS
+/// connection is verified, or that make git run a command of the repository's choosing (key names
 /// are matched lower-cased).
-const PUSH_SENSITIVE_CONFIG: &str = r"^(http\.(.*\.)?(followredirects|extraheader|proxy|pinnedpubkey)|url\..*\.(insteadof|pushinsteadof)|remote\.[^.]*\.(pushurl|proxy)|credential\..*)$";
+const PUSH_SENSITIVE_CONFIG: &str = r"^(http\.(.*\.)?(followredirects|extraheader|proxy|proxyauthmethod|pinnedpubkey|sslverify|sslcainfo|sslcapath|sslcert|sslkey|sslcertpasswordprotected|sslbackend|sslversion|sslcipherlist)|url\..*\.(insteadof|pushinsteadof)|remote\.[^.]*\.(pushurl|proxy|receivepack|uploadpack)|credential\..*|core\.(sshcommand|gitproxy)|protocol\..*)$";
 
 /// `https://host[:port]/` of an `https://` remote URL: the scope of git's per-URL
 /// `http.<url>.extraheader`. The port is part of it (git matches the authority).
@@ -1967,6 +1968,21 @@ mod tests {
                 "http.https://github.com/.followRedirects",
             ],
         );
+        // TLS verification switched off, or a command run in place of the remote's receive-pack.
+        for (key, value) in [
+            ("http.sslVerify", "false"),
+            ("http.https://github.com/.sslCAInfo", "/tmp/evil.pem"),
+            ("remote.origin.receivepack", "touch /tmp/pwned"),
+            ("core.sshCommand", "touch /tmp/pwned"),
+        ] {
+            git(&repo, &["config", key, value]);
+            let err = manager.push_branch(&wt, "task", None).await.unwrap_err();
+            assert!(
+                matches!(err, SymphonyError::Conflict(ref m) if m.contains(&key.to_ascii_lowercase())),
+                "{key}: {err}"
+            );
+            git(&repo, &["config", "--unset", key]);
+        }
         manager.push_branch(&wt, "task", None).await.unwrap();
     }
 
