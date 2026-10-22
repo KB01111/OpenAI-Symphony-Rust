@@ -236,18 +236,8 @@ async fn install_update(
     pending: State<'_, updates::PendingUpdate>,
     confirmed: bool,
 ) -> Result<updates::InstallOutcome, String> {
-    let running = match state.mode_settings() {
-        Some(orchestrator) => match orchestrator.state_snapshot().await {
-            Ok(snapshot) => Some(snapshot.counts.running),
-            Err(e) => {
-                tracing::warn!("Could not count running tasks before updating: {e}");
-                None
-            }
-        },
-        // Attached to another runtime: it keeps running when this app is replaced.
-        None => None,
-    };
-    updates::install(&app, &pending, running, confirmed).await
+    // `None` when attached to another runtime: it keeps running when this app is replaced.
+    updates::install(&app, &pending, state.mode_settings(), confirmed).await
 }
 
 /// Open the project's releases page in the default browser. The URL is a constant.

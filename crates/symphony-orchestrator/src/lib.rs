@@ -566,7 +566,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
     /// Delete activity-log events older than the configured retention (`event_retention_days`,
     /// `0` = keep everything) for tasks that are finished. Returns how many were deleted.
     pub async fn prune_old_events(&self) -> SymphonyResult<u64> {
-        let days = self.storage.get_settings().await?.event_retention_days;
+        let days = self
+            .storage
+            .get_settings()
+            .await?
+            .effective_event_retention_days();
         if days == 0 {
             return Ok(0);
         }
@@ -4738,21 +4742,21 @@ rl.on('line', (line) => {
 
         // 0 keeps everything.
         let mut settings = storage.get_settings().await.unwrap();
-        assert_eq!(settings.event_retention_days, 30, "the default");
-        settings.event_retention_days = 0;
+        assert_eq!(settings.effective_event_retention_days(), 30, "the default");
+        settings.event_retention_days = Some(0);
         storage.save_settings(&settings).await.unwrap();
         assert_eq!(orch.prune_old_events().await.unwrap(), 0);
         assert_eq!(ids().await, vec!["old", "recent"]);
         // (the runtime's own creation events are younger than any window used here)
 
         // The default window drops the 40-day-old event only.
-        settings.event_retention_days = 30;
+        settings.event_retention_days = Some(30);
         storage.save_settings(&settings).await.unwrap();
         assert_eq!(orch.prune_old_events().await.unwrap(), 1);
         assert_eq!(ids().await, vec!["recent"]);
 
         // A shorter window applies to the next pass.
-        settings.event_retention_days = 1;
+        settings.event_retention_days = Some(1);
         storage.save_settings(&settings).await.unwrap();
         assert_eq!(orch.prune_old_events().await.unwrap(), 1);
         assert!(ids().await.is_empty());

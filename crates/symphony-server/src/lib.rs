@@ -1598,9 +1598,12 @@ fn validate_settings(settings: &AppSettings) -> std::result::Result<(), String> 
     if settings.remote_port == 0 {
         return Err("remote_port must be a valid TCP port".into());
     }
-    if settings.event_retention_days > MAX_EVENT_RETENTION_DAYS {
+    if settings
+        .event_retention_days
+        .is_some_and(|days| days > MAX_EVENT_RETENTION_DAYS)
+    {
         return Err(format!(
-            "event_retention_days must be 0 (keep everything) or at most {MAX_EVENT_RETENTION_DAYS}"
+            "event_retention_days must be 0 (keep everything) or between 1 and {MAX_EVENT_RETENTION_DAYS}"
         ));
     }
     let policy = &settings.resource_policy;
@@ -1638,10 +1641,18 @@ fn validate_settings(settings: &AppSettings) -> std::result::Result<(), String> 
 )]
 async fn put_settings_handler(
     State(state): State<ServerState>,
-    Json(settings): Json<AppSettings>,
+    Json(mut settings): Json<AppSettings>,
 ) -> Response {
     if let Err(msg) = validate_settings(&settings) {
         return api_error(StatusCode::BAD_REQUEST, "invalid_settings", msg);
+    }
+    // A client that predates a field omits it: keep what is stored rather than resetting it
+    // (for the retention period a reset to the default would start deleting history).
+    if settings.event_retention_days.is_none() {
+        match state.orchestrator.storage().get_settings().await {
+            Ok(stored) => settings.event_retention_days = stored.event_retention_days,
+            Err(e) => return error_response(e),
+        }
     }
     match state.orchestrator.storage().save_settings(&settings).await {
         Ok(()) => {
@@ -1987,12 +1998,14 @@ mod tests {
     #[test]
     fn event_retention_accepts_zero_and_a_bounded_number_of_days() {
         let mut s = AppSettings::default();
-        assert_eq!(s.event_retention_days, 30);
+        assert_eq!(s.effective_event_retention_days(), 30);
         for days in [0, 1, 30, MAX_EVENT_RETENTION_DAYS] {
-            s.event_retention_days = days;
+            s.event_retention_days = Some(days);
             assert!(validate_settings(&s).is_ok(), "{days} days");
         }
-        s.event_retention_days = MAX_EVENT_RETENTION_DAYS + 1;
+        s.event_retention_days = None;
+        assert!(validate_settings(&s).is_ok(), "omitted means unchanged");
+        s.event_retention_days = Some(MAX_EVENT_RETENTION_DAYS + 1);
         let err = validate_settings(&s).unwrap_err();
         assert!(err.contains("event_retention_days"), "{err}");
     }

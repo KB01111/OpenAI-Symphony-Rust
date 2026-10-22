@@ -13,8 +13,10 @@
 //! The endpoint hosts are compile-time constants. See `docs/RELEASING.md` for the signing keys.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use symphony_orchestrator::SymphonyOrchestrator;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use tokio::sync::Mutex;
@@ -204,7 +206,8 @@ async fn find_signed_update(app: &AppHandle, manifest: &str) -> Result<Option<Up
     let url = manifest
         .parse()
         .map_err(|e| format!("bad manifest URL: {e}"))?;
-    app.updater_builder()
+    let update = app
+        .updater_builder()
         .endpoints(vec![url])
         .map_err(|e| e.to_string())?
         .timeout(REQUEST_TIMEOUT)
@@ -212,27 +215,69 @@ async fn find_signed_update(app: &AppHandle, manifest: &str) -> Result<Option<Up
         .map_err(|e| e.to_string())?
         .check()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if let Some(update) = &update {
+        if !download_is_from_release(manifest, update.download_url.as_str()) {
+            return Err("the manifest points to an installer outside its own release".to_string());
+        }
+    }
+    Ok(update)
+}
+
+/// The manifest is not signed, only the installer is, so a doctored manifest could pair a newer
+/// version number with another genuinely signed installer (an older build). Requiring the
+/// installer to live in the same release as the manifest keeps the source to this repository's
+/// own release assets.
+fn download_is_from_release(manifest_url: &str, download_url: &str) -> bool {
+    manifest_url
+        .strip_suffix(MANIFEST_ASSET)
+        .is_some_and(|release| {
+            release.ends_with('/')
+                && download_url.starts_with(release)
+                && !download_url[release.len()..].contains(['/', '?', '#'])
+        })
+}
+
+/// Agent runs the embedded runtime has in flight; `None` when another process owns the runtime
+/// (it keeps running when this app is replaced). Fails closed: an unreadable count is an error,
+/// never "zero".
+async fn running_agents(
+    orchestrator: Option<&SymphonyOrchestrator>,
+) -> Result<Option<usize>, String> {
+    match orchestrator {
+        None => Ok(None),
+        Some(orchestrator) => orchestrator
+            .state_snapshot()
+            .await
+            .map(|s| Some(s.counts.running))
+            .map_err(|e| format!("Could not tell whether agents are running: {e}")),
+    }
 }
 
 /// Download the staged update, verify its signature, and run the installer.
 ///
-/// `running_tasks` is the number of agent runs the embedded runtime has in flight (`None` when the
-/// runtime is owned by another process). Installing ends the app, and with it those runs; they are
-/// re-queued by crash recovery, so the user has to confirm first.
+/// Installing ends the app, and with it the agent runs of the embedded runtime (`orchestrator`);
+/// they are re-queued by crash recovery, so the user has to confirm first. The count is read
+/// before the download and again right before the installer starts, because the scheduler keeps
+/// dispatching meanwhile and a download can take a while.
 pub async fn install(
     app: &AppHandle,
     pending: &PendingUpdate,
-    running_tasks: Option<usize>,
+    orchestrator: Option<Arc<SymphonyOrchestrator>>,
     confirmed: bool,
 ) -> Result<InstallOutcome, String> {
-    if let Some(running) = running_tasks.filter(|n| *n > 0 && !confirmed) {
-        return Ok(InstallOutcome::NeedsConfirmation { running });
+    if !confirmed {
+        if let Some(running) = running_agents(orchestrator.as_deref())
+            .await?
+            .filter(|n| *n > 0)
+        {
+            return Ok(InstallOutcome::NeedsConfirmation { running });
+        }
     }
     if pending.installing.swap(true, Ordering::AcqRel) {
         return Err("An update is already being installed".to_string());
     }
-    let result = download_and_run(app, pending).await;
+    let result = download_and_run(app, pending, orchestrator.as_deref(), confirmed).await;
     pending.installing.store(false, Ordering::Release);
     result
 }
@@ -240,6 +285,8 @@ pub async fn install(
 async fn download_and_run(
     app: &AppHandle,
     pending: &PendingUpdate,
+    orchestrator: Option<&SymphonyOrchestrator>,
+    confirmed: bool,
 ) -> Result<InstallOutcome, String> {
     let update = pending
         .update
@@ -281,6 +328,12 @@ async fn download_and_run(
             total: Some(bytes.len() as u64),
         },
     );
+    if !confirmed {
+        if let Some(running) = running_agents(orchestrator).await?.filter(|n| *n > 0) {
+            // Work started during the download: ask again instead of interrupting it.
+            return Ok(InstallOutcome::NeedsConfirmation { running });
+        }
+    }
     tracing::info!(version = %update.version, "Update verified; starting the installer");
     // Verifies the signature again, then runs the installer. On Windows this exits the process.
     update
@@ -475,5 +528,32 @@ mod tests {
         );
         let json = serde_json::to_value(InstallOutcome::Installed).unwrap();
         assert_eq!(json, serde_json::json!({"status": "installed"}));
+    }
+
+    #[test]
+    fn the_installer_must_come_from_the_manifests_own_release() {
+        let manifest =
+            "https://github.com/KB01111/OpenAI-Symphony-Rust/releases/download/v2.1.0/latest.json";
+        let ok = "https://github.com/KB01111/OpenAI-Symphony-Rust/releases/download/v2.1.0/Symphony-Desktop_2.1.0_x64-setup.exe";
+        assert!(download_is_from_release(manifest, ok));
+        for bad in [
+            // an older release of the same repository (a genuinely signed, older installer)
+            "https://github.com/KB01111/OpenAI-Symphony-Rust/releases/download/v1.0.0/setup.exe",
+            // another host or repository
+            "https://evil.example/KB01111/OpenAI-Symphony-Rust/releases/download/v2.1.0/setup.exe",
+            "https://github.com/other/OpenAI-Symphony-Rust/releases/download/v2.1.0/setup.exe",
+            // sneaking out of the release directory
+            "https://github.com/KB01111/OpenAI-Symphony-Rust/releases/download/v2.1.0/../v1.0.0/setup.exe",
+            "https://github.com/KB01111/OpenAI-Symphony-Rust/releases/download/v2.1.0/x/setup.exe",
+            "https://github.com/KB01111/OpenAI-Symphony-Rust/releases/download/v2.1.0/setup.exe?redirect=1",
+            // a tag that merely starts like the release's
+            "https://github.com/KB01111/OpenAI-Symphony-Rust/releases/download/v2.1.00/setup.exe",
+        ] {
+            assert!(!download_is_from_release(manifest, bad), "{bad}");
+        }
+        assert!(!download_is_from_release(
+            "https://example.com/other.json",
+            ok
+        ));
     }
 }

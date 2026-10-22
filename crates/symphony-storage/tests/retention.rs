@@ -144,6 +144,8 @@ async fn a_backlog_larger_than_one_batch_is_fully_pruned() {
 fn settings_without_the_field_default_to_thirty_days() {
     let old = serde_json::json!({"theme": "dark"});
     let settings: symphony_core::AppSettings = serde_json::from_value(old).unwrap();
-    assert_eq!(settings.event_retention_days, 30);
+    // Absent from older stored settings: "not provided", which readers treat as the default.
+    assert_eq!(settings.event_retention_days, None);
+    assert_eq!(settings.effective_event_retention_days(), 30);
     assert_eq!(settings.theme, "dark");
 }

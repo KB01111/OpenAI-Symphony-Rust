@@ -84,10 +84,19 @@ private key means installed apps can never be updated again (users would have to
 new public key); leaking it lets anyone ship an update. To rotate, generate a new pair, replace `pubkey`, ship
 a release signed with the **old** key that carries the new public key, then switch the secrets.
 
-What the workflow does when the secret exists: `tauri build` runs with `bundle.createUpdaterArtifacts`, which
-adds `<installer>.exe.sig`; `scripts/updater-manifest.mjs` writes `latest.json` (version, notes, installer URL,
-signature); both are uploaded and covered by `SHA256SUMS.txt`. Releases built UNSIGNED (Authenticode) are
-pre-releases, so only pre-release builds are offered them.
+What the workflow does when the secret exists: after the installer is built (and smoke-tested), a separate step
+runs `tauri signer sign` on it, so the key is visible to that step only and never to compilers, build scripts or
+the frontend toolchain; `scripts/updater-manifest.mjs` then checks the signature's structure and writes
+`latest.json` (version, notes, installer URL, signature); both are uploaded and covered by `SHA256SUMS.txt`.
+Releases built UNSIGNED (Authenticode) are pre-releases, so only pre-release builds are offered them.
+
+Anyone who can push a tag or edit the workflow on a branch can run a workflow that reads repository secrets. If
+more than one person has write access, create a GitHub *environment* (e.g. `release`) restricted to `v*` tags
+and required reviewers, store the two secrets there and add `environment: release` to the release job.
+
+What protects an installed app from a doctored manifest: the installer must carry a valid signature for the
+compiled-in key, the manifest's version must match the release the GitHub API announced, the installer URL must
+live in that same release's download path, and the version must be newer than the running one.
 
 Not enforced yet: `require_signed_version` (the updater would also check that the signature names the same
 version as the manifest, which blocks downgrade tricks through a forged manifest). The Tauri CLI used here

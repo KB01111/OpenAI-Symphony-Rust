@@ -630,6 +630,9 @@ impl Storage {
     /// completed, failed or cancelled) are kept however old they are; events without a task, or
     /// whose task no longer exists, are deleted like any other old event. Returns how many rows
     /// were removed.
+    ///
+    /// Timestamps are stored as RFC 3339 strings of UTC instants (`record_event`), so comparing
+    /// them as text orders them correctly and lets SQLite use `idx_agent_events_timestamp`.
     pub async fn prune_agent_events(&self, older_than: DateTime<Utc>) -> SymphonyResult<u64> {
         const BATCH: i64 = 2_000;
         let cutoff = older_than.to_rfc3339();
@@ -639,7 +642,7 @@ impl Storage {
                 r#"
                 DELETE FROM agent_events WHERE rowid IN (
                     SELECT rowid FROM agent_events
-                    WHERE julianday(timestamp) < julianday(?1)
+                    WHERE timestamp < ?1
                       AND (task_id IS NULL OR task_id NOT IN (
                             SELECT id FROM tasks
                             WHERE status NOT IN ('completed', 'failed', 'cancelled')))

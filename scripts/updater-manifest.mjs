@@ -1,8 +1,7 @@
 /**
  * Builds `latest.json`, the manifest the in-app updater (tauri-plugin-updater) reads from a GitHub
  * release: the version, the release notes, and for each platform the installer URL and the
- * minisign signature of that installer (`<installer>.sig`, created by `tauri build` when
- * `bundle.createUpdaterArtifacts` is on and `TAURI_SIGNING_PRIVATE_KEY` is set).
+ * minisign signature of that installer (`<installer>.sig`, created by `tauri signer sign`).
  *
  *   node scripts/updater-manifest.mjs --tag v2.1.0 --repo owner/name \
  *     --installer Symphony-Desktop_2.1.0_x64-setup.exe --signature setup.exe.sig \
@@ -20,12 +19,35 @@ const ASSET = /^[A-Za-z0-9._-]+$/;
 /** The updater picks `<os>-<arch>` for the running target; the only shipped build is Windows x64. */
 export const PLATFORM = "windows-x86_64";
 
-/** Fails unless `signature` is a base64-wrapped minisign signature, which is what the updater parses. */
+/** Decodes strict base64 (canonical padding, no stray characters) or returns null. */
+function strictBase64(text) {
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text)) return null;
+  const bytes = Buffer.from(text, "base64");
+  return bytes.toString("base64") === text ? bytes : null;
+}
+
+/**
+ * Fails unless `signature` has the structure the updater parses: base64 of a minisign signature
+ * file, i.e. an untrusted comment, a 74-byte signature line (`Ed`/`ED` + 8-byte key id + 64-byte
+ * Ed25519 signature), a trusted comment and a 64-byte global signature. It cannot check the
+ * signature itself (that needs the public key); it catches truncated, hand-edited or foreign files
+ * before they are published.
+ */
 export function checkSignature(signature) {
-  const text = Buffer.from(signature, "base64").toString("utf8");
-  if (!signature || !text.startsWith("untrusted comment:")) {
-    throw new Error("the signature is not a minisign signature created by `tauri build` / `tauri signer sign`");
-  }
+  const fail = (why) => {
+    throw new Error(`the signature is not a minisign signature created by \`tauri build\` / \`tauri signer sign\` (${why})`);
+  };
+  const outer = strictBase64(signature);
+  if (!outer) fail("not base64");
+  const lines = outer.toString("utf8").split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  if (lines.length !== 4) fail(`expected 4 lines, found ${lines.length}`);
+  if (!lines[0].startsWith("untrusted comment:")) fail("missing untrusted comment");
+  const body = strictBase64(lines[1]);
+  if (!body || body.length !== 74 || body[0] !== 0x45 || (body[1] !== 0x64 && body[1] !== 0x44)) fail("bad signature line");
+  if (!lines[2].startsWith("trusted comment:")) fail("missing trusted comment");
+  const global = strictBase64(lines[3]);
+  if (!global || global.length !== 64) fail("bad global signature");
 }
 
 export function buildManifest({ tag, repo, installer, signature, notes = "", pubDate = new Date() }) {

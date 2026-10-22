@@ -11,8 +11,19 @@ import { fileURLToPath } from "node:url";
 import { PLATFORM, buildManifest, checkSignature } from "./updater-manifest.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-// What `tauri signer sign` writes: base64 of a minisign signature file.
-const SIGNATURE = Buffer.from("untrusted comment: signature from tauri secret key\nRUT...\ntrusted comment: timestamp:1\nabc==\n").toString("base64");
+// What `tauri signer sign` writes: base64 of a minisign signature file with the exact field sizes
+// (the bytes are not a real signature, only the structure is checked here).
+const minisign = ({ id = "ED", signature = 72, global = 64, comments = ["untrusted comment: signature from tauri secret key", "trusted comment: timestamp:1"] } = {}) =>
+  Buffer.from(
+    [
+      comments[0],
+      Buffer.concat([Buffer.from(id), Buffer.alloc(signature, 7)]).toString("base64"),
+      comments[1],
+      Buffer.alloc(global, 9).toString("base64"),
+      ""
+    ].join("\n")
+  ).toString("base64");
+const SIGNATURE = minisign();
 const input = { tag: "v2.1.0", repo: "KB01111/OpenAI-Symphony-Rust", installer: "Symphony-Desktop_2.1.0_x64-setup.exe", signature: `${SIGNATURE}\n`, notes: "  Faster startup\n" };
 
 test("builds the manifest the updater expects", () => {
@@ -48,6 +59,18 @@ test("refuses a missing or foreign signature", () => {
   assert.throws(() => buildManifest({ ...input, signature: "" }), /minisign/);
   assert.throws(() => buildManifest({ ...input, signature: "not base64 of a signature" }), /minisign/);
   assert.doesNotThrow(() => checkSignature(SIGNATURE));
+  assert.doesNotThrow(() => checkSignature(minisign({ id: "Ed" })));
+  // Right header, wrong shape: a truncated or edited file must not reach the release.
+  const bad = [
+    minisign({ signature: 10 }),
+    minisign({ global: 10 }),
+    minisign({ id: "XX" }),
+    minisign({ comments: ["comment: nope", "trusted comment: x"] }),
+    minisign({ comments: ["untrusted comment: x", "comment: nope"] }),
+    Buffer.from("untrusted comment: only a header\n").toString("base64"),
+    `${SIGNATURE}!`
+  ];
+  for (const signature of bad) assert.throws(() => checkSignature(signature), /minisign/);
 });
 
 test("the command line writes the manifest and fails with a message on bad input", () => {

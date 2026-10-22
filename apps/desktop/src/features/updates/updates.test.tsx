@@ -50,6 +50,9 @@ function installHost(handlers: Record<string, Invoke>) {
   return invoke;
 }
 
+/** Lets a resolved or rejected check reach the UI before asserting that nothing was shown. */
+const settle = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 50))));
+
 const calls = (invoke: ReturnType<typeof installHost>, command: string) => invoke.mock.calls.filter(([c]) => c === command);
 
 beforeEach(() => {
@@ -177,6 +180,7 @@ describe("UpdateBanner", () => {
     let invoke = installHost({ check_for_updates: async () => update({ update_available: false, latest: "2.0.0" }) });
     let view = renderWithProviders(<UpdateBanner />, { runtime: createMockRuntime({}) });
     await waitFor(() => expect(calls(invoke, "check_for_updates")).toHaveLength(1));
+    await settle();
     expect(screen.queryByText(/is available/)).not.toBeInTheDocument();
     view.unmount();
 
@@ -188,12 +192,15 @@ describe("UpdateBanner", () => {
     });
     view = renderWithProviders(<UpdateBanner />, { runtime: createMockRuntime({}) });
     await waitFor(() => expect(calls(invoke, "check_for_updates")).toHaveLength(1));
+    await settle();
     expect(screen.queryByText(/Could not reach GitHub/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     view.unmount();
 
     // Browser / dev server: no host, so nothing to ask.
     delete (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     renderWithProviders(<UpdateBanner />, { runtime: createMockRuntime({}) });
+    await settle();
     expect(screen.queryByText(/is available/)).not.toBeInTheDocument();
   });
 
@@ -201,7 +208,7 @@ describe("UpdateBanner", () => {
     useUiStore.setState({ autoCheckUpdates: false });
     const invoke = installHost({ check_for_updates: async () => update() });
     renderWithProviders(<UpdateBanner />, { runtime: createMockRuntime({}) });
-    await new Promise((r) => setTimeout(r, 50));
+    await settle();
     expect(calls(invoke, "check_for_updates")).toHaveLength(0);
   });
 });

@@ -1146,7 +1146,12 @@ pub struct AppSettings {
     pub provider_default_models: HashMap<ProviderKind, String>,
     /// Days the activity log (agent events) of finished tasks is kept; older events are deleted.
     /// `0` keeps everything. Events of tasks that are still active are never deleted.
-    pub event_retention_days: u32,
+    ///
+    /// Omit it (or send `null`) to leave the stored value unchanged; clients written before this
+    /// setting existed do exactly that. Settings that never had a value use 30.
+    #[serde(default)]
+    #[schema(maximum = 3650)]
+    pub event_retention_days: Option<u32>,
 }
 
 /// Default for [`AppSettings::event_retention_days`].
@@ -1172,8 +1177,16 @@ impl Default for AppSettings {
             onboarding_completed: false,
             extra_env_vars: HashMap::new(),
             provider_default_models: HashMap::new(),
-            event_retention_days: DEFAULT_EVENT_RETENTION_DAYS,
+            event_retention_days: Some(DEFAULT_EVENT_RETENTION_DAYS),
         }
+    }
+}
+
+impl AppSettings {
+    /// Retention in days (`0` = keep everything), with the default for settings that never had one.
+    pub fn effective_event_retention_days(&self) -> u32 {
+        self.event_retention_days
+            .unwrap_or(DEFAULT_EVENT_RETENTION_DAYS)
     }
 }
 
