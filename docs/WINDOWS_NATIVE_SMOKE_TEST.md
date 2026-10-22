@@ -78,5 +78,18 @@ Record the Windows build (`winver`), the commit and pass/fail for each step.
 14. **Shared data directory** — Point `SYMPHONY_DATA_DIR` at a folder where `Everyone` has full control
     (`icacls <dir> /grant *S-1-1-0:(OI)(CI)F`) and start Symphony: `runtime.json` and `credentials.vault` are
     still restricted to your account and SYSTEM (step 2 check).
-15. **Shutdown** — Exit from the tray. Task Manager shows no `symphony-desktop.exe` or `symphony-cli.exe`
+15. **Backup and restore** — Settings → Backups → *Create backup* while a task runs: a folder
+    `backups\symphony-backup-<time>` appears with `symphony.sqlite`, `manifest.json` (and `WORKFLOW.md`), and
+    no credential file. Exit from the tray, run `symphony-cli verify-backup "<folder>"`, change something
+    (rename a task), then `symphony-cli --data-dir "$env:SYMPHONY_DATA_DIR" restore-backup "<folder>"`: the
+    old state is back and `*.pre-restore-*` files hold the replaced ones. Run it once while Symphony is
+    still open: it must refuse.
+16. **Create pull request** — Against a throw-away GitHub repository with a token saved under Settings →
+    Integrations: finish a task, open its review, *Create pull request* → confirm. A branch and a pull
+    request appear on GitHub (nothing merged), the review shows its `#number`, repeating the click opens
+    nothing new, and a review with a security warning or conflict offers no button.
+17. **Upgrade keeps data** — Install the previous build, create data, install this one over it: projects,
+    tasks and history are intact and a `symphony.sqlite.pre-migration-v*.bak` was written. Uninstall and
+    record whether `%LOCALAPPDATA%\symphony-desktop` survives (`docs/DATA_BACKUP.md` says it should).
+18. **Shutdown** — Exit from the tray. Task Manager shows no `symphony-desktop.exe` or `symphony-cli.exe`
     left behind, and `runtime.json` has been removed.

@@ -123,7 +123,10 @@ export const reviewMessages = defineMessages({
       noMerge: "Nothing is merged and the task is not completed. Review and merge the pull request in your Git host.",
       confirm: "Create pull request",
       success: "Pull request opened",
-      successBody: "Pull request #{number} was opened. Nothing was merged."
+      successBody: "Pull request #{number} was opened. Nothing was merged.",
+      refresh: "Refresh status",
+      refreshing: "Refreshing…",
+      refreshHint: "Reads CI, merge state and comments from GitHub."
     },
     approve: {
       title: "Record human approval?",
@@ -256,7 +259,10 @@ export const reviewMessages = defineMessages({
       noMerge: "Inget slås samman och uppgiften slutförs inte. Granska och slå samman pull requesten i din Git-tjänst.",
       confirm: "Skapa pull request",
       success: "Pull request öppnad",
-      successBody: "Pull request #{number} öppnades. Inget slogs samman."
+      successBody: "Pull request #{number} öppnades. Inget slogs samman.",
+      refresh: "Uppdatera status",
+      refreshing: "Uppdaterar…",
+      refreshHint: "Läser CI, sammanslagningsstatus och kommentarer från GitHub."
     },
     approve: {
       title: "Registrera mänskligt godkännande?",

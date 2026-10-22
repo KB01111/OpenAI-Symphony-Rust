@@ -1456,6 +1456,54 @@
         "x-symphony-remote": false
       }
     },
+    "/api/v1/prs/{id}/refresh": {
+      "post": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "Refresh a review's pull request from GitHub: CI result, merge state, state and review comments,\nthen re-rate it. Read-only on GitHub; local administration only.",
+        "operationId": "refreshPullRequest",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Review id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestReview"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
     "/api/v1/worktrees": {
       "get": {
         "tags": [

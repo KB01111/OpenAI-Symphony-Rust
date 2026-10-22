@@ -275,6 +275,10 @@ export class SymphonyClient {
   createPullRequest(id: string) {
     return this.call((o) => api.createPullRequest({ ...o, path: { id } }));
   }
+  /** Re-read the pull request's CI result, merge state and comments from GitHub and re-rate it. */
+  refreshPullRequest(id: string) {
+    return this.call((o) => api.refreshPullRequest({ ...o, path: { id } }));
+  }
   listWorktrees(signal?: AbortSignal) {
     return this.call((o) => api.listWorktrees(o), signal);
   }

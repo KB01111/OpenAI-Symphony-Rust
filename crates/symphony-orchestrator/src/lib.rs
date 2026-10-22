@@ -1634,6 +1634,72 @@ Please implement the requested changes cleanly in the current Git workspace, run
         Ok(review)
     }
 
+    /// Refresh a review that has a pull request from GitHub: CI result, merge state (conflicts),
+    /// state (open, closed, merged by someone) and review comments, then re-rate it. Read-only on
+    /// GitHub; what GitHub has not computed yet stays unknown instead of being reported as fine.
+    pub async fn refresh_pull_request(&self, review_id: &str) -> SymphonyResult<PullRequestReview> {
+        let _publishing = self.publish_lock.lock().await;
+        let mut review = self
+            .storage
+            .get_pr_review(review_id)
+            .await?
+            .ok_or_else(|| SymphonyError::NotFound(format!("PR review {review_id} not found")))?;
+        if review.pr_number == 0 {
+            return Err(SymphonyError::Conflict(
+                "this review has no pull request yet; create one first".into(),
+            ));
+        }
+        let project = self
+            .storage
+            .get_project(&review.project_id)
+            .await?
+            .ok_or_else(|| SymphonyError::ProjectNotFound(review.project_id.clone()))?;
+        let repo = project
+            .github_repo
+            .clone()
+            .filter(|r| r.contains('/'))
+            .ok_or_else(|| {
+                SymphonyError::InvalidConfig(
+                    "the project has no GitHub repository (owner/name) configured".into(),
+                )
+            })?;
+        let tracker =
+            GitHubTracker::new(self.github_api_url.clone(), repo, self.github_token(), None);
+        let details = tracker
+            .fetch_pull_request_details(review.pr_number)
+            .await
+            .map_err(|e| with_redacted_message(e, &self.secret_store.all_secret_values()))?;
+
+        review.ci_status = details.ci_status.clone();
+        review.has_conflicts = details.has_conflicts;
+        review.mergeable = details.mergeable == Some(true) && !details.has_conflicts;
+        if !details.html_url.is_empty() {
+            review.url = details.html_url.clone();
+        }
+        if details.merged {
+            review.state = "merged".to_string();
+        } else if details.state == "closed" {
+            review.state = "closed".to_string();
+        }
+        review.review_comments = details.review_comments;
+        review.merge_readiness = MergeReadinessReport::evaluate(
+            if review.has_conflicts {
+                ConflictCheck::Conflicts
+            } else if review.mergeable {
+                ConflictCheck::Clean
+            } else {
+                ConflictCheck::NotChecked
+            },
+            &review.ci_status,
+            &review.validation_results,
+            &review.security_warnings,
+            review.changed_files.len(),
+        );
+        review.updated_at = Utc::now();
+        self.storage.upsert_pr_review(&review).await?;
+        Ok(review)
+    }
+
     /// Explicitly approve a Pull Request review for human merge completion (Section 4.F)
     pub async fn approve_pr_merge(&self, review_id: &str) -> SymphonyResult<PullRequestReview> {
         let mut review = self
@@ -3705,6 +3771,35 @@ rl.on('line', (line) => {
         String,
         Arc<std::sync::Mutex<Vec<(String, String, String, String)>>>,
     ) {
+        github_mock_with(Arc::new(move |method: &str, _target: &str| {
+            match (method, existing_pr) {
+                ("POST", None) => (
+                    "201 Created".to_string(),
+                    json!({ "number": 42, "html_url": "https://github.com/acme/widgets/pull/42" }),
+                ),
+                ("POST", Some(_)) => (
+                    "422 Unprocessable Entity".to_string(),
+                    json!({ "message": "Validation Failed", "errors": [{ "message": "A pull request already exists for acme:branch." }] }),
+                ),
+                (_, Some(n)) => (
+                    "200 OK".to_string(),
+                    json!([{ "number": n, "html_url": format!("https://github.com/acme/widgets/pull/{n}") }]),
+                ),
+                _ => ("200 OK".to_string(), json!([])),
+            }
+        }))
+        .await
+    }
+
+    type GithubAnswer = dyn Fn(&str, &str) -> (String, Value) + Send + Sync;
+
+    /// The recording server answering every request with `answer(method, target)`.
+    async fn github_mock_with(
+        answer: Arc<GithubAnswer>,
+    ) -> (
+        String,
+        Arc<std::sync::Mutex<Vec<(String, String, String, String)>>>,
+    ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -3714,6 +3809,7 @@ rl.on('line', (line) => {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let log = log.clone();
+                let answer = answer.clone();
                 tokio::spawn(async move {
                     let mut raw = Vec::new();
                     let mut buf = [0u8; 4096];
@@ -3753,21 +3849,7 @@ rl.on('line', (line) => {
                     log.lock()
                         .unwrap()
                         .push((method.clone(), target.clone(), auth, body));
-                    let (status, payload) = match (method.as_str(), existing_pr) {
-                        ("POST", None) => (
-                            "201 Created",
-                            json!({ "number": 42, "html_url": "https://github.com/acme/widgets/pull/42" }),
-                        ),
-                        ("POST", Some(_)) => (
-                            "422 Unprocessable Entity",
-                            json!({ "message": "Validation Failed", "errors": [{ "message": "A pull request already exists for acme:branch." }] }),
-                        ),
-                        (_, Some(n)) => (
-                            "200 OK",
-                            json!([{ "number": n, "html_url": format!("https://github.com/acme/widgets/pull/{n}") }]),
-                        ),
-                        _ => ("200 OK", json!([])),
-                    };
+                    let (status, payload) = answer(&method, &target);
                     let payload = payload.to_string();
                     let reply = format!(
                         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
@@ -3940,6 +4022,94 @@ rl.on('line', (line) => {
         let again = orch.create_pull_request(&review.id).await.unwrap();
         assert_eq!(again.pr_number, 42);
         assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_refreshing_a_pull_request_reports_what_github_says_and_never_guesses() {
+        let temp = TempDir::new().unwrap();
+        // GitHub: merge not computed yet (`mergeable: null`), no check run at all.
+        let state = Arc::new(std::sync::Mutex::new((Value::Null, json!([]))));
+        let served = state.clone();
+        let (api, _requests) = github_mock_with(Arc::new(move |method: &str, target: &str| {
+            let (mergeable, runs) = served.lock().unwrap().clone();
+            let path = target.split('?').next().unwrap_or(target);
+            let payload = match (method, path) {
+                ("POST", _) => {
+                    json!({ "number": 42, "html_url": "https://github.com/acme/widgets/pull/42" })
+                }
+                (_, "/repos/acme/widgets/pulls/42") => json!({
+                    "number": 42, "title": "t", "body": "b", "state": "open",
+                    "html_url": "https://github.com/acme/widgets/pull/42",
+                    "head": { "ref": "branch", "sha": "abc123" }, "base": { "ref": "main" },
+                    "mergeable": mergeable,
+                    "mergeable_state": if mergeable.is_null() { "unknown" } else { "clean" },
+                    "merged": false
+                }),
+                (_, "/repos/acme/widgets/commits/abc123/check-runs") => {
+                    json!({ "check_runs": runs })
+                }
+                (_, p) if p.ends_with("/files") || p.ends_with("/comments") => json!([]),
+                _ => json!({}),
+            };
+            ("200 OK".to_string(), payload)
+        }))
+        .await;
+        let (orch, _task, review) = finished_run(
+            &temp,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        // Refreshing a review without a pull request is refused.
+        assert_eq!(
+            orch.refresh_pull_request(&review.id)
+                .await
+                .unwrap_err()
+                .code(),
+            "conflict"
+        );
+        orch.create_pull_request(&review.id).await.unwrap();
+
+        let unknown = orch.refresh_pull_request(&review.id).await.unwrap();
+        assert_eq!(unknown.ci_status, "none", "no check run is not a pass");
+        assert!(
+            !unknown.mergeable && !unknown.has_conflicts,
+            "an uncomputed merge is unknown"
+        );
+        let evidence = unknown.merge_readiness.evidence.join("\n");
+        assert!(!evidence.contains("Remote CI checks passed"), "{evidence}");
+        assert!(evidence.contains("could not be checked"), "{evidence}");
+
+        *state.lock().unwrap() = (
+            json!(true),
+            json!([{ "status": "completed", "conclusion": "success" }]),
+        );
+        let green = orch.refresh_pull_request(&review.id).await.unwrap();
+        assert_eq!(green.ci_status, "passed");
+        assert!(green.mergeable);
+        assert!(green
+            .merge_readiness
+            .evidence
+            .join("\n")
+            .contains("Remote CI checks passed"));
+
+        *state.lock().unwrap() = (
+            json!(false),
+            json!([{ "status": "completed", "conclusion": "failure" }]),
+        );
+        let red = orch.refresh_pull_request(&review.id).await.unwrap();
+        assert_eq!(red.ci_status, "failed");
+        assert!(red.has_conflicts && !red.mergeable);
+        assert!(red.merge_readiness.score < green.merge_readiness.score);
+        // What was read is what is stored.
+        let stored = orch
+            .storage
+            .get_pr_review(&review.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.ci_status, "failed");
     }
 
     #[tokio::test]

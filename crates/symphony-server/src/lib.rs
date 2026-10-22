@@ -513,6 +513,7 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(get_pr_handler))
         .routes(routes!(approve_pr_merge_handler))
         .routes(routes!(create_pull_request_handler))
+        .routes(routes!(refresh_pull_request_handler))
         .routes(routes!(list_worktrees_handler))
         .routes(routes!(get_workflow_handler, update_workflow_handler))
         .routes(routes!(preview_workflow_handler))
@@ -1474,6 +1475,23 @@ async fn create_pull_request_handler(
     Path(id): Path<String>,
 ) -> Response {
     respond(state.orchestrator.create_pull_request(&id).await)
+}
+
+/// Refresh a review's pull request from GitHub: CI result, merge state, state and review comments,
+/// then re-rate it. Read-only on GitHub; local administration only.
+#[utoipa::path(
+    post,
+    path = "/prs/{id}/refresh",
+    operation_id = "refreshPullRequest",
+    tag = "reviews",
+    params(("id" = String, Path, description = "Review id")),
+    responses((status = 200, body = PullRequestReview))
+)]
+async fn refresh_pull_request_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Response {
+    respond(state.orchestrator.refresh_pull_request(&id).await)
 }
 
 #[utoipa::path(

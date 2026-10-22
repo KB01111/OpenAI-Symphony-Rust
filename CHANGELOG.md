@@ -12,6 +12,17 @@ First release. Replace "Unreleased" with the release date in the commit that is 
 
 ### Added
 
+- **Backups**: consistent SQLite backups with a checksum manifest (Settings → Backups, `GET/POST
+  /api/v1/backups`), `symphony-cli verify-backup` and an offline `symphony-cli restore-backup` that keeps
+  the replaced files and rolls back on failure. Credentials are never part of a backup
+  (`docs/DATA_BACKUP.md`).
+- **Refresh status** on a review with a pull request re-reads CI, merge state and comments from GitHub
+  (`POST /api/v1/prs/{id}/refresh`). A repository without any check run now reads as "no CI" instead of
+  "passed", and a merge GitHub has not computed yet reads as unknown instead of clean.
+- **Create pull request**: a confirmed action on a review that commits the worktree changes to the task
+  branch, pushes it to `origin` and opens a GitHub pull request (`POST /api/v1/prs/{id}/create-pull-request`,
+  local administration only). It never merges; it is refused without a GitHub repository and token, with
+  conflicts or with security warnings.
 - Rust orchestration runtime with a Tauri 2 desktop host and a React 19 + Fluent UI v9 + shadcn/ui +
   Apps SDK UI interface; Codex App Server, Claude Code, OpenCode and simulated agent drivers; GitHub
   Issues and Linear trackers; isolated Git worktrees, approvals, validations and PR merge readiness.
@@ -44,8 +55,21 @@ First release. Replace "Unreleased" with the release date in the commit that is 
 - Token counts and cost estimates are no longer inflated: the runtime totals added every usage
   report of a session (Codex sends many, each with the running total), and a multi-turn Codex task
   counted its earlier turns again on every turn. Stream events now carry the session's cumulative
-  usage, turn outcomes that turn's usage, and only growth is counted. The first turn of a resumed
-  Codex thread may still include the thread's earlier usage if the app server reports it.
+  usage, turn outcomes that turn's usage, and only growth is counted.
+- A resumed Codex thread no longer charges its earlier usage again on every retry. Verified against
+  `codex app-server` 0.163.0: `thread/resume` replays the thread's absolute total. Symphony now keeps
+  the accounted thread total per task, measures a session against it, settles the usage of turns that
+  time out, crash or are interrupted, and marks a figure it cannot measure exactly as estimated (shown
+  as "≈"). Claude Code's prompt-cache tokens now count as input.
+- Pull request reviews no longer invent facts. Every review used to claim "Remote CI checks passed",
+  "mergeable" and "no conflicts" and showed the attempt count as the pull request number. The merge is
+  now simulated against the base branch (`git merge-tree`, Git 2.38+), a local review reports "No remote
+  CI", and the number is blank until a pull request exists.
+- The credential scan of a change looks at the added lines of up to 4 MiB of diff for GitHub, `sk-`,
+  Linear, AWS and Slack credentials and private keys, and warns when it could not scan everything.
+- Database schema changes are versioned and transactional (`schema_migrations`); a snapshot of the
+  database is taken before the first migration of an existing database, and a database written by a
+  newer version is refused instead of guessed at.
 - GitHub and Linear issue listings follow pagination instead of stopping at the first 100 or 50
   issues, so newer issues of a large backlog are dispatched. Candidate listings read up to 100
   pages; the terminal-state listing used for startup workspace cleanup reads up to 10 pages,
@@ -59,6 +83,14 @@ First release. Replace "Unreleased" with the release date in the commit that is 
 
 ### Changed
 
+- The application identifiers are now project-owned (`io.github.kb01111.symphony-desktop`,
+  `…-companion`) instead of `com.openai.symphony.*`, which implied ownership by a third party. Decided
+  before the first release: the data directory, credential vault and autostart entry do not depend on
+  the identifier; the WebView profile (UI preferences) and the saved window position of a development
+  build start fresh.
+- Releases publish CycloneDX SBOMs and a `BUILD-INFO.txt` naming the source commit; all published files
+  are covered by `SHA256SUMS.txt`.
+- Dependencies: `tokio` 1.53.3 (1.54.0 was yanked), `vitest` 4.1.12 (`@vitest/mocker` advisories).
 - Keyboard focus indicators: a single keyborg copy (Fluent UI 9.74.10); two copies shared one
   registry and could tear down keyboard-navigation tracking.
 - Dependencies: TypeScript 7 (the API client generator keeps TypeScript 6 in its own
@@ -67,6 +99,10 @@ First release. Replace "Unreleased" with the release date in the commit that is 
   dirs 7, and current GitHub Actions.
 
 ### Security
+
+- The host-side `github_api` and `linear_graphql` agent tools are scoped: GitHub requests are confined to
+  the project's own repository and cannot merge, delete or administer; Linear mutations are limited to
+  comments, issue updates and PR attachments. Previously any request was forwarded with the host's token.
 
 - KaTeX raised to 0.18 (GHSA-238p-pmpm-9mq7) with its own stylesheet, so math rendered in agent
   messages keeps its layout; `pnpm audit` reports no known vulnerabilities.

@@ -230,6 +230,7 @@ async fn sensitive_endpoints_are_forbidden_to_remote_clients() {
         ),
         (Method::GET, "/diagnostics/export", None),
         (Method::POST, "/prs/pr-1/create-pull-request", None),
+        (Method::POST, "/prs/pr-1/refresh", None),
         (Method::POST, "/prs/pr-1/approve-merge", None),
         (Method::GET, "/backups", None),
         (Method::POST, "/backups", None),

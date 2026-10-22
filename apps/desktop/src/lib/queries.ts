@@ -313,6 +313,21 @@ export function useCreatePullRequest() {
   });
 }
 
+/** Re-read a review's pull request status from GitHub. */
+export function useRefreshPullRequest() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: (id: string) => client.refreshPullRequest(id),
+    onSuccess: (pr) => {
+      qc.setQueryData(qk.pr(pr.id), pr);
+      void qc.invalidateQueries({ queryKey: qk.prsAll });
+    },
+    onError
+  });
+}
+
 export function useSaveWorkflow() {
   const client = useClient();
   const qc = useQueryClient();

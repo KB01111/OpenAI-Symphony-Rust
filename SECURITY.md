@@ -57,6 +57,22 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
      - Linear API keys (`lin_api_...`)
      - HTTP `Bearer <token>` headers and any custom registered secrets.
 
+4. **Scoped agent tools** (`crates/symphony-trackers/src/tool_policy.rs`):
+   - `github_api` and `linear_graphql` run on the host with Symphony's own tracker tokens, outside the
+     agent's sandbox and approval gate, and an agent reads untrusted text. They are therefore an allowlist,
+     checked before anything is sent:
+     - **`github_api`**: only `GET`, `POST` and `PATCH`; only paths under `/repos/{owner}/{repo}/` of the
+       project's own repository; reading the repository, creating and editing issues and pull requests,
+       comments and labels. No merge, no review, no deletion, no `PUT`, no secrets/hooks/collaborators, no
+       other repository, no encoded or relative path tricks. It can mutate tracker state (issues, comments,
+       pull request text); it cannot merge.
+     - **`linear_graphql`**: queries (read-only); mutations limited to `commentCreate`, `commentUpdate`,
+       `issueUpdate`, `attachmentCreate`, `attachmentLinkGitHubPR`, `attachmentLinkURL`; one operation per
+       call; no subscriptions. The document is tokenized (aliases, comments, strings and fragments cannot
+       smuggle another mutation).
+     - Refused calls fail with a structured error and never reach the network; the session continues.
+   - Widening either list is a security change: add the tests that show what the new operation can do.
+
 ---
 
 ## 3. Agent Execution & Approval Policies
@@ -65,9 +81,23 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
 - **Timeout & Stall Protection**:
   - Every turn is bounded by `codex.turn_timeout_ms` (default 1 hour) and `codex.stall_timeout_ms` (default 5 minutes).
   - Lifecycle hooks are bounded by `hooks.timeout_ms` (default 60 seconds) and use structured process arguments rather than concatenating untrusted inputs into shells.
-- **Human-in-the-Loop Pull Request Merging**:
-  - Symphony Desktop **never** merges pull requests automatically by default (`require_human_approval_for_merge: true`).
-  - Even when a pull request achieves a `5/5` Merge Readiness Score, a human operator must explicitly click **Approve & Enable Merge**.
+- **Human-in-the-Loop Pull Requests**:
+  - Symphony Desktop contains **no merge operation at all**: no code path calls a merge endpoint, and the
+    agent tools cannot (see §2.4). A `5/5` readiness score changes nothing by itself.
+  - **Record human approval** marks a review as approved and completes the task locally; it does not push
+    or merge anything.
+  - **Create pull request** is a separate, confirmed human action on a review. It commits the worktree's
+    changes to the task branch, pushes that branch to `origin` (never forced) and opens a pull request.
+    It is refused without a GitHub repository and token, while the branch conflicts with its base, while
+    the review carries security warnings, and while the task is running. Repository hooks and
+    `core.fsmonitor` are disabled for the commit and the push, so nothing an agent left in the repository
+    is executed on the user's behalf. The token reaches git through its environment for that one command
+    (not argv, not a config file) and is scrubbed from error messages. The endpoint is local-administration
+    only: the remote companion listener answers `403 forbidden_scope`.
+  - Merging remains a decision on the Git host. An automatic-merge policy would have to be an explicit,
+    separately authorised setting; none exists.
+- **Backups never contain credentials.** The vault is bound to the Windows account (DPAPI) and is excluded
+  from `symphony-storage`'s backups; see `docs/DATA_BACKUP.md`.
 
 ---
 

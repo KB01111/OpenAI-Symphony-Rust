@@ -15,7 +15,7 @@ import { AiEmptyView, ConfirmDialog, ErrorState, KeyValueList, LoadingRows, Merg
 import { errorMessage, SymphonyApiError } from "@symphony/api-client";
 import { paths } from "../../app/routes.js";
 import { useMessages } from "../../lib/i18n.js";
-import { useApprovePullRequest, useCreatePullRequest, usePullRequest } from "../../lib/queries.js";
+import { useApprovePullRequest, useCreatePullRequest, usePullRequest, useRefreshPullRequest } from "../../lib/queries.js";
 import { reviewMessages } from "./messages.js";
 import { hasPullRequest, isWebUrl } from "./reviewHelpers.js";
 import { CommentsTab, DiffTab, FilesChangedTab, SecurityTab, ValidationTab, type DiffSource } from "./ReviewTabs.js";
@@ -52,6 +52,7 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
   const notify = useNotify();
   const approve = useApprovePullRequest();
   const publish = useCreatePullRequest();
+  const refresh = useRefreshPullRequest();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [tab, setTab] = useState<ReviewTab>("files");
@@ -160,6 +161,15 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
             {m.publish.button}
           </Button>
           {publishBlocked ? <span className="text-xs text-muted-foreground">{publishBlocked}</span> : null}
+        </div>
+      ) : null}
+
+      {hasPullRequest(review) && isWebUrl(review.url) ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button disabled={refresh.isPending} onClick={() => refresh.mutate(review.id)}>
+            {refresh.isPending ? m.publish.refreshing : m.publish.refresh}
+          </Button>
+          <span className="text-xs text-muted-foreground">{m.publish.refreshHint}</span>
         </div>
       ) : null}
 

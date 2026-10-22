@@ -20,6 +20,12 @@ function runtimeWith(reviews: PullRequestReview[]) {
       store.set(id, opened);
       return opened;
     },
+    "POST /prs/:id/refresh": ({ path }) => {
+      const id = decodeURIComponent(path.split("/")[2]!);
+      const refreshed = { ...store.get(id)!, ci_status: "passed", mergeable: true, has_conflicts: false };
+      store.set(id, refreshed);
+      return refreshed;
+    },
     "POST /prs/:id/approve-merge": ({ path }) => {
       const id = decodeURIComponent(path.split("/")[2]!);
       const approved = { ...store.get(id)!, human_approved: true };
@@ -86,6 +92,18 @@ describe("ReviewsPage", () => {
     ]);
     // The review now links the real pull request, and the action is gone.
     expect(await screen.findByRole("link", { name: /github.com\/acme\/widgets\/pull\/42/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create pull request" })).not.toBeInTheDocument();
+  });
+
+  it("refreshes a published pull request from GitHub on request", async () => {
+    const published = pullRequest({ id: "pr-live", pr_number: 9, ci_status: "unknown", url: "https://github.com/acme/widgets/pull/9", title: "Published" });
+    const runtime = runtimeWith([published]);
+    renderWithProviders(<ReviewsPage />, { runtime, route: "/reviews/pr-live", path: "/reviews/:reviewId" });
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh status" }));
+    await waitFor(() =>
+      expect(runtime.calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: "/prs/pr-live/refresh", body: undefined }])
+    );
+    // A local review has nothing to refresh.
     expect(screen.queryByRole("button", { name: "Create pull request" })).not.toBeInTheDocument();
   });
 

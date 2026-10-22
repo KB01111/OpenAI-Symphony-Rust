@@ -66,9 +66,13 @@ pub struct GitHubPullRequestDetails {
     pub state: String,
     pub head_ref: String,
     pub base_ref: String,
-    pub mergeable: bool,
+    /// `None` while GitHub has not computed mergeability yet (`mergeable: null`): unknown, not "yes".
+    pub mergeable: Option<bool>,
     pub has_conflicts: bool,
+    /// `passed`, `failed`, `pending`, `none` (no check ran) or `unknown` (the checks could not be read).
     pub ci_status: String,
+    /// The pull request was merged (by someone; Symphony never merges).
+    pub merged: bool,
     pub changed_files: Vec<ChangedFileSummary>,
     pub review_comments: Vec<ReviewCommentEvaluation>,
 }
@@ -495,15 +499,16 @@ impl GitHubTracker {
             .and_then(|v| v.as_str())
             .unwrap_or("main")
             .to_string();
-        let mergeable = pr
-            .get("mergeable")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+        // GitHub answers `mergeable: null` while it computes the merge: that is unknown, and an
+        // unknown merge is never reported as clean.
+        let mergeable = pr.get("mergeable").and_then(|v| v.as_bool());
         let mergeable_state = pr
             .get("mergeable_state")
             .and_then(|v| v.as_str())
-            .unwrap_or("clean");
-        let has_conflicts = !mergeable || mergeable_state == "dirty";
+            .unwrap_or("unknown");
+        let has_conflicts = mergeable == Some(false) || mergeable_state == "dirty";
+        let merged = pr.get("merged").and_then(|v| v.as_bool()).unwrap_or(false)
+            || pr.get("merged_at").map(|v| !v.is_null()).unwrap_or(false);
 
         // Fetch changed files
         let files_url = format!(
@@ -536,7 +541,7 @@ impl GitHubTracker {
         let mut ci_status = "unknown".to_string();
         if !head_sha.is_empty() {
             let checks_url = format!(
-                "{}/repos/{}/commits/{head_sha}/check-runs",
+                "{}/repos/{}/commits/{head_sha}/check-runs?per_page=100",
                 self.api_url, self.repo
             );
             if let Ok(c_resp) = self
@@ -546,20 +551,7 @@ impl GitHubTracker {
             {
                 if let Ok(val) = c_resp.json::<Value>().await {
                     if let Some(runs) = val.get("check_runs").and_then(|r| r.as_array()) {
-                        if runs.is_empty() {
-                            ci_status = "passed".to_string();
-                        } else if runs.iter().any(|r| {
-                            r.get("conclusion").and_then(|c| c.as_str()) == Some("failure")
-                        }) {
-                            ci_status = "failed".to_string();
-                        } else if runs
-                            .iter()
-                            .any(|r| r.get("status").and_then(|s| s.as_str()) != Some("completed"))
-                        {
-                            ci_status = "pending".to_string();
-                        } else {
-                            ci_status = "passed".to_string();
-                        }
+                        ci_status = summarize_check_runs(runs).to_string();
                     }
                 }
             }
@@ -641,10 +633,54 @@ impl GitHubTracker {
             mergeable,
             has_conflicts,
             ci_status,
+            merged,
             changed_files,
             review_comments,
         })
     }
+}
+
+/// CI status of a commit from its check runs. No check run means no CI ran: that is `none`, never
+/// `passed`; a cancelled, timed-out or action-required run is not a pass either.
+fn summarize_check_runs(runs: &[Value]) -> &'static str {
+    if runs.is_empty() {
+        return "none";
+    }
+    let conclusion = |r: &Value| {
+        r.get("conclusion")
+            .and_then(|c| c.as_str())
+            .map(str::to_string)
+    };
+    if runs.iter().any(|r| {
+        matches!(
+            conclusion(r).as_deref(),
+            Some(
+                "failure"
+                    | "timed_out"
+                    | "cancelled"
+                    | "action_required"
+                    | "startup_failure"
+                    | "stale"
+            )
+        )
+    }) {
+        return "failed";
+    }
+    if runs
+        .iter()
+        .any(|r| r.get("status").and_then(|s| s.as_str()) != Some("completed"))
+    {
+        return "pending";
+    }
+    if runs.iter().all(|r| {
+        matches!(
+            conclusion(r).as_deref(),
+            Some("success" | "neutral" | "skipped")
+        )
+    }) {
+        return "passed";
+    }
+    "unknown"
 }
 
 impl GitHubTracker {
@@ -1340,6 +1376,50 @@ fn derive_priority_from_labels(labels: &[String]) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_runs_are_summarised_without_inventing_a_pass() {
+        let run = |status: &str, conclusion: Option<&str>| json!({ "status": status, "conclusion": conclusion });
+        assert_eq!(
+            summarize_check_runs(&[]),
+            "none",
+            "no CI is not a passing CI"
+        );
+        assert_eq!(
+            summarize_check_runs(&[
+                run("completed", Some("success")),
+                run("completed", Some("skipped"))
+            ]),
+            "passed"
+        );
+        assert_eq!(
+            summarize_check_runs(&[run("completed", Some("success")), run("in_progress", None)]),
+            "pending"
+        );
+        assert_eq!(
+            summarize_check_runs(&[
+                run("completed", Some("success")),
+                run("completed", Some("failure"))
+            ]),
+            "failed"
+        );
+        for bad in [
+            "cancelled",
+            "timed_out",
+            "action_required",
+            "startup_failure",
+        ] {
+            assert_eq!(
+                summarize_check_runs(&[run("completed", Some(bad))]),
+                "failed",
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            summarize_check_runs(&[run("completed", Some("something_new"))]),
+            "unknown"
+        );
+    }
 
     #[test]
     fn test_github_issue_normalization_and_pr_exclusion() {

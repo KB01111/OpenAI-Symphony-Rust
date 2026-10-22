@@ -1740,6 +1740,36 @@ export type CreatePullRequestResponses = {
 
 export type CreatePullRequestResponse = CreatePullRequestResponses[keyof CreatePullRequestResponses];
 
+export type RefreshPullRequestData = {
+    body?: never;
+    path: {
+        /**
+         * Review id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/prs/{id}/refresh';
+};
+
+export type RefreshPullRequestErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type RefreshPullRequestError = RefreshPullRequestErrors[keyof RefreshPullRequestErrors];
+
+export type RefreshPullRequestResponses = {
+    /**
+     * OK
+     */
+    200: PullRequestReview;
+};
+
+export type RefreshPullRequestResponse = RefreshPullRequestResponses[keyof RefreshPullRequestResponses];
+
 export type ListWorktreesData = {
     body?: never;
     path?: never;

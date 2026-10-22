@@ -117,7 +117,8 @@ A successful Tauri build alone proves compilation, not runtime behaviour; say wh
 3. Tag the merge commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml` re-checks the version,
    runs the Rust and frontend tests, builds the NSIS installer and CLI, signs them when the
    `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` secrets are set, runs the native smoke test,
-   writes `SHA256SUMS.txt` and creates a **draft** release with the changelog section as notes.
+   writes CycloneDX SBOMs, `BUILD-INFO.txt` (source commit) and `SHA256SUMS.txt` and creates a **draft**
+   release with the changelog section as notes (see [`docs/RELEASING.md`](./docs/RELEASING.md)).
 4. Run the manual checklist in [`docs/WINDOWS_NATIVE_SMOKE_TEST.md`](./docs/WINDOWS_NATIVE_SMOKE_TEST.md)
    with the drafted installer, then publish the draft. Never publish assets named `UNSIGNED`.
 
@@ -129,7 +130,12 @@ A successful Tauri build alone proves compilation, not runtime behaviour; say wh
 - **Use Authentic Design System Components**:
   - Use `@fluentui/react-components` for application shell, navigation, dialogs, and settings forms.
   - Use `@openai/apps-sdk-ui` (`Alert`, `Badge`, `Button`, `CodeBlock`, `Markdown`, `Textarea`, `Tooltip`, `Popover`, `EmptyMessage`, `SegmentedControl`, `ShimmerText`) for AI-facing surfaces.
+- **Database changes** are forward-only migrations: add `crates/symphony-storage/migrations/NNNN_name.sql`,
+  list it in `MIGRATIONS` and raise `SCHEMA_VERSION`; never edit an applied migration. Add a test that opens a
+  database in the previous schema (see `crates/symphony-storage/tests/migrations.rs`) and shows nothing is lost.
 - **Security**:
+  - Agent tools (`github_api`, `linear_graphql`) are an allowlist (`crates/symphony-trackers/src/tool_policy.rs`);
+    do not widen it without tests. There is deliberately no merge operation.
   - Never pass raw tracker tokens (`GITHUB_TOKEN`, `LINEAR_API_KEY`) into coding agent child processes.
   - Always validate workspace paths via `symphony_workspaces::validate_workspace_path`.
   - Store secrets only through `SecretStore` and write secret-bearing files only through
