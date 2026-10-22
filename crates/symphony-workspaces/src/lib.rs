@@ -61,7 +61,7 @@ impl Drop for SafeHooksDir {
 /// Repository-local git settings that change where a push goes, how it authenticates, how its TLS
 /// connection is verified, or that make git run a command of the repository's choosing (key names
 /// are matched lower-cased).
-const PUSH_SENSITIVE_CONFIG: &str = r"^(http\.(.*\.)?(followredirects|extraheader|proxy|proxyauthmethod|pinnedpubkey|sslverify|sslcainfo|sslcapath|sslcert|sslkey|sslcertpasswordprotected|sslbackend|sslversion|sslcipherlist)|url\..*\.(insteadof|pushinsteadof)|remote\.[^.]*\.(pushurl|proxy|receivepack|uploadpack)|credential\..*|core\.(sshcommand|gitproxy)|protocol\..*)$";
+const PUSH_SENSITIVE_CONFIG: &str = r"^(http\.(.*\.)?(followredirects|extraheader|proxy|proxyauthmethod|pinnedpubkey|sslverify|sslcainfo|sslcapath|sslcert|sslkey|sslcertpasswordprotected|sslbackend|sslversion|sslcipherlist)|url\..*\.(insteadof|pushinsteadof)|remote\.[^.]*\.(pushurl|proxy|receivepack|uploadpack)|credential\..*|core\.(sshcommand|gitproxy)|protocol\.([^.]*\.)?allow)$";
 
 /// `https://host[:port]/` of an `https://` remote URL: the scope of git's per-URL
 /// `http.<url>.extraheader`. The port is part of it (git matches the authority).
@@ -1974,6 +1974,7 @@ mod tests {
             ("http.https://github.com/.sslCAInfo", "/tmp/evil.pem"),
             ("remote.origin.receivepack", "touch /tmp/pwned"),
             ("core.sshCommand", "touch /tmp/pwned"),
+            ("protocol.ext.allow", "always"),
         ] {
             git(&repo, &["config", key, value]);
             let err = manager.push_branch(&wt, "task", None).await.unwrap_err();
@@ -1983,6 +1984,8 @@ mod tests {
             );
             git(&repo, &["config", "--unset", key]);
         }
+        // Ordinary settings that do not change where or how the push goes stay allowed.
+        git(&repo, &["config", "protocol.version", "2"]);
         manager.push_branch(&wt, "task", None).await.unwrap();
     }
 
