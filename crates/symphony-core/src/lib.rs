@@ -1,11 +1,13 @@
 pub mod domain;
 pub mod error;
 pub mod redaction;
+pub mod usage;
 pub mod workflow;
 
 pub use domain::*;
 pub use error::{SymphonyError, SymphonyResult};
 pub use redaction::redact_secrets;
+pub use usage::{ReportOrigin, ThreadUsageLedger};
 pub use workflow::{
     compute_backoff_delay_ms, expand_path_value, render_continuation_prompt,
     render_workflow_prompt, resolve_env_token, AgentConfig, CodexConfig, HooksConfig,

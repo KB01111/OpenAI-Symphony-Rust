@@ -13,6 +13,7 @@ use symphony_core::domain::{
 };
 use symphony_core::error::{Result, SymphonyError};
 use symphony_core::redaction::redact_secrets;
+use symphony_core::usage::{ReportOrigin, ThreadUsageLedger};
 use symphony_workspaces::{prepare_tree_command, ProcessTree, SECRET_ENV_VARS_TO_STRIP};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
@@ -39,6 +40,10 @@ pub struct AgentLaunchConfig {
     pub extra_env: HashMap<String, String>,
     pub dynamic_tools: Vec<Value>,
     pub require_human_approval_for_requests: bool,
+    /// Absolute usage of the thread being resumed that earlier attempts already accounted for
+    /// (`Task::resume_usage_baseline`); `None` for a new thread or when it was never recorded.
+    #[serde(default)]
+    pub resume_usage_baseline: Option<TokenUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,8 +74,27 @@ pub struct TurnExecutionOutcome {
     pub error_message: Option<String>,
     /// Usage of this turn alone.
     pub usage: TokenUsage,
+    /// Absolute usage of the provider thread after this turn, for providers whose usage reports
+    /// are thread-wide totals (Codex). Persisted as the baseline for the next resume.
+    #[serde(default)]
+    pub thread_usage_total: Option<TokenUsage>,
+    /// `true` when `usage` may include usage that predates this session (see
+    /// `symphony_core::usage::ThreadUsageLedger`).
+    #[serde(default)]
+    pub usage_estimated: bool,
     pub rate_limits: Option<Value>,
     pub assistant_messages: Vec<String>,
+}
+
+/// What a session has consumed so far, readable at any time (also after a failed or interrupted
+/// turn that produced no [`TurnExecutionOutcome`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsageSnapshot {
+    /// Cumulative usage of this session since it started, never including earlier sessions.
+    pub session_usage: TokenUsage,
+    /// Absolute thread usage, for providers that report thread-wide totals.
+    pub thread_total: Option<TokenUsage>,
+    pub estimated: bool,
 }
 
 #[async_trait]
@@ -98,6 +122,7 @@ pub trait AgentSession: Send + Sync {
     fn capabilities(&self) -> ProviderCapabilities;
     fn thread_id(&self) -> Option<String>;
     fn pid(&self) -> Option<u32>;
+    fn usage_snapshot(&self) -> UsageSnapshot;
 
     async fn run_turn(
         &mut self,
@@ -212,8 +237,13 @@ pub struct CodexAppServerSession {
     stdout_rx: mpsc::Receiver<String>,
     thread_id: String,
     current_turn_id: Option<String>,
-    /// Latest absolute thread total reported by `thread/tokenUsage/updated`.
-    thread_usage: TokenUsage,
+    /// Separates the thread's historical usage from what this session adds; fed with the absolute
+    /// totals of `thread/tokenUsage/updated`.
+    usage: ThreadUsageLedger,
+    /// Session usage already handed out in earlier turn outcomes. A turn's outcome carries the
+    /// growth since then, so usage reported between turns (a replay while resuming, a late report)
+    /// lands in the next outcome instead of being lost.
+    outcome_usage_reported: TokenUsage,
     pid: Option<u32>,
     next_id: i64,
     tool_handler: Option<Arc<dyn DynamicToolHandler>>,
@@ -285,15 +315,22 @@ impl CodexAppServerSession {
 
         forward_stderr(stderr, pid, event_tx.clone());
 
+        let resume_usage_baseline = config.resume_usage_baseline;
         let mut session = Self {
             config,
             tree,
             child,
             stdin: Arc::new(Mutex::new(stdin)),
             stdout_rx,
-            thread_id: String::new(),
+            // Replayed usage during `thread/resume` already carries this id.
+            thread_id: existing_thread_id.clone().unwrap_or_default(),
             current_turn_id: None,
-            thread_usage: TokenUsage::default(),
+            usage: if existing_thread_id.is_some() {
+                ThreadUsageLedger::resumed(resume_usage_baseline)
+            } else {
+                ThreadUsageLedger::fresh()
+            },
+            outcome_usage_reported: TokenUsage::default(),
             pid,
             next_id: 1,
             tool_handler,
@@ -302,8 +339,13 @@ impl CodexAppServerSession {
 
         session.initialize_protocol(&event_tx).await?;
         let thread_id = session
-            .start_or_resume_thread(existing_thread_id, &event_tx)
+            .start_or_resume_thread(existing_thread_id.clone(), &event_tx)
             .await?;
+        if existing_thread_id.as_deref() != Some(thread_id.as_str()) {
+            // The provider answered with a different thread than the one asked for: nothing of
+            // the old thread's usage applies to it.
+            session.usage = ThreadUsageLedger::fresh();
+        }
         session.thread_id = thread_id;
 
         Ok(session)
@@ -478,6 +520,27 @@ impl CodexAppServerSession {
         }
     }
 
+    /// Feed a usage report to the ledger and return this session's cumulative usage.
+    ///
+    /// `tokenUsage.total` is the absolute usage of the whole thread, and `thread/resume` replays
+    /// the persisted total (with the id of the thread's previous turn) before any new turn runs.
+    fn observe_usage(&mut self, msg: &Value) -> Option<TokenUsage> {
+        let reported = extract_token_usage(msg)?;
+        if let Some(reported_thread) = msg.pointer("/params/threadId").and_then(Value::as_str) {
+            if !self.thread_id.is_empty() && reported_thread != self.thread_id {
+                return None;
+            }
+        }
+        let report_turn = msg.pointer("/params/turnId").and_then(Value::as_str);
+        let origin = match (report_turn, self.current_turn_id.as_deref()) {
+            (Some(report), Some(live)) if report == live => ReportOrigin::Live,
+            (Some(_), Some(_)) | (_, None) => ReportOrigin::Replay,
+            (None, Some(_)) => ReportOrigin::Live,
+        };
+        self.usage.observe(reported, origin);
+        Some(self.usage.session_usage())
+    }
+
     async fn handle_protocol_message(
         &mut self,
         msg: &Value,
@@ -493,11 +556,7 @@ impl CodexAppServerSession {
             .as_ref()
             .map(|turn_id| format!("{}-{}", self.thread_id, turn_id));
 
-        // Codex reports absolute thread totals, which are already cumulative for the session.
-        let usage = extract_token_usage(msg).map(|u| u.max(&self.thread_usage));
-        if let Some(u) = usage {
-            self.thread_usage = u;
-        }
+        let usage = self.observe_usage(msg);
         let rate_limits = extract_rate_limits(msg);
         let text_message = extract_display_message(method, &params);
 
@@ -699,12 +758,19 @@ impl AgentSession for CodexAppServerSession {
         self.pid
     }
 
+    fn usage_snapshot(&self) -> UsageSnapshot {
+        UsageSnapshot {
+            session_usage: self.usage.session_usage(),
+            thread_total: Some(self.usage.thread_total()),
+            estimated: self.usage.is_estimated(),
+        }
+    }
+
     async fn run_turn(
         &mut self,
         prompt: &str,
         event_tx: mpsc::Sender<AgentStreamEvent>,
     ) -> Result<TurnExecutionOutcome> {
-        let usage_at_turn_start = self.thread_usage;
         let req_id = self.next_id;
         self.next_id += 1;
 
@@ -792,8 +858,13 @@ impl AgentSession for CodexAppServerSession {
             })
         })
         .await;
-        // The thread total covers every earlier turn as well; the outcome reports this turn only.
-        let latest_usage = self.thread_usage.since(&usage_at_turn_start);
+        // The session usage covers every earlier turn as well; the outcome reports what was added
+        // since the previous outcome.
+        let session_usage = self.usage.session_usage();
+        let latest_usage = session_usage.since(&self.outcome_usage_reported);
+        self.outcome_usage_reported = session_usage;
+        let thread_usage_total = Some(self.usage.thread_total());
+        let usage_estimated = self.usage.is_estimated();
 
         match loop_res {
             Ok(Ok(TurnCompletionSignal::Completed)) => Ok(TurnExecutionOutcome {
@@ -805,6 +876,8 @@ impl AgentSession for CodexAppServerSession {
                 error_code: None,
                 error_message: None,
                 usage: latest_usage,
+                thread_usage_total,
+                usage_estimated,
                 rate_limits: latest_rate_limits,
                 assistant_messages,
             }),
@@ -817,6 +890,8 @@ impl AgentSession for CodexAppServerSession {
                 error_code: Some("turn_failed".into()),
                 error_message: Some(err),
                 usage: latest_usage,
+                thread_usage_total,
+                usage_estimated,
                 rate_limits: latest_rate_limits,
                 assistant_messages,
             }),
@@ -829,6 +904,8 @@ impl AgentSession for CodexAppServerSession {
                 error_code: Some("turn_cancelled".into()),
                 error_message: Some("Turn was cancelled".into()),
                 usage: latest_usage,
+                thread_usage_total,
+                usage_estimated,
                 rate_limits: latest_rate_limits,
                 assistant_messages,
             }),
@@ -1087,6 +1164,14 @@ impl AgentSession for ClaudeCodeSession {
         self.pid
     }
 
+    fn usage_snapshot(&self) -> UsageSnapshot {
+        UsageSnapshot {
+            session_usage: self.completed_usage,
+            thread_total: None,
+            estimated: false,
+        }
+    }
+
     async fn run_turn(
         &mut self,
         prompt: &str,
@@ -1198,6 +1283,8 @@ impl AgentSession for ClaudeCodeSession {
                 Some(format!("Claude Code exited with status {}", status))
             },
             usage,
+            thread_usage_total: None,
+            usage_estimated: false,
             rate_limits: None,
             assistant_messages: messages,
         })
@@ -1251,6 +1338,14 @@ impl AgentSession for OpenCodeSession {
 
     fn pid(&self) -> Option<u32> {
         self.pid
+    }
+
+    fn usage_snapshot(&self) -> UsageSnapshot {
+        UsageSnapshot {
+            session_usage: self.completed_usage,
+            thread_total: None,
+            estimated: false,
+        }
     }
 
     async fn run_turn(
@@ -1363,6 +1458,8 @@ impl AgentSession for OpenCodeSession {
                 Some(format!("OpenCode exited with status {}", status))
             },
             usage,
+            thread_usage_total: None,
+            usage_estimated: false,
             rate_limits: None,
             assistant_messages: messages,
         })
@@ -1467,6 +1564,8 @@ impl SimulatedAgentSession {
             error_code: error.as_ref().map(|(code, _)| code.to_string()),
             error_message: error.map(|(_, msg)| msg),
             usage,
+            thread_usage_total: None,
+            usage_estimated: false,
             rate_limits: if succeeded {
                 Some(json!({ "requests_remaining": 999 }))
             } else {
@@ -1493,6 +1592,14 @@ impl AgentSession for SimulatedAgentSession {
 
     fn pid(&self) -> Option<u32> {
         Some(std::process::id())
+    }
+
+    fn usage_snapshot(&self) -> UsageSnapshot {
+        UsageSnapshot {
+            session_usage: self.completed_usage,
+            thread_total: None,
+            estimated: false,
+        }
     }
 
     async fn run_turn(

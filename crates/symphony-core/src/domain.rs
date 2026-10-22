@@ -497,6 +497,14 @@ pub struct Task {
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub estimated_cost_usd: f64,
+    /// Absolute usage of the provider thread (`current_thread_id`) that earlier attempts already
+    /// accounted for: the baseline a resumed thread's cumulative reports are measured against.
+    #[serde(default)]
+    pub thread_usage: Option<ThreadUsageMark>,
+    /// `true` when part of the token totals could not be measured exactly (the provider did not
+    /// expose enough information to separate this task's usage from a resumed thread's history).
+    #[serde(default)]
+    pub usage_estimated: bool,
     pub duration_seconds: f64,
     pub last_error: Option<String>,
     pub next_retry_at: Option<DateTime<Utc>>,
@@ -506,7 +514,24 @@ pub struct Task {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+/// Absolute token usage of one provider thread, as last accounted for by Symphony.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ThreadUsageMark {
+    pub thread_id: String,
+    pub usage: TokenUsage,
+}
+
 impl Task {
+    /// The accounted usage of the thread this task would resume, if it was recorded for that
+    /// very thread (a mark for another thread says nothing about the current one).
+    pub fn resume_usage_baseline(&self) -> Option<TokenUsage> {
+        let thread_id = self.current_thread_id.as_deref()?;
+        self.thread_usage
+            .as_ref()
+            .filter(|mark| mark.thread_id == thread_id)
+            .map(|mark| mark.usage)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new_manual(
         project_id: String,
@@ -557,6 +582,8 @@ impl Task {
             output_tokens: 0,
             total_tokens: 0,
             estimated_cost_usd: 0.0,
+            thread_usage: None,
+            usage_estimated: false,
             duration_seconds: 0.0,
             last_error: None,
             next_retry_at: None,
@@ -601,6 +628,9 @@ pub struct RunAttempt {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    /// `true` when this attempt's token usage is an estimate (see `Task::usage_estimated`).
+    #[serde(default)]
+    pub usage_estimated: bool,
 }
 
 /// Live session metadata tracked while an agent subprocess is active (SPEC.md Section 4.1.6)

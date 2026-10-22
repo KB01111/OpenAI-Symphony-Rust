@@ -4106,7 +4106,8 @@
           "error",
           "input_tokens",
           "output_tokens",
-          "total_tokens"
+          "total_tokens",
+          "usage_estimated"
         ],
         "properties": {
           "id": {
@@ -4192,6 +4193,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "usage_estimated": {
+            "type": "boolean",
+            "description": "`true` when this attempt's token usage is an estimate (see `Task::usage_estimated`)."
           }
         }
       },
@@ -4516,6 +4521,8 @@
           "output_tokens",
           "total_tokens",
           "estimated_cost_usd",
+          "thread_usage",
+          "usage_estimated",
           "duration_seconds",
           "last_error",
           "next_retry_at",
@@ -4623,6 +4630,21 @@
           "estimated_cost_usd": {
             "type": "number",
             "format": "double"
+          },
+          "thread_usage": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThreadUsageMark",
+                "description": "Absolute usage of the provider thread (`current_thread_id`) that earlier attempts already\naccounted for: the baseline a resumed thread's cumulative reports are measured against."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage_estimated": {
+            "type": "boolean",
+            "description": "`true` when part of the token totals could not be measured exactly (the provider did not\nexpose enough information to separate this task's usage from a resumed thread's history)."
           },
           "duration_seconds": {
             "type": "number",
@@ -4733,6 +4755,22 @@
           "dark",
           "light"
         ]
+      },
+      "ThreadUsageMark": {
+        "type": "object",
+        "description": "Absolute token usage of one provider thread, as last accounted for by Symphony.",
+        "required": [
+          "thread_id",
+          "usage"
+        ],
+        "properties": {
+          "thread_id": {
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/TokenUsage"
+          }
+        }
       },
       "TokenUsage": {
         "type": "object",

@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use symphony_agents::{
-    detect_provider_statuses, start_agent_session, AgentLaunchConfig, AgentStreamEvent,
-    ApprovalGate, DynamicToolHandler,
+    detect_provider_statuses, start_agent_session, AgentLaunchConfig, AgentSession,
+    AgentStreamEvent, ApprovalGate, DynamicToolHandler,
 };
 use symphony_core::{
     compute_backoff_delay_ms, redact_secrets, render_continuation_prompt, render_workflow_prompt,
@@ -18,7 +18,7 @@ use symphony_core::{
     OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus, PullRequestReview,
     RepositoryValidation, RetryEntry, RunAttempt, RunAttemptPhase, RunningSessionSummary,
     ServiceConfig, StateCounts, SymphonyError, SymphonyResult, Task, TaskDiff, TaskStatus,
-    TokenUsage, ValidationResult, WorkflowDefinition, WorktreeInfo,
+    ThreadUsageMark, TokenUsage, ValidationResult, WorkflowDefinition, WorktreeInfo,
 };
 use symphony_platform::{HardwareMonitor, SecretStore};
 
@@ -119,6 +119,71 @@ pub struct ProjectUpdate {
     #[schema(minimum = 1, maximum = 32)]
     pub max_concurrent_agents: Option<u32>,
     pub validation_commands: Option<Vec<String>>,
+}
+
+/// Tokens an attempt has recorded so far.
+fn attempt_usage(attempt: &RunAttempt) -> TokenUsage {
+    TokenUsage {
+        input_tokens: attempt.input_tokens,
+        output_tokens: attempt.output_tokens,
+        total_tokens: attempt.total_tokens,
+    }
+}
+
+/// Add usage to a task and to the attempt that consumed it.
+fn record_usage(task: &mut Task, attempt: &mut RunAttempt, delta: &TokenUsage) {
+    task.input_tokens = task.input_tokens.saturating_add(delta.input_tokens);
+    task.output_tokens = task.output_tokens.saturating_add(delta.output_tokens);
+    task.total_tokens = task.total_tokens.saturating_add(delta.total_tokens);
+    task.estimated_cost_usd += delta.estimate_cost_usd(task.model.as_deref());
+    attempt.input_tokens = attempt.input_tokens.saturating_add(delta.input_tokens);
+    attempt.output_tokens = attempt.output_tokens.saturating_add(delta.output_tokens);
+    attempt.total_tokens = attempt.total_tokens.saturating_add(delta.total_tokens);
+}
+
+/// Remember the absolute usage of the provider thread (the baseline for resuming it) and carry
+/// an "estimated" measurement over to the task and the attempt.
+fn record_thread_usage(
+    task: &mut Task,
+    attempt: &mut RunAttempt,
+    thread_id: &str,
+    thread_total: Option<TokenUsage>,
+    estimated: bool,
+) {
+    if let Some(usage) = thread_total {
+        task.thread_usage = Some(ThreadUsageMark {
+            thread_id: thread_id.to_string(),
+            usage,
+        });
+    }
+    if estimated {
+        task.usage_estimated = true;
+        attempt.usage_estimated = true;
+    }
+}
+
+/// Account for usage a session consumed that no completed turn reported (a turn that timed out,
+/// crashed or was interrupted): everything beyond what the attempt already recorded.
+fn settle_session_usage(task: &mut Task, attempt: &mut RunAttempt, session: &dyn AgentSession) {
+    let snapshot = session.usage_snapshot();
+    let unreported = snapshot.session_usage.since(&attempt_usage(attempt));
+    if unreported != TokenUsage::default() {
+        record_usage(task, attempt, &unreported);
+    }
+    match session.thread_id() {
+        Some(thread_id) => record_thread_usage(
+            task,
+            attempt,
+            &thread_id,
+            snapshot.thread_total,
+            snapshot.estimated,
+        ),
+        None if snapshot.estimated => {
+            task.usage_estimated = true;
+            attempt.usage_estimated = true;
+        }
+        None => {}
+    }
 }
 
 struct ActiveWorkerHandle {
@@ -1716,6 +1781,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     output_tokens: 0,
                     total_tokens: 0,
                     estimated_cost_usd: 0.0,
+                    thread_usage: None,
+                    usage_estimated: false,
                     duration_seconds: 0.0,
                     last_error: None,
                     next_retry_at: None,
@@ -2173,6 +2240,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
+            usage_estimated: false,
         };
         let _ = self.storage.upsert_run_attempt(&attempt_record).await;
 
@@ -2339,6 +2407,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             extra_env: self.provider_env_from_vault(),
             dynamic_tools,
             require_human_approval_for_requests: config.codex.approval_policy != json!("never"),
+            resume_usage_baseline: task.resume_usage_baseline(),
         };
 
         let (stream_tx, mut stream_rx) = mpsc::channel::<AgentStreamEvent>(512);
@@ -2438,6 +2507,22 @@ Please implement the requested changes cleanly in the current Git workspace, run
             let outcome_res = tokio::select! {
                 res = agent_session.run_turn(&prompt, stream_tx.clone()) => res,
                 cancel_res = &mut cancel_rx => {
+                    // The turn was interrupted from outside: settle what it consumed. The worker's
+                    // task copy is stale (the stopping side owns the row), so only the usage is
+                    // added, atomically.
+                    let recorded = attempt_usage(&attempt_record);
+                    settle_session_usage(&mut task, &mut attempt_record, agent_session.as_ref());
+                    let settled = attempt_usage(&attempt_record).since(&recorded);
+                    let _ = self
+                        .storage
+                        .add_task_usage(
+                            &task.id,
+                            &settled,
+                            settled.estimate_cost_usd(task.model.as_deref()),
+                            attempt_record.usage_estimated,
+                            task.thread_usage.as_ref(),
+                        )
+                        .await;
                     let _ = agent_session.cancel().await;
                     let reason = cancel_res.unwrap_or_else(|_| "cancelled".to_string());
                     self.finish_externally_stopped_attempt(&mut attempt_record, &reason).await;
@@ -2450,23 +2535,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     task.current_thread_id = Some(outcome.thread_id.clone());
                     task.current_turn_id = Some(outcome.turn_id.clone());
                     task.current_session_id = Some(outcome.session_id.clone());
-                    task.input_tokens =
-                        task.input_tokens.saturating_add(outcome.usage.input_tokens);
-                    task.output_tokens = task
-                        .output_tokens
-                        .saturating_add(outcome.usage.output_tokens);
-                    task.total_tokens =
-                        task.total_tokens.saturating_add(outcome.usage.total_tokens);
-                    task.estimated_cost_usd +=
-                        outcome.usage.estimate_cost_usd(task.model.as_deref());
+                    record_usage(&mut task, &mut attempt_record, &outcome.usage);
+                    record_thread_usage(
+                        &mut task,
+                        &mut attempt_record,
+                        &outcome.thread_id,
+                        outcome.thread_usage_total,
+                        outcome.usage_estimated,
+                    );
                     let _ = self.storage.upsert_task(&task).await;
 
                     attempt_record.session_id = Some(outcome.session_id.clone());
                     attempt_record.thread_id = Some(outcome.thread_id.clone());
                     attempt_record.turn_id = Some(outcome.turn_id.clone());
-                    attempt_record.input_tokens += outcome.usage.input_tokens;
-                    attempt_record.output_tokens += outcome.usage.output_tokens;
-                    attempt_record.total_tokens += outcome.usage.total_tokens;
                     let _ = self.storage.upsert_run_attempt(&attempt_record).await;
 
                     if outcome.cancelled {
@@ -2509,6 +2590,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     }
                 }
                 Err(err) => {
+                    // The turn ended without an outcome (timeout, dead process): what the session
+                    // reported before that is still real usage.
+                    settle_session_usage(&mut task, &mut attempt_record, agent_session.as_ref());
                     let _ = agent_session.stop().await;
                     let phase = match err {
                         SymphonyError::TurnTimeout(_) => RunAttemptPhase::TimedOut,
@@ -3059,6 +3143,286 @@ mod tests {
             Utc::now() - chrono::Duration::seconds(1);
     }
 
+    /// Scripted Codex app-server for the usage tests. Behaviour comes from its arguments:
+    /// `<replay> <reports> <end>`, each a `input:output` list (comma separated) or `-`/`die`/`hang`.
+    const USAGE_MOCK_CODEX: &str = r#"
+const readline = require('readline');
+const [replayArg, reportsArg, end] = process.argv.slice(2);
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+const send = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+const pairs = (v) => (v && v !== '-' ? v.split(',').map((p) => p.split(':').map(Number)) : []);
+const note = (thread, turn, [i, o]) => send({ method: 'thread/tokenUsage/updated', params: {
+  threadId: thread, turnId: turn, tokenUsage: {
+    total: { inputTokens: i, outputTokens: o, totalTokens: i + o },
+    last: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } } } });
+let thread = 'thread_1';
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  const msg = JSON.parse(line);
+  if (msg.method === 'initialize') send({ id: msg.id, result: { userAgent: 'mock' } });
+  else if (msg.method === 'thread/start' || msg.method === 'thread/resume') {
+    thread = (msg.params && msg.params.threadId) || 'thread_1';
+    pairs(replayArg).forEach((p) => note(thread, 'turn_prev', p));
+    send({ id: msg.id, result: { thread: { id: thread } } });
+  } else if (msg.method === 'turn/start') {
+    send({ id: msg.id, result: { turn: { id: 'turn_new' } } });
+    pairs(reportsArg).forEach((p) => note(thread, 'turn_new', p));
+    if (end === 'die') process.exit(3);
+    if (end === 'hang') return;
+    send({ method: 'turn/completed', params: { turnId: 'turn_new' } });
+  }
+});
+"#;
+
+    /// A Codex task that already ran once (thread `thread_1`, 1000 + 500 tokens accounted for) and
+    /// waits to be dispatched again; `args` select the scripted app-server's behaviour.
+    async fn resumed_codex_task(
+        temp: &TempDir,
+        storage: Storage,
+        args: &str,
+        baseline: Option<TokenUsage>,
+    ) -> (SymphonyOrchestrator, Task) {
+        let repo_dir = temp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        for git_args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "test@symphony.local"],
+            vec!["config", "user.name", "Symphony Test"],
+            vec!["commit", "--allow-empty", "-m", "initial"],
+        ] {
+            std::process::Command::new("git")
+                .args(git_args)
+                .current_dir(&repo_dir)
+                .output()
+                .unwrap();
+        }
+        let script = temp.path().join("mock_codex.js");
+        std::fs::write(&script, USAGE_MOCK_CODEX).unwrap();
+
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        let orch = SymphonyOrchestrator::new(storage.clone(), None, secrets)
+            .await
+            .unwrap();
+        orch.memory.write().await.active_config.codex.command =
+            format!("node \"{}\" {args}", script.display());
+        orch.create_project(Project {
+            id: "proj-usage".into(),
+            name: "Usage".into(),
+            repo_path: repo_dir.to_string_lossy().to_string(),
+            default_branch: "main".into(),
+            workspace_root: temp.path().join("workspaces").to_string_lossy().to_string(),
+            workflow_path: None,
+            preferred_provider: ProviderKind::Codex,
+            preferred_model: None,
+            tracker_kind: "manual".into(),
+            github_repo: None,
+            linear_project_slug: None,
+            required_labels: Vec::new(),
+            auto_dispatch: false,
+            max_concurrent_agents: 1,
+            validation_commands: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+        let mut task = orch
+            .create_manual_task(
+                "proj-usage".into(),
+                Some("SYM-USAGE".into()),
+                "Resumed usage".into(),
+                None,
+                Some(1),
+                Some(ProviderKind::Codex),
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .unwrap();
+        // State left by an earlier attempt: its thread and the usage already accounted for.
+        task.status = TaskStatus::Failed;
+        task.current_thread_id = Some("thread_1".into());
+        task.input_tokens = 1000;
+        task.output_tokens = 500;
+        task.total_tokens = 1500;
+        task.thread_usage = baseline.map(|usage| ThreadUsageMark {
+            thread_id: "thread_1".into(),
+            usage,
+        });
+        storage.upsert_task(&task).await.unwrap();
+        (orch, task)
+    }
+
+    fn usage_of(input: u64, output: u64) -> TokenUsage {
+        TokenUsage {
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: input + output,
+        }
+    }
+
+    async fn wait_for_status(
+        orch: &SymphonyOrchestrator,
+        task_id: &str,
+        wanted: &[TaskStatus],
+    ) -> Task {
+        for _ in 0..300 {
+            let t = orch.get_task(task_id).await.unwrap();
+            if wanted.contains(&t.status)
+                && (t.status == TaskStatus::HumanReview || t.current_session_id.is_none())
+            {
+                return t;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("task never reached {wanted:?}");
+    }
+
+    async fn live_total(orch: &SymphonyOrchestrator, expected: u64) -> u64 {
+        let mut total = 0;
+        for _ in 0..100 {
+            total = orch
+                .state_snapshot()
+                .await
+                .unwrap()
+                .codex_totals
+                .total_tokens;
+            if total == expected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        total
+    }
+
+    #[tokio::test]
+    async fn test_resumed_codex_thread_is_not_charged_for_its_history() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect_in_memory().await.unwrap();
+        // The thread replays its 1000 + 500 on resume, then this attempt adds 400 + 150.
+        let (orch, task) = resumed_codex_task(
+            &temp,
+            storage,
+            "1000:500 1000:500,1400:650 -",
+            Some(usage_of(1000, 500)),
+        )
+        .await;
+
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        let done = wait_for_status(&orch, &task.id, &[TaskStatus::HumanReview]).await;
+
+        assert_eq!(
+            done.total_tokens,
+            1500 + 550,
+            "task counts only the new usage"
+        );
+        assert_eq!(done.input_tokens, 1400);
+        assert_eq!(done.output_tokens, 650);
+        assert_eq!(done.thread_usage.unwrap().usage, usage_of(1400, 650));
+        assert!(!done.usage_estimated);
+        let attempts = orch.storage.list_run_attempts(&task.id).await.unwrap();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].total_tokens, 550);
+        // The live runtime totals took the same path: the replayed history was not credited.
+        assert_eq!(live_total(&orch, 550).await, 550);
+    }
+
+    #[tokio::test]
+    async fn test_resumed_codex_thread_without_a_baseline_and_replay_is_flagged_estimated() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect_in_memory().await.unwrap();
+        // A task stored by an older version (no baseline) on an app-server that does not replay.
+        let (orch, task) = resumed_codex_task(&temp, storage, "- 1400:650 -", None).await;
+
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        let done = wait_for_status(&orch, &task.id, &[TaskStatus::HumanReview]).await;
+
+        assert!(
+            done.usage_estimated,
+            "history cannot be told apart: not an exact figure"
+        );
+        let attempts = orch.storage.list_run_attempts(&task.id).await.unwrap();
+        assert!(attempts[0].usage_estimated);
+        // The thread total is still recorded, so the next resume is exact again.
+        assert_eq!(done.thread_usage.unwrap().usage, usage_of(1400, 650));
+    }
+
+    #[tokio::test]
+    async fn test_usage_before_a_crashed_turn_is_settled_and_the_baseline_advances() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect_in_memory().await.unwrap();
+        // The app-server reports 150 + 40 of new usage and dies without finishing the turn.
+        let (orch, task) = resumed_codex_task(
+            &temp,
+            storage,
+            "1000:500 1100:520,1150:540 die",
+            Some(usage_of(1000, 500)),
+        )
+        .await;
+
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        let failed = wait_for_status(&orch, &task.id, &[TaskStatus::Failed]).await;
+
+        assert_eq!(
+            failed.total_tokens,
+            1500 + 190,
+            "usage of the crashed turn is not lost"
+        );
+        assert_eq!(failed.thread_usage.unwrap().usage, usage_of(1150, 540));
+        let attempts = orch.storage.list_run_attempts(&task.id).await.unwrap();
+        assert_eq!(attempts[0].total_tokens, 190);
+        assert_eq!(live_total(&orch, 190).await, 190);
+    }
+
+    #[tokio::test]
+    async fn test_usage_of_an_interrupted_turn_is_settled_without_overwriting_the_new_status() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect_in_memory().await.unwrap();
+        // The turn reports 80 + 20 and then hangs until the operator cancels the task.
+        let (orch, task) = resumed_codex_task(
+            &temp,
+            storage,
+            "1000:500 1050:520,1080:520 hang",
+            Some(usage_of(1000, 500)),
+        )
+        .await;
+
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        // Wait until the usage has reached the session before cancelling.
+        for _ in 0..200 {
+            let live = orch
+                .state_snapshot()
+                .await
+                .unwrap()
+                .codex_totals
+                .total_tokens;
+            if live == 100 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        orch.cancel_task(&task.id, "operator").await.unwrap();
+        let cancelled = wait_for_status(&orch, &task.id, &[TaskStatus::Cancelled]).await;
+
+        // Settling happens on the worker's side; give it a moment to land.
+        let mut settled = cancelled;
+        for _ in 0..100 {
+            settled = orch.get_task(&task.id).await.unwrap();
+            if settled.total_tokens == 1600 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            settled.status,
+            TaskStatus::Cancelled,
+            "the cancellation stays authoritative"
+        );
+        assert_eq!(settled.total_tokens, 1500 + 100);
+        assert_eq!(settled.thread_usage.unwrap().usage, usage_of(1080, 520));
+    }
+
     #[tokio::test]
     async fn test_retry_backoff_is_not_bypassed_by_candidate_selection() {
         let temp = TempDir::new().unwrap();
@@ -3427,6 +3791,7 @@ rl.on('line', (line) => {
             extra_env: HashMap::new(),
             dynamic_tools: Vec::new(),
             require_human_approval_for_requests: false,
+            resume_usage_baseline: None,
         };
 
         struct AutoApprove;

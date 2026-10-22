@@ -588,6 +588,10 @@ export type RunAttempt = {
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
+    /**
+     * `true` when this attempt's token usage is an estimate (see `Task::usage_estimated`).
+     */
+    usage_estimated: boolean;
 };
 
 /**
@@ -696,6 +700,12 @@ export type Task = {
     output_tokens: number;
     total_tokens: number;
     estimated_cost_usd: number;
+    thread_usage: ThreadUsageMark | null;
+    /**
+     * `true` when part of the token totals could not be measured exactly (the provider did not
+     * expose enough information to separate this task's usage from a resumed thread's history).
+     */
+    usage_estimated: boolean;
     duration_seconds: number;
     last_error: string | null;
     next_retry_at: string | null;
@@ -728,6 +738,14 @@ export type TaskStatus = 'backlog' | 'ready' | 'queued' | 'running' | 'blocked' 
  * stored as a string and validated by the API layer.
  */
 export type ThemePreference = 'system' | 'dark' | 'light';
+
+/**
+ * Absolute token usage of one provider thread, as last accounted for by Symphony.
+ */
+export type ThreadUsageMark = {
+    thread_id: string;
+    usage: TokenUsage;
+};
 
 /**
  * Token usage report

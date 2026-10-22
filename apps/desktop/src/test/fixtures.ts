@@ -73,6 +73,8 @@ export function task(overrides: Partial<Task> & { identifier?: string; title?: s
     output_tokens: 0,
     total_tokens: 0,
     estimated_cost_usd: 0,
+    thread_usage: null,
+    usage_estimated: false,
     duration_seconds: 0,
     last_error: null,
     next_retry_at: null,

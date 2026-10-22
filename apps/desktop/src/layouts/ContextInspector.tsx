@@ -78,7 +78,14 @@ const TaskInspector: React.FC<{ id: string }> = ({ id }) => {
           { label: m.inspector.branch, value: t.branch_name, mono: true },
           { label: m.inspector.workspace, value: t.workspace_path, mono: true },
           { label: m.inspector.attempts, value: t.attempt_count },
-          { label: m.inspector.tokens, value: formatTokens(t.total_tokens, locale) },
+          {
+            label: m.inspector.tokens,
+            value: t.usage_estimated ? (
+              <span title={m.inspector.tokensEstimated}>≈ {formatTokens(t.total_tokens, locale)}</span>
+            ) : (
+              formatTokens(t.total_tokens, locale)
+            )
+          },
           { label: m.inspector.cost, value: formatCurrency(t.estimated_cost_usd, locale) },
           { label: m.inspector.duration, value: formatDuration(t.duration_seconds, getTranslations(locale)) },
           { label: m.inspector.status, value: <TimeAgo iso={t.updated_at} /> }
