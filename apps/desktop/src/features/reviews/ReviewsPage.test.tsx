@@ -14,6 +14,12 @@ function runtimeWith(reviews: PullRequestReview[]) {
       const review = store.get(decodeURIComponent(path.split("/")[2]!));
       return review ?? { status: 404, body: { error: { code: "not_found", message: "not_found: pull request" } } };
     },
+    "POST /prs/:id/create-pull-request": ({ path }) => {
+      const id = decodeURIComponent(path.split("/")[2]!);
+      const opened = { ...store.get(id)!, pr_number: 42, url: "https://github.com/acme/widgets/pull/42", ci_status: "unknown" };
+      store.set(id, opened);
+      return opened;
+    },
     "POST /prs/:id/approve-merge": ({ path }) => {
       const id = decodeURIComponent(path.split("/")[2]!);
       const approved = { ...store.get(id)!, human_approved: true };
@@ -58,6 +64,57 @@ describe("ReviewsPage", () => {
     expect(item).toContain("No remote CI");
     expect(item).not.toContain("#0");
     expect(item).not.toMatch(/CI: (none|passed)/);
+  });
+
+  it("creates the pull request only after an explicit confirmation, exactly once", async () => {
+    const local = pullRequest({ id: "pr-local", pr_number: 0, ci_status: "none", title: "Local branch only", branch_name: "symphony/sym-9", base_branch: "main" });
+    const runtime = runtimeWith([local]);
+    renderWithProviders(<ReviewsPage />, { runtime, route: "/reviews/pr-local", path: "/reviews/:reviewId" });
+    fireEvent.click(await screen.findByRole("button", { name: "Create pull request" }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/commits the worktree's changes to branch symphony\/sym-9/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Nothing is merged/)).toBeInTheDocument();
+    expect(runtime.calls.filter((c) => c.method === "POST")).toHaveLength(0);
+
+    const confirm = await within(dialog).findByRole("button", { name: "Create pull request" });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(runtime.calls.filter((c) => c.method === "POST")).toEqual([
+      { method: "POST", path: "/prs/pr-local/create-pull-request", body: undefined }
+    ]);
+    // The review now links the real pull request, and the action is gone.
+    expect(await screen.findByRole("link", { name: /github.com\/acme\/widgets\/pull\/42/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create pull request" })).not.toBeInTheDocument();
+  });
+
+  it("blocks creating a pull request while the branch conflicts or has security warnings", async () => {
+    const conflicted = pullRequest({ id: "pr-conflict", pr_number: 0, ci_status: "none", has_conflicts: true, mergeable: false, title: "Conflicted" });
+    renderWithProviders(<ReviewsPage />, { runtime: runtimeWith([conflicted]), route: "/reviews/pr-conflict", path: "/reviews/:reviewId" });
+    const button = await screen.findByRole("button", { name: "Create pull request" });
+    expect(button).toBeDisabled();
+    expect(screen.getAllByText(/Resolve the merge conflicts/).length).toBeGreaterThan(0);
+  });
+
+  it("surfaces a refused pull request instead of pretending it worked", async () => {
+    const local = pullRequest({ id: "pr-local", pr_number: 0, ci_status: "none", title: "Local branch only" });
+    const runtime = createMockRuntime({
+      "GET /projects": () => [project()],
+      "GET /prs": () => [local],
+      "GET /prs/:id": () => local,
+      "POST /prs/:id/create-pull-request": () => ({
+        status: 400,
+        body: { error: { code: "invalid_config", message: "invalid_config: no GitHub token is configured" } }
+      })
+    });
+    renderWithProviders(<ReviewsPage />, { runtime, route: "/reviews/pr-local", path: "/reviews/:reviewId" });
+    fireEvent.click(await screen.findByRole("button", { name: "Create pull request" }));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Create pull request" }));
+    expect(await screen.findByText(/no GitHub token is configured/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Create pull request" })).toBeInTheDocument();
   });
 
   it("lists reviews newest first and filters them", async () => {

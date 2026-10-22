@@ -229,6 +229,8 @@ async fn sensitive_endpoints_are_forbidden_to_remote_clients() {
             Some(serde_json::to_value(AppSettings::default()).unwrap()),
         ),
         (Method::GET, "/diagnostics/export", None),
+        (Method::POST, "/prs/pr-1/create-pull-request", None),
+        (Method::POST, "/prs/pr-1/approve-merge", None),
         (Method::GET, "/backups", None),
         (Method::POST, "/backups", None),
         (Method::GET, "/providers", None),

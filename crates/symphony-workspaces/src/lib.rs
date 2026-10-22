@@ -25,6 +25,48 @@ pub const SECRET_ENV_VARS_TO_STRIP: &[&str] = &[
 
 const MAX_UNTRACKED_DIFF_FILES: usize = 200;
 
+/// An empty directory used as `core.hooksPath`, so no repository hook can run during a git command
+/// that Symphony issues on the user's behalf. Removed on drop.
+struct SafeHooksDir(PathBuf);
+
+impl SafeHooksDir {
+    fn new() -> SymphonyResult<Self> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let dir =
+            std::env::temp_dir().join(format!("symphony-no-hooks-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self(dir))
+    }
+
+    /// `-c` options that turn hooks and the fsmonitor hook off.
+    fn config_args(&self) -> Vec<String> {
+        vec![
+            "-c".into(),
+            format!("core.hooksPath={}", self.0.display()),
+            "-c".into(),
+            "core.fsmonitor=false".into(),
+        ]
+    }
+}
+
+impl Drop for SafeHooksDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// `https://host/` of an `https://` remote URL, the scope of git's per-URL `http.<url>.extraheader`.
+fn https_origin(remote: &str) -> Option<String> {
+    let url = url::Url::parse(remote).ok()?;
+    if url.scheme() != "https" {
+        return None;
+    }
+    Some(format!("https://{}/", url.host_str()?))
+}
+
 /// Result of simulating a merge of a worktree into its base branch ([`WorkspaceManager::check_mergeability`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeCheck {
@@ -752,6 +794,173 @@ impl WorkspaceManager {
         }
     }
 
+    /// Commit every change in the worktree (untracked files included, `.gitignore` honoured) to
+    /// `branch`, which must be the branch the worktree has checked out. Returns the new commit, or
+    /// `None` when there was nothing to commit. Repository hooks and `core.fsmonitor` never run:
+    /// the worktree is the agent's, and a commit made on the user's behalf must not execute what the
+    /// agent left behind.
+    pub async fn commit_changes(
+        &self,
+        workspace_path: &Path,
+        branch: &str,
+        message: &str,
+    ) -> SymphonyResult<Option<String>> {
+        let hooks = SafeHooksDir::new()?;
+        let current = Self::git_checked(
+            workspace_path,
+            &hooks,
+            &[],
+            &["rev-parse", "--abbrev-ref", "HEAD"],
+        )
+        .await?
+        .trim()
+        .to_string();
+        if current != branch {
+            return Err(SymphonyError::Conflict(format!(
+                "the worktree has `{current}` checked out, not the task branch `{branch}`"
+            )));
+        }
+        Self::git_checked(workspace_path, &hooks, &[], &["add", "-A"]).await?;
+        let staged = git_command()
+            .arg("-C")
+            .arg(workspace_path)
+            .args(hooks.config_args())
+            .args(["diff", "--cached", "--quiet"])
+            .stdin(Stdio::null())
+            .status()
+            .await
+            .map_err(|e| SymphonyError::GitWorktreeError(format!("could not run git: {e}")))?;
+        match staged.code() {
+            Some(0) => return Ok(None),
+            Some(1) => {}
+            other => {
+                return Err(SymphonyError::GitWorktreeError(format!(
+                    "git diff --cached failed ({other:?})"
+                )))
+            }
+        }
+        // Commit under the user's own identity when git knows one, else under a neutral one.
+        let has_identity = git_stdout(workspace_path, &["config", "user.email"])
+            .await
+            .map(|e| !e.trim().is_empty())
+            .unwrap_or(false);
+        let identity: Vec<(&str, &str)> = if has_identity {
+            Vec::new()
+        } else {
+            vec![
+                ("GIT_AUTHOR_NAME", "Symphony Desktop"),
+                ("GIT_AUTHOR_EMAIL", "symphony@localhost"),
+                ("GIT_COMMITTER_NAME", "Symphony Desktop"),
+                ("GIT_COMMITTER_EMAIL", "symphony@localhost"),
+            ]
+        };
+        Self::git_checked(
+            workspace_path,
+            &hooks,
+            &identity,
+            &["commit", "--no-verify", "--no-gpg-sign", "-m", message],
+        )
+        .await?;
+        let sha = Self::git_checked(workspace_path, &hooks, &[], &["rev-parse", "HEAD"]).await?;
+        Ok(Some(sha.trim().to_string()))
+    }
+
+    /// Push `branch` to `origin` (never forced). `token` authenticates an `https://` remote for
+    /// this one command through git's environment-based configuration: it is not written to any
+    /// config file and does not appear on the command line.
+    pub async fn push_branch(
+        &self,
+        workspace_path: &Path,
+        branch: &str,
+        token: Option<&str>,
+    ) -> SymphonyResult<()> {
+        if branch.is_empty() || branch.starts_with('-') || branch.contains(char::is_whitespace) {
+            return Err(SymphonyError::GitWorktreeError(format!(
+                "`{branch}` is not a branch name that can be pushed"
+            )));
+        }
+        let hooks = SafeHooksDir::new()?;
+        let remote = Self::git_checked(
+            workspace_path,
+            &hooks,
+            &[],
+            &["remote", "get-url", "origin"],
+        )
+        .await
+        .map_err(|_| {
+            SymphonyError::Conflict("the repository has no `origin` remote to push to".into())
+        })?
+        .trim()
+        .to_string();
+        let mut env: Vec<(String, String)> = Vec::new();
+        if let (Some(token), Some(base)) = (token, https_origin(&remote)) {
+            use base64::Engine;
+            let credentials =
+                base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+            env.push(("GIT_CONFIG_COUNT".into(), "1".into()));
+            env.push((
+                "GIT_CONFIG_KEY_0".into(),
+                format!("http.{base}.extraheader"),
+            ));
+            env.push((
+                "GIT_CONFIG_VALUE_0".into(),
+                format!("AUTHORIZATION: basic {credentials}"),
+            ));
+        }
+        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+        let env_refs: Vec<(&str, &str)> =
+            env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        Self::git_checked(
+            workspace_path,
+            &hooks,
+            &env_refs,
+            &["push", "--no-verify", "origin", &refspec],
+        )
+        .await
+        .map(drop)
+        .map_err(|e| match (e, token) {
+            // Never echo the token, whatever git printed.
+            (SymphonyError::GitWorktreeError(msg), Some(t)) => {
+                SymphonyError::GitWorktreeError(msg.replace(t, "[REDACTED]"))
+            }
+            (other, _) => other,
+        })
+    }
+
+    /// Run git in `cwd` with hooks and fsmonitor disabled; Ok(stdout) on success.
+    async fn git_checked(
+        cwd: &Path,
+        hooks: &SafeHooksDir,
+        env: &[(&str, &str)],
+        args: &[&str],
+    ) -> SymphonyResult<String> {
+        let mut cmd = git_command();
+        cmd.arg("-C")
+            .arg(cwd)
+            .args(hooks.config_args())
+            .args(args)
+            .stdin(Stdio::null())
+            // Never block on a credential prompt: a missing credential is an error.
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GCM_INTERACTIVE", "never");
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        let out = cmd
+            .output()
+            .await
+            .map_err(|e| SymphonyError::GitWorktreeError(format!("could not run git: {e}")))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            Err(SymphonyError::GitWorktreeError(format!(
+                "git {} failed: {}",
+                args.first().copied().unwrap_or(""),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )))
+        }
+    }
+
     /// Safely remove a workspace directory and detach its Git worktree registration.
     /// If `force` is false and the worktree has uncommitted user work, refuses deletion.
     pub async fn cleanup_workspace(
@@ -1224,5 +1433,174 @@ mod tests {
                 .await,
             MergeCheck::Unavailable(_)
         ));
+    }
+
+    /// `repo_with_worktree` plus a bare `origin` the repository pushes to.
+    fn repo_with_origin(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let (repo, wt) = repo_with_worktree(root);
+        let origin = root.join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "--bare", "-b", "main"]);
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        (repo, wt, origin)
+    }
+
+    #[tokio::test]
+    async fn commit_changes_commits_everything_once() {
+        let dir = tempdir().unwrap();
+        let (_repo, wt) = repo_with_worktree(dir.path());
+        let manager = WorkspaceManager::new();
+        assert_eq!(
+            manager
+                .commit_changes(&wt, "task", "nothing")
+                .await
+                .unwrap(),
+            None
+        );
+
+        std::fs::write(wt.join("file.txt"), "one\nchanged\nthree\n").unwrap();
+        std::fs::write(wt.join("new.txt"), "new\n").unwrap();
+        let sha = manager
+            .commit_changes(&wt, "task", "SYM-1: Implement")
+            .await
+            .unwrap()
+            .expect("a commit");
+        let head = git_stdout(&wt, &["rev-parse", "HEAD"]).await.unwrap();
+        assert_eq!(head.trim(), sha);
+        let files = git_stdout(&wt, &["show", "--name-only", "--format=%s", "HEAD"])
+            .await
+            .unwrap();
+        assert!(files.starts_with("SYM-1: Implement"), "{files}");
+        assert!(
+            files.contains("file.txt") && files.contains("new.txt"),
+            "{files}"
+        );
+        // A second call finds nothing left.
+        assert_eq!(
+            manager.commit_changes(&wt, "task", "again").await.unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_changes_refuses_another_branch() {
+        let dir = tempdir().unwrap();
+        let (_repo, wt) = repo_with_worktree(dir.path());
+        std::fs::write(wt.join("x.txt"), "x").unwrap();
+        let err = WorkspaceManager::new()
+            .commit_changes(&wt, "main", "m")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "conflict", "{err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repository_hooks_never_run_for_commit_or_push() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let (repo, wt, _origin) = repo_with_origin(dir.path());
+        let marker = dir.path().join("hook-ran");
+        for hook in ["pre-commit", "commit-msg", "post-commit", "pre-push"] {
+            let path = repo.join(".git").join("hooks").join(hook);
+            std::fs::write(&path, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(wt.join("new.txt"), "new\n").unwrap();
+        let manager = WorkspaceManager::new();
+        manager
+            .commit_changes(&wt, "task", "msg")
+            .await
+            .unwrap()
+            .unwrap();
+        manager.push_branch(&wt, "task", None).await.unwrap();
+        assert!(!marker.exists(), "a repository hook was executed");
+        // Sanity check of the test itself: the same hook does run for a plain git commit.
+        std::fs::write(wt.join("plain.txt"), "p\n").unwrap();
+        git(&wt, &["add", "-A"]);
+        git(&wt, &["commit", "-m", "plain"]);
+        assert!(marker.exists(), "the test hook is not effective");
+    }
+
+    #[tokio::test]
+    async fn push_branch_publishes_the_branch_and_never_forces() {
+        let dir = tempdir().unwrap();
+        let (_repo, wt, origin) = repo_with_origin(dir.path());
+        std::fs::write(wt.join("new.txt"), "new\n").unwrap();
+        let manager = WorkspaceManager::new();
+        let sha = manager
+            .commit_changes(&wt, "task", "msg")
+            .await
+            .unwrap()
+            .unwrap();
+        manager.push_branch(&wt, "task", None).await.unwrap();
+        let remote_head = git_stdout(&origin, &["rev-parse", "refs/heads/task"])
+            .await
+            .unwrap();
+        assert_eq!(remote_head.trim(), sha);
+
+        // The remote branch diverges (someone else pushed): the push is refused, not forced.
+        let other = dir.path().join("other");
+        git(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                other.to_str().unwrap(),
+            ],
+        );
+        git(&other, &["checkout", "-q", "task"]);
+        std::fs::write(other.join("theirs.txt"), "theirs\n").unwrap();
+        git(&other, &["add", "-A"]);
+        git(&other, &["commit", "-m", "theirs"]);
+        git(&other, &["push", "-q", "origin", "task"]);
+        std::fs::write(wt.join("mine.txt"), "mine\n").unwrap();
+        manager
+            .commit_changes(&wt, "task", "mine")
+            .await
+            .unwrap()
+            .unwrap();
+        let err = manager.push_branch(&wt, "task", None).await.unwrap_err();
+        assert_eq!(err.code(), "git_worktree_error", "{err}");
+        assert!(manager.push_branch(&wt, "--delete", None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_failed_authenticated_push_never_echoes_the_token() {
+        let dir = tempdir().unwrap();
+        let (repo, wt) = repo_with_worktree(dir.path());
+        // An https origin nothing listens on: the push fails fast, over the authenticated path.
+        git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://127.0.0.1:1/acme/widgets.git",
+            ],
+        );
+        std::fs::write(wt.join("new.txt"), "new\n").unwrap();
+        let manager = WorkspaceManager::new();
+        manager
+            .commit_changes(&wt, "task", "msg")
+            .await
+            .unwrap()
+            .unwrap();
+        let token = "ghp_secrettokensecrettokensecrettoken12";
+        let err = manager
+            .push_branch(&wt, "task", Some(token))
+            .await
+            .unwrap_err();
+        assert!(!err.to_string().contains(token), "{err}");
+        assert_eq!(
+            https_origin("https://github.com/acme/widgets.git").as_deref(),
+            Some("https://github.com/")
+        );
+        assert_eq!(https_origin("git@github.com:acme/widgets.git"), None);
+        assert_eq!(https_origin("/local/path.git"), None);
     }
 }

@@ -114,6 +114,17 @@ export const reviewMessages = defineMessages({
     security: {
       empty: "No security warnings were raised."
     },
+    publish: {
+      button: "Create pull request",
+      disabledConflicts: "Resolve the merge conflicts before opening a pull request.",
+      disabledWarnings: "Resolve the security warnings before publishing this branch.",
+      title: "Create a GitHub pull request?",
+      body: "This commits the worktree's changes to branch {branch}, pushes that branch to the repository's origin and opens a pull request into {base}.",
+      noMerge: "Nothing is merged and the task is not completed. Review and merge the pull request in your Git host.",
+      confirm: "Create pull request",
+      success: "Pull request opened",
+      successBody: "Pull request #{number} was opened. Nothing was merged."
+    },
     approve: {
       title: "Record human approval?",
       body: "This records your human approval for “{title}” and marks the task as completed.",
@@ -235,6 +246,17 @@ export const reviewMessages = defineMessages({
     },
     security: {
       empty: "Inga säkerhetsvarningar rapporterades."
+    },
+    publish: {
+      button: "Skapa pull request",
+      disabledConflicts: "Lös sammanslagningskonflikterna innan du öppnar en pull request.",
+      disabledWarnings: "Åtgärda säkerhetsvarningarna innan grenen publiceras.",
+      title: "Skapa en GitHub-pull request?",
+      body: "Detta committar arbetsträdets ändringar till grenen {branch}, pushar grenen till repots origin och öppnar en pull request mot {base}.",
+      noMerge: "Inget slås samman och uppgiften slutförs inte. Granska och slå samman pull requesten i din Git-tjänst.",
+      confirm: "Skapa pull request",
+      success: "Pull request öppnad",
+      successBody: "Pull request #{number} öppnades. Inget slogs samman."
     },
     approve: {
       title: "Registrera mänskligt godkännande?",

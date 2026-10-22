@@ -1710,6 +1710,36 @@ export type ApprovePrMergeResponses = {
 
 export type ApprovePrMergeResponse = ApprovePrMergeResponses[keyof ApprovePrMergeResponses];
 
+export type CreatePullRequestData = {
+    body?: never;
+    path: {
+        /**
+         * Review id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/prs/{id}/create-pull-request';
+};
+
+export type CreatePullRequestErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type CreatePullRequestError = CreatePullRequestErrors[keyof CreatePullRequestErrors];
+
+export type CreatePullRequestResponses = {
+    /**
+     * OK
+     */
+    200: PullRequestReview;
+};
+
+export type CreatePullRequestResponse = CreatePullRequestResponses[keyof CreatePullRequestResponses];
+
 export type ListWorktreesData = {
     body?: never;
     path?: never;

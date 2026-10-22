@@ -1408,6 +1408,54 @@
         "x-symphony-remote": false
       }
     },
+    "/api/v1/prs/{id}/create-pull-request": {
+      "post": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "Publish a reviewed branch as a GitHub pull request: commits the worktree's changes to the task\nbranch, pushes it to `origin` (never forced) and opens a pull request into the base branch.\nAn explicit human action, local administration only. Nothing is merged. Repeating the call\nreturns the review's existing pull request.",
+        "operationId": "createPullRequest",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Review id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestReview"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
     "/api/v1/worktrees": {
       "get": {
         "tags": [

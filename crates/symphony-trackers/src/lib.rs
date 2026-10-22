@@ -73,6 +73,15 @@ pub struct GitHubPullRequestDetails {
     pub review_comments: Vec<ReviewCommentEvaluation>,
 }
 
+/// A pull request opened by (or found for) a branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenedPullRequest {
+    pub number: u64,
+    pub html_url: String,
+    /// `true` when the branch already had an open pull request and none was created.
+    pub already_existed: bool,
+}
+
 impl GitHubTracker {
     pub fn new(
         api_url: Option<String>,
@@ -280,6 +289,100 @@ impl GitHubTracker {
             .await
             .unwrap_or_else(|_| json!({"status": status.as_u16()}));
         Ok((status.is_success(), val))
+    }
+
+    /// Open a pull request for `head` into `base`, or return the open one the branch already has
+    /// (a retry after a pull request was created but not recorded must not fail or duplicate it).
+    /// Nothing is ever merged.
+    pub async fn open_pull_request(
+        &self,
+        title: &str,
+        head: &str,
+        base: &str,
+        body: &str,
+    ) -> SymphonyResult<OpenedPullRequest> {
+        self.validate_config()?;
+        let url = format!("{}/repos/{}/pulls", self.api_url, self.repo);
+        let resp = self
+            .apply_headers(self.client.post(&url))
+            .json(&json!({ "title": title, "head": head, "base": base, "body": body }))
+            .send()
+            .await
+            .map_err(|e| SymphonyError::TrackerError {
+                code: "github_pr_create_failed".to_string(),
+                message: e.to_string(),
+            })?;
+        let status = resp.status();
+        if status.is_success() {
+            let created: Value = resp.json().await.map_err(|e| SymphonyError::TrackerError {
+                code: "github_pr_decode_failed".to_string(),
+                message: e.to_string(),
+            })?;
+            return Self::opened_from_json(&created, false).ok_or_else(|| {
+                SymphonyError::TrackerError {
+                    code: "github_pr_decode_failed".to_string(),
+                    message: "GitHub's answer has no pull request number".to_string(),
+                }
+            });
+        }
+        let text = resp.text().await.unwrap_or_default();
+        if status.as_u16() == 422 && text.contains("already exists") {
+            if let Some(existing) = self.find_open_pull_request(head).await? {
+                return Ok(existing);
+            }
+        }
+        Err(SymphonyError::TrackerError {
+            code: format!("github_http_{}", status.as_u16()),
+            message: text,
+        })
+    }
+
+    /// The open pull request whose head is branch `head` of this repository, if any.
+    pub async fn find_open_pull_request(
+        &self,
+        head: &str,
+    ) -> SymphonyResult<Option<OpenedPullRequest>> {
+        self.validate_config()?;
+        let owner = self.repo.split('/').next().unwrap_or_default();
+        let mut url = url::Url::parse(&format!("{}/repos/{}/pulls", self.api_url, self.repo))
+            .map_err(|e| SymphonyError::TrackerError {
+                code: "github_pr_fetch_failed".to_string(),
+                message: e.to_string(),
+            })?;
+        url.query_pairs_mut()
+            .append_pair("head", &format!("{owner}:{head}"))
+            .append_pair("state", "open");
+        let resp = self
+            .apply_headers(self.client.get(url))
+            .send()
+            .await
+            .map_err(|e| SymphonyError::TrackerError {
+                code: "github_pr_fetch_failed".to_string(),
+                message: e.to_string(),
+            })?;
+        if !resp.status().is_success() {
+            return Err(SymphonyError::TrackerError {
+                code: format!("github_http_{}", resp.status().as_u16()),
+                message: resp.text().await.unwrap_or_default(),
+            });
+        }
+        let list: Value = resp.json().await.unwrap_or(Value::Null);
+        Ok(list
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|first| Self::opened_from_json(first, true)))
+    }
+
+    fn opened_from_json(value: &Value, already_existed: bool) -> Option<OpenedPullRequest> {
+        Some(OpenedPullRequest {
+            number: value.get("number")?.as_u64()?,
+            html_url: value
+                .get("html_url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            already_existed,
+        })
     }
 
     /// Create a Pull Request on GitHub

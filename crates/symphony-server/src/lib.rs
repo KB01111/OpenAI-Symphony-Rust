@@ -512,6 +512,7 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(list_prs_handler))
         .routes(routes!(get_pr_handler))
         .routes(routes!(approve_pr_merge_handler))
+        .routes(routes!(create_pull_request_handler))
         .routes(routes!(list_worktrees_handler))
         .routes(routes!(get_workflow_handler, update_workflow_handler))
         .routes(routes!(preview_workflow_handler))
@@ -1454,6 +1455,25 @@ async fn approve_pr_merge_handler(
     Path(id): Path<String>,
 ) -> Response {
     respond(state.orchestrator.approve_pr_merge(&id).await)
+}
+
+/// Publish a reviewed branch as a GitHub pull request: commits the worktree's changes to the task
+/// branch, pushes it to `origin` (never forced) and opens a pull request into the base branch.
+/// An explicit human action, local administration only. Nothing is merged. Repeating the call
+/// returns the review's existing pull request.
+#[utoipa::path(
+    post,
+    path = "/prs/{id}/create-pull-request",
+    operation_id = "createPullRequest",
+    tag = "reviews",
+    params(("id" = String, Path, description = "Review id")),
+    responses((status = 200, body = PullRequestReview))
+)]
+async fn create_pull_request_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Response {
+    respond(state.orchestrator.create_pull_request(&id).await)
 }
 
 #[utoipa::path(

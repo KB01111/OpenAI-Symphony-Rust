@@ -268,6 +268,13 @@ export class SymphonyClient {
   approvePullRequest(id: string) {
     return this.call((o) => api.approvePrMerge({ ...o, path: { id } }));
   }
+  /**
+   * Publish the reviewed branch as a GitHub pull request (commit, push, open). An explicit human
+   * action; it never merges anything. Repeating it returns the existing pull request.
+   */
+  createPullRequest(id: string) {
+    return this.call((o) => api.createPullRequest({ ...o, path: { id } }));
+  }
   listWorktrees(signal?: AbortSignal) {
     return this.call((o) => api.listWorktrees(o), signal);
   }

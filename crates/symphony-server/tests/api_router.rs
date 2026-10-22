@@ -351,3 +351,30 @@ async fn backups_are_unavailable_on_a_host_that_does_not_manage_them() {
         "backups_unavailable"
     );
 }
+
+#[tokio::test]
+async fn creating_a_pull_request_needs_a_token_and_an_existing_review() {
+    let (app, _dir) = router().await;
+    let anonymous = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/prs/pr-1/create-pull-request")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+    let missing = app
+        .oneshot(authed(
+            Method::POST,
+            "/api/v1/prs/does-not-exist/create-pull-request",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
