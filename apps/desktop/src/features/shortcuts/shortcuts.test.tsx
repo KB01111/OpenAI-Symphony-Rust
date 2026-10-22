@@ -42,7 +42,7 @@ describe("keyboard shortcut help", () => {
     renderHarness();
     act(() => useUiStore.getState().setShortcutsOpen(true));
     fireEvent.keyDown(window, { key: "p", ctrlKey: true });
-    expect(useUiStore.getState()).toMatchObject({ shortcutsOpen: false, paletteOpen: true });
+    expect(useUiStore.getState()).toMatchObject({ shortcutsOpen: false, paletteOpen: true, paletteMode: "projects" });
     act(() => useUiStore.getState().setShortcutsOpen(true));
     fireEvent.keyDown(window, { key: "n", ctrlKey: true });
     expect(useUiStore.getState()).toMatchObject({ shortcutsOpen: false, newTaskOpen: true });
@@ -75,21 +75,24 @@ describe("ShortcutsDialog", () => {
     act(() => useUiStore.setState({ shortcutsOpen: true, locale: "en" }));
     renderWithProviders(<ShortcutsDialog />, { runtime: createMockRuntime() });
     expect(await screen.findByRole("dialog", { name: m.title })).toBeInTheDocument();
-    // Each action is shown together with its own key combination (a swap would fail).
-    const expected: Record<keyof typeof m.items, string> = {
-      palette: "Ctrl+K",
-      newTask: "Ctrl+N",
-      projects: "Ctrl+P",
-      refresh: "Ctrl+R",
-      sidebar: "Ctrl+B",
-      activity: "Ctrl+J",
-      inspector: "Ctrl+I",
-      help: "F1+Ctrl+/"
+    // Each action is shown together with its own key combination(s); alternatives are separated by
+    // "or", so a swapped binding or one merged chord fails.
+    const expected: Record<keyof typeof m.items, string[][]> = {
+      palette: [["Ctrl", "K"]],
+      newTask: [["Ctrl", "N"]],
+      projects: [["Ctrl", "P"]],
+      refresh: [["Ctrl", "R"]],
+      sidebar: [["Ctrl", "B"]],
+      activity: [["Ctrl", "J"]],
+      inspector: [["Ctrl", "I"]],
+      help: [["F1"], ["Ctrl", "/"]]
     };
-    for (const [item, combo] of Object.entries(expected)) {
-      const row = screen.getByText(m.items[item as keyof typeof m.items]).closest("li");
+    for (const [item, combos] of Object.entries(expected)) {
+      const label = m.items[item as keyof typeof m.items];
+      const row = screen.getByText(label).closest("li");
       expect(row, item).not.toBeNull();
-      expect(Array.from(row!.querySelectorAll("kbd")).map((k) => k.textContent).join("+"), item).toBe(combo);
+      expect(row!.textContent, item).toBe(label + combos.map((keys) => keys.join("")).join(m.or));
+      expect(row!.querySelectorAll("kbd"), item).toHaveLength(combos.flat().length);
     }
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(useUiStore.getState().shortcutsOpen).toBe(false);

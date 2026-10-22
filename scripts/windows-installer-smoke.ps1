@@ -186,7 +186,16 @@ try {
 finally {
   if ($installDir -and (Test-Path $installDir)) {
     Stop-InstalledApp $installDir
-    if ($createdInstallDir) { Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($createdInstallDir) {
+      # A run that failed half-way still has its uninstall entry: remove it properly first, so the
+      # profile is not left with an entry that points at a deleted directory.
+      $leftover = Join-Path $installDir 'uninstall.exe'
+      if ((Test-Path $leftover) -and @(Get-UninstallEntries).Count -gt 0) {
+        try { Invoke-Silent $leftover @('/S', "_?=$installDir") 'the cleanup uninstall' 120 }
+        catch { Write-Host "cleanup uninstall failed: $_" }
+      }
+      Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
   }
   if ($createdMarker) { Remove-Item $marker -Force -ErrorAction SilentlyContinue }
   if ($createdDataDir) { Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue }
