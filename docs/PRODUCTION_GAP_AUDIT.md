@@ -245,8 +245,9 @@ wrong or out of proportion and are answered on their threads, see below). Verifi
   whose path is the project's `owner/name`; any other HTTPS origin is refused; ssh/local origins use the
   user's own git credentials. The per-URL scope keeps an explicit port. The worktree is re-scanned and
   re-checked for conflicts immediately before publishing (the review is a snapshot).
-- **SEC-06** `push_branch` refuses an `origin` with a separate push URL and sets `http.followRedirects=false`
-  for the push; `diff_since_checked` turns a failing `git diff`/`ls-files` into a warning that blocks
+- **SEC-06** `push_branch` refuses an `origin` with a separate or additional push URL and any repository-local
+  `http.*` redirect/header/proxy, `url.*.insteadOf` or `credential.*` setting, and sets
+  `http.followRedirects=false` for the push; `diff_since_checked` turns a failing `git diff`/`ls-files` into a warning that blocks
   publishing, as does an unresolvable base commit; the `github_api` policy no longer allows `POST /pulls`
   (publishing is the confirmed "Create pull request" action). The base branch used for the merge check and
   the review is `origin/<base>` when it exists (what the pull request merges into), else the local branch.

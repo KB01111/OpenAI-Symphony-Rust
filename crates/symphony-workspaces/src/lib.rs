@@ -58,6 +58,10 @@ impl Drop for SafeHooksDir {
     }
 }
 
+/// Repository-local git settings that change where a push goes or how it authenticates (key names
+/// are matched lower-cased).
+const PUSH_SENSITIVE_CONFIG: &str = r"^(http\.(.*\.)?(followredirects|extraheader|proxy|pinnedpubkey)|url\..*\.(insteadof|pushinsteadof)|remote\.[^.]*\.(pushurl|proxy)|credential\..*)$";
+
 /// `https://host[:port]/` of an `https://` remote URL: the scope of git's per-URL
 /// `http.<url>.extraheader`. The port is part of it (git matches the authority).
 fn https_origin(remote: &str) -> Option<String> {
@@ -1102,24 +1106,48 @@ impl WorkspaceManager {
         .trim()
         .to_string();
         // `pushurl`/`pushInsteadOf` can send a push somewhere other than the fetch URL that was
-        // checked; the credential below is scoped to the URL git actually pushes to, so refuse.
-        let push_remote = Self::git_checked(
+        // checked (and a remote can have several push URLs, all of which receive the branch); the
+        // credential below is scoped to the URL git actually pushes to, so refuse.
+        let push_remotes = Self::git_checked(
             workspace_path,
             &hooks,
             &[],
-            &["remote", "get-url", "--push", "origin"],
+            &["remote", "get-url", "--push", "--all", "origin"],
         )
         .await
         .map_err(|_| {
             SymphonyError::Conflict("the repository has no `origin` remote to push to".into())
-        })?
-        .trim()
-        .to_string();
-        if push_remote != remote {
+        })?;
+        let push_remotes: Vec<&str> = push_remotes.lines().map(str::trim).collect();
+        if push_remotes != [remote.as_str()] {
             return Err(SymphonyError::Conflict(
-                "`origin` has a separate push URL; refusing to push to a destination other than the one that was checked"
+                "`origin` has a separate or additional push URL; refusing to push to a destination other than the one that was checked"
                     .into(),
             ));
+        }
+        // Repository-local settings (an agent can write them) that redirect or re-authenticate a
+        // push: a URL-scoped `http.<url>.followRedirects` would beat the generic setting below.
+        for scope in ["--local", "--worktree"] {
+            let found = Self::git_checked(
+                workspace_path,
+                &hooks,
+                &[],
+                &[
+                    "config",
+                    scope,
+                    "--name-only",
+                    "--get-regexp",
+                    PUSH_SENSITIVE_CONFIG,
+                ],
+            )
+            .await
+            // Exit 1 (no match) and an unsupported scope both mean there is nothing to refuse.
+            .unwrap_or_default();
+            if let Some(key) = found.lines().map(str::trim).find(|l| !l.is_empty()) {
+                return Err(SymphonyError::Conflict(format!(
+                    "the repository's own configuration sets `{key}`, which can redirect or re-authenticate a push; remove it before publishing"
+                )));
+            }
         }
         // Whatever the repository or user configuration says, a push never follows a redirect to
         // another endpoint.
@@ -1867,11 +1895,78 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, SymphonyError::Conflict(ref m) if m.contains("separate push URL")),
+            matches!(err, SymphonyError::Conflict(ref m) if m.contains("push URL")),
             "{err}"
         );
         // Without the override the same push goes through.
         git(&repo, &["config", "--unset", "remote.origin.pushurl"]);
+        manager.push_branch(&wt, "task", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_push_refuses_extra_push_urls_and_repository_redirect_settings() {
+        let dir = tempdir().unwrap();
+        let (repo, wt) = repo_with_worktree(dir.path());
+        let bare = dir.path().join("origin.git");
+        git(dir.path(), &["init", "--bare", bare.to_str().unwrap()]);
+        git(&repo, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        std::fs::write(wt.join("new.txt"), "new\n").unwrap();
+        let manager = WorkspaceManager::new();
+        manager
+            .commit_changes(&wt, "task", "msg")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // A second push URL would receive the branch too, unchecked.
+        git(
+            &repo,
+            &[
+                "remote",
+                "set-url",
+                "--add",
+                "--push",
+                "origin",
+                bare.to_str().unwrap(),
+            ],
+        );
+        git(
+            &repo,
+            &[
+                "remote",
+                "set-url",
+                "--add",
+                "--push",
+                "origin",
+                "https://evil.example/x.git",
+            ],
+        );
+        let err = manager.push_branch(&wt, "task", None).await.unwrap_err();
+        assert!(matches!(err, SymphonyError::Conflict(_)), "{err}");
+        git(&repo, &["config", "--unset-all", "remote.origin.pushurl"]);
+
+        // A URL-scoped redirect setting from the repository would override the generic ban.
+        git(
+            &repo,
+            &[
+                "config",
+                "http.https://github.com/.followRedirects",
+                "initial",
+            ],
+        );
+        let err = manager.push_branch(&wt, "task", None).await.unwrap_err();
+        assert!(
+            matches!(err, SymphonyError::Conflict(ref m) if m.contains("followredirects")),
+            "{err}"
+        );
+        git(
+            &repo,
+            &[
+                "config",
+                "--unset",
+                "http.https://github.com/.followRedirects",
+            ],
+        );
         manager.push_branch(&wt, "task", None).await.unwrap();
     }
 
