@@ -1,20 +1,52 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{Row, SqlitePool};
-use std::path::Path;
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteConnection, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+};
+use sqlx::{ConnectOptions, Connection, Row, SqlitePool};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 use symphony_core::{
     redact_secrets, AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, ApprovalStatus,
     Issue, Project, ProviderKind, ProviderProfile, PullRequestReview, RunAttempt, RunAttemptPhase,
-    SymphonyError, SymphonyResult, Task, TaskStatus, ValidationResult,
+    SymphonyError, SymphonyResult, Task, TaskStatus, ThreadUsageMark, TokenUsage, ValidationResult,
 };
+
+pub mod backup;
 
 #[derive(Clone)]
 pub struct Storage {
     pool: SqlitePool,
+    /// The database file, `None` for in-memory databases.
+    db_path: Option<PathBuf>,
 }
+
+/// One forward-only schema migration. Versions are applied in order, each inside a transaction, and
+/// recorded in `schema_migrations`; a migration that fails leaves the database untouched.
+struct Migration {
+    version: i64,
+    name: &'static str,
+    sql: &'static str,
+}
+
+const MIGRATIONS: &[Migration] = &[
+    // 0001 only uses `CREATE ... IF NOT EXISTS`, so it is also the baseline of databases created
+    // before versions were recorded.
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("../migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "usage_accounting",
+        sql: include_str!("../migrations/0002_usage_accounting.sql"),
+    },
+];
+
+/// The schema version this build reads and writes.
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticBundle {
@@ -29,6 +61,9 @@ pub struct DiagnosticBundle {
 
 impl Storage {
     /// Connect to a SQLite database file with WAL mode enabled and apply schema migrations.
+    ///
+    /// Migrations run on a dedicated connection that is closed before the pool opens: a pooled
+    /// connection that cached the old schema would otherwise misread rows of altered tables.
     pub async fn connect(db_path: impl AsRef<Path>) -> SymphonyResult<Self> {
         let path_ref = db_path.as_ref();
         if let Some(parent) = path_ref.parent() {
@@ -45,15 +80,30 @@ impl Storage {
             .busy_timeout(Duration::from_secs(10))
             .foreign_keys(true);
 
+        let mut migration_conn = options
+            .connect()
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let migrated = apply_migrations(
+            &mut migration_conn,
+            Some(path_ref),
+            MIGRATIONS,
+            SCHEMA_VERSION,
+        )
+        .await;
+        let _ = migration_conn.close().await;
+        migrated?;
+
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
             .connect_with(options)
             .await
             .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
 
-        let storage = Self { pool };
-        storage.run_migrations().await?;
-        Ok(storage)
+        Ok(Self {
+            pool,
+            db_path: Some(path_ref.to_path_buf()),
+        })
     }
 
     /// Connect to an in-memory SQLite database for isolated unit and integration tests.
@@ -68,23 +118,40 @@ impl Storage {
             .await
             .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
 
-        let storage = Self { pool };
+        let storage = Self {
+            pool,
+            db_path: None,
+        };
         storage.run_migrations().await?;
         Ok(storage)
     }
 
+    /// Apply pending schema migrations (see [`apply_migrations`]); a no-op when up to date.
     pub async fn run_migrations(&self) -> SymphonyResult<()> {
-        let schema_sql = include_str!("../migrations/0001_init.sql");
-        for statement in schema_sql.split(';') {
-            let trimmed = statement.trim();
-            if !trimmed.is_empty() {
-                sqlx::query(trimmed)
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
-            }
-        }
-        Ok(())
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        apply_migrations(
+            &mut conn,
+            self.db_path.as_deref(),
+            MIGRATIONS,
+            SCHEMA_VERSION,
+        )
+        .await
+    }
+
+    /// Write a transactionally consistent copy of the database to `destination` (SQLite
+    /// `VACUUM INTO`): readers and writers keep working, committed WAL content is included and the
+    /// result is a self-contained database file. Fails if `destination` already exists.
+    pub async fn backup_to(&self, destination: &Path) -> SymphonyResult<()> {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        backup_connection_to(&mut conn, destination).await
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -196,10 +263,13 @@ impl Storage {
                 current_session_id, current_thread_id, current_turn_id, current_phase,
                 pr_number, pr_url, input_tokens, output_tokens, total_tokens,
                 estimated_cost_usd, duration_seconds, last_error, next_retry_at,
-                created_at, updated_at, started_at, completed_at
+                created_at, updated_at, started_at, completed_at,
+                thread_usage_thread_id, thread_usage_input_tokens, thread_usage_output_tokens,
+                thread_usage_total_tokens, usage_estimated
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+                ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
+                ?29, ?30, ?31, ?32, ?33
             )
             ON CONFLICT(id) DO UPDATE SET
                 issue_id = excluded.issue_id,
@@ -226,7 +296,12 @@ impl Storage {
                 next_retry_at = excluded.next_retry_at,
                 updated_at = excluded.updated_at,
                 started_at = excluded.started_at,
-                completed_at = excluded.completed_at
+                completed_at = excluded.completed_at,
+                thread_usage_thread_id = excluded.thread_usage_thread_id,
+                thread_usage_input_tokens = excluded.thread_usage_input_tokens,
+                thread_usage_output_tokens = excluded.thread_usage_output_tokens,
+                thread_usage_total_tokens = excluded.thread_usage_total_tokens,
+                usage_estimated = excluded.usage_estimated
             "#,
         )
         .bind(&task.id)
@@ -257,6 +332,23 @@ impl Storage {
         .bind(task.updated_at.to_rfc3339())
         .bind(task.started_at.map(|d| d.to_rfc3339()))
         .bind(task.completed_at.map(|d| d.to_rfc3339()))
+        .bind(task.thread_usage.as_ref().map(|m| m.thread_id.clone()))
+        .bind(
+            task.thread_usage
+                .as_ref()
+                .map(|m| m.usage.input_tokens as i64),
+        )
+        .bind(
+            task.thread_usage
+                .as_ref()
+                .map(|m| m.usage.output_tokens as i64),
+        )
+        .bind(
+            task.thread_usage
+                .as_ref()
+                .map(|m| m.usage.total_tokens as i64),
+        )
+        .bind(task.usage_estimated as i64)
         .execute(&self.pool)
         .await
         .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
@@ -288,6 +380,84 @@ impl Storage {
             .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
 
         row.map(row_to_task).transpose()
+    }
+
+    /// Persist only the lifecycle columns of `task` (status, session/thread/turn ids, phase, error,
+    /// retry time, update time). For the side that stops a worker: its copy of the task was read
+    /// before the worker settled usage, and [`upsert_task`](Self::upsert_task) would write that
+    /// stale usage back over the settlement.
+    pub async fn update_task_lifecycle(&self, task: &Task) -> SymphonyResult<()> {
+        let result = sqlx::query(
+            "UPDATE tasks SET
+                status = ?2,
+                current_session_id = ?3,
+                current_thread_id = ?4,
+                current_turn_id = ?5,
+                current_phase = ?6,
+                last_error = ?7,
+                next_retry_at = ?8,
+                updated_at = ?9
+             WHERE id = ?1",
+        )
+        .bind(&task.id)
+        .bind(task.status.as_str())
+        .bind(&task.current_session_id)
+        .bind(&task.current_thread_id)
+        .bind(&task.current_turn_id)
+        .bind(task.current_phase.map(|p| p.to_string()))
+        .bind(&task.last_error)
+        .bind(task.next_retry_at.map(|t| t.to_rfc3339()))
+        .bind(task.updated_at.to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(SymphonyError::NotFound(format!(
+                "task {} not found",
+                task.id
+            )));
+        }
+        Ok(())
+    }
+
+    /// Add usage to a task's totals in one atomic statement, without touching any other column.
+    /// For code that settles usage on behalf of a stopped worker whose in-memory copy of the task
+    /// is stale (rewriting the whole row would overwrite a concurrent status change).
+    pub async fn add_task_usage(
+        &self,
+        task_id: &str,
+        delta: &TokenUsage,
+        estimated_cost_usd: f64,
+        estimated: bool,
+        thread_usage: Option<&ThreadUsageMark>,
+    ) -> SymphonyResult<()> {
+        sqlx::query(
+            "UPDATE tasks SET
+                input_tokens = input_tokens + ?2,
+                output_tokens = output_tokens + ?3,
+                total_tokens = total_tokens + ?4,
+                estimated_cost_usd = estimated_cost_usd + ?5,
+                usage_estimated = usage_estimated OR ?6,
+                thread_usage_thread_id = COALESCE(?7, thread_usage_thread_id),
+                thread_usage_input_tokens = COALESCE(?8, thread_usage_input_tokens),
+                thread_usage_output_tokens = COALESCE(?9, thread_usage_output_tokens),
+                thread_usage_total_tokens = COALESCE(?10, thread_usage_total_tokens)
+             WHERE id = ?1",
+        )
+        .bind(task_id)
+        .bind(delta.input_tokens as i64)
+        .bind(delta.output_tokens as i64)
+        .bind(delta.total_tokens as i64)
+        .bind(estimated_cost_usd)
+        .bind(estimated as i64)
+        .bind(thread_usage.map(|m| m.thread_id.clone()))
+        .bind(thread_usage.map(|m| m.usage.input_tokens as i64))
+        .bind(thread_usage.map(|m| m.usage.output_tokens as i64))
+        .bind(thread_usage.map(|m| m.usage.total_tokens as i64))
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(())
     }
 
     pub async fn get_task_by_identifier(&self, identifier: &str) -> SymphonyResult<Option<Task>> {
@@ -362,9 +532,9 @@ impl Storage {
                 id, task_id, issue_id, issue_identifier, attempt_number, provider,
                 workspace_path, branch_name, session_id, thread_id, turn_id,
                 turn_count, phase, started_at, finished_at, error,
-                input_tokens, output_tokens, total_tokens
+                input_tokens, output_tokens, total_tokens, usage_estimated
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
             )
             ON CONFLICT(id) DO UPDATE SET
                 session_id = excluded.session_id,
@@ -376,7 +546,8 @@ impl Storage {
                 error = excluded.error,
                 input_tokens = excluded.input_tokens,
                 output_tokens = excluded.output_tokens,
-                total_tokens = excluded.total_tokens
+                total_tokens = excluded.total_tokens,
+                usage_estimated = excluded.usage_estimated
             "#,
         )
         .bind(&attempt.id)
@@ -398,6 +569,7 @@ impl Storage {
         .bind(attempt.input_tokens as i64)
         .bind(attempt.output_tokens as i64)
         .bind(attempt.total_tokens as i64)
+        .bind(attempt.usage_estimated as i64)
         .execute(&self.pool)
         .await
         .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
@@ -650,8 +822,9 @@ impl Storage {
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
             let json_str: String = r.get("review_json");
-            let pr: PullRequestReview = serde_json::from_str(&json_str)
+            let mut pr: PullRequestReview = serde_json::from_str(&json_str)
                 .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+            pr.normalize_legacy();
             out.push(pr);
         }
         Ok(out)
@@ -667,8 +840,9 @@ impl Storage {
         match row {
             Some(r) => {
                 let json_str: String = r.get("review_json");
-                let pr: PullRequestReview = serde_json::from_str(&json_str)
+                let mut pr: PullRequestReview = serde_json::from_str(&json_str)
                     .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+                pr.normalize_legacy();
                 Ok(Some(pr))
             }
             None => Ok(None),
@@ -849,6 +1023,147 @@ fn row_to_project(r: sqlx::sqlite::SqliteRow) -> SymphonyResult<Project> {
     })
 }
 
+/// Apply pending schema migrations on `conn`.
+///
+/// * A database written by a newer build is refused: guessing at a newer schema could corrupt it.
+/// * Before the first pending migration touches a database that already holds data, a consistent
+///   snapshot is written next to it (`<db>.pre-migration-v<N>-<time>.bak`), so a migration that
+///   goes wrong can always be undone by restoring that file.
+/// * Every migration runs in its own transaction together with its `schema_migrations` row.
+async fn apply_migrations(
+    conn: &mut SqliteConnection,
+    db_path: Option<&Path>,
+    migrations: &[Migration],
+    supported_version: i64,
+) -> SymphonyResult<()> {
+    let storage_err = |e: sqlx::Error| SymphonyError::StorageError(e.to_string());
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )",
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(storage_err)?;
+
+    let applied: Vec<i64> = sqlx::query_scalar("SELECT version FROM schema_migrations")
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(storage_err)?;
+    if let Some(newest) = applied.iter().copied().max() {
+        if newest > supported_version {
+            return Err(SymphonyError::StorageError(format!(
+                "the database uses schema version {newest}, which is newer than the version \
+                 {supported_version} this build supports; update Symphony Desktop or restore a \
+                 backup made by this version"
+            )));
+        }
+    }
+
+    let pending: Vec<&Migration> = migrations
+        .iter()
+        .filter(|m| !applied.contains(&m.version))
+        .collect();
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let has_data: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tasks')",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(storage_err)?;
+    if let (true, Some(path)) = (has_data, db_path) {
+        let target_version = pending
+            .last()
+            .map(|m| m.version)
+            .unwrap_or(supported_version);
+        let snapshot = path.with_file_name(format!(
+            "{}.pre-migration-v{}-{}.bak",
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "symphony.sqlite".into()),
+            target_version,
+            Utc::now().format("%Y%m%dT%H%M%SZ")
+        ));
+        backup_connection_to(conn, &snapshot).await?;
+        tracing::info!(snapshot = %snapshot.display(), "wrote pre-migration database snapshot");
+    }
+
+    for migration in pending {
+        let mut tx = conn.begin().await.map_err(storage_err)?;
+        sqlx::raw_sql(migration.sql)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                SymphonyError::StorageError(format!(
+                    "migration {:04}_{} failed and was rolled back: {e}",
+                    migration.version, migration.name
+                ))
+            })?;
+        sqlx::query(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+        )
+        .bind(migration.version)
+        .bind(migration.name)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&mut *tx)
+        .await
+        .map_err(storage_err)?;
+        tx.commit().await.map_err(storage_err)?;
+        tracing::info!(
+            version = migration.version,
+            name = migration.name,
+            "applied schema migration"
+        );
+    }
+    Ok(())
+}
+
+async fn backup_connection_to(
+    conn: &mut SqliteConnection,
+    destination: &Path,
+) -> SymphonyResult<()> {
+    if destination.exists() {
+        return Err(SymphonyError::StorageError(format!(
+            "backup destination {} already exists",
+            destination.display()
+        )));
+    }
+    if let Some(parent) = destination.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    sqlx::query("VACUUM INTO ?1")
+        .bind(destination.to_string_lossy().into_owned())
+        .execute(conn)
+        .await
+        .map_err(|e| SymphonyError::StorageError(format!("database backup failed: {e}")))?;
+    Ok(())
+}
+
+/// The recorded thread usage baseline, `None` for rows without one (legacy tasks, tasks that never
+/// ran a provider thread).
+fn thread_usage_from_row(r: &sqlx::sqlite::SqliteRow) -> Option<ThreadUsageMark> {
+    let thread_id: Option<String> = r.get("thread_usage_thread_id");
+    let input: Option<i64> = r.get("thread_usage_input_tokens");
+    let output: Option<i64> = r.get("thread_usage_output_tokens");
+    let total: Option<i64> = r.get("thread_usage_total_tokens");
+    Some(ThreadUsageMark {
+        thread_id: thread_id?,
+        usage: TokenUsage {
+            input_tokens: input? as u64,
+            output_tokens: output? as u64,
+            total_tokens: total? as u64,
+        },
+    })
+}
+
 fn row_to_task(r: sqlx::sqlite::SqliteRow) -> SymphonyResult<Task> {
     let issue_json: String = r.get("issue_json");
     let issue: Issue = serde_json::from_str(&issue_json)
@@ -878,6 +1193,8 @@ fn row_to_task(r: sqlx::sqlite::SqliteRow) -> SymphonyResult<Task> {
         output_tokens: r.get::<i64, _>("output_tokens") as u64,
         total_tokens: r.get::<i64, _>("total_tokens") as u64,
         estimated_cost_usd: r.get("estimated_cost_usd"),
+        thread_usage: thread_usage_from_row(&r),
+        usage_estimated: r.get::<i64, _>("usage_estimated") != 0,
         duration_seconds: r.get("duration_seconds"),
         last_error: r.get("last_error"),
         next_retry_at: parse_opt_dt(r.get("next_retry_at")),
@@ -914,6 +1231,7 @@ fn row_to_run_attempt(r: sqlx::sqlite::SqliteRow) -> SymphonyResult<RunAttempt> 
         input_tokens: r.get::<i64, _>("input_tokens") as u64,
         output_tokens: r.get::<i64, _>("output_tokens") as u64,
         total_tokens: r.get::<i64, _>("total_tokens") as u64,
+        usage_estimated: r.get::<i64, _>("usage_estimated") != 0,
     })
 }
 
@@ -1015,5 +1333,41 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("Interrupted"));
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_failing_migration_rolls_back_completely() {
+        let storage = Storage::connect_in_memory().await.unwrap();
+        let broken = [Migration {
+            version: 99,
+            name: "broken",
+            // The first statement succeeds, the second fails: neither may persist.
+            sql: "CREATE TABLE half_applied (id INTEGER); INSERT INTO missing_table VALUES (1);",
+        }];
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let err = apply_migrations(&mut conn, None, &broken, 99)
+            .await
+            .expect_err("migration must fail");
+        drop(conn);
+        assert!(err.to_string().contains("rolled back"), "{err}");
+
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'half_applied')",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert!(!exists, "partial DDL must be rolled back");
+        let recorded: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 99")
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(recorded, 0);
     }
 }

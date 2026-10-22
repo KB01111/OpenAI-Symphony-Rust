@@ -32,6 +32,9 @@ export const PriorityChip: React.FC<{ priority: number | null | undefined }> = (
 export const TaskCardBody = React.memo(function TaskCardBody({ task }: { task: Task }) {
   const m = useMessages(taskMessages);
   const locale = useLocale();
+  const tokensLabel = formatMessage(task.usage_estimated ? m.card.tokensEstimated : m.card.tokens, {
+    count: formatTokens(task.total_tokens, locale)
+  });
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       <div className="flex items-center gap-1.5 pe-7">
@@ -49,10 +52,13 @@ export const TaskCardBody = React.memo(function TaskCardBody({ task }: { task: T
           <span className="sr-only">{formatMessage(m.card.attempts, { count: task.attempt_count })}</span>
           <span aria-hidden>{task.attempt_count}</span>
         </span>
-        <span className="inline-flex items-center gap-1" title={formatMessage(m.card.tokens, { count: formatTokens(task.total_tokens, locale) })}>
+        <span className="inline-flex items-center gap-1" title={tokensLabel}>
           <Coins className="size-3" aria-hidden />
-          <span className="sr-only">{formatMessage(m.card.tokens, { count: formatTokens(task.total_tokens, locale) })}</span>
-          <span aria-hidden>{formatTokens(task.total_tokens, locale)}</span>
+          <span className="sr-only">{tokensLabel}</span>
+          <span aria-hidden>
+            {task.usage_estimated ? "≈ " : ""}
+            {formatTokens(task.total_tokens, locale)}
+          </span>
         </span>
         <TimeAgo iso={task.updated_at} className="ms-auto" />
       </div>

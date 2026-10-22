@@ -572,6 +572,7 @@ impl RemoteAccessManager {
             default_workspace_root: self.default_workspace_root.clone(),
             scope: ApiScope::Remote,
             remote_access: None,
+            backup_root: None,
         };
         let router = build_router_inner(self.orchestrator.clone(), &config, Some(slot.clone()));
         let host = spec.host.trim_start_matches('[').trim_end_matches(']');

@@ -40,7 +40,7 @@ export function filterReviews(
       if (filters.minScore !== null && r.merge_readiness.score < filters.minScore) return false;
       if (filters.hasBlockers && r.merge_readiness.blockers.length === 0) return false;
       if (!needle) return true;
-      const haystack = [r.title, r.branch_name, r.base_branch, `#${r.pr_number}`, r.task_id, projectNames.get(r.project_id) ?? ""]
+      const haystack = [r.title, r.branch_name, r.base_branch, hasPullRequest(r) ? `#${r.pr_number}` : "", r.task_id, projectNames.get(r.project_id) ?? ""]
         .join("\n")
         .toLowerCase();
       return haystack.includes(needle);
@@ -60,6 +60,14 @@ export const SCORE_CHIP_CLASS: Record<ScoreTone, string> = {
   warning: "bg-warning-subtle text-warning",
   danger: "bg-destructive-subtle text-destructive"
 };
+
+/**
+ * Whether a real pull request exists. `pr_number` 0 means none (a local worktree review); reviews
+ * written before 2.0 stored the attempt count as the number, so the URL has to be a web URL as well.
+ */
+export function hasPullRequest(review: { pr_number: number; url: string }): boolean {
+  return review.pr_number > 0 && isWebUrl(review.url);
+}
 
 export type CiTone = "success" | "danger" | "pending";
 

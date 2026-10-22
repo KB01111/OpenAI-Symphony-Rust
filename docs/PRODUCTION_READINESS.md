@@ -24,8 +24,10 @@ Every release is a **draft** until a maintainer has run the manual checklist in
 
 - **Data directory**: `%LOCALAPPDATA%\symphony-desktop` (override with `SYMPHONY_DATA_DIR` /
   `--data-dir`): `symphony.sqlite` (WAL), `credentials.vault` (DPAPI), `runtime.json`, `WORKFLOW.md`,
-  `logs\`. Back it up with Symphony closed (tray → *Stop runtime and exit*) so the SQLite WAL is checkpointed; the vault only
-  decrypts for the same Windows account.
+  `logs\`. **Backups**: Settings → Backups creates a SQLite-consistent backup while Symphony runs (never a raw
+  copy of the live file); restore is offline with `symphony-cli restore-backup`. Credentials are never part of a
+  backup: the vault only decrypts for the same Windows account. Scope, restore and failure recovery:
+  [`DATA_BACKUP.md`](./DATA_BACKUP.md). Upgrades snapshot an existing database before migrating it.
 - **Logs**: `logs\desktop-YYYY-MM-DD.log` / `logs\cli-YYYY-MM-DD.log`: owner-only, redacted, 14 files and
   50 MiB per day per component, panics included. `RUST_LOG` raises the level.
 - **Bug reports**: Settings → Diagnostics → *Export diagnostics* (redacted JSON) plus the day's log file.
@@ -49,7 +51,12 @@ These cannot be done from the repository and are deliberately not faked:
 ## 4. Known limitations and accepted risks
 
 - **No auto-update**: users install new versions manually. Tauri's updater needs an update-signing key
-  pair and a hosted manifest; decide on hosting before enabling it.
+  pair and a hosted manifest; the plan and the owner's steps are in [`RELEASING.md`](./RELEASING.md). No
+  updater code ships until it can be verified with a real key on Windows.
+- **Pull requests are opened, never merged**: *Create pull request* commits, pushes and opens one on explicit
+  request; *Refresh status* re-reads its CI and merge state on demand (no background polling).
+- **Not yet verified on Windows 11** for this release candidate: everything in
+  [`PRODUCTION_RELEASE_REPORT.md`](./PRODUCTION_RELEASE_REPORT.md) §4, including the manual checklist.
 - **Windows only** for the packaged desktop app. The CLI runs on Linux/macOS; there the vault uses an
   owner-only key file instead of an OS keychain, and agent trees are tracked by process group (a host killed
   with SIGKILL cannot clean up; Windows Job Objects can).

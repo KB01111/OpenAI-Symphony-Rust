@@ -43,6 +43,22 @@ export function useExportDiagnostics() {
   return { ...mutation, bundle };
 }
 
+/** `GET /backups` — the local backups, newest first. */
+export function useBackups() {
+  const client = useClient();
+  return useQuery({ queryKey: qk.backups, queryFn: ({ signal }) => client.listBackups(signal) });
+}
+
+/** `POST /backups` — create a backup, then refresh the list. */
+export function useCreateBackup() {
+  const client = useClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.createBackup(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.backups })
+  });
+}
+
 /** `GET /remote-access` — persisted remote settings plus the listener's effective state. */
 export function useRemoteAccess() {
   const client = useClient();

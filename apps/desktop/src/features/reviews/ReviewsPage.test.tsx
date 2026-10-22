@@ -14,6 +14,18 @@ function runtimeWith(reviews: PullRequestReview[]) {
       const review = store.get(decodeURIComponent(path.split("/")[2]!));
       return review ?? { status: 404, body: { error: { code: "not_found", message: "not_found: pull request" } } };
     },
+    "POST /prs/:id/create-pull-request": ({ path }) => {
+      const id = decodeURIComponent(path.split("/")[2]!);
+      const opened = { ...store.get(id)!, pr_number: 42, url: "https://github.com/acme/widgets/pull/42", ci_status: "unknown" };
+      store.set(id, opened);
+      return opened;
+    },
+    "POST /prs/:id/refresh": ({ path }) => {
+      const id = decodeURIComponent(path.split("/")[2]!);
+      const refreshed = { ...store.get(id)!, ci_status: "passed", mergeable: true, has_conflicts: false };
+      store.set(id, refreshed);
+      return refreshed;
+    },
     "POST /prs/:id/approve-merge": ({ path }) => {
       const id = decodeURIComponent(path.split("/")[2]!);
       const approved = { ...store.get(id)!, human_approved: true };
@@ -24,10 +36,11 @@ function runtimeWith(reviews: PullRequestReview[]) {
 }
 
 const reviews = [
-  pullRequest({ id: "pr-approved", pr_number: 1, title: "Approved docs", human_approved: true, updated_at: "2026-10-18T10:00:00Z" }),
+  pullRequest({ id: "pr-approved", pr_number: 1, url: "https://github.com/acme/widgets/pull/1", title: "Approved docs", human_approved: true, updated_at: "2026-10-18T10:00:00Z" }),
   pullRequest({
     id: "pr-blocked",
     pr_number: 2,
+    url: "https://github.com/acme/widgets/pull/2",
     title: "Blocked refactor",
     merge_readiness: { score: 2, label: "Needs work", evidence: [], blockers: ["Validation failed"] },
     updated_at: "2026-10-20T09:00:00Z"
@@ -35,6 +48,7 @@ const reviews = [
   pullRequest({
     id: "pr-ready",
     pr_number: 3,
+    url: "https://github.com/acme/widgets/pull/3",
     title: "Ready feature",
     merge_readiness: { score: 5, label: "Ready", evidence: ["All checks passed"], blockers: [] },
     updated_at: "2026-10-19T09:00:00Z"
@@ -49,6 +63,95 @@ function listTitles() {
 }
 
 describe("ReviewsPage", () => {
+  it("does not invent a pull request number or a CI result for a local worktree review", async () => {
+    const local = pullRequest({ id: "pr-local", pr_number: 0, ci_status: "none", title: "Local branch only" });
+    renderWithProviders(<ReviewsPage />, { runtime: runtimeWith([local]), route: "/reviews", path: "/reviews" });
+    await screen.findByText("Local branch only");
+    const item = listTitles()[0]!;
+    expect(item).toContain("Local review");
+    expect(item).toContain("No remote CI");
+    expect(item).not.toContain("#0");
+    expect(item).not.toMatch(/CI: (none|passed)/);
+  });
+
+  it("creates the pull request only after an explicit confirmation, exactly once", async () => {
+    const local = pullRequest({ id: "pr-local", pr_number: 0, ci_status: "none", title: "Local branch only", branch_name: "symphony/sym-9", base_branch: "main" });
+    const runtime = runtimeWith([local]);
+    renderWithProviders(<ReviewsPage />, { runtime, route: "/reviews/pr-local", path: "/reviews/:reviewId" });
+    fireEvent.click(await screen.findByRole("button", { name: "Create pull request" }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/commits the worktree's changes to branch symphony\/sym-9/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Nothing is merged/)).toBeInTheDocument();
+    expect(runtime.calls.filter((c) => c.method === "POST")).toHaveLength(0);
+
+    const confirm = await within(dialog).findByRole("button", { name: "Create pull request" });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(runtime.calls.filter((c) => c.method === "POST")).toEqual([
+      { method: "POST", path: "/prs/pr-local/create-pull-request", body: undefined }
+    ]);
+    // The review now links the real pull request, and the action is gone.
+    expect(await screen.findByRole("link", { name: /github.com\/acme\/widgets\/pull\/42/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create pull request" })).not.toBeInTheDocument();
+  });
+
+  it("refreshes a published pull request from GitHub on request", async () => {
+    const published = pullRequest({ id: "pr-live", pr_number: 9, ci_status: "unknown", url: "https://github.com/acme/widgets/pull/9", title: "Published" });
+    const runtime = runtimeWith([published]);
+    renderWithProviders(<ReviewsPage />, { runtime, route: "/reviews/pr-live", path: "/reviews/:reviewId" });
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh status" }));
+    await waitFor(() =>
+      expect(runtime.calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: "/prs/pr-live/refresh", body: undefined }])
+    );
+    // A local review has nothing to refresh.
+    expect(screen.queryByRole("button", { name: "Create pull request" })).not.toBeInTheDocument();
+  });
+
+  it("blocks creating a pull request while the branch conflicts or has security warnings", async () => {
+    const conflicted = pullRequest({ id: "pr-conflict", pr_number: 0, ci_status: "none", has_conflicts: true, mergeable: false, title: "Conflicted" });
+    renderWithProviders(<ReviewsPage />, { runtime: runtimeWith([conflicted]), route: "/reviews/pr-conflict", path: "/reviews/:reviewId" });
+    const button = await screen.findByRole("button", { name: "Create pull request" });
+    expect(button).toBeDisabled();
+    expect(screen.getAllByText(/Resolve the merge conflicts/).length).toBeGreaterThan(0);
+  });
+
+  it("blocks creating a pull request while the change has security warnings", async () => {
+    const flagged = pullRequest({
+      id: "pr-flagged",
+      pr_number: 0,
+      ci_status: "none",
+      security_warnings: ["Possible GitHub token added by the change."],
+      title: "Flagged"
+    });
+    renderWithProviders(<ReviewsPage />, { runtime: runtimeWith([flagged]), route: "/reviews/pr-flagged", path: "/reviews/:reviewId" });
+    const button = await screen.findByRole("button", { name: "Create pull request" });
+    expect(button).toBeDisabled();
+    expect(screen.queryByText(/Resolve the merge conflicts/)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/security warning/i).length).toBeGreaterThan(0);
+  });
+
+  it("surfaces a refused pull request instead of pretending it worked", async () => {
+    const local = pullRequest({ id: "pr-local", pr_number: 0, ci_status: "none", title: "Local branch only" });
+    const runtime = createMockRuntime({
+      "GET /projects": () => [project()],
+      "GET /prs": () => [local],
+      "GET /prs/:id": () => local,
+      "POST /prs/:id/create-pull-request": () => ({
+        status: 400,
+        body: { error: { code: "invalid_config", message: "invalid_config: no GitHub token is configured" } }
+      })
+    });
+    renderWithProviders(<ReviewsPage />, { runtime, route: "/reviews/pr-local", path: "/reviews/:reviewId" });
+    fireEvent.click(await screen.findByRole("button", { name: "Create pull request" }));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Create pull request" }));
+    expect(await screen.findByText(/no GitHub token is configured/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Create pull request" })).toBeInTheDocument();
+  });
+
   it("lists reviews newest first and filters them", async () => {
     renderWithProviders(<ReviewsPage />, { runtime: runtimeWith(reviews), route: "/reviews", path: "/reviews" });
     await screen.findByText("Blocked refactor");
@@ -125,7 +228,8 @@ describe("ReviewsPage", () => {
 
   it("renders local:// urls as text and web urls as safe links", async () => {
     const web = pullRequest({ id: "pr-web", url: "https://github.com/acme/repo/pull/7", title: "Web PR" });
-    renderWithProviders(<ReviewsPage />, { runtime: runtimeWith([...reviews, web]), route: "/reviews/pr-ready", path: "/reviews/:reviewId" });
+    const local = pullRequest({ id: "pr-local-url", pr_number: 0, ci_status: "none", url: "local://worktree/symphony/sym-1", title: "Local only" });
+    renderWithProviders(<ReviewsPage />, { runtime: runtimeWith([local, web]), route: "/reviews/pr-local-url", path: "/reviews/:reviewId" });
     expect(await screen.findByText("local://worktree/symphony/sym-1")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /local:\/\// })).not.toBeInTheDocument();
 

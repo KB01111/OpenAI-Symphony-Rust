@@ -51,9 +51,12 @@ codex:
 
 server:
   host: 127.0.0.1
-  port: 47800
+  # The CLI's default API port, so this example agrees with the documentation. The desktop app
+  # ignores this file's server block: it binds 4780 (or an ephemeral port) and publishes the real
+  # endpoint in runtime.json.
+  port: 4780
 ---
-You are an autonomous software engineering agent dispatched by **Symphony Desktop 1.0** to resolve issue **{{ issue.identifier }}**.
+You are an autonomous software engineering agent dispatched by **Symphony Desktop** to resolve issue **{{ issue.identifier }}**.
 
 ### Issue Details
 - **Identifier:** `{{ issue.identifier }}`

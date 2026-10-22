@@ -108,6 +108,39 @@ export type AttemptSummary = {
 };
 
 /**
+ * Existing backups, newest first, and the directory they live in.
+ */
+export type BackupList = {
+    directory: string;
+    backups: Array<BackupSummary>;
+};
+
+/**
+ * One backup on disk. Credentials are never part of a backup.
+ */
+export type BackupSummary = {
+    /**
+     * Directory name, unique per backup.
+     */
+    id: string;
+    /**
+     * Absolute directory of the backup on this machine.
+     */
+    path: string;
+    created_at: string;
+    app_version: string;
+    /**
+     * Database schema version of the backup.
+     */
+    schema_version: number;
+    size_bytes: number;
+    /**
+     * Whether the active `WORKFLOW.md` is part of the backup.
+     */
+    includes_workflow: boolean;
+};
+
+/**
  * Blocker reference for an Issue (SPEC.md Section 4.1.1)
  */
 export type BlockerRef = {
@@ -465,6 +498,11 @@ export type PullRequestReview = {
     merge_readiness: MergeReadinessReport;
     human_approved: boolean;
     updated_at: string;
+    /**
+     * The commit Symphony pushed when it opened the pull request: what the local validation and
+     * security evidence describe. A pull request whose head moved beyond it is flagged on refresh.
+     */
+    reviewed_commit: string | null;
 };
 
 /**
@@ -588,6 +626,10 @@ export type RunAttempt = {
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
+    /**
+     * `true` when this attempt's token usage is an estimate (see `Task::usage_estimated`).
+     */
+    usage_estimated: boolean;
 };
 
 /**
@@ -696,6 +738,12 @@ export type Task = {
     output_tokens: number;
     total_tokens: number;
     estimated_cost_usd: number;
+    thread_usage: ThreadUsageMark | null;
+    /**
+     * `true` when part of the token totals could not be measured exactly (the provider did not
+     * expose enough information to separate this task's usage from a resumed thread's history).
+     */
+    usage_estimated: boolean;
     duration_seconds: number;
     last_error: string | null;
     next_retry_at: string | null;
@@ -728,6 +776,14 @@ export type TaskStatus = 'backlog' | 'ready' | 'queued' | 'running' | 'blocked' 
  * stored as a string and validated by the API layer.
  */
 export type ThemePreference = 'system' | 'dark' | 'light';
+
+/**
+ * Absolute token usage of one provider thread, as last accounted for by Symphony.
+ */
+export type ThreadUsageMark = {
+    thread_id: string;
+    usage: TokenUsage;
+};
 
 /**
  * Token usage report
@@ -1659,6 +1715,66 @@ export type ApprovePrMergeResponses = {
 
 export type ApprovePrMergeResponse = ApprovePrMergeResponses[keyof ApprovePrMergeResponses];
 
+export type CreatePullRequestData = {
+    body?: never;
+    path: {
+        /**
+         * Review id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/prs/{id}/create-pull-request';
+};
+
+export type CreatePullRequestErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type CreatePullRequestError = CreatePullRequestErrors[keyof CreatePullRequestErrors];
+
+export type CreatePullRequestResponses = {
+    /**
+     * OK
+     */
+    200: PullRequestReview;
+};
+
+export type CreatePullRequestResponse = CreatePullRequestResponses[keyof CreatePullRequestResponses];
+
+export type RefreshPullRequestData = {
+    body?: never;
+    path: {
+        /**
+         * Review id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/prs/{id}/refresh';
+};
+
+export type RefreshPullRequestErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type RefreshPullRequestError = RefreshPullRequestErrors[keyof RefreshPullRequestErrors];
+
+export type RefreshPullRequestResponses = {
+    /**
+     * OK
+     */
+    200: PullRequestReview;
+};
+
+export type RefreshPullRequestResponse = RefreshPullRequestResponses[keyof RefreshPullRequestResponses];
+
 export type ListWorktreesData = {
     body?: never;
     path?: never;
@@ -1942,6 +2058,56 @@ export type ExportDiagnosticsResponses = {
 };
 
 export type ExportDiagnosticsResponse = ExportDiagnosticsResponses[keyof ExportDiagnosticsResponses];
+
+export type ListBackupsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/backups';
+};
+
+export type ListBackupsErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ListBackupsError = ListBackupsErrors[keyof ListBackupsErrors];
+
+export type ListBackupsResponses = {
+    /**
+     * OK
+     */
+    200: BackupList;
+};
+
+export type ListBackupsResponse = ListBackupsResponses[keyof ListBackupsResponses];
+
+export type CreateBackupData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/backups';
+};
+
+export type CreateBackupErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type CreateBackupError = CreateBackupErrors[keyof CreateBackupErrors];
+
+export type CreateBackupResponses = {
+    /**
+     * Created
+     */
+    201: BackupSummary;
+};
+
+export type CreateBackupResponse = CreateBackupResponses[keyof CreateBackupResponses];
 
 export type GetIssueDetailData = {
     body?: never;

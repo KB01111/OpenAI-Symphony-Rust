@@ -47,6 +47,7 @@ export const taskMessages = defineMessages({
     card: {
       attempts: "{count} attempt(s)",
       tokens: "{count} tokens",
+      tokensEstimated: "About {count} tokens (estimated: part of the usage could not be measured exactly)",
       updated: "Updated",
       actions: "Actions for {identifier}",
       openHint: "Double-click or press Enter to open the execution view",
@@ -189,6 +190,7 @@ export const taskMessages = defineMessages({
     card: {
       attempts: "{count} försök",
       tokens: "{count} tokens",
+      tokensEstimated: "Ungefär {count} tokens (uppskattning: en del av förbrukningen kunde inte mätas exakt)",
       updated: "Uppdaterad",
       actions: "Åtgärder för {identifier}",
       openHint: "Dubbelklicka eller tryck Enter för att öppna körningsvyn",

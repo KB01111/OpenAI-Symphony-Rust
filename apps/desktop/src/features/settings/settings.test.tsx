@@ -5,7 +5,7 @@ import type { RemoteAccessStatus } from "@symphony/shared-types";
 import { settings } from "../../test/fixtures.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
 import { settingsMessages } from "./messages.js";
-import { RemoteSection } from "./sections.js";
+import { BackupsSection, RemoteSection } from "./sections.js";
 import { isLoopback, isValidRemoteOrigin, parseOrigins, portOf, serverErrorFields, validateSettings } from "./validation.js";
 
 const v = settingsMessages.en.validation;
@@ -140,5 +140,65 @@ describe("RemoteSection", () => {
     fireEvent.click(await within(dialog).findByRole("button", { name: m.revoke }));
     await waitFor(() => expect(runtime.calls.some((c) => c.method === "DELETE" && c.path === "/remote-access/token")).toBe(true));
     expect(await screen.findByText(m.states.token_missing!)).toBeInTheDocument();
+  });
+});
+
+describe("BackupsSection", () => {
+  const m = settingsMessages.en.backups;
+  const summary = (id: string, createdAt: string) => ({
+    id,
+    path: `C:\\data\\backups\\${id}`,
+    created_at: createdAt,
+    app_version: "2.0.0",
+    schema_version: 2,
+    size_bytes: 2048,
+    includes_workflow: true
+  });
+
+  it("creates a backup, lists it and states what is not included", async () => {
+    const stored = [summary("symphony-backup-20261020T100000Z", "2026-10-20T10:00:00Z")];
+    const runtime = createMockRuntime({
+      "GET /backups": () => ({ directory: "C:\\data\\backups", backups: stored }),
+      "POST /backups": () => {
+        const created = summary("symphony-backup-20261021T120000Z", "2026-10-21T12:00:00Z");
+        stored.unshift(created);
+        return { status: 201, body: created };
+      }
+    });
+    renderWithProviders(<BackupsSection />, { runtime });
+
+    expect(await screen.findByText("symphony-backup-20261020T100000Z")).toBeInTheDocument();
+    expect(screen.getByText(/API keys and tokens/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: m.create }));
+    expect(await screen.findByText("symphony-backup-20261021T120000Z")).toBeInTheDocument();
+    expect(runtime.calls.filter((c) => c.method === "POST")).toHaveLength(1);
+  });
+
+  it("reports a failed backup instead of pretending it succeeded", async () => {
+    const runtime = createMockRuntime({
+      "GET /backups": () => ({ directory: "C:\\data\\backups", backups: [] }),
+      "POST /backups": () => ({
+        status: 500,
+        body: { error: { code: "storage_error", message: "storage_error: database backup failed: disk full" } }
+      })
+    });
+    renderWithProviders(<BackupsSection />, { runtime });
+    expect(await screen.findByText(m.empty)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: m.create }));
+    expect(await screen.findByText(m.createFailed)).toBeInTheDocument();
+    expect(await screen.findByText(/disk full/)).toBeInTheDocument();
+    expect(screen.getByText(m.empty)).toBeInTheDocument();
+  });
+
+  it("says so when the host does not manage backups", async () => {
+    const runtime = createMockRuntime({
+      "GET /backups": () => ({
+        status: 501,
+        body: { error: { code: "backups_unavailable", message: "backups_unavailable: This runtime host does not manage backups" } }
+      })
+    });
+    renderWithProviders(<BackupsSection />, { runtime });
+    expect(await screen.findByText(m.unavailable)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: m.create })).not.toBeInTheDocument();
   });
 });

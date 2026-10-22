@@ -268,6 +268,17 @@ export class SymphonyClient {
   approvePullRequest(id: string) {
     return this.call((o) => api.approvePrMerge({ ...o, path: { id } }));
   }
+  /**
+   * Publish the reviewed branch as a GitHub pull request (commit, push, open). An explicit human
+   * action; it never merges anything. Repeating it returns the existing pull request.
+   */
+  createPullRequest(id: string) {
+    return this.call((o) => api.createPullRequest({ ...o, path: { id } }));
+  }
+  /** Re-read the pull request's CI result, merge state and comments from GitHub and re-rate it. */
+  refreshPullRequest(id: string) {
+    return this.call((o) => api.refreshPullRequest({ ...o, path: { id } }));
+  }
   listWorktrees(signal?: AbortSignal) {
     return this.call((o) => api.listWorktrees(o), signal);
   }
@@ -311,6 +322,19 @@ export class SymphonyClient {
   }
   exportDiagnostics() {
     return this.call((o) => api.exportDiagnostics(o)) as Promise<Record<string, unknown>>;
+  }
+
+  // --------------------------------------------------------------------------------------------
+  // Backups (local administration only)
+  // --------------------------------------------------------------------------------------------
+
+  /** Existing local backups, newest first, and the directory they are stored in. */
+  listBackups(signal?: AbortSignal) {
+    return this.call((o) => api.listBackups(o), signal);
+  }
+  /** Create a SQLite-consistent backup now. Credentials are never included. */
+  createBackup() {
+    return this.call((o) => api.createBackup(o));
   }
 
   // --------------------------------------------------------------------------------------------

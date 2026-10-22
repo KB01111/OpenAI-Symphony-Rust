@@ -55,6 +55,7 @@ fn config(
         extra_env: HashMap::new(),
         dynamic_tools: Vec::new(),
         require_human_approval_for_requests: false,
+        resume_usage_baseline: None,
     }
 }
 

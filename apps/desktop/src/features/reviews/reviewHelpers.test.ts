@@ -8,6 +8,7 @@ import {
   diffForFile,
   filterReviews,
   hasActiveReviewFilters,
+  hasPullRequest,
   isWebUrl,
   scoreTone
 } from "./reviewHelpers.js";
@@ -86,6 +87,13 @@ describe("diff slicing", () => {
     "@@ -0,0 +1 @@",
     "+# Readme"
   ].join("\n");
+
+  it("treats pull request number 0 as no pull request", () => {
+    expect(hasPullRequest({ pr_number: 0, url: "https://github.com/a/b/pull/1" })).toBe(false);
+    expect(hasPullRequest({ pr_number: 12, url: "https://github.com/a/b/pull/12" })).toBe(true);
+    // A number written by an older version for a local review is not a pull request.
+    expect(hasPullRequest({ pr_number: 2, url: "local://worktree/symphony/sym-1" })).toBe(false);
+  });
 
   it("restricts a unified diff to one file", () => {
     const only = diffForFile(diff, "README.md");

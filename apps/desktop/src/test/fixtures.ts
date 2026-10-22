@@ -73,6 +73,8 @@ export function task(overrides: Partial<Task> & { identifier?: string; title?: s
     output_tokens: 0,
     total_tokens: 0,
     estimated_cost_usd: 0,
+    thread_usage: null,
+    usage_estimated: false,
     duration_seconds: 0,
     last_error: null,
     next_retry_at: null,
@@ -211,6 +213,7 @@ export function pullRequest(overrides: Partial<PullRequestReview> = {}): PullReq
     review_comments: [],
     security_warnings: [],
     merge_readiness: { score: 4, label: "Strong Candidate", evidence: ["Clean merge"], blockers: [] },
+    reviewed_commit: null,
     human_approved: false,
     updated_at: now,
     ...overrides

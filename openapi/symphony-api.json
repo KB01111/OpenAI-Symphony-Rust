@@ -1408,6 +1408,102 @@
         "x-symphony-remote": false
       }
     },
+    "/api/v1/prs/{id}/create-pull-request": {
+      "post": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "Publish a reviewed branch as a GitHub pull request: commits the worktree's changes to the task\nbranch, pushes it to `origin` (never forced) and opens a pull request into the base branch.\nAn explicit human action, local administration only. Nothing is merged. Repeating the call\nreturns the review's existing pull request.",
+        "operationId": "createPullRequest",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Review id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestReview"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
+    "/api/v1/prs/{id}/refresh": {
+      "post": {
+        "tags": [
+          "reviews"
+        ],
+        "summary": "Refresh a review's pull request from GitHub: CI result, merge state, state and review comments,\nthen re-rate it. Read-only on GitHub; local administration only.",
+        "operationId": "refreshPullRequest",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Review id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestReview"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
     "/api/v1/worktrees": {
       "get": {
         "tags": [
@@ -1836,6 +1932,78 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
+    "/api/v1/backups": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "List the local backups.",
+        "operationId": "listBackups",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupList"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      },
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "Create a backup now: a transactionally consistent copy of the database (SQLite `VACUUM INTO`,\nWAL included) plus the active `WORKFLOW.md`, with a checksum manifest. Credentials are not\nincluded. Restoring is an offline operation (`symphony-cli restore-backup <folder>`).",
+        "operationId": "createBackup",
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupSummary"
                 }
               }
             }
@@ -2378,6 +2546,69 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "BackupList": {
+        "type": "object",
+        "description": "Existing backups, newest first, and the directory they live in.",
+        "required": [
+          "directory",
+          "backups"
+        ],
+        "properties": {
+          "directory": {
+            "type": "string"
+          },
+          "backups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BackupSummary"
+            }
+          }
+        }
+      },
+      "BackupSummary": {
+        "type": "object",
+        "description": "One backup on disk. Credentials are never part of a backup.",
+        "required": [
+          "id",
+          "path",
+          "created_at",
+          "app_version",
+          "schema_version",
+          "size_bytes",
+          "includes_workflow"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Directory name, unique per backup."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute directory of the backup on this machine."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "app_version": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Database schema version of the backup."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "includes_workflow": {
+            "type": "boolean",
+            "description": "Whether the active `WORKFLOW.md` is part of the backup."
           }
         }
       },
@@ -3730,7 +3961,8 @@
           "security_warnings",
           "merge_readiness",
           "human_approved",
-          "updated_at"
+          "updated_at",
+          "reviewed_commit"
         ],
         "properties": {
           "id": {
@@ -3810,6 +4042,13 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "reviewed_commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit Symphony pushed when it opened the pull request: what the local validation and\nsecurity evidence describe. A pull request whose head moved beyond it is flagged on refresh."
           }
         }
       },
@@ -4106,7 +4345,8 @@
           "error",
           "input_tokens",
           "output_tokens",
-          "total_tokens"
+          "total_tokens",
+          "usage_estimated"
         ],
         "properties": {
           "id": {
@@ -4192,6 +4432,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "usage_estimated": {
+            "type": "boolean",
+            "description": "`true` when this attempt's token usage is an estimate (see `Task::usage_estimated`)."
           }
         }
       },
@@ -4516,6 +4760,8 @@
           "output_tokens",
           "total_tokens",
           "estimated_cost_usd",
+          "thread_usage",
+          "usage_estimated",
           "duration_seconds",
           "last_error",
           "next_retry_at",
@@ -4623,6 +4869,21 @@
           "estimated_cost_usd": {
             "type": "number",
             "format": "double"
+          },
+          "thread_usage": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThreadUsageMark",
+                "description": "Absolute usage of the provider thread (`current_thread_id`) that earlier attempts already\naccounted for: the baseline a resumed thread's cumulative reports are measured against."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage_estimated": {
+            "type": "boolean",
+            "description": "`true` when part of the token totals could not be measured exactly (the provider did not\nexpose enough information to separate this task's usage from a resumed thread's history)."
           },
           "duration_seconds": {
             "type": "number",
@@ -4733,6 +4994,22 @@
           "dark",
           "light"
         ]
+      },
+      "ThreadUsageMark": {
+        "type": "object",
+        "description": "Absolute token usage of one provider thread, as last accounted for by Symphony.",
+        "required": [
+          "thread_id",
+          "usage"
+        ],
+        "properties": {
+          "thread_id": {
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/TokenUsage"
+          }
+        }
       },
       "TokenUsage": {
         "type": "object",
@@ -5100,6 +5377,10 @@
     {
       "name": "diagnostics",
       "description": "Redacted diagnostics export"
+    },
+    {
+      "name": "backups",
+      "description": "SQLite-consistent local backups of the application data (local administration only)"
     },
     {
       "name": "remote-access",

@@ -70,6 +70,19 @@ enum Commands {
         #[arg(default_value = "WORKFLOW.md")]
         path: PathBuf,
     },
+    /// Check a backup without changing anything: manifest, checksums, schema version and SQLite's
+    /// integrity check of the database copy
+    VerifyBackup {
+        /// Backup directory (`<data dir>/backups/symphony-backup-<time>`)
+        path: PathBuf,
+    },
+    /// Replace the application data in `--data-dir` with a backup. Needs the runtime stopped; the
+    /// replaced files are kept as `<name>.pre-restore-<time>` and put back if the restore fails.
+    /// Credentials are not part of a backup and are left untouched.
+    RestoreBackup {
+        /// Backup directory (`<data dir>/backups/symphony-backup-<time>`)
+        path: PathBuf,
+    },
     /// Run a single task immediately in headless CLI mode
     RunTask {
         #[arg(long)]
@@ -99,6 +112,18 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Some(Commands::VerifyBackup { path }) = &cli.command {
+        let manifest = symphony_storage::backup::verify_backup(path).await?;
+        println!(
+            "Backup is intact: {} file(s), created {}, database schema version {}, made by Symphony Desktop {}.",
+            manifest.files.len(),
+            manifest.created_at.to_rfc3339(),
+            manifest.schema_version,
+            manifest.app_version
+        );
+        return Ok(());
+    }
+
     let data_dir = cli.data_dir.clone().unwrap_or_else(default_app_data_dir);
     std::fs::create_dir_all(&data_dir)?;
     match init_logging(Some(&data_dir), "cli") {
@@ -110,9 +135,29 @@ async fn main() -> anyhow::Result<()> {
     // One runtime (desktop or CLI) owns a data directory at a time: single authoritative scheduler.
     let _instance_guard = SingleInstanceGuard::acquire(&data_dir)?;
 
-    let db_path = cli
-        .db_path
-        .unwrap_or_else(|| data_dir.join("symphony.sqlite"));
+    if let Some(Commands::RestoreBackup { path }) = &cli.command {
+        if cli.db_path.is_some() {
+            anyhow::bail!("--db-path cannot be combined with restore-backup: it restores <data-dir>/symphony.sqlite");
+        }
+        let report = symphony_storage::backup::restore_backup(path, &data_dir).await?;
+        println!(
+            "Restored {} into {}.",
+            report.restored_from.display(),
+            data_dir.display()
+        );
+        for previous in &report.previous_files {
+            println!("Kept the replaced file: {}", previous.display());
+        }
+        println!(
+            "Credentials were not touched. Start Symphony Desktop again to use the restored data."
+        );
+        return Ok(());
+    }
+
+    let default_database = data_dir.join("symphony.sqlite");
+    // Only a database that is really elsewhere cannot be restored by `restore-backup`.
+    let custom_database = cli.db_path.as_ref().is_some_and(|p| *p != default_database);
+    let db_path = cli.db_path.unwrap_or(default_database);
     let storage = Storage::connect(&db_path).await?;
     // `--quarantine-credential-vault` only acts on a vault that cannot be opened; a readable
     // vault is used as is, so leaving the flag in a service definition is harmless.
@@ -251,6 +296,9 @@ async fn main() -> anyhow::Result<()> {
         allowed_origins,
         default_workspace_root: Some(data_dir.join("workspaces")),
         remote_access: Some(remote_access.clone()),
+        // `restore-backup` restores <data-dir>/symphony.sqlite only: with a database elsewhere a
+        // backup could be made but never restored, so none is offered.
+        backup_root: (!custom_database).then(|| data_dir.join("backups")),
         ..ServerConfig::local(port, Some(token.clone()))
     };
     let (addr, _handle) = match start_http_server(orchestrator.clone(), server_config.clone()).await

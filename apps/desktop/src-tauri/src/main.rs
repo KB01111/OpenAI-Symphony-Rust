@@ -364,6 +364,7 @@ async fn start_embedded_runtime(
     let local_config = ServerConfig {
         default_workspace_root: Some(data_dir.join("workspaces")),
         remote_access: Some(remote_access.clone()),
+        backup_root: Some(data_dir.join("backups")),
         ..ServerConfig::local(DEFAULT_LOCAL_PORT, Some(token.clone()))
     };
     // Preferred port first; an ephemeral fallback is discovered by clients via IPC/runtime.json.

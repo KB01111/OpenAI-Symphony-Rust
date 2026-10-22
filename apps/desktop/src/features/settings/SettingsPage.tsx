@@ -13,6 +13,7 @@ import {
   ApplicationSection,
   DefaultsSection,
   DesktopSection,
+  BackupsSection,
   DiagnosticsSection,
   IntegrationsSection,
   RemoteSection,
@@ -232,6 +233,7 @@ export default function SettingsPage() {
                 <DefaultsSection draft={current} errors={errors} update={update} />
                 <RemoteSection draft={current} errors={errors} update={update} />
                 <IntegrationsSection />
+                <BackupsSection />
                 <DiagnosticsSection />
                 <ApplicationSection />
               </>

@@ -25,7 +25,8 @@ export function readinessEvidence(review: PullRequestReview): ReadinessEvidence 
     ci: ci === "success" || ci === "passed" ? "pass" : ci === "failure" || ci === "failed" ? "fail" : "pending",
     validation:
       validations.length === 0 ? "pending" : validations.every((v) => v.passed) ? "pass" : "fail",
-    conflicts: review.has_conflicts ? "fail" : "pass",
+    // `mergeable` is only true after a simulated merge succeeded: unknown is not "clean".
+    conflicts: review.has_conflicts ? "fail" : review.mergeable ? "pass" : "pending",
     security: review.security_warnings.length > 0 ? "fail" : "pass",
     reviewedComments: review.review_comments.length
   };
@@ -55,7 +56,12 @@ export const MergeReadinessCard: React.FC<MergeReadinessCardProps> = ({ review, 
   const evidence = readinessEvidence(review);
 
   const rows: { key: string; label: string; state: EvidenceState; value: string }[] = [
-    { key: "ci", label: ui.ci, state: evidence.ci, value: review.ci_status || ui.pending },
+    {
+      key: "ci",
+      label: ui.ci,
+      state: evidence.ci,
+      value: review.ci_status === "none" || !review.ci_status ? ui.noRemoteCi : review.ci_status
+    },
     {
       key: "validation",
       label: ui.validation,
@@ -65,7 +71,7 @@ export const MergeReadinessCard: React.FC<MergeReadinessCardProps> = ({ review, 
           ? ui.noneRun
           : `${review.validation_results.filter((v) => v.passed).length}/${review.validation_results.length}`
     },
-    { key: "conflicts", label: ui.conflicts, state: evidence.conflicts, value: evidence.conflicts === "pass" ? ui.clean : ui.detected },
+    { key: "conflicts", label: ui.conflicts, state: evidence.conflicts, value: evidence.conflicts === "pass" ? ui.clean : evidence.conflicts === "fail" ? ui.detected : ui.notChecked },
     {
       key: "security",
       label: ui.security,

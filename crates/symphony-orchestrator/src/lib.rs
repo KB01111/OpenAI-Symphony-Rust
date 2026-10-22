@@ -8,25 +8,29 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use symphony_agents::{
-    detect_provider_statuses, start_agent_session, AgentLaunchConfig, AgentStreamEvent,
-    ApprovalGate, DynamicToolHandler,
+    detect_provider_statuses, start_agent_session, AgentLaunchConfig, AgentSession,
+    AgentStreamEvent, ApprovalGate, DynamicToolHandler,
 };
 use symphony_core::{
-    compute_backoff_delay_ms, redact_secrets, render_continuation_prompt, render_workflow_prompt,
-    sort_candidate_issues, AgentEvent, ApprovalDecision, ApprovalRequest, ApprovalStatus,
-    CodexTotals, HardwareSnapshot, Issue, LiveSession, MergeReadinessReport,
-    OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus, PullRequestReview,
-    RepositoryValidation, RetryEntry, RunAttempt, RunAttemptPhase, RunningSessionSummary,
-    ServiceConfig, StateCounts, SymphonyError, SymphonyResult, Task, TaskDiff, TaskStatus,
-    TokenUsage, ValidationResult, WorkflowDefinition, WorktreeInfo,
+    compute_backoff_delay_ms, detect_secrets_in_added_lines, redact_secrets,
+    render_continuation_prompt, render_workflow_prompt, sort_candidate_issues, AgentEvent,
+    ApprovalDecision, ApprovalRequest, ApprovalStatus, CodexTotals, ConflictCheck,
+    HardwareSnapshot, Issue, LiveSession, MergeReadinessReport, OrchestratorStateSnapshot, Project,
+    ProviderKind, ProviderStatus, PullRequestReview, RepositoryValidation, RetryEntry, RunAttempt,
+    RunAttemptPhase, RunningSessionSummary, ServiceConfig, StateCounts, SymphonyError,
+    SymphonyResult, Task, TaskDiff, TaskStatus, ThreadUsageMark, TokenUsage, ValidationResult,
+    WorkflowDefinition, WorktreeInfo,
 };
 use symphony_platform::{HardwareMonitor, SecretStore};
+
+/// How much of a change is scanned for credentials before a review is scored.
+const SECRET_SCAN_DIFF_BYTES: usize = 4 * 1024 * 1024;
 
 /// Provider API keys that agent subprocesses may receive from the credential vault.
 pub const PROVIDER_CREDENTIAL_ENV_KEYS: &[&str] = &["OPENAI_API_KEY", "ANTHROPIC_API_KEY"];
 use symphony_storage::Storage;
 use symphony_trackers::{GitHubTracker, LinearTracker, TrackerAdapter};
-use symphony_workspaces::WorkspaceManager;
+use symphony_workspaces::{MergeCheck, WorkspaceManager};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
@@ -121,6 +125,89 @@ pub struct ProjectUpdate {
     pub validation_commands: Option<Vec<String>>,
 }
 
+fn short_sha(sha: &str) -> &str {
+    sha.get(..8).unwrap_or(sha)
+}
+
+/// The same error with credentials masked in its message (git and HTTP errors can echo URLs).
+fn with_redacted_message(error: SymphonyError, secrets: &[String]) -> SymphonyError {
+    match error {
+        SymphonyError::GitWorktreeError(message) => {
+            SymphonyError::GitWorktreeError(redact_secrets(&message, secrets))
+        }
+        SymphonyError::TrackerError { code, message } => SymphonyError::TrackerError {
+            code,
+            message: redact_secrets(&message, secrets),
+        },
+        other => other,
+    }
+}
+
+/// Tokens an attempt has recorded so far.
+fn attempt_usage(attempt: &RunAttempt) -> TokenUsage {
+    TokenUsage {
+        input_tokens: attempt.input_tokens,
+        output_tokens: attempt.output_tokens,
+        total_tokens: attempt.total_tokens,
+    }
+}
+
+/// Add usage to a task and to the attempt that consumed it.
+fn record_usage(task: &mut Task, attempt: &mut RunAttempt, delta: &TokenUsage) {
+    task.input_tokens = task.input_tokens.saturating_add(delta.input_tokens);
+    task.output_tokens = task.output_tokens.saturating_add(delta.output_tokens);
+    task.total_tokens = task.total_tokens.saturating_add(delta.total_tokens);
+    task.estimated_cost_usd += delta.estimate_cost_usd(task.model.as_deref());
+    attempt.input_tokens = attempt.input_tokens.saturating_add(delta.input_tokens);
+    attempt.output_tokens = attempt.output_tokens.saturating_add(delta.output_tokens);
+    attempt.total_tokens = attempt.total_tokens.saturating_add(delta.total_tokens);
+}
+
+/// Remember the absolute usage of the provider thread (the baseline for resuming it) and carry
+/// an "estimated" measurement over to the task and the attempt.
+fn record_thread_usage(
+    task: &mut Task,
+    attempt: &mut RunAttempt,
+    thread_id: &str,
+    thread_total: Option<TokenUsage>,
+    estimated: bool,
+) {
+    if let Some(usage) = thread_total {
+        task.thread_usage = Some(ThreadUsageMark {
+            thread_id: thread_id.to_string(),
+            usage,
+        });
+    }
+    if estimated {
+        task.usage_estimated = true;
+        attempt.usage_estimated = true;
+    }
+}
+
+/// Account for usage a session consumed that no completed turn reported (a turn that timed out,
+/// crashed or was interrupted): everything beyond what the attempt already recorded.
+fn settle_session_usage(task: &mut Task, attempt: &mut RunAttempt, session: &dyn AgentSession) {
+    let snapshot = session.usage_snapshot();
+    let unreported = snapshot.session_usage.since(&attempt_usage(attempt));
+    if unreported != TokenUsage::default() {
+        record_usage(task, attempt, &unreported);
+    }
+    match session.thread_id() {
+        Some(thread_id) => record_thread_usage(
+            task,
+            attempt,
+            &thread_id,
+            snapshot.thread_total,
+            snapshot.estimated,
+        ),
+        None if snapshot.estimated => {
+            task.usage_estimated = true;
+            attempt.usage_estimated = true;
+        }
+        None => {}
+    }
+}
+
 struct ActiveWorkerHandle {
     pub session: LiveSession,
     pub cancel_tx: oneshot::Sender<String>,
@@ -129,6 +216,10 @@ struct ActiveWorkerHandle {
 struct OrchestratorRuntimeMemory {
     pub scheduler_paused: bool,
     pub running: HashMap<String, ActiveWorkerHandle>,
+    /// Tasks whose worker was told to stop and has not finished winding down (settling the usage
+    /// of the interrupted turn). They are not dispatchable meanwhile: a new attempt would resume
+    /// from a thread baseline the old worker is about to move.
+    pub winding_down: HashSet<String>,
     pub claimed_issue_ids: HashSet<String>,
     pub retry_attempts: HashMap<String, RetryEntry>,
     pub completed_issue_ids: HashSet<String>,
@@ -257,6 +348,11 @@ pub struct SymphonyOrchestrator {
     /// tick working from a snapshot cannot start a task that was just moved by hand. Taken before
     /// `memory`, never while holding it.
     dispatch_lock: Arc<Mutex<()>>,
+    /// Serializes publishing a review (commit, push, open the pull request), so a double click
+    /// cannot commit or open twice. Never held together with `dispatch_lock`.
+    publish_lock: Arc<Mutex<()>>,
+    /// GitHub REST API base URL for pull requests (GitHub Enterprise, tests); `None` = github.com.
+    github_api_url: Option<String>,
 }
 
 impl SymphonyOrchestrator {
@@ -337,6 +433,7 @@ impl SymphonyOrchestrator {
         let memory = Arc::new(RwLock::new(OrchestratorRuntimeMemory {
             scheduler_paused: false,
             running: HashMap::new(),
+            winding_down: HashSet::new(),
             claimed_issue_ids: HashSet::new(),
             retry_attempts,
             completed_issue_ids: completed_ids,
@@ -361,6 +458,8 @@ impl SymphonyOrchestrator {
             refresh_tx,
             refresh_rx: Arc::new(Mutex::new(refresh_rx)),
             dispatch_lock: Arc::new(Mutex::new(())),
+            publish_lock: Arc::new(Mutex::new(())),
+            github_api_url: None,
         })
     }
 
@@ -1114,7 +1213,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let cancel_tx = {
             let mut mem = self.memory.write().await;
             mem.retry_attempts.remove(task_id);
-            mem.running.remove(task_id).map(|h| h.cancel_tx)
+            let stopped = mem.running.remove(task_id).map(|h| h.cancel_tx);
+            if stopped.is_some() {
+                mem.winding_down.insert(task_id.to_string());
+            }
+            stopped
         };
         if let Some(tx) = cancel_tx {
             let _ = tx.send(reason.to_string());
@@ -1128,7 +1231,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
         task.current_session_id = None;
         task.last_error = Some(reason.to_string());
         task.updated_at = Utc::now();
-        self.storage.upsert_task(&task).await?;
+        // Only the lifecycle columns: the stopped worker settles its usage concurrently, and a full
+        // row written from the copy read above would put the older totals back.
+        self.storage.update_task_lifecycle(&task).await?;
+        let task = self.get_task(task_id).await?;
 
         {
             let mut mem = self.memory.write().await;
@@ -1158,13 +1264,40 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 task.issue.identifier
             )));
         }
+        // A refused retry must not leave the task Queued for the scheduler to start later.
+        if self.memory.read().await.winding_down.contains(task_id) {
+            return Err(SymphonyError::Conflict(format!(
+                "the previous attempt of {} is still stopping; try again in a moment",
+                task.issue.identifier
+            )));
+        }
         task.status.validate_transition(TaskStatus::Queued)?;
+        let before = (task.status, task.last_error.clone(), task.next_retry_at);
         task.status = TaskStatus::Queued;
         task.last_error = None;
         task.next_retry_at = None;
         task.updated_at = Utc::now();
         self.storage.upsert_task(&task).await?;
-        self.dispatch_task_now(task_id).await
+        match self.dispatch_task_now(task_id).await {
+            Ok(task) => Ok(task),
+            Err(err) => {
+                // Dispatch refused (for instance the previous attempt began stopping meanwhile):
+                // put the task back as it was instead of leaving it queued.
+                if let Ok(mut current) = self.get_task(task_id).await {
+                    let queued_and_idle = current.status == TaskStatus::Queued
+                        && !self.memory.read().await.running.contains_key(task_id);
+                    if queued_and_idle {
+                        current.status = before.0;
+                        current.last_error = before.1;
+                        current.next_retry_at = before.2;
+                        current.updated_at = Utc::now();
+                        // Lifecycle columns only: the previous worker may be settling usage.
+                        let _ = self.storage.update_task_lifecycle(&current).await;
+                    }
+                }
+                Err(err)
+            }
+        }
     }
 
     pub async fn resolve_approval(
@@ -1390,6 +1523,365 @@ Please implement the requested changes cleanly in the current Git workspace, run
         })
     }
 
+    /// Credential warnings for what the worktree changed since `base` (commits, uncommitted changes,
+    /// untracked files): up to [`SECRET_SCAN_DIFF_BYTES`] are scanned, and a change too large for
+    /// that says so instead of passing silently.
+    async fn scan_workspace_for_credentials(
+        &self,
+        workspace: &Path,
+        base: Option<&str>,
+    ) -> Vec<String> {
+        let mut warnings = Vec::new();
+        // A scan that could not run must not read as "nothing found": it blocks publishing like a
+        // finding does.
+        let (scan_diff, truncated) = match self
+            .workspaces
+            .diff_since_checked(workspace, SECRET_SCAN_DIFF_BYTES, base)
+            .await
+        {
+            Ok(result) => result,
+            Err((partial, reason)) => {
+                warnings.push(format!(
+                    "The change could not be scanned for credentials ({reason})."
+                ));
+                (partial, false)
+            }
+        };
+        if base.is_none() {
+            warnings.push(
+                "The commit the branch started from was not found, so commits already made on it were not scanned for credentials."
+                    .to_string(),
+            );
+        }
+        warnings.extend(
+            detect_secrets_in_added_lines(&scan_diff)
+                .into_iter()
+                .map(|kind| format!("Possible {kind} added by the change.")),
+        );
+        if truncated {
+            warnings.push(format!(
+                "The diff is larger than the {} MiB scanned for credentials; part of it was not checked.",
+                SECRET_SCAN_DIFF_BYTES / (1024 * 1024)
+            ));
+        }
+        warnings
+    }
+
+    /// Whether `host` (with an explicit port, as in `https://host:port/`) is the GitHub host of this
+    /// runtime: github.com, or the host of the configured GitHub Enterprise API URL.
+    fn is_github_host(&self, host: &str) -> bool {
+        if host.eq_ignore_ascii_case("github.com") {
+            return true;
+        }
+        self.github_api_url
+            .as_deref()
+            .and_then(|api| url::Url::parse(api).ok())
+            .map(|api| {
+                let api_host = match (api.host_str(), api.port()) {
+                    (Some(h), Some(p)) => format!("{h}:{p}"),
+                    (Some(h), None) => h.to_string(),
+                    _ => return false,
+                };
+                host.eq_ignore_ascii_case(&api_host)
+                    || host.eq_ignore_ascii_case(api_host.strip_prefix("api.").unwrap_or(&api_host))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Use another GitHub REST API base URL (GitHub Enterprise Server) for pull requests.
+    pub fn with_github_api_url(mut self, url: impl Into<String>) -> Self {
+        self.github_api_url = Some(url.into()).filter(|u| !u.trim().is_empty());
+        self
+    }
+
+    /// Publish a reviewed branch as a GitHub pull request. **An explicit human action** (the
+    /// review's "Create pull request" button): the worktree's changes are committed to the task
+    /// branch, the branch is pushed to `origin` (never forced) and a pull request into the base
+    /// branch is opened. Nothing is merged, ever; merging stays with the repository's owners.
+    ///
+    /// Safe to repeat: a review that already has a pull request is returned unchanged, and a branch
+    /// that already has an open pull request adopts it instead of failing or duplicating it.
+    pub async fn create_pull_request(&self, review_id: &str) -> SymphonyResult<PullRequestReview> {
+        let _publishing = self.publish_lock.lock().await;
+        let mut review = self
+            .storage
+            .get_pr_review(review_id)
+            .await?
+            .ok_or_else(|| SymphonyError::NotFound(format!("PR review {review_id} not found")))?;
+        if review.has_pull_request() {
+            return Ok(review);
+        }
+        let task = self.get_task(&review.task_id).await?;
+        if !matches!(task.status, TaskStatus::HumanReview | TaskStatus::Completed) {
+            return Err(SymphonyError::Conflict(format!(
+                "task {} is {}: a pull request can only be opened for a finished run",
+                task.issue.identifier,
+                task.status.as_str()
+            )));
+        }
+        let project = self
+            .storage
+            .get_project(&review.project_id)
+            .await?
+            .ok_or_else(|| SymphonyError::ProjectNotFound(review.project_id.clone()))?;
+        let repo = project
+            .github_repo
+            .clone()
+            .filter(|r| r.contains('/'))
+            .ok_or_else(|| {
+                SymphonyError::InvalidConfig(
+                    "the project has no GitHub repository (owner/name) to open a pull request in"
+                        .into(),
+                )
+            })?;
+        let token = self.github_token().ok_or_else(|| {
+            SymphonyError::InvalidConfig(
+                "no GitHub token is configured: add GITHUB_TOKEN under Settings > Integrations"
+                    .into(),
+            )
+        })?;
+        if !review.security_warnings.is_empty() {
+            return Err(SymphonyError::Conflict(
+                "the review has security warnings; resolve them before publishing the branch"
+                    .into(),
+            ));
+        }
+        if review.has_conflicts {
+            return Err(SymphonyError::Conflict(format!(
+                "the branch conflicts with `{}`; resolve the conflicts before opening a pull request",
+                review.base_branch
+            )));
+        }
+        let workspace = task
+            .workspace_path
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .ok_or_else(|| {
+                SymphonyError::NotFound(format!(
+                    "the worktree of {} no longer exists",
+                    task.issue.identifier
+                ))
+            })?;
+        let branch = task
+            .branch_name
+            .clone()
+            .unwrap_or_else(|| review.branch_name.clone());
+
+        // The review is a snapshot; what is published is the worktree as it is now. Check it again
+        // right before it leaves the machine.
+        let base = self
+            .workspaces
+            .review_base(&workspace, &review.base_branch)
+            .await;
+        let warnings = self
+            .scan_workspace_for_credentials(&workspace, base.as_deref())
+            .await;
+        if !warnings.is_empty() {
+            return Err(SymphonyError::Conflict(format!(
+                "the worktree has security warnings: {}",
+                warnings.join(" ")
+            )));
+        }
+        if let MergeCheck::Conflicts(files) = self
+            .workspaces
+            .check_mergeability(&workspace, &review.base_branch)
+            .await
+        {
+            return Err(SymphonyError::Conflict(format!(
+                "the branch now conflicts with `{}` ({}); resolve the conflicts before opening a pull request",
+                review.base_branch,
+                files.join(", ")
+            )));
+        }
+
+        // The token is only ever sent to the repository this project is configured for.
+        let origin = self.workspaces.origin_url(&workspace).await?;
+        let push_token = match symphony_workspaces::https_remote(&origin) {
+            // ssh and local remotes use the user's own git credentials; nothing of ours is sent.
+            None => None,
+            Some((host, path)) => {
+                if self.is_github_host(&host) && path.eq_ignore_ascii_case(&repo) {
+                    Some(token.as_str())
+                } else {
+                    return Err(SymphonyError::Conflict(format!(
+                        "the repository's origin is https://{host}/{path}, not the project's GitHub repository {repo}; the GitHub token is not sent there"
+                    )));
+                }
+            }
+        };
+
+        let title = format!("{}: {}", task.issue.identifier, task.issue.title);
+        let secrets = self.secret_store.all_secret_values();
+        self.workspaces
+            .commit_changes(&workspace, &branch, &title)
+            .await
+            .map_err(|e| with_redacted_message(e, &secrets))?;
+        let pushed_commit = self.workspaces.head_commit(&workspace).await?;
+        self.workspaces
+            .push_branch(&workspace, &branch, push_token)
+            .await
+            .map_err(|e| with_redacted_message(e, &secrets))?;
+
+        let tracker = GitHubTracker::new(self.github_api_url.clone(), repo, Some(token), None);
+        let body = redact_secrets(
+            &format!(
+                "{}\n\n---\nOpened by Symphony Desktop after explicit human approval of this review (merge readiness {}/5). Nothing is merged automatically.",
+                review.description, review.merge_readiness.score
+            ),
+            &secrets,
+        );
+        let opened = tracker
+            .open_pull_request(&title, &branch, &review.base_branch, &body)
+            .await?;
+
+        review.pr_number = opened.number;
+        review.reviewed_commit = Some(pushed_commit);
+        if !opened.html_url.is_empty() {
+            review.url = opened.html_url.clone();
+        }
+        // A real pull request now exists, so remote CI is real but not yet known.
+        review.ci_status = "unknown".to_string();
+        review.merge_readiness = MergeReadinessReport::evaluate(
+            if review.mergeable {
+                ConflictCheck::Clean
+            } else {
+                ConflictCheck::NotChecked
+            },
+            &review.ci_status,
+            &review.validation_results,
+            &review.security_warnings,
+            review.changed_files.len(),
+        );
+        review.updated_at = Utc::now();
+        self.storage.upsert_pr_review(&review).await?;
+
+        // Only the pull request fields: the worker's copy of the task may be stale.
+        if let Ok(mut current) = self.get_task(&task.id).await {
+            current.pr_number = Some(opened.number);
+            current.pr_url = Some(review.url.clone());
+            current.updated_at = Utc::now();
+            self.storage.upsert_task(&current).await?;
+        }
+        self.emit_event(
+            Some(task.id.clone()),
+            Some(task.issue.identifier.clone()),
+            None,
+            Some(task.provider),
+            "pr/created",
+            Some(RunAttemptPhase::Succeeded),
+            if opened.already_existed {
+                format!(
+                    "Linked {} to its open pull request #{}",
+                    task.issue.identifier, opened.number
+                )
+            } else {
+                format!(
+                    "Opened pull request #{} for {}",
+                    opened.number, task.issue.identifier
+                )
+            },
+            Some(json!({ "pr_number": opened.number, "url": review.url, "branch": branch })),
+        )
+        .await;
+        Ok(review)
+    }
+
+    /// Refresh a review that has a pull request from GitHub: CI result, merge state (conflicts),
+    /// state (open, closed, merged by someone) and review comments, then re-rate it. Read-only on
+    /// GitHub; what GitHub has not computed yet stays unknown instead of being reported as fine.
+    pub async fn refresh_pull_request(&self, review_id: &str) -> SymphonyResult<PullRequestReview> {
+        let _publishing = self.publish_lock.lock().await;
+        let mut review = self
+            .storage
+            .get_pr_review(review_id)
+            .await?
+            .ok_or_else(|| SymphonyError::NotFound(format!("PR review {review_id} not found")))?;
+        if !review.has_pull_request() {
+            return Err(SymphonyError::Conflict(
+                "this review has no pull request yet; create one first".into(),
+            ));
+        }
+        let project = self
+            .storage
+            .get_project(&review.project_id)
+            .await?
+            .ok_or_else(|| SymphonyError::ProjectNotFound(review.project_id.clone()))?;
+        let repo = project
+            .github_repo
+            .clone()
+            .filter(|r| r.contains('/'))
+            .ok_or_else(|| {
+                SymphonyError::InvalidConfig(
+                    "the project has no GitHub repository (owner/name) configured".into(),
+                )
+            })?;
+        let tracker =
+            GitHubTracker::new(self.github_api_url.clone(), repo, self.github_token(), None);
+        let details = tracker
+            .fetch_pull_request_details(review.pr_number)
+            .await
+            .map_err(|e| with_redacted_message(e, &self.secret_store.all_secret_values()))?;
+
+        review.ci_status = details.ci_status.clone();
+        review.has_conflicts = details.has_conflicts;
+        review.mergeable = details.mergeable == Some(true) && !details.has_conflicts;
+        if !details.html_url.is_empty() {
+            review.url = details.html_url.clone();
+        }
+        if details.merged {
+            review.state = "merged".to_string();
+        } else if details.state == "closed" {
+            review.state = "closed".to_string();
+        } else if matches!(review.state.as_str(), "closed" | "merged") {
+            // Reopened on GitHub; a recorded human approval stays visible.
+            review.state = if review.human_approved {
+                "approved_for_merge".to_string()
+            } else {
+                "open".to_string()
+            };
+        }
+        review.review_comments = details.review_comments;
+        let mut readiness = MergeReadinessReport::evaluate(
+            if review.has_conflicts {
+                ConflictCheck::Conflicts
+            } else if review.mergeable {
+                ConflictCheck::Clean
+            } else {
+                ConflictCheck::NotChecked
+            },
+            &review.ci_status,
+            &review.validation_results,
+            &review.security_warnings,
+            review.changed_files.len(),
+        );
+        // The local validation, diff and credential scan describe the commit Symphony pushed. If the
+        // pull request's head has moved beyond it, they are no evidence for what is there now.
+        let head_moved = match review.reviewed_commit.as_deref() {
+            Some(reviewed) => !details.head_sha.is_empty() && details.head_sha != reviewed,
+            None => false,
+        };
+        if head_moved {
+            readiness.blockers.push(format!(
+                "The pull request's head ({}) is not the commit that was reviewed ({}): the local validation, diff and credential scan do not cover it.",
+                short_sha(&details.head_sha),
+                short_sha(review.reviewed_commit.as_deref().unwrap_or_default())
+            ));
+            readiness.score = readiness.score.saturating_sub(2).max(1);
+            readiness.label = match readiness.score {
+                4 => "Strong Candidate (Minor Pending Items)",
+                3 => "Needs Review Attention",
+                2 => "Not Ready (Validation or CI Issues)",
+                _ => "Blocked (Conflicts or Critical Failures)",
+            }
+            .to_string();
+        }
+        review.merge_readiness = readiness;
+        review.updated_at = Utc::now();
+        self.storage.upsert_pr_review(&review).await?;
+        Ok(review)
+    }
+
     /// Explicitly approve a Pull Request review for human merge completion (Section 4.F)
     pub async fn approve_pr_merge(&self, review_id: &str) -> SymphonyResult<PullRequestReview> {
         let mut review = self
@@ -1425,7 +1917,14 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     Some(task.provider),
                     "pr/human_approved",
                     Some(RunAttemptPhase::Succeeded),
-                    format!("Human approved PR #{} ({})", review.pr_number, review.title),
+                    if review.pr_number == 0 {
+                        format!(
+                            "Human approved review of {} ({})",
+                            review.branch_name, review.title
+                        )
+                    } else {
+                        format!("Human approved PR #{} ({})", review.pr_number, review.title)
+                    },
                     None,
                 )
                 .await;
@@ -1716,6 +2215,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     output_tokens: 0,
                     total_tokens: 0,
                     estimated_cost_usd: 0.0,
+                    thread_usage: None,
+                    usage_estimated: false,
                     duration_seconds: 0.0,
                     last_error: None,
                     next_retry_at: None,
@@ -1883,7 +2384,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 warn!(task_id = %task_id, "Detected stalled agent session; cancelling and scheduling retry");
                 let cancel_tx = {
                     let mut mem = self.memory.write().await;
-                    mem.running.remove(&task_id).map(|h| h.cancel_tx)
+                    let stopped = mem.running.remove(&task_id).map(|h| h.cancel_tx);
+                    if stopped.is_some() {
+                        mem.winding_down.insert(task_id.clone());
+                    }
+                    stopped
                 };
                 if let Some(tx) = cancel_tx {
                     let _ = tx.send("stall_timeout".to_string());
@@ -2034,7 +2539,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         task.next_retry_at = Some(due_at);
         task.last_error = error.clone();
         task.updated_at = Utc::now();
-        self.storage.upsert_task(&task).await?;
+        // Called right after a stalled worker was told to stop: leave its usage columns alone.
+        self.storage.update_task_lifecycle(&task).await?;
 
         let entry = RetryEntry {
             task_id: task.id.clone(),
@@ -2071,6 +2577,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
             let mut mem = self.memory.write().await;
             if mem.running.contains_key(&task.id) {
                 return Ok(task);
+            }
+            if mem.winding_down.contains(&task.id) {
+                return Err(SymphonyError::Conflict(format!(
+                    "the previous attempt of {} is still stopping; try again in a moment",
+                    task.issue.identifier
+                )));
             }
             if !task.status.can_transition_to(TaskStatus::Running) {
                 return Err(SymphonyError::InvalidStateTransition {
@@ -2133,8 +2645,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let orch = self.clone();
         let task_clone = task.clone();
         tokio::spawn(async move {
+            let task_id = task_clone.id.clone();
             orch.run_worker_attempt(task_clone, project, cancel_rx)
                 .await;
+            // However the worker ended, the task may be dispatched again.
+            orch.memory.write().await.winding_down.remove(&task_id);
         });
 
         Ok(task)
@@ -2173,6 +2688,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
+            usage_estimated: false,
         };
         let _ = self.storage.upsert_run_attempt(&attempt_record).await;
 
@@ -2339,6 +2855,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             extra_env: self.provider_env_from_vault(),
             dynamic_tools,
             require_human_approval_for_requests: config.codex.approval_policy != json!("never"),
+            resume_usage_baseline: task.resume_usage_baseline(),
         };
 
         let (stream_tx, mut stream_rx) = mpsc::channel::<AgentStreamEvent>(512);
@@ -2438,6 +2955,22 @@ Please implement the requested changes cleanly in the current Git workspace, run
             let outcome_res = tokio::select! {
                 res = agent_session.run_turn(&prompt, stream_tx.clone()) => res,
                 cancel_res = &mut cancel_rx => {
+                    // The turn was interrupted from outside: settle what it consumed. The worker's
+                    // task copy is stale (the stopping side owns the row), so only the usage is
+                    // added, atomically.
+                    let recorded = attempt_usage(&attempt_record);
+                    settle_session_usage(&mut task, &mut attempt_record, agent_session.as_ref());
+                    let settled = attempt_usage(&attempt_record).since(&recorded);
+                    let _ = self
+                        .storage
+                        .add_task_usage(
+                            &task.id,
+                            &settled,
+                            settled.estimate_cost_usd(task.model.as_deref()),
+                            attempt_record.usage_estimated,
+                            task.thread_usage.as_ref(),
+                        )
+                        .await;
                     let _ = agent_session.cancel().await;
                     let reason = cancel_res.unwrap_or_else(|_| "cancelled".to_string());
                     self.finish_externally_stopped_attempt(&mut attempt_record, &reason).await;
@@ -2450,23 +2983,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     task.current_thread_id = Some(outcome.thread_id.clone());
                     task.current_turn_id = Some(outcome.turn_id.clone());
                     task.current_session_id = Some(outcome.session_id.clone());
-                    task.input_tokens =
-                        task.input_tokens.saturating_add(outcome.usage.input_tokens);
-                    task.output_tokens = task
-                        .output_tokens
-                        .saturating_add(outcome.usage.output_tokens);
-                    task.total_tokens =
-                        task.total_tokens.saturating_add(outcome.usage.total_tokens);
-                    task.estimated_cost_usd +=
-                        outcome.usage.estimate_cost_usd(task.model.as_deref());
+                    record_usage(&mut task, &mut attempt_record, &outcome.usage);
+                    record_thread_usage(
+                        &mut task,
+                        &mut attempt_record,
+                        &outcome.thread_id,
+                        outcome.thread_usage_total,
+                        outcome.usage_estimated,
+                    );
                     let _ = self.storage.upsert_task(&task).await;
 
                     attempt_record.session_id = Some(outcome.session_id.clone());
                     attempt_record.thread_id = Some(outcome.thread_id.clone());
                     attempt_record.turn_id = Some(outcome.turn_id.clone());
-                    attempt_record.input_tokens += outcome.usage.input_tokens;
-                    attempt_record.output_tokens += outcome.usage.output_tokens;
-                    attempt_record.total_tokens += outcome.usage.total_tokens;
                     let _ = self.storage.upsert_run_attempt(&attempt_record).await;
 
                     if outcome.cancelled {
@@ -2509,6 +3038,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     }
                 }
                 Err(err) => {
+                    // The turn ended without an outcome (timeout, dead process): what the session
+                    // reported before that is still real usage.
+                    settle_session_usage(&mut task, &mut attempt_record, agent_session.as_ref());
                     let _ = agent_session.stop().await;
                     let phase = match err {
                         SymphonyError::TurnTimeout(_) => RunAttemptPhase::TimedOut,
@@ -2572,37 +3104,65 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
 
         // 8. Inspect workspace changes, diff, and construct structured PR review / merge-readiness report
-        let changed_files = self
+        // Reviewed against where the branch left the base, so commits the agent made itself are
+        // part of the review and of the credential scan next to its uncommitted work.
+        let review_base = self
             .workspaces
-            .inspect_changed_files(&allocated.path)
-            .await
-            .unwrap_or_default();
-        let diff_preview = self
-            .workspaces
-            .get_diff_preview(&allocated.path)
-            .await
-            .unwrap_or_default();
-
-        let mut security_warnings = Vec::new();
-        if diff_preview.contains("PRIVATE KEY") || diff_preview.contains("ghp_") {
-            security_warnings.push(
-                "Potential credential or key pattern detected in workspace diff.".to_string(),
-            );
+            .review_base(&allocated.path, &project.default_branch)
+            .await;
+        let changed_files = match &review_base {
+            Some(base) => {
+                self.workspaces
+                    .inspect_changes_since(&allocated.path, base)
+                    .await
+            }
+            None => self.workspaces.inspect_changed_files(&allocated.path).await,
         }
+        .unwrap_or_default();
+        let (diff_preview, _) = self
+            .workspaces
+            .collect_diff_since(&allocated.path, 32_000, review_base.as_deref())
+            .await;
+        let security_warnings = self
+            .scan_workspace_for_credentials(&allocated.path, review_base.as_deref())
+            .await;
 
-        let merge_readiness = MergeReadinessReport::evaluate(
-            false,
-            "passed",
+        // What is known about the branch is measured, never assumed: the merge is simulated against
+        // the base branch, and a local review has no remote CI at all.
+        let merge_check = self
+            .workspaces
+            .check_mergeability(&allocated.path, &project.default_branch)
+            .await;
+        let (conflict_check, mergeable, has_conflicts) = match &merge_check {
+            MergeCheck::Clean => (ConflictCheck::Clean, true, false),
+            MergeCheck::Conflicts(_) => (ConflictCheck::Conflicts, false, true),
+            MergeCheck::Unavailable(reason) => {
+                warn!(reason = %reason, "merge conflicts could not be checked");
+                (ConflictCheck::NotChecked, false, false)
+            }
+        };
+        let ci_status = "none";
+        let mut merge_readiness = MergeReadinessReport::evaluate(
+            conflict_check,
+            ci_status,
             &validation_results,
             &security_warnings,
             changed_files.len(),
         );
+        if let MergeCheck::Conflicts(files) = &merge_check {
+            if !files.is_empty() {
+                merge_readiness
+                    .blockers
+                    .push(format!("Conflicting files: {}.", files.join(", ")));
+            }
+        }
 
         let pr_review = PullRequestReview {
             id: format!("pr-{}", task.id),
             task_id: task.id.clone(),
             project_id: project.id.clone(),
-            pr_number: task.pr_number.unwrap_or(task.attempt_count as u64),
+            // 0 = no pull request exists (yet): this is a review of the local worktree branch.
+            pr_number: task.pr_number.unwrap_or(0),
             title: format!("{}: {}", task.issue.identifier, task.issue.title),
             description: last_outcome
                 .and_then(|o| o.assistant_messages.last().cloned())
@@ -2619,9 +3179,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
             branch_name: allocated.branch_name.clone(),
             base_branch: project.default_branch.clone(),
             state: "open".to_string(),
-            ci_status: "passed".to_string(),
-            mergeable: true,
-            has_conflicts: false,
+            ci_status: ci_status.to_string(),
+            mergeable,
+            has_conflicts,
             changed_files,
             diff_preview,
             validation_results: validation_results.clone(),
@@ -2630,6 +3190,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             merge_readiness,
             human_approved: false,
             updated_at: Utc::now(),
+            reviewed_commit: None,
         };
         let _ = self.storage.upsert_pr_review(&pr_review).await;
 
@@ -2980,6 +3541,21 @@ mod tests {
         assert!(detail.pull_request.is_some());
         let pr = detail.pull_request.unwrap();
         assert!(pr.merge_readiness.score >= 4);
+        // A local review makes no claim about remote state it never looked at.
+        assert_eq!(
+            pr.pr_number, 0,
+            "no pull request exists for a local worktree review"
+        );
+        assert_eq!(pr.ci_status, "none");
+        assert!(
+            pr.mergeable && !pr.has_conflicts,
+            "the merge was simulated and is clean"
+        );
+        assert!(!pr
+            .merge_readiness
+            .evidence
+            .iter()
+            .any(|e| e.contains("Remote CI checks passed")));
         assert!(pr
             .changed_files
             .iter()
@@ -3057,6 +3633,970 @@ mod tests {
         let mut mem = orch.memory.write().await;
         mem.retry_attempts.get_mut(task_id).unwrap().due_at =
             Utc::now() - chrono::Duration::seconds(1);
+    }
+
+    /// Scripted Codex app-server for the usage tests. Behaviour comes from its arguments:
+    /// `<replay> <reports> <end>`, each a `input:output` list (comma separated) or `-`/`die`/`hang`.
+    const USAGE_MOCK_CODEX: &str = r#"
+const readline = require('readline');
+const [replayArg, reportsArg, end] = process.argv.slice(2);
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+const send = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+const pairs = (v) => (v && v !== '-' ? v.split(',').map((p) => p.split(':').map(Number)) : []);
+const note = (thread, turn, [i, o]) => send({ method: 'thread/tokenUsage/updated', params: {
+  threadId: thread, turnId: turn, tokenUsage: {
+    total: { inputTokens: i, outputTokens: o, totalTokens: i + o },
+    last: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } } } });
+let thread = 'thread_1';
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  const msg = JSON.parse(line);
+  if (msg.method === 'initialize') send({ id: msg.id, result: { userAgent: 'mock' } });
+  else if (msg.method === 'thread/start' || msg.method === 'thread/resume') {
+    thread = (msg.params && msg.params.threadId) || 'thread_1';
+    pairs(replayArg).forEach((p) => note(thread, 'turn_prev', p));
+    send({ id: msg.id, result: { thread: { id: thread } } });
+  } else if (msg.method === 'turn/start') {
+    send({ id: msg.id, result: { turn: { id: 'turn_new' } } });
+    pairs(reportsArg).forEach((p) => note(thread, 'turn_new', p));
+    if (end === 'die') process.exit(3);
+    if (end === 'hang') return;
+    send({ method: 'turn/completed', params: { turnId: 'turn_new' } });
+  }
+});
+"#;
+
+    /// A Codex task that already ran once (thread `thread_1`, 1000 + 500 tokens accounted for) and
+    /// waits to be dispatched again; `args` select the scripted app-server's behaviour.
+    async fn resumed_codex_task(
+        temp: &TempDir,
+        storage: Storage,
+        args: &str,
+        baseline: Option<TokenUsage>,
+    ) -> (SymphonyOrchestrator, Task) {
+        let repo_dir = temp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        for git_args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "test@symphony.local"],
+            vec!["config", "user.name", "Symphony Test"],
+            vec!["commit", "--allow-empty", "-m", "initial"],
+        ] {
+            std::process::Command::new("git")
+                .args(git_args)
+                .current_dir(&repo_dir)
+                .output()
+                .unwrap();
+        }
+        let script = temp.path().join("mock_codex.js");
+        std::fs::write(&script, USAGE_MOCK_CODEX).unwrap();
+
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        let orch = SymphonyOrchestrator::new(storage.clone(), None, secrets)
+            .await
+            .unwrap();
+        orch.memory.write().await.active_config.codex.command =
+            format!("node \"{}\" {args}", script.display());
+        orch.create_project(Project {
+            id: "proj-usage".into(),
+            name: "Usage".into(),
+            repo_path: repo_dir.to_string_lossy().to_string(),
+            default_branch: "main".into(),
+            workspace_root: temp.path().join("workspaces").to_string_lossy().to_string(),
+            workflow_path: None,
+            preferred_provider: ProviderKind::Codex,
+            preferred_model: None,
+            tracker_kind: "manual".into(),
+            github_repo: None,
+            linear_project_slug: None,
+            required_labels: Vec::new(),
+            auto_dispatch: false,
+            max_concurrent_agents: 1,
+            validation_commands: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+        let mut task = orch
+            .create_manual_task(
+                "proj-usage".into(),
+                Some("SYM-USAGE".into()),
+                "Resumed usage".into(),
+                None,
+                Some(1),
+                Some(ProviderKind::Codex),
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .unwrap();
+        // State left by an earlier attempt: its thread and the usage already accounted for.
+        task.status = TaskStatus::Failed;
+        task.current_thread_id = Some("thread_1".into());
+        task.input_tokens = 1000;
+        task.output_tokens = 500;
+        task.total_tokens = 1500;
+        task.thread_usage = baseline.map(|usage| ThreadUsageMark {
+            thread_id: "thread_1".into(),
+            usage,
+        });
+        storage.upsert_task(&task).await.unwrap();
+        (orch, task)
+    }
+
+    fn usage_of(input: u64, output: u64) -> TokenUsage {
+        TokenUsage {
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: input + output,
+        }
+    }
+
+    async fn wait_for_status(
+        orch: &SymphonyOrchestrator,
+        task_id: &str,
+        wanted: &[TaskStatus],
+    ) -> Task {
+        for _ in 0..300 {
+            let t = orch.get_task(task_id).await.unwrap();
+            if wanted.contains(&t.status)
+                && (t.status == TaskStatus::HumanReview || t.current_session_id.is_none())
+            {
+                return t;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("task never reached {wanted:?}");
+    }
+
+    async fn live_total(orch: &SymphonyOrchestrator, expected: u64) -> u64 {
+        let mut total = 0;
+        for _ in 0..100 {
+            total = orch
+                .state_snapshot()
+                .await
+                .unwrap()
+                .codex_totals
+                .total_tokens;
+            if total == expected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        total
+    }
+
+    #[tokio::test]
+    async fn test_resumed_codex_thread_is_not_charged_for_its_history() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect_in_memory().await.unwrap();
+        // The thread replays its 1000 + 500 on resume, then this attempt adds 400 + 150.
+        let (orch, task) = resumed_codex_task(
+            &temp,
+            storage,
+            "1000:500 1000:500,1400:650 -",
+            Some(usage_of(1000, 500)),
+        )
+        .await;
+
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        let done = wait_for_status(&orch, &task.id, &[TaskStatus::HumanReview]).await;
+
+        assert_eq!(
+            done.total_tokens,
+            1500 + 550,
+            "task counts only the new usage"
+        );
+        assert_eq!(done.input_tokens, 1400);
+        assert_eq!(done.output_tokens, 650);
+        assert_eq!(done.thread_usage.unwrap().usage, usage_of(1400, 650));
+        assert!(!done.usage_estimated);
+        let attempts = orch.storage.list_run_attempts(&task.id).await.unwrap();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].total_tokens, 550);
+        // The live runtime totals took the same path: the replayed history was not credited.
+        assert_eq!(live_total(&orch, 550).await, 550);
+    }
+
+    #[tokio::test]
+    async fn test_resumed_codex_thread_without_a_baseline_and_replay_is_flagged_estimated() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect_in_memory().await.unwrap();
+        // A task stored by an older version (no baseline) on an app-server that does not replay.
+        let (orch, task) = resumed_codex_task(&temp, storage, "- 1400:650 -", None).await;
+
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        let done = wait_for_status(&orch, &task.id, &[TaskStatus::HumanReview]).await;
+
+        assert!(
+            done.usage_estimated,
+            "history cannot be told apart: not an exact figure"
+        );
+        let attempts = orch.storage.list_run_attempts(&task.id).await.unwrap();
+        assert!(attempts[0].usage_estimated);
+        // The thread total is still recorded, so the next resume is exact again.
+        assert_eq!(done.thread_usage.unwrap().usage, usage_of(1400, 650));
+    }
+
+    #[tokio::test]
+    async fn test_usage_before_a_crashed_turn_is_settled_and_the_baseline_advances() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect_in_memory().await.unwrap();
+        // The app-server reports 150 + 40 of new usage and dies without finishing the turn.
+        let (orch, task) = resumed_codex_task(
+            &temp,
+            storage,
+            "1000:500 1100:520,1150:540 die",
+            Some(usage_of(1000, 500)),
+        )
+        .await;
+
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        let failed = wait_for_status(&orch, &task.id, &[TaskStatus::Failed]).await;
+
+        assert_eq!(
+            failed.total_tokens,
+            1500 + 190,
+            "usage of the crashed turn is not lost"
+        );
+        assert_eq!(failed.thread_usage.unwrap().usage, usage_of(1150, 540));
+        let attempts = orch.storage.list_run_attempts(&task.id).await.unwrap();
+        assert_eq!(attempts[0].total_tokens, 190);
+        assert_eq!(live_total(&orch, 190).await, 190);
+    }
+
+    #[tokio::test]
+    async fn test_usage_of_an_interrupted_turn_is_settled_without_overwriting_the_new_status() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect_in_memory().await.unwrap();
+        // The turn reports 80 + 20 and then hangs until the operator cancels the task.
+        let (orch, task) = resumed_codex_task(
+            &temp,
+            storage,
+            "1000:500 1050:520,1080:520 hang",
+            Some(usage_of(1000, 500)),
+        )
+        .await;
+
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        // Wait until the usage has reached the session before cancelling.
+        for _ in 0..200 {
+            let live = orch
+                .state_snapshot()
+                .await
+                .unwrap()
+                .codex_totals
+                .total_tokens;
+            if live == 100 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        orch.cancel_task(&task.id, "operator").await.unwrap();
+        let cancelled = wait_for_status(&orch, &task.id, &[TaskStatus::Cancelled]).await;
+
+        // Settling happens on the worker's side; give it a moment to land.
+        let mut settled = cancelled;
+        for _ in 0..100 {
+            settled = orch.get_task(&task.id).await.unwrap();
+            if settled.total_tokens == 1600 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            settled.status,
+            TaskStatus::Cancelled,
+            "the cancellation stays authoritative"
+        );
+        assert_eq!(settled.total_tokens, 1500 + 100);
+        assert_eq!(settled.thread_usage.unwrap().usage, usage_of(1080, 520));
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_dispatch_requests_start_one_attempt() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.transition_task(&task.id, TaskStatus::Queued)
+            .await
+            .unwrap();
+
+        // Manual dispatches and scheduler ticks race for the same task.
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let orch = orch.clone();
+            let id = task.id.clone();
+            handles.push(tokio::spawn(async move {
+                if i % 2 == 0 {
+                    let _ = orch.dispatch_task_now(&id).await;
+                } else {
+                    let _ = orch.reconcile_and_dispatch_tick().await;
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let started = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(started.attempt_count, 1, "exactly one attempt may start");
+        // Let the attempt run to its end, then check no second one slipped in meanwhile.
+        for _ in 0..300 {
+            let t = orch.get_task(&task.id).await.unwrap();
+            if t.status == TaskStatus::HumanReview || t.status == TaskStatus::Failed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let attempts = orch.storage.list_run_attempts(&task.id).await.unwrap();
+        assert_eq!(attempts.len(), 1, "{attempts:?}");
+        assert_eq!(orch.get_task(&task.id).await.unwrap().attempt_count, 1);
+    }
+
+    /// A recording stand-in for the GitHub REST API: `(method, target, authorization, body)` of
+    /// every request. `existing_pr` makes `POST /pulls` answer 422 "already exists" and the
+    /// pull request listing return that number.
+    async fn github_mock(
+        existing_pr: Option<u64>,
+    ) -> (
+        String,
+        Arc<std::sync::Mutex<Vec<(String, String, String, String)>>>,
+    ) {
+        github_mock_with(Arc::new(move |method: &str, _target: &str| {
+            match (method, existing_pr) {
+                ("POST", None) => (
+                    "201 Created".to_string(),
+                    json!({ "number": 42, "html_url": "https://github.com/acme/widgets/pull/42" }),
+                ),
+                ("POST", Some(_)) => (
+                    "422 Unprocessable Entity".to_string(),
+                    json!({ "message": "Validation Failed", "errors": [{ "message": "A pull request already exists for acme:branch." }] }),
+                ),
+                (_, Some(n)) => (
+                    "200 OK".to_string(),
+                    json!([{ "number": n, "html_url": format!("https://github.com/acme/widgets/pull/{n}") }]),
+                ),
+                _ => ("200 OK".to_string(), json!([])),
+            }
+        }))
+        .await
+    }
+
+    type GithubAnswer = dyn Fn(&str, &str) -> (String, Value) + Send + Sync;
+
+    /// The recording server answering every request with `answer(method, target)`.
+    async fn github_mock_with(
+        answer: Arc<GithubAnswer>,
+    ) -> (
+        String,
+        Arc<std::sync::Mutex<Vec<(String, String, String, String)>>>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let log = log.clone();
+                let answer = answer.clone();
+                tokio::spawn(async move {
+                    let mut raw = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    let (head_len, length) = loop {
+                        let n = stream.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        raw.extend_from_slice(&buf[..n]);
+                        if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&raw[..pos]).to_lowercase();
+                            let length = head
+                                .lines()
+                                .find_map(|l| l.strip_prefix("content-length:"))
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                                .unwrap_or(0);
+                            break (pos + 4, length);
+                        }
+                    };
+                    while raw.len() < head_len + length {
+                        let n = stream.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        raw.extend_from_slice(&buf[..n]);
+                    }
+                    let head = String::from_utf8_lossy(&raw[..head_len]).to_string();
+                    let mut first = head.lines().next().unwrap_or("").split_whitespace();
+                    let method = first.next().unwrap_or("").to_string();
+                    let target = first.next().unwrap_or("").to_string();
+                    let auth = head
+                        .lines()
+                        .find(|l| l.to_lowercase().starts_with("authorization:"))
+                        .map(|l| l.split_once(':').unwrap().1.trim().to_string())
+                        .unwrap_or_default();
+                    let body = String::from_utf8_lossy(&raw[head_len..]).to_string();
+                    log.lock()
+                        .unwrap()
+                        .push((method.clone(), target.clone(), auth, body));
+                    let (status, payload) = answer(&method, &target);
+                    let payload = payload.to_string();
+                    let reply = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                        payload.len()
+                    );
+                    let _ = stream.write_all(reply.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (base, seen)
+    }
+
+    /// A finished simulated run (`HumanReview`) on a real repository with a bare `origin`, in a
+    /// project that belongs to GitHub repository `acme/widgets`.
+    async fn finished_run(
+        temp: &TempDir,
+        github_repo: Option<&str>,
+        token: Option<&str>,
+        api_url: &str,
+    ) -> (SymphonyOrchestrator, Task, PullRequestReview) {
+        let repo_dir = temp.path().join("repo");
+        let origin = temp.path().join("origin.git");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        std::fs::create_dir_all(&origin).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&origin, &["init", "--bare", "-b", "main"]);
+        git(&repo_dir, &["init", "-b", "main"]);
+        git(&repo_dir, &["config", "user.email", "test@symphony.local"]);
+        git(&repo_dir, &["config", "user.name", "Symphony Test"]);
+        std::fs::write(repo_dir.join("README.md"), "# repo\n").unwrap();
+        git(&repo_dir, &["add", "."]);
+        git(&repo_dir, &["commit", "-m", "initial"]);
+        git(
+            &repo_dir,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(&repo_dir, &["push", "-q", "origin", "main"]);
+
+        let storage = Storage::connect_in_memory().await.unwrap();
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        if let Some(token) = token {
+            secrets.set_secret("GITHUB_TOKEN", token).unwrap();
+        }
+        let orch = SymphonyOrchestrator::new(storage, None, secrets)
+            .await
+            .unwrap()
+            .with_github_api_url(api_url);
+        orch.create_project(Project {
+            id: "proj-pr".into(),
+            name: "PR".into(),
+            repo_path: repo_dir.to_string_lossy().to_string(),
+            default_branch: "main".into(),
+            workspace_root: temp.path().join("workspaces").to_string_lossy().to_string(),
+            workflow_path: None,
+            preferred_provider: ProviderKind::Simulated,
+            preferred_model: None,
+            tracker_kind: "manual".into(),
+            github_repo: github_repo.map(str::to_string),
+            linear_project_slug: None,
+            required_labels: Vec::new(),
+            auto_dispatch: false,
+            max_concurrent_agents: 1,
+            validation_commands: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+        let task = orch
+            .create_manual_task(
+                "proj-pr".into(),
+                Some("SYM-PR".into()),
+                "Publish the work".into(),
+                Some("Create SYMPHONY_TASK_NOTE.md".into()),
+                Some(1),
+                Some(ProviderKind::Simulated),
+                None,
+                Vec::new(),
+                true,
+            )
+            .await
+            .unwrap();
+        let done = wait_for_status(&orch, &task.id, &[TaskStatus::HumanReview]).await;
+        let review = orch
+            .storage
+            .get_pr_review(&format!("pr-{}", done.id))
+            .await
+            .unwrap()
+            .unwrap();
+        (orch, done, review)
+    }
+
+    #[tokio::test]
+    async fn test_creating_a_pull_request_commits_pushes_and_opens_it_once() {
+        let temp = TempDir::new().unwrap();
+        let (api, requests) = github_mock(None).await;
+        let (orch, task, review) = finished_run(
+            &temp,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        assert_eq!(review.pr_number, 0);
+
+        let opened = orch.create_pull_request(&review.id).await.unwrap();
+
+        assert_eq!(opened.pr_number, 42);
+        assert_eq!(opened.url, "https://github.com/acme/widgets/pull/42");
+        assert!(
+            !opened.human_approved,
+            "opening a pull request is not an approval"
+        );
+        let stored = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(stored.pr_number, Some(42));
+        assert_eq!(
+            stored.status,
+            TaskStatus::HumanReview,
+            "the task is not completed by publishing"
+        );
+
+        // The branch reached `origin` with the agent's work in it.
+        let origin = temp.path().join("origin.git");
+        let branch = task.branch_name.clone().unwrap();
+        let shown = std::process::Command::new("git")
+            .args([
+                "-C",
+                origin.to_str().unwrap(),
+                "show",
+                "--name-only",
+                "--format=%s",
+                &format!("refs/heads/{branch}"),
+            ])
+            .output()
+            .unwrap();
+        let shown = String::from_utf8_lossy(&shown.stdout).to_string();
+        assert!(shown.starts_with("SYM-PR: Publish the work"), "{shown}");
+        assert!(shown.contains("SYMPHONY_TASK_NOTE.md"), "{shown}");
+
+        // One authenticated POST into the base branch; no merge call of any kind.
+        let log = requests.lock().unwrap().clone();
+        assert_eq!(log.len(), 1, "{log:?}");
+        let (method, target, auth, body) = &log[0];
+        assert_eq!(
+            (method.as_str(), target.as_str()),
+            ("POST", "/repos/acme/widgets/pulls")
+        );
+        assert!(auth.contains("ghp_testtoken"), "{auth}");
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["base"], "main");
+        assert_eq!(body["head"], Value::String(branch));
+        assert!(body["body"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing is merged automatically"));
+
+        // Repeating the request changes nothing and calls nothing.
+        let again = orch.create_pull_request(&review.id).await.unwrap();
+        assert_eq!(again.pr_number, 42);
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_refreshing_a_pull_request_reports_what_github_says_and_never_guesses() {
+        let temp = TempDir::new().unwrap();
+        // GitHub: merge not computed yet (`mergeable: null`), no check run at all.
+        let state = Arc::new(std::sync::Mutex::new((
+            Value::Null,
+            json!([]),
+            "abc123".to_string(),
+            "open".to_string(),
+        )));
+        let served = state.clone();
+        let (api, _requests) = github_mock_with(Arc::new(move |method: &str, target: &str| {
+            let (mergeable, runs, head_sha, pr_state) = served.lock().unwrap().clone();
+            let path = target.split('?').next().unwrap_or(target);
+            let payload = match (method, path) {
+                ("POST", _) => {
+                    json!({ "number": 42, "html_url": "https://github.com/acme/widgets/pull/42" })
+                }
+                (_, "/repos/acme/widgets/pulls/42") => json!({
+                    "number": 42, "title": "t", "body": "b", "state": pr_state,
+                    "html_url": "https://github.com/acme/widgets/pull/42",
+                    "head": { "ref": "branch", "sha": head_sha }, "base": { "ref": "main" },
+                    "mergeable": mergeable,
+                    "mergeable_state": if mergeable.is_null() { "unknown" } else { "clean" },
+                    "merged": false
+                }),
+                (_, p) if p.contains("/check-runs") => {
+                    json!({ "check_runs": runs })
+                }
+                (_, p) if p.ends_with("/files") || p.ends_with("/comments") => json!([]),
+                _ => json!({}),
+            };
+            ("200 OK".to_string(), payload)
+        }))
+        .await;
+        let (orch, _task, review) = finished_run(
+            &temp,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        // Refreshing a review without a pull request is refused.
+        assert_eq!(
+            orch.refresh_pull_request(&review.id)
+                .await
+                .unwrap_err()
+                .code(),
+            "conflict"
+        );
+        let opened = orch.create_pull_request(&review.id).await.unwrap();
+        // GitHub reports the commit Symphony pushed as the head.
+        state.lock().unwrap().2 = opened
+            .reviewed_commit
+            .clone()
+            .expect("pushed commit recorded");
+
+        let unknown = orch.refresh_pull_request(&review.id).await.unwrap();
+        assert_eq!(unknown.ci_status, "none", "no check run is not a pass");
+        assert!(
+            !unknown.mergeable && !unknown.has_conflicts,
+            "an uncomputed merge is unknown"
+        );
+        let evidence = unknown.merge_readiness.evidence.join("\n");
+        assert!(!evidence.contains("Remote CI checks passed"), "{evidence}");
+        assert!(evidence.contains("could not be checked"), "{evidence}");
+
+        {
+            let mut s = state.lock().unwrap();
+            s.0 = json!(true);
+            s.1 = json!([{ "status": "completed", "conclusion": "success" }]);
+        }
+        let green = orch.refresh_pull_request(&review.id).await.unwrap();
+        assert_eq!(green.ci_status, "passed");
+        assert!(green.mergeable);
+        assert!(green
+            .merge_readiness
+            .evidence
+            .join("\n")
+            .contains("Remote CI checks passed"));
+
+        {
+            let mut s = state.lock().unwrap();
+            s.0 = json!(false);
+            s.1 = json!([{ "status": "completed", "conclusion": "failure" }]);
+        }
+        let red = orch.refresh_pull_request(&review.id).await.unwrap();
+        assert_eq!(red.ci_status, "failed");
+        assert!(red.has_conflicts && !red.mergeable);
+        assert!(red.merge_readiness.score < green.merge_readiness.score);
+        // What was read is what is stored.
+        let stored = orch
+            .storage
+            .get_pr_review(&review.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.ci_status, "failed");
+
+        // Someone pushes another commit: the local evidence no longer describes the head.
+        {
+            let mut s = state.lock().unwrap();
+            s.0 = json!(true);
+            s.1 = json!([{ "status": "completed", "conclusion": "success" }]);
+            s.2 = "deadbeefcafe0000".to_string();
+        }
+        let moved = orch.refresh_pull_request(&review.id).await.unwrap();
+        assert!(
+            moved
+                .merge_readiness
+                .blockers
+                .iter()
+                .any(|b| b.contains("not the commit that was reviewed")),
+            "{:?}",
+            moved.merge_readiness.blockers
+        );
+        assert!(moved.merge_readiness.score < green.merge_readiness.score);
+
+        // Closed on GitHub, then reopened: the state follows, keeping a recorded approval visible.
+        {
+            let mut s = state.lock().unwrap();
+            s.2 = moved.reviewed_commit.clone().unwrap();
+            s.3 = "closed".to_string();
+        }
+        assert_eq!(
+            orch.refresh_pull_request(&review.id).await.unwrap().state,
+            "closed"
+        );
+        state.lock().unwrap().3 = "open".to_string();
+        assert_eq!(
+            orch.refresh_pull_request(&review.id).await.unwrap().state,
+            "open"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publishing_rechecks_the_worktree_and_binds_the_token_to_the_origin() {
+        let temp = TempDir::new().unwrap();
+        let (api, requests) = github_mock(None).await;
+        let (orch, task, review) = finished_run(
+            &temp,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        let ws = PathBuf::from(task.workspace_path.clone().unwrap());
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&ws)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        // A credential is committed after the review was made: the review is stale, the scan is not.
+        std::fs::write(
+            ws.join("leak.env"),
+            "TOKEN=ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        )
+        .unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-m", "leak"]);
+        let err = orch.create_pull_request(&review.id).await.unwrap_err();
+        assert_eq!(err.code(), "conflict", "{err}");
+        assert!(err.to_string().contains("security warnings"), "{err}");
+        git(&["reset", "--hard", "HEAD~1"]);
+
+        // An origin that is not the project's repository never receives the GitHub token.
+        git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://evil.example/acme/widgets.git",
+        ]);
+        let err = orch.create_pull_request(&review.id).await.unwrap_err();
+        assert_eq!(err.code(), "conflict", "{err}");
+        assert!(err.to_string().contains("token is not sent"), "{err}");
+        git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/someone-else/widgets.git",
+        ]);
+        let err = orch.create_pull_request(&review.id).await.unwrap_err();
+        assert!(err.to_string().contains("token is not sent"), "{err}");
+
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "nothing reached GitHub"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_review_written_before_merge_facts_were_measured_is_normalised_and_publishable()
+    {
+        let temp = TempDir::new().unwrap();
+        let (api, _requests) = github_mock(None).await;
+        let (orch, _task, mut review) = finished_run(
+            &temp,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        // What 2.0.0 stored for a local review: the attempt count as the number, an invented pass.
+        review.pr_number = 2;
+        review.url = "local://worktree/symphony/sym-pr".to_string();
+        review.ci_status = "passed".to_string();
+        review.mergeable = true;
+        review.merge_readiness.evidence = vec!["Remote CI checks passed.".to_string()];
+        orch.storage.upsert_pr_review(&review).await.unwrap();
+
+        let legacy = orch
+            .storage
+            .get_pr_review(&review.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!legacy.has_pull_request());
+        assert_eq!(legacy.ci_status, "none");
+        assert!(!legacy.mergeable, "an unverified merge is not mergeable");
+        assert!(!legacy
+            .merge_readiness
+            .evidence
+            .join(" ")
+            .contains("Remote CI checks passed"));
+        assert!(orch
+            .storage
+            .list_pr_reviews(None)
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.ci_status != "passed"));
+
+        // The bogus number does not count as an existing pull request: the branch can be published.
+        let opened = orch.create_pull_request(&review.id).await.unwrap();
+        assert_eq!(opened.pr_number, 42);
+        assert!(opened.has_pull_request());
+    }
+
+    #[tokio::test]
+    async fn test_a_task_cannot_restart_while_its_cancelled_worker_is_still_settling() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect_in_memory().await.unwrap();
+        let (orch, task) = resumed_codex_task(
+            &temp,
+            storage,
+            "1000:500 1050:520,1080:520 hang",
+            Some(usage_of(1000, 500)),
+        )
+        .await;
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        for _ in 0..200 {
+            if orch
+                .state_snapshot()
+                .await
+                .unwrap()
+                .codex_totals
+                .total_tokens
+                == 100
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        orch.cancel_task(&task.id, "operator").await.unwrap();
+
+        // Retrying right away either is refused while the worker winds down, or finds the usage
+        // already settled; it never starts from a baseline the old worker is about to move.
+        let mut restarted = false;
+        for _ in 0..200 {
+            match orch.retry_task(&task.id).await {
+                Ok(_) => {
+                    restarted = true;
+                    break;
+                }
+                Err(e) => {
+                    assert!(
+                        e.to_string().contains("still stopping")
+                            || e.code() == "invalid_state_transition",
+                        "unexpected refusal: {e}"
+                    );
+                    // A refused retry must not leave the task queued for the scheduler to start.
+                    assert_ne!(
+                        orch.get_task(&task.id).await.unwrap().status,
+                        TaskStatus::Queued,
+                        "a refused retry left the task queued"
+                    );
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }
+        }
+        assert!(restarted, "the task must become dispatchable again");
+        let mid = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(
+            mid.total_tokens,
+            1500 + 100,
+            "the cancelled turn was settled once, before the restart"
+        );
+        assert_eq!(mid.thread_usage.unwrap().usage, usage_of(1080, 520));
+        orch.cancel_task(&task.id, "done").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_an_existing_pull_request_for_the_branch_is_adopted() {
+        let temp = TempDir::new().unwrap();
+        let (api, requests) = github_mock(Some(7)).await;
+        let (orch, _task, review) = finished_run(
+            &temp,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        let opened = orch.create_pull_request(&review.id).await.unwrap();
+        assert_eq!(opened.pr_number, 7);
+        let methods: Vec<String> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.0.clone())
+            .collect();
+        assert_eq!(methods, vec!["POST", "GET"]);
+    }
+
+    #[tokio::test]
+    async fn test_publishing_is_refused_without_repository_token_or_with_warnings() {
+        let temp = TempDir::new().unwrap();
+        let (api, requests) = github_mock(None).await;
+
+        // No GitHub repository on the project.
+        let (orch, _task, review) = finished_run(
+            &temp,
+            None,
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        let err = orch.create_pull_request(&review.id).await.unwrap_err();
+        assert_eq!(err.code(), "invalid_config", "{err}");
+
+        // No token.
+        let temp2 = TempDir::new().unwrap();
+        let (orch, _task, review) = finished_run(&temp2, Some("acme/widgets"), None, &api).await;
+        if orch.github_token().is_none() {
+            let err = orch.create_pull_request(&review.id).await.unwrap_err();
+            assert!(err.to_string().contains("GITHUB_TOKEN"), "{err}");
+        }
+
+        // Security warnings block publishing.
+        let temp3 = TempDir::new().unwrap();
+        let (orch, _task, mut review) = finished_run(
+            &temp3,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        review
+            .security_warnings
+            .push("Possible private key added by the change.".into());
+        orch.storage.upsert_pr_review(&review).await.unwrap();
+        let err = orch.create_pull_request(&review.id).await.unwrap_err();
+        assert_eq!(err.code(), "conflict", "{err}");
+
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "nothing reached GitHub"
+        );
+        assert!(matches!(
+            orch.create_pull_request("missing").await.unwrap_err(),
+            SymphonyError::NotFound(_)
+        ));
     }
 
     #[tokio::test]
@@ -3427,6 +4967,7 @@ rl.on('line', (line) => {
             extra_env: HashMap::new(),
             dynamic_tools: Vec::new(),
             require_human_approval_for_requests: false,
+            resume_usage_baseline: None,
         };
 
         struct AutoApprove;

@@ -1,11 +1,13 @@
 pub mod domain;
 pub mod error;
 pub mod redaction;
+pub mod usage;
 pub mod workflow;
 
 pub use domain::*;
 pub use error::{SymphonyError, SymphonyResult};
-pub use redaction::redact_secrets;
+pub use redaction::{detect_secrets_in_added_lines, redact_secrets};
+pub use usage::{ReportOrigin, ThreadUsageLedger};
 pub use workflow::{
     compute_backoff_delay_ms, expand_path_value, render_continuation_prompt,
     render_workflow_prompt, resolve_env_token, AgentConfig, CodexConfig, HooksConfig,
@@ -16,6 +18,67 @@ pub use workflow::{
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
+
+    fn passing_validation() -> ValidationResult {
+        ValidationResult {
+            id: "v1".into(),
+            task_id: "t1".into(),
+            attempt_number: 1,
+            command: "cargo test".into(),
+            exit_code: 0,
+            passed: true,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 1,
+            executed_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn merge_readiness_never_claims_unverified_ci_or_merge_state() {
+        let report = MergeReadinessReport::evaluate(
+            ConflictCheck::NotChecked,
+            "none",
+            &[passing_validation()],
+            &[],
+            2,
+        );
+        let evidence = report.evidence.join("\n");
+        assert!(!evidence.contains("CI checks passed"), "{evidence}");
+        assert!(!evidence.contains("without conflicts"), "{evidence}");
+        assert!(evidence.contains("could not be checked"), "{evidence}");
+        assert!(evidence.contains("No remote CI run"), "{evidence}");
+        assert!(report.blockers.is_empty());
+        // An unverified merge is never the top rating, with everything else in order.
+        assert_eq!(report.score, 4);
+        assert_ne!(report.label, "Ready for Human Approval & Merge");
+    }
+
+    #[test]
+    fn merge_readiness_penalises_conflicts_and_failed_ci() {
+        let clean = MergeReadinessReport::evaluate(
+            ConflictCheck::Clean,
+            "passed",
+            &[passing_validation()],
+            &[],
+            1,
+        );
+        assert_eq!(clean.score, 5);
+        assert!(clean
+            .evidence
+            .iter()
+            .any(|e| e.contains("Remote CI checks passed")));
+
+        let conflicted = MergeReadinessReport::evaluate(
+            ConflictCheck::Conflicts,
+            "failed",
+            &[passing_validation()],
+            &[],
+            1,
+        );
+        assert_eq!(conflicted.score, 1);
+        assert_eq!(conflicted.blockers.len(), 2);
+    }
 
     #[test]
     fn test_workflow_parse_and_front_matter_validation() {

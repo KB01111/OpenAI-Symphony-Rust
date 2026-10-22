@@ -22,6 +22,7 @@ import { paths } from "../../app/routes.js";
 import { DiffViewer } from "../../components/DiffViewer.js";
 import { useLocale, useMessages, useT } from "../../lib/i18n.js";
 import { usePullRequests, useTaskAttempts, useTaskDiff, useTaskValidations } from "../../lib/queries.js";
+import { hasPullRequest } from "../reviews/reviewHelpers.js";
 import { executionMessages } from "./messages.js";
 
 type RightTab = "changes" | "validation" | "usage" | "pr";
@@ -163,7 +164,7 @@ const PullRequestTab: React.FC<{ task: Task }> = ({ task }) => {
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-foreground">{pr.title}</p>
           <p className="font-mono text-xs text-muted-foreground">
-            {formatMessage(m.changes.prNumber, { number: pr.pr_number })} · {pr.branch_name} → {pr.base_branch}
+            {hasPullRequest(pr) ? formatMessage(m.changes.prNumber, { number: pr.pr_number }) : m.changes.localReview} · {pr.branch_name} → {pr.base_branch}
           </p>
         </div>
         <SdkBadge variant="soft" color={score >= 4 ? "success" : score >= 3 ? "warning" : "danger"} size="sm" pill>
@@ -173,7 +174,7 @@ const PullRequestTab: React.FC<{ task: Task }> = ({ task }) => {
       <KeyValueList
         items={[
           { label: m.changes.score, value: formatMessage(m.changes.scoreValue, { score, label: pr.merge_readiness.label }) },
-          { label: m.changes.ci, value: pr.ci_status },
+          { label: m.changes.ci, value: pr.ci_status === "none" ? m.changes.noRemoteCi : pr.ci_status },
           { label: m.changes.state, value: pr.state },
           ...(pr.merge_readiness.blockers.length > 0
             ? [{ label: m.changes.blockersLabel, value: <span className="text-destructive">{formatMessage(m.changes.blockers, { count: pr.merge_readiness.blockers.length })}</span> }]

@@ -192,6 +192,7 @@ const review: PullRequestReview = {
   review_comments: [],
   security_warnings: ["leaked key"],
   merge_readiness: { score: 2, label: "Not ready", evidence: ["Clean merge"], blockers: ["Security warning: leaked key"] },
+  reviewed_commit: null,
   human_approved: false,
   updated_at: "2026-01-01T00:00:00Z"
 };
@@ -205,6 +206,9 @@ describe("MergeReadinessCard", () => {
       security: "fail",
       reviewedComments: 0
     });
+    // An unchecked merge (not mergeable, no conflicts) is pending, never "clean".
+    expect(readinessEvidence({ ...review, mergeable: false }).conflicts).toBe("pending");
+    expect(readinessEvidence({ ...review, has_conflicts: true, mergeable: false }).conflicts).toBe("fail");
     const onApprove = vi.fn();
     render(
       <SymphonyDesignProvider themeMode="dark">

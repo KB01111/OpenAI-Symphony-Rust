@@ -91,6 +91,7 @@ export const shellMessages = defineMessages({
     },
     inspector: {
       ci: "CI checks",
+      noRemoteCi: "No remote CI",
       label: "Inspector",
       empty: "Nothing selected",
       emptyDetail: "Select a task, project, worktree, or pull request to inspect it.",
@@ -106,6 +107,7 @@ export const shellMessages = defineMessages({
       workspace: "Workspace",
       attempts: "Attempts",
       tokens: "Tokens",
+      tokensEstimated: "Estimated: part of the usage could not be measured exactly",
       cost: "Est. cost",
       duration: "Duration",
       lastError: "Last error",
@@ -231,6 +233,7 @@ export const shellMessages = defineMessages({
     },
     inspector: {
       ci: "CI-kontroller",
+      noRemoteCi: "Ingen fjärr-CI",
       label: "Inspektör",
       empty: "Inget valt",
       emptyDetail: "Välj en uppgift, ett projekt, ett arbetsträd eller en pull request för att inspektera.",
@@ -246,6 +249,7 @@ export const shellMessages = defineMessages({
       workspace: "Arbetsyta",
       attempts: "Försök",
       tokens: "Tokens",
+      tokensEstimated: "Uppskattning: en del av förbrukningen kunde inte mätas exakt",
       cost: "Uppsk. kostnad",
       duration: "Varaktighet",
       lastError: "Senaste fel",

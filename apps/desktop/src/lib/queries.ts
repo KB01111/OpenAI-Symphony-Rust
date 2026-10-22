@@ -297,6 +297,37 @@ export function useApprovePullRequest() {
   });
 }
 
+/** Commit, push and open a pull request for a review (an explicit human action; never merges). */
+export function useCreatePullRequest() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: (id: string) => client.createPullRequest(id),
+    onSuccess: (pr) => {
+      qc.setQueryData(qk.pr(pr.id), pr);
+      void qc.invalidateQueries({ queryKey: qk.prsAll });
+      void qc.invalidateQueries({ queryKey: qk.tasksAll });
+    },
+    onError
+  });
+}
+
+/** Re-read a review's pull request status from GitHub. */
+export function useRefreshPullRequest() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: (id: string) => client.refreshPullRequest(id),
+    onSuccess: (pr) => {
+      qc.setQueryData(qk.pr(pr.id), pr);
+      void qc.invalidateQueries({ queryKey: qk.prsAll });
+    },
+    onError
+  });
+}
+
 export function useSaveWorkflow() {
   const client = useClient();
   const qc = useQueryClient();

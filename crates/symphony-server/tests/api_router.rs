@@ -269,3 +269,112 @@ async fn registering_a_subdirectory_stores_the_checkout_root() {
         "worktrees must be created from the checkout root"
     );
 }
+
+#[tokio::test]
+async fn backups_are_created_and_listed_through_the_local_api() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::connect(dir.path().join("symphony.sqlite"))
+        .await
+        .unwrap();
+    let secrets = SecretStore::new(dir.path()).unwrap();
+    let orch = Arc::new(
+        SymphonyOrchestrator::new(storage, None, secrets)
+            .await
+            .unwrap(),
+    );
+    let app = build_router(
+        orch,
+        &ServerConfig {
+            backup_root: Some(dir.path().join("backups")),
+            ..ServerConfig::local(0, Some(TOKEN.to_string()))
+        },
+    );
+
+    // Authentication is required.
+    let anonymous = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/backups")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+    let empty = app
+        .clone()
+        .oneshot(authed(Method::GET, "/api/v1/backups", None))
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), StatusCode::OK);
+    assert_eq!(json_body(empty).await["backups"], json!([]));
+
+    let created = app
+        .clone()
+        .oneshot(authed(Method::POST, "/api/v1/backups", None))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created = json_body(created).await;
+    assert!(created["id"]
+        .as_str()
+        .unwrap()
+        .starts_with("symphony-backup-"));
+    assert!(created["size_bytes"].as_u64().unwrap() > 0);
+    assert!(std::path::Path::new(created["path"].as_str().unwrap())
+        .join("symphony.sqlite")
+        .is_file());
+
+    let listed = json_body(
+        app.oneshot(authed(Method::GET, "/api/v1/backups", None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(listed["backups"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["backups"][0]["id"], created["id"]);
+}
+
+#[tokio::test]
+async fn backups_are_unavailable_on_a_host_that_does_not_manage_them() {
+    let (app, _dir) = router().await;
+    let resp = app
+        .oneshot(authed(Method::POST, "/api/v1/backups", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(
+        json_body(resp).await["error"]["code"],
+        "backups_unavailable"
+    );
+}
+
+#[tokio::test]
+async fn creating_a_pull_request_needs_a_token_and_an_existing_review() {
+    let (app, _dir) = router().await;
+    let anonymous = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/prs/pr-1/create-pull-request")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+    let missing = app
+        .oneshot(authed(
+            Method::POST,
+            "/api/v1/prs/does-not-exist/create-pull-request",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}

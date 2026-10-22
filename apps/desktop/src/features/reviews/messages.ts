@@ -24,6 +24,8 @@ export const reviewMessages = defineMessages({
       score: "Readiness {score}/5",
       ci: "CI: {status}",
       ciUnknown: "CI: pending",
+      ciNone: "No remote CI",
+      localReview: "Local review",
       blockers: "{count} blocker(s)",
       unknownProject: "Unknown project",
       updated: "Updated"
@@ -112,6 +114,20 @@ export const reviewMessages = defineMessages({
     security: {
       empty: "No security warnings were raised."
     },
+    publish: {
+      button: "Create pull request",
+      disabledConflicts: "Resolve the merge conflicts before opening a pull request.",
+      disabledWarnings: "Resolve the security warnings before publishing this branch.",
+      title: "Create a GitHub pull request?",
+      body: "This commits the worktree's changes to branch {branch}, pushes that branch to the repository's origin and opens a pull request into {base}.",
+      noMerge: "Nothing is merged and the task is not completed. Review and merge the pull request in your Git host.",
+      confirm: "Create pull request",
+      success: "Pull request opened",
+      successBody: "Pull request #{number} was opened. Nothing was merged.",
+      refresh: "Refresh status",
+      refreshing: "Refreshing…",
+      refreshHint: "Reads CI, merge state and comments from GitHub."
+    },
     approve: {
       title: "Record human approval?",
       body: "This records your human approval for “{title}” and marks the task as completed.",
@@ -144,6 +160,8 @@ export const reviewMessages = defineMessages({
       score: "Beredskap {score}/5",
       ci: "CI: {status}",
       ciUnknown: "CI: väntar",
+      ciNone: "Ingen fjärr-CI",
+      localReview: "Lokal granskning",
       blockers: "{count} blockerare",
       unknownProject: "Okänt projekt",
       updated: "Uppdaterad"
@@ -231,6 +249,20 @@ export const reviewMessages = defineMessages({
     },
     security: {
       empty: "Inga säkerhetsvarningar rapporterades."
+    },
+    publish: {
+      button: "Skapa pull request",
+      disabledConflicts: "Lös sammanslagningskonflikterna innan du öppnar en pull request.",
+      disabledWarnings: "Åtgärda säkerhetsvarningarna innan grenen publiceras.",
+      title: "Skapa en GitHub-pull request?",
+      body: "Detta committar arbetsträdets ändringar till grenen {branch}, pushar grenen till repots origin och öppnar en pull request mot {base}.",
+      noMerge: "Inget slås samman och uppgiften slutförs inte. Granska och slå samman pull requesten i din Git-tjänst.",
+      confirm: "Skapa pull request",
+      success: "Pull request öppnad",
+      successBody: "Pull request #{number} öppnades. Inget slogs samman.",
+      refresh: "Uppdatera status",
+      refreshing: "Uppdaterar…",
+      refreshHint: "Läser CI, sammanslagningsstatus och kommentarer från GitHub."
     },
     approve: {
       title: "Registrera mänskligt godkännande?",

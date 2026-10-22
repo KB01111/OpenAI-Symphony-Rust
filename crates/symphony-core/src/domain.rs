@@ -497,6 +497,14 @@ pub struct Task {
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub estimated_cost_usd: f64,
+    /// Absolute usage of the provider thread (`current_thread_id`) that earlier attempts already
+    /// accounted for: the baseline a resumed thread's cumulative reports are measured against.
+    #[serde(default)]
+    pub thread_usage: Option<ThreadUsageMark>,
+    /// `true` when part of the token totals could not be measured exactly (the provider did not
+    /// expose enough information to separate this task's usage from a resumed thread's history).
+    #[serde(default)]
+    pub usage_estimated: bool,
     pub duration_seconds: f64,
     pub last_error: Option<String>,
     pub next_retry_at: Option<DateTime<Utc>>,
@@ -506,7 +514,24 @@ pub struct Task {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+/// Absolute token usage of one provider thread, as last accounted for by Symphony.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ThreadUsageMark {
+    pub thread_id: String,
+    pub usage: TokenUsage,
+}
+
 impl Task {
+    /// The accounted usage of the thread this task would resume, if it was recorded for that
+    /// very thread (a mark for another thread says nothing about the current one).
+    pub fn resume_usage_baseline(&self) -> Option<TokenUsage> {
+        let thread_id = self.current_thread_id.as_deref()?;
+        self.thread_usage
+            .as_ref()
+            .filter(|mark| mark.thread_id == thread_id)
+            .map(|mark| mark.usage)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new_manual(
         project_id: String,
@@ -557,6 +582,8 @@ impl Task {
             output_tokens: 0,
             total_tokens: 0,
             estimated_cost_usd: 0.0,
+            thread_usage: None,
+            usage_estimated: false,
             duration_seconds: 0.0,
             last_error: None,
             next_retry_at: None,
@@ -601,6 +628,9 @@ pub struct RunAttempt {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    /// `true` when this attempt's token usage is an estimate (see `Task::usage_estimated`).
+    #[serde(default)]
+    pub usage_estimated: bool,
 }
 
 /// Live session metadata tracked while an agent subprocess is active (SPEC.md Section 4.1.6)
@@ -785,6 +815,40 @@ pub struct PullRequestReview {
     pub merge_readiness: MergeReadinessReport,
     pub human_approved: bool,
     pub updated_at: DateTime<Utc>,
+    /// The commit Symphony pushed when it opened the pull request: what the local validation and
+    /// security evidence describe. A pull request whose head moved beyond it is flagged on refresh.
+    #[serde(default)]
+    pub reviewed_commit: Option<String>,
+}
+
+impl PullRequestReview {
+    /// Whether a real pull request exists. Reviews written before 2.0 stored the attempt count as
+    /// `pr_number` for a local review, so a number alone proves nothing: the URL has to be one.
+    pub fn has_pull_request(&self) -> bool {
+        self.pr_number > 0 && (self.url.starts_with("https://") || self.url.starts_with("http://"))
+    }
+
+    /// Bring a review written before merge facts were measured in line with what is known: it
+    /// never ran CI and never checked a merge, whatever it recorded. Reviews that already carry
+    /// measured values (`ci_status` other than the old hardcoded `passed`) are left alone.
+    pub fn normalize_legacy(&mut self) {
+        if self.has_pull_request() || self.ci_status != "passed" {
+            return;
+        }
+        self.ci_status = "none".to_string();
+        self.mergeable = false;
+        self.merge_readiness = MergeReadinessReport::evaluate(
+            if self.has_conflicts {
+                ConflictCheck::Conflicts
+            } else {
+                ConflictCheck::NotChecked
+            },
+            &self.ci_status,
+            &self.validation_results,
+            &self.security_warnings,
+            self.changed_files.len(),
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -814,9 +878,22 @@ pub struct MergeReadinessReport {
     pub blockers: Vec<String>,
 }
 
+/// What is known about merge conflicts between a review's branch and its base branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictCheck {
+    /// A simulated merge succeeded.
+    Clean,
+    /// A simulated merge conflicts.
+    Conflicts,
+    /// The check could not run (no Git support, base branch missing): nothing is known.
+    NotChecked,
+}
+
 impl MergeReadinessReport {
+    /// Rate a review from evidence. Nothing is assumed: CI status `none` (a local review has no
+    /// remote CI) and an unchecked merge are reported as such and never counted as a pass.
     pub fn evaluate(
-        has_conflicts: bool,
+        conflicts: ConflictCheck,
         ci_status: &str,
         validations: &[ValidationResult],
         security_warnings: &[String],
@@ -826,11 +903,24 @@ impl MergeReadinessReport {
         let mut blockers = Vec::new();
         let mut score: i32 = 5;
 
-        if has_conflicts {
-            score -= 3;
-            blockers.push("Branch has unresolved Git merge conflicts.".to_string());
-        } else {
-            evidence.push("Clean Git merge base without conflicts.".to_string());
+        match conflicts {
+            ConflictCheck::Conflicts => {
+                score -= 3;
+                blockers.push("Branch has unresolved Git merge conflicts.".to_string());
+            }
+            ConflictCheck::Clean => {
+                evidence.push(
+                    "A simulated merge into the base branch completes without conflicts."
+                        .to_string(),
+                );
+            }
+            ConflictCheck::NotChecked => {
+                // An unverified merge can never be the top rating.
+                score -= 1;
+                evidence.push(
+                    "Merge conflicts could not be checked; mergeability is unverified.".to_string(),
+                );
+            }
         }
 
         if !security_warnings.is_empty() {
@@ -873,6 +963,9 @@ impl MergeReadinessReport {
             "pending" | "running" => {
                 score -= 1;
                 evidence.push("Remote CI checks are still in progress.".to_string());
+            }
+            "none" | "not_applicable" => {
+                evidence.push("No remote CI run is associated with this local review.".to_string());
             }
             _ => {
                 evidence.push(format!("CI status: {ci_status}."));

@@ -121,6 +121,11 @@ cargo run -p symphony-cli -- --data-dir .\.symphony-dev
 
 # Move an unreadable credential vault aside explicitly (it is never replaced silently)
 cargo run -p symphony-cli -- --quarantine-credential-vault
+
+# Backups (create them in the app: Settings > Backups). Verify and restore are offline operations;
+# see docs/DATA_BACKUP.md. Credentials are never part of a backup.
+cargo run -p symphony-cli -- verify-backup "<data dir>\backups\symphony-backup-<time>"
+cargo run -p symphony-cli -- --data-dir <data dir> restore-backup "<data dir>\backups\symphony-backup-<time>"
 ```
 
 ### 5. Launch Symphony Desktop (Development Mode)
@@ -174,6 +179,10 @@ smoke-tests and drafts the GitHub release; see [CONTRIBUTING.md](./CONTRIBUTING.
 - [docs/POST_MERGE_STABILIZATION.md](./docs/POST_MERGE_STABILIZATION.md) — Post-merge security/reliability findings, fixes and verification.
 - [docs/WINDOWS_NATIVE_SMOKE_TEST.md](./docs/WINDOWS_NATIVE_SMOKE_TEST.md) — Automated and manual native Windows 11 validation.
 - [docs/PRODUCTION_READINESS.md](./docs/PRODUCTION_READINESS.md) — Release gates, operations and the remaining owner actions.
+- [docs/PRODUCTION_GAP_AUDIT.md](./docs/PRODUCTION_GAP_AUDIT.md) — Verified defects, gaps and unverified concerns with evidence and status.
+- [docs/PRODUCTION_RELEASE_REPORT.md](./docs/PRODUCTION_RELEASE_REPORT.md) — What was done, what was run, what blocks a release.
+- [docs/DATA_BACKUP.md](./docs/DATA_BACKUP.md) — Data directory, backups, restore and recovery.
+- [docs/RELEASING.md](./docs/RELEASING.md) — Release pipeline, signing, SBOMs and the (unimplemented) updater plan.
 - [CHANGELOG.md](./CHANGELOG.md) — Release notes (the release workflow publishes the tagged section).
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Detailed architecture, Symphony `SPEC.md` compliance, and component design.
 - [SECURITY.md](./SECURITY.md) — Threat model, workspace isolation invariants, credential handling, and sandboxing.

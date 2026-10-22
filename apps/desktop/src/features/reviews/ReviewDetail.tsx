@@ -15,9 +15,9 @@ import { AiEmptyView, ConfirmDialog, ErrorState, KeyValueList, LoadingRows, Merg
 import { errorMessage, SymphonyApiError } from "@symphony/api-client";
 import { paths } from "../../app/routes.js";
 import { useMessages } from "../../lib/i18n.js";
-import { useApprovePullRequest, usePullRequest } from "../../lib/queries.js";
+import { useApprovePullRequest, useCreatePullRequest, usePullRequest, useRefreshPullRequest } from "../../lib/queries.js";
 import { reviewMessages } from "./messages.js";
-import { isWebUrl } from "./reviewHelpers.js";
+import { hasPullRequest, isWebUrl } from "./reviewHelpers.js";
 import { CommentsTab, DiffTab, FilesChangedTab, SecurityTab, ValidationTab, type DiffSource } from "./ReviewTabs.js";
 
 type ReviewTab = "files" | "diff" | "validation" | "comments" | "security";
@@ -51,7 +51,10 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
   const m = useMessages(reviewMessages);
   const notify = useNotify();
   const approve = useApprovePullRequest();
+  const publish = useCreatePullRequest();
+  const refresh = useRefreshPullRequest();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
   const [tab, setTab] = useState<ReviewTab>("files");
   const [file, setFile] = useState<string | null>(null);
   const [diffSource, setDiffSource] = useState<DiffSource>("snapshot");
@@ -72,8 +75,26 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
     });
   };
 
+  const publishing = useRef(false);
+  const confirmPublish = () => {
+    if (publishing.current || publish.isPending || hasPullRequest(review)) return;
+    publishing.current = true;
+    publish.mutate(review.id, {
+      onSuccess: (pr) => notify("success", m.publish.success, formatMessage(m.publish.successBody, { number: pr.pr_number })),
+      onSettled: () => {
+        publishing.current = false;
+        setPublishOpen(false);
+      }
+    });
+  };
+
   const blockers = review.merge_readiness.blockers;
   const warnings = review.security_warnings;
+  const publishBlocked = review.has_conflicts
+    ? m.publish.disabledConflicts
+    : warnings.length > 0
+      ? m.publish.disabledWarnings
+      : null;
 
   return (
     <div className="space-y-3 p-4">
@@ -81,7 +102,7 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
         <div className="flex flex-wrap items-start gap-2">
           <GitPullRequest className="mt-0.5 size-5 shrink-0 text-accent" aria-hidden />
           <h2 id={`review-title-${review.id}`} className="min-w-0 flex-1 font-display text-lg font-semibold text-foreground">
-            <span className="text-muted-foreground">#{review.pr_number}</span> {review.title}
+            <span className="text-muted-foreground">{hasPullRequest(review) ? `#${review.pr_number}` : m.list.localReview}</span> {review.title}
           </h2>
           <SdkBadge size="sm" variant="outline" color="secondary" pill>
             {review.state}
@@ -129,6 +150,28 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
         approving={approve.isPending}
         onApprove={review.human_approved ? undefined : () => setConfirmOpen(true)}
       />
+
+      {!hasPullRequest(review) ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            icon={<GitPullRequest className="size-4" aria-hidden />}
+            disabled={publish.isPending || publishBlocked !== null}
+            onClick={() => setPublishOpen(true)}
+          >
+            {m.publish.button}
+          </Button>
+          {publishBlocked ? <span className="text-xs text-muted-foreground">{publishBlocked}</span> : null}
+        </div>
+      ) : null}
+
+      {hasPullRequest(review) && isWebUrl(review.url) ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button disabled={refresh.isPending} onClick={() => refresh.mutate(review.id)}>
+            {refresh.isPending ? m.publish.refreshing : m.publish.refresh}
+          </Button>
+          <span className="text-xs text-muted-foreground">{m.publish.refreshHint}</span>
+        </div>
+      ) : null}
 
       {review.has_conflicts ? (
         <MessageBar intent="error">
@@ -205,6 +248,18 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={publishOpen}
+        onOpenChange={setPublishOpen}
+        title={m.publish.title}
+        confirmLabel={m.publish.confirm}
+        pending={publish.isPending}
+        onConfirm={confirmPublish}
+        description={formatMessage(m.publish.body, { branch: review.branch_name, base: review.base_branch })}
+      >
+        <p className="font-semibold">{m.publish.noMerge}</p>
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={confirmOpen}

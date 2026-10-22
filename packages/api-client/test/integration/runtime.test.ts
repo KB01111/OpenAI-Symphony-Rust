@@ -6,7 +6,7 @@
  */
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -296,6 +296,27 @@ describe("Symphony runtime contract (real Axum router)", () => {
     expect(diag).not.toContain("lin_api_testvalue1234567890");
     await client.deleteCredential("LINEAR_API_KEY");
     expect((await client.listCredentials()).configured).not.toContain("LINEAR_API_KEY");
+  });
+
+  it("creates and lists consistent backups without including credentials", async () => {
+    expect((await client.listBackups()).backups).toEqual([]);
+    await client.saveCredential("LINEAR_API_KEY", "lin_api_backupvalue1234567890");
+    const created = await client.createBackup();
+    expect(created.id).toMatch(/^symphony-backup-/);
+    expect(created.schema_version).toBeGreaterThanOrEqual(2);
+    expect(created.size_bytes).toBeGreaterThan(0);
+    const listed = await client.listBackups();
+    expect(listed.backups.map((b) => b.id)).toEqual([created.id]);
+    expect(listed.directory).toBe(join(dataDir, "backups"));
+    // The backup holds the database and no secret material.
+    const files = readdirSync(created.path);
+    expect(files).toContain("symphony.sqlite");
+    expect(files).toContain("manifest.json");
+    expect(files.some((f) => f.includes("credential"))).toBe(false);
+    for (const f of files) {
+      expect(readFileSync(join(created.path, f)).includes("lin_api_backupvalue")).toBe(false);
+    }
+    await client.deleteCredential("LINEAR_API_KEY");
   });
 
   it("delivers each event once over SSE, in emission order", () => {
