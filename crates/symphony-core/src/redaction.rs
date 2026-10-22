@@ -216,7 +216,7 @@ fn secret_patterns() -> &'static [(&'static str, Regex)] {
             ("AWS access key id", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
             (
                 "AWS secret access key",
-                r#"(?i)aws_?secret_?access_?key["']?\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}\b"#,
+                r#"(?i)aws_?secret_?access_?key["']?\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}(?:$|[^A-Za-z0-9/+=])"#,
             ),
             ("Slack token", r"\bxox[abprs]-[A-Za-z0-9-]{10,255}"),
             ("private key", r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----"),
@@ -283,6 +283,21 @@ mod tests {
             vec!["AWS secret access key"]
         );
         assert!(detect_secrets_in_added_lines("+AWS_SECRET_ACCESS_KEY=${secret}\n").is_empty());
+        // `/`, `+` and `=` are part of the alphabet: a key may end in one of them.
+        for tail in ["/", "+", "="] {
+            let key = format!("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKE{tail}");
+            for line in [
+                format!("+AWS_SECRET_ACCESS_KEY={key}\n"),
+                format!("+AWS_SECRET_ACCESS_KEY=\"{key}\"\n"),
+                format!("+aws_secret_access_key: '{key}'"),
+            ] {
+                assert_eq!(
+                    detect_secrets_in_added_lines(&line),
+                    vec!["AWS secret access key"],
+                    "{line}"
+                );
+            }
+        }
         assert_eq!(
             detect_secrets_in_added_lines("+x = \"sk-proj-abcdefghijklmnopqrstuvwxyz0123\"\n+SLACK=xoxb-123456789012-abcdefghijkl\n"),
             vec!["API key (sk-…)", "Slack token"]

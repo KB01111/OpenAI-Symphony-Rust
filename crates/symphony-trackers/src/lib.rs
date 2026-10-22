@@ -237,7 +237,7 @@ impl GitHubTracker {
     pub fn dynamic_tool_spec() -> Value {
         json!({
             "name": "github_api",
-            "description": "Execute an authenticated GitHub REST API request on the host side without exposing GITHUB_TOKEN to the agent subprocess. Limited to the project's own repository (paths under /repos/{owner}/{repo}/): read it, open and edit issues and pull requests and comment on them. Merging, deleting, administration and other repositories are not available.",
+            "description": "Execute an authenticated GitHub REST API request on the host side without exposing GITHUB_TOKEN to the agent subprocess. Limited to the project's own repository (paths under /repos/{owner}/{repo}/): read it, open and edit issues, edit pull requests and comment on issues and pull requests. Opening a pull request, merging, deleting, administration and other repositories are not available: a pull request is created only by the human-confirmed \"Create pull request\" action.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

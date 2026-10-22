@@ -154,10 +154,10 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let custom_database = cli.db_path.is_some();
-    let db_path = cli
-        .db_path
-        .unwrap_or_else(|| data_dir.join("symphony.sqlite"));
+    let default_database = data_dir.join("symphony.sqlite");
+    // Only a database that is really elsewhere cannot be restored by `restore-backup`.
+    let custom_database = cli.db_path.as_ref().is_some_and(|p| *p != default_database);
+    let db_path = cli.db_path.unwrap_or(default_database);
     let storage = Storage::connect(&db_path).await?;
     // `--quarantine-credential-vault` only acts on a vault that cannot be opened; a readable
     // vault is used as is, so leaving the flag in a service definition is harmless.

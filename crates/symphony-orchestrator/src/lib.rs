@@ -1291,7 +1291,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
                         current.last_error = before.1;
                         current.next_retry_at = before.2;
                         current.updated_at = Utc::now();
-                        let _ = self.storage.upsert_task(&current).await;
+                        // Lifecycle columns only: the previous worker may be settling usage.
+                        let _ = self.storage.update_task_lifecycle(&current).await;
                     }
                 }
                 Err(err)

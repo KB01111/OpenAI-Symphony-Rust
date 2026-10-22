@@ -386,7 +386,7 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
             }
             if !problems.is_empty() {
                 return Err(storage_err(format!(
-                    "the restore failed ({err}) and putting the previous data back was incomplete: {}. Nothing was deleted; the files named above still hold the previous data.",
+                    "the restore failed ({err}) and putting the previous data back was incomplete: {}. Nothing was deleted: inspect the files named above (those named `.pre-restore-…` hold the previous data).",
                     problems.join("; ")
                 )));
             }
