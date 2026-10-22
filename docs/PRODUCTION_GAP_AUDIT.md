@@ -331,7 +331,12 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
 - **AG-04 (P2, unverified)**: `claude -p …` and `opencode` are started without a permission mode or an
   approval bridge; whether a headless run can edit files depends on the user's own Claude/OpenCode settings.
   Needs a live run and a product decision (`--permission-mode`, allowed tools, or an MCP permission tool).
-- **Claude/OpenCode usage is exact only per invocation**; a killed invocation reports nothing.
+- **Claude/OpenCode usage is exact only per invocation**; a killed invocation reports nothing: a turn that
+  times out or is cancelled after the CLI printed usage but before it finished is not in the settlement, and
+  the task is not marked estimated for it. Fixing it needs a live run of both CLIs.
+- **Codex resume without a persisted baseline** (tasks stored by 2.0.0 only): if a live usage notification
+  arrived before the `turn/start` response it would be taken as the replay and undercount that turn once.
+  Codex answers `turn/start` first (real-binary probe), and new tasks always persist a baseline.
 - **Generic `usage` maps** are read as cumulative in `extract_token_usage` (SPEC 13.5 says not to unless
   the event defines it); harmless for Codex today (monotone ledger), worth tightening with a captured trace.
 - **Provider model lists** in `default_capabilities` are static and stale (e.g. `claude-sonnet-4-5`).
