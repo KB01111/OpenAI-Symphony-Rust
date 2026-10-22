@@ -285,7 +285,9 @@ jobs:
             $ghArgs += '--prerelease=false'
             # Re-publishing an older stable tag must not move the "Latest" badge backwards.
             $latestTag = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>$null
-            $isNewest = ($LASTEXITCODE -ne 0) -or (-not $latestTag) -or ([version] $env:RELEASE_VERSION -ge [version] ($latestTag -replace '^v', ''))
+            # SemVer build metadata (+build.1) is not part of the precedence and [version] cannot parse it.
+            $isNewest = ($LASTEXITCODE -ne 0) -or (-not $latestTag) -or
+              ([version] ($env:RELEASE_VERSION -replace '\+.*$', '') -ge [version] (($latestTag -replace '^v', '') -replace '\+.*$', ''))
             $ghArgs += if ($isNewest) { '--latest' } else { '--latest=false' }
           }
           else { $ghArgs += '--prerelease' }
