@@ -1631,6 +1631,9 @@ fn validate_settings(settings: &AppSettings) -> std::result::Result<(), String> 
     Ok(())
 }
 
+/// Serializes `PUT /settings` so the read-modify-write of omitted fields is atomic.
+static SETTINGS_WRITE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[utoipa::path(
     put,
     path = "/settings",
@@ -1646,6 +1649,9 @@ async fn put_settings_handler(
     if let Err(msg) = validate_settings(&settings) {
         return api_error(StatusCode::BAD_REQUEST, "invalid_settings", msg);
     }
+    // Every settings write goes through this handler; holding the lock from the read below to the
+    // save keeps "keep the stored value" from restoring a value another request just replaced.
+    let _write = SETTINGS_WRITE.lock().await;
     // A client that predates a field omits it: keep what is stored rather than resetting it
     // (for the retention period a reset to the default would start deleting history).
     if settings.event_retention_days.is_none() {
