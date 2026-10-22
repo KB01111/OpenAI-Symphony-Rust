@@ -33,6 +33,7 @@ type EditableSettings = Pick<
   | "default_provider"
   | "default_model"
   | "polling_interval_ms"
+  | "event_retention_days"
   | "resource_policy"
   | "remote_api_enabled"
   | "remote_bind_address"
@@ -46,6 +47,7 @@ function editable(s: AppSettings): EditableSettings {
     default_provider: s.default_provider,
     default_model: s.default_model,
     polling_interval_ms: s.polling_interval_ms,
+    event_retention_days: s.event_retention_days ?? 30,
     resource_policy: { ...s.resource_policy },
     remote_api_enabled: s.remote_api_enabled,
     remote_bind_address: s.remote_bind_address,

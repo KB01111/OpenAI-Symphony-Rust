@@ -77,6 +77,11 @@ export type AppSettings = {
     provider_default_models: {
         [key: string]: string;
     };
+    /**
+     * Days the activity log (agent events) of finished tasks is kept; older events are deleted.
+     * `0` keeps everything. Events of tasks that are still active are never deleted.
+     */
+    event_retention_days?: number;
 };
 
 export type ApprovalDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel';

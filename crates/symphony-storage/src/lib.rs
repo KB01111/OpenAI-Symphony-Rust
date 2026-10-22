@@ -625,6 +625,40 @@ impl Storage {
         Ok(())
     }
 
+    /// Delete activity-log events older than `older_than`, in small batches so a large backlog
+    /// never holds the write lock for long. Events of tasks that are not finished (anything but
+    /// completed, failed or cancelled) are kept however old they are; events without a task, or
+    /// whose task no longer exists, are deleted like any other old event. Returns how many rows
+    /// were removed.
+    pub async fn prune_agent_events(&self, older_than: DateTime<Utc>) -> SymphonyResult<u64> {
+        const BATCH: i64 = 2_000;
+        let cutoff = older_than.to_rfc3339();
+        let mut removed = 0u64;
+        loop {
+            let result = sqlx::query(
+                r#"
+                DELETE FROM agent_events WHERE rowid IN (
+                    SELECT rowid FROM agent_events
+                    WHERE julianday(timestamp) < julianday(?1)
+                      AND (task_id IS NULL OR task_id NOT IN (
+                            SELECT id FROM tasks
+                            WHERE status NOT IN ('completed', 'failed', 'cancelled')))
+                    LIMIT ?2
+                )
+                "#,
+            )
+            .bind(&cutoff)
+            .bind(BATCH)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+            removed += result.rows_affected();
+            if (result.rows_affected() as i64) < BATCH {
+                return Ok(removed);
+            }
+        }
+    }
+
     pub async fn list_events(
         &self,
         task_id: Option<&str>,

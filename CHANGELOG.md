@@ -47,9 +47,17 @@ First release. Replace "Unreleased" with the release date in the commit that is 
   smoke test, upgrade over itself, silent uninstall, and user data survives. The release workflow can also
   publish straight from CI (manual run with `publish`; unsigned builds only as an explicit pre-release), and
   every commit on `main` produces an unsigned installer artifact.
-- **Check for updates** (Settings → Application): an explicit lookup of the newest GitHub release. It never
-  runs on its own, downloads nothing and opens the releases page; signed in-app updates still need the
-  update-signing key described in `docs/RELEASING.md`.
+- **In-app updates** (Settings → Application and a banner in the window): the app looks for a newer GitHub
+  release at startup and every six hours (switch off with *Check for updates automatically*), shows the
+  release notes and **Update now** downloads the installer, verifies its signature against the update key
+  built into the app, runs it and restarts; it asks first when agents are running. Releases built without
+  the update key (no `latest.json`) are announced and open the releases page. The release workflow signs
+  the installer for the updater and publishes `latest.json` when the `TAURI_SIGNING_PRIVATE_KEY` secret is
+  set (`docs/RELEASING.md`).
+- **Activity-history retention** (Settings → Scheduling & resources, `event_retention_days`, default 30, `0` keeps
+  everything): the runtime deletes old activity-log events of finished tasks a couple of minutes after startup
+  and every six hours, in small batches. Events of tasks that are still active are never deleted. Before this the
+  `agent_events` table grew without bound.
 - **Open data folder / Open log folder** (Settings → Application) and a **Keyboard shortcuts** help dialog
   (`F1`, `Ctrl+/`, the command palette or Settings).
 - The tray menu and native notifications follow the interface language (English/Swedish) instead of being

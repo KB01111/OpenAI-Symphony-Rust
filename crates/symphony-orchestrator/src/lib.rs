@@ -38,6 +38,10 @@ use uuid::Uuid;
 
 /// How long provider detection results are reused before re-probing CLIs.
 const PROVIDER_CACHE_TTL_SECS: i64 = 60;
+/// First activity-log pruning pass after startup (not competing with startup work) ...
+const EVENT_PRUNE_STARTUP_DELAY: Duration = Duration::from_secs(120);
+/// ... and how often it repeats while the runtime keeps running.
+const EVENT_PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// Maximum diff size returned by `task_diff` (the UI renders it lazily).
 const TASK_DIFF_MAX_BYTES: usize = 512 * 1024;
 
@@ -534,6 +538,18 @@ Please implement the requested changes cleanly in the current Git workspace, run
             }
         });
 
+        // Activity-log retention: a first pass shortly after startup, then every few hours.
+        let orch_prune = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(EVENT_PRUNE_STARTUP_DELAY).await;
+            loop {
+                if let Err(e) = orch_prune.prune_old_events().await {
+                    warn!(error = %e, "Pruning old activity-log events failed");
+                }
+                tokio::time::sleep(EVENT_PRUNE_INTERVAL).await;
+            }
+        });
+
         // Start dynamic WORKFLOW.md file watcher if a path is configured
         let orch_watch = self.clone();
         tokio::spawn(async move {
@@ -545,6 +561,25 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 let _ = orch_watch.watch_workflow_file(wf_path).await;
             }
         });
+    }
+
+    /// Delete activity-log events older than the configured retention (`event_retention_days`,
+    /// `0` = keep everything) for tasks that are finished. Returns how many were deleted.
+    pub async fn prune_old_events(&self) -> SymphonyResult<u64> {
+        let days = self.storage.get_settings().await?.event_retention_days;
+        if days == 0 {
+            return Ok(0);
+        }
+        let cutoff = Utc::now() - chrono::Duration::days(i64::from(days));
+        let removed = self.storage.prune_agent_events(cutoff).await?;
+        if removed > 0 {
+            info!(
+                removed,
+                retention_days = days,
+                "Pruned old activity-log events"
+            );
+        }
+        Ok(removed)
     }
 
     async fn watch_workflow_file(&self, wf_path: PathBuf) -> SymphonyResult<()> {
@@ -4660,6 +4695,67 @@ rl.on('line', (line) => {
         let waiting = orch.get_task(&task_id).await.unwrap();
         assert_eq!(waiting.status, TaskStatus::Queued);
         assert_eq!(waiting.attempt_count, 0);
+    }
+
+    #[tokio::test]
+    async fn prune_old_events_follows_the_retention_setting() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect(temp.path().join("retention.db"))
+            .await
+            .unwrap();
+        let (orch, task) = single_slot_orchestrator_on(&temp, storage.clone()).await;
+        let mut finished = orch.get_task(&task.id).await.unwrap();
+        finished.status = TaskStatus::Completed;
+        storage.upsert_task(&finished).await.unwrap();
+
+        let event = |id: &str, age_days: i64| AgentEvent {
+            id: id.into(),
+            task_id: Some(task.id.clone()),
+            issue_identifier: None,
+            session_id: None,
+            provider: None,
+            event_type: "message".into(),
+            phase: None,
+            message: id.into(),
+            payload: None,
+            timestamp: Utc::now() - chrono::Duration::days(age_days),
+        };
+        for e in [event("old", 40), event("recent", 5)] {
+            storage.record_event(&e).await.unwrap();
+        }
+        let ids = || async {
+            let mut ids: Vec<String> = storage
+                .list_events(None, 500)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|e| e.id)
+                .filter(|id| id == "old" || id == "recent")
+                .collect();
+            ids.sort();
+            ids
+        };
+
+        // 0 keeps everything.
+        let mut settings = storage.get_settings().await.unwrap();
+        assert_eq!(settings.event_retention_days, 30, "the default");
+        settings.event_retention_days = 0;
+        storage.save_settings(&settings).await.unwrap();
+        assert_eq!(orch.prune_old_events().await.unwrap(), 0);
+        assert_eq!(ids().await, vec!["old", "recent"]);
+        // (the runtime's own creation events are younger than any window used here)
+
+        // The default window drops the 40-day-old event only.
+        settings.event_retention_days = 30;
+        storage.save_settings(&settings).await.unwrap();
+        assert_eq!(orch.prune_old_events().await.unwrap(), 1);
+        assert_eq!(ids().await, vec!["recent"]);
+
+        // A shorter window applies to the next pass.
+        settings.event_retention_days = 1;
+        storage.save_settings(&settings).await.unwrap();
+        assert_eq!(orch.prune_old_events().await.unwrap(), 1);
+        assert!(ids().await.is_empty());
     }
 
     #[tokio::test]

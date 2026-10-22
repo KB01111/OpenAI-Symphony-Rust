@@ -2,10 +2,12 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
 import { useUiStore } from "../../store/uiStore.js";
+import { updateMessages } from "../updates/messages.js";
 import { settingsMessages } from "./messages.js";
 import { ApplicationSection } from "./sections.js";
 
 const m = settingsMessages.en.application;
+const u = updateMessages.en;
 
 const runtimeInfo = () => ({
   service: "symphony",
@@ -62,7 +64,7 @@ describe("ApplicationSection: native host actions", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_log_directory", undefined));
   });
 
-  it("reports an available update with its notes and opens only the fixed release page", async () => {
+  it("reports an update that cannot be installed in-app with its notes and opens only the fixed release page", async () => {
     const invoke = installHost({
       check_for_updates: async () => ({
         current: "2.0.0",
@@ -70,7 +72,8 @@ describe("ApplicationSection: native host actions", () => {
         update_available: true,
         prerelease: false,
         published_at: "2026-10-22T10:00:00Z",
-        notes: "Faster startup"
+        notes: "Faster startup",
+        installable: false
       }),
       open_releases_page: async () => undefined
     });
@@ -82,33 +85,33 @@ describe("ApplicationSection: native host actions", () => {
     fireEvent.click(screen.getByRole("button", { name: m.checkUpdates }));
     expect(await screen.findByText("Version 2.1.0 is available. You are running 2.0.0.")).toBeInTheDocument();
     expect(screen.getByText("Faster startup")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: m.openReleases }));
+    fireEvent.click(screen.getByRole("button", { name: u.openReleases }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_releases_page", undefined));
   });
 
   it("names the release page, not a folder, when it cannot be opened", async () => {
     installHost({
-      check_for_updates: async () => ({ current: "2.0.0", latest: "2.1.0", update_available: true, prerelease: false, published_at: null, notes: null }),
+      check_for_updates: async () => ({ current: "2.0.0", latest: "2.1.0", update_available: true, prerelease: false, published_at: null, notes: null, installable: false }),
       open_releases_page: async () => {
         throw "Failed to open explorer: not found";
       }
     });
     renderWithProviders(<ApplicationSection />, { runtime: createMockRuntime({ "GET /runtime": runtimeInfo }) });
     fireEvent.click(await screen.findByRole("button", { name: m.checkUpdates }));
-    fireEvent.click(await screen.findByRole("button", { name: m.openReleases }));
-    expect(await screen.findByText(m.openReleasesFailed)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: u.openReleases }));
+    expect(await screen.findByText(u.openReleasesFailed)).toBeInTheDocument();
     expect(screen.queryByText(m.openFailed)).not.toBeInTheDocument();
   });
 
   it("says when the installed version is current and when nothing is published", async () => {
-    let answer: unknown = { current: "2.0.0", latest: "2.0.0", update_available: false, prerelease: false, published_at: null, notes: null };
+    let answer: unknown = { current: "2.0.0", latest: "2.0.0", update_available: false, prerelease: false, published_at: null, notes: null, installable: false };
     installHost({ check_for_updates: async () => answer });
     renderWithProviders(<ApplicationSection />, { runtime: createMockRuntime({ "GET /runtime": runtimeInfo }) });
     fireEvent.click(await screen.findByRole("button", { name: m.checkUpdates }));
     expect(await screen.findByText("You are up to date (version 2.0.0).")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: m.openReleases })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: u.openReleases })).not.toBeInTheDocument();
 
-    answer = { current: "2.0.0", latest: null, update_available: false, prerelease: false, published_at: null, notes: null };
+    answer = { current: "2.0.0", latest: null, update_available: false, prerelease: false, published_at: null, notes: null, installable: false };
     fireEvent.click(screen.getByRole("button", { name: m.checkUpdates }));
     expect(await screen.findByText(m.noReleases)).toBeInTheDocument();
   });

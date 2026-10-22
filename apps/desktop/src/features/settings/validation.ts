@@ -3,6 +3,7 @@ import type { SettingsMessages } from "./messages.js";
 
 export type SettingsField =
   | "polling_interval_ms"
+  | "event_retention_days"
   | "max_concurrent_on_ac"
   | "max_concurrent_on_battery"
   | "high_memory_threshold_percent"
@@ -27,6 +28,10 @@ export function validateSettings(s: AppSettings, v: SettingsMessages["validation
 
   if (!isInt(s.polling_interval_ms)) errors.polling_interval_ms = v.integer;
   else if (s.polling_interval_ms < 2000) errors.polling_interval_ms = v.polling;
+
+  const retention = s.event_retention_days ?? 30;
+  if (!isInt(retention)) errors.event_retention_days = v.integer;
+  else if (retention < 0 || retention > 3650) errors.event_retention_days = v.retention;
 
   if (!isInt(p.max_concurrent_on_ac)) errors.max_concurrent_on_ac = v.integer;
   else if (p.max_concurrent_on_ac < 1 || p.max_concurrent_on_ac > 32) errors.max_concurrent_on_ac = v.maxAc;
@@ -60,6 +65,7 @@ export function serverErrorFields(message: string): SettingsField[] {
   if (message.includes("max_concurrent_on_battery")) return ["max_concurrent_on_battery"];
   if (message.includes("max_concurrent_on_ac")) return ["max_concurrent_on_ac"];
   if (message.includes("polling_interval_ms")) return ["polling_interval_ms"];
+  if (message.includes("event_retention_days")) return ["event_retention_days"];
   if (message.includes("remote_port")) return ["remote_port"];
   if (message.includes("remote_bind_address")) return ["remote_bind_address"];
   if (message.includes("origin")) return ["remote_allowed_origins"];

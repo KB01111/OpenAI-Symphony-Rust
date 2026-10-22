@@ -52,7 +52,7 @@ use symphony_core::{
         AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, LocalePreference,
         OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus, PullRequestReview,
         RepositoryValidation, RunAttempt, RuntimeInfo, Task, TaskDiff, TaskStatus, ThemePreference,
-        ValidationResult, WorktreeInfo,
+        ValidationResult, WorktreeInfo, MAX_EVENT_RETENTION_DAYS,
     },
     error::{Result, SymphonyError},
 };
@@ -379,7 +379,10 @@ const OPTIONAL_FIELD_SCHEMAS: &[&str] = &[
 
 /// Individual properties added after 2.0 that older clients may omit from request bodies
 /// (`#[serde(default)]` on the Rust side). Keeping them optional keeps the change non-breaking.
-const OPTIONAL_PROPERTIES: &[(&str, &str)] = &[("AppSettings", "remote_allowed_origins")];
+const OPTIONAL_PROPERTIES: &[(&str, &str)] = &[
+    ("AppSettings", "remote_allowed_origins"),
+    ("AppSettings", "event_retention_days"),
+];
 
 /// OpenAPI extension that marks whether an operation is available on the remote listener.
 pub const REMOTE_EXTENSION: &str = "x-symphony-remote";
@@ -1595,6 +1598,11 @@ fn validate_settings(settings: &AppSettings) -> std::result::Result<(), String> 
     if settings.remote_port == 0 {
         return Err("remote_port must be a valid TCP port".into());
     }
+    if settings.event_retention_days > MAX_EVENT_RETENTION_DAYS {
+        return Err(format!(
+            "event_retention_days must be 0 (keep everything) or at most {MAX_EVENT_RETENTION_DAYS}"
+        ));
+    }
     let policy = &settings.resource_policy;
     if policy.max_concurrent_on_ac == 0 || policy.max_concurrent_on_ac > 32 {
         return Err("resource_policy.max_concurrent_on_ac must be between 1 and 32".into());
@@ -1974,5 +1982,18 @@ mod tests {
         s.extra_env_vars
             .insert("GITHUB_TOKEN".into(), "ghp_x".into());
         assert!(validate_settings(&s).is_err());
+    }
+
+    #[test]
+    fn event_retention_accepts_zero_and_a_bounded_number_of_days() {
+        let mut s = AppSettings::default();
+        assert_eq!(s.event_retention_days, 30);
+        for days in [0, 1, 30, MAX_EVENT_RETENTION_DAYS] {
+            s.event_retention_days = days;
+            assert!(validate_settings(&s).is_ok(), "{days} days");
+        }
+        s.event_retention_days = MAX_EVENT_RETENTION_DAYS + 1;
+        let err = validate_settings(&s).unwrap_err();
+        assert!(err.contains("event_retention_days"), "{err}");
     }
 }

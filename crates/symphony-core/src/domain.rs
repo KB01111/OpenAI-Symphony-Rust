@@ -1144,7 +1144,15 @@ pub struct AppSettings {
     pub extra_env_vars: HashMap<String, String>,
     /// Per-provider default model preference (`ProviderKind` -> model id).
     pub provider_default_models: HashMap<ProviderKind, String>,
+    /// Days the activity log (agent events) of finished tasks is kept; older events are deleted.
+    /// `0` keeps everything. Events of tasks that are still active are never deleted.
+    pub event_retention_days: u32,
 }
+
+/// Default for [`AppSettings::event_retention_days`].
+pub const DEFAULT_EVENT_RETENTION_DAYS: u32 = 30;
+/// Upper bound accepted for [`AppSettings::event_retention_days`] (ten years).
+pub const MAX_EVENT_RETENTION_DAYS: u32 = 3650;
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -1164,6 +1172,7 @@ impl Default for AppSettings {
             onboarding_completed: false,
             extra_env_vars: HashMap::new(),
             provider_default_models: HashMap::new(),
+            event_retention_days: DEFAULT_EVENT_RETENTION_DAYS,
         }
     }
 }

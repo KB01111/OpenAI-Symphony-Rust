@@ -17,7 +17,7 @@ import {
   Switch,
   Textarea
 } from "@fluentui/react-components";
-import { DatabaseBackup, Download, ExternalLink, FileJson, FolderOpen, Keyboard, KeyRound, LogOut, RefreshCw, ShieldOff } from "lucide-react";
+import { DatabaseBackup, Download, FileJson, FolderOpen, Keyboard, KeyRound, LogOut, RefreshCw, ShieldOff } from "lucide-react";
 import { SymphonyApiError, errorMessage, isTauri, nativeHost } from "@symphony/api-client";
 import { ALL_PROVIDERS, formatMessage, type AppSettings, type Locale, type ProviderKind } from "@symphony/shared-types";
 import {
@@ -42,7 +42,6 @@ import { CredentialRow } from "../providers/CredentialControls.js";
 import { PROVIDER_CREDENTIAL_KEYS } from "../providers/ProviderCard.js";
 import {
   useBackups,
-  useCheckForUpdates,
   useCreateBackup,
   useExportDiagnostics,
   useNativeHostConfig,
@@ -51,6 +50,8 @@ import {
   useRotateRemoteToken,
   useRuntimeInfo
 } from "./hooks.js";
+import { UpdateActions } from "../updates/UpdateActions.js";
+import { useAppUpdate } from "../updates/useAppUpdate.js";
 import { settingsMessages } from "./messages.js";
 import { formatBytes, parseOrigins, type SettingsErrors } from "./validation.js";
 
@@ -287,6 +288,15 @@ export const SchedulingSection: React.FC<FormSectionProps> = ({ draft, errors, u
             max={100}
             error={errors.high_cpu_threshold_percent}
             onChange={(v) => policy({ high_cpu_threshold_percent: v })}
+          />
+          <NumberField
+            label={m.scheduling.retention}
+            hint={m.scheduling.retentionHint}
+            value={draft.event_retention_days ?? 30}
+            min={0}
+            max={3650}
+            error={errors.event_retention_days}
+            onChange={(v) => update((s) => ({ ...s, event_retention_days: v }))}
           />
           <div className="sm:col-span-2">
             <Switch
@@ -715,35 +725,44 @@ const FolderActions: React.FC = () => {
   );
 };
 
-/** Desktop only: an explicit lookup of the newest GitHub release; installing stays manual. */
+/** Desktop only: look for a newer GitHub release and install it from inside the app. */
 const UpdateCheck: React.FC = () => {
   const m = useMessages(settingsMessages);
-  const notify = useNotify();
-  const check = useCheckForUpdates();
-  const openReleases = useMutation({
-    mutationFn: () => nativeHost.openReleasesPage(),
-    onError: (error) => notify("error", m.application.openReleasesFailed, errorMessage(error))
-  });
-  const result = check.data;
+  const query = useAppUpdate();
+  const autoCheck = useUiStore((s) => s.autoCheckUpdates);
+  const setAutoCheck = useUiStore((s) => s.setAutoCheckUpdates);
+  // A failed automatic check stays silent; an error is shown only for a check the user asked for.
+  const [asked, setAsked] = useState(false);
+  const result = query.data;
+  const checking = query.isFetching;
   return (
     <div className="space-y-2 border-t border-border pt-3">
       <h3 className="text-sm font-medium text-foreground">{m.application.updates}</h3>
       <p className="text-xs text-muted-foreground">{m.application.updatesHint}</p>
+      <Switch
+        checked={autoCheck}
+        onChange={(_, d) => setAutoCheck(d.checked)}
+        label={m.application.autoCheckUpdates}
+      />
+      <p className="text-xs text-muted-foreground">{m.application.autoCheckUpdatesHint}</p>
       <div className="flex flex-wrap gap-2">
         <Button
-          icon={check.isPending ? <Spinner size="tiny" /> : <RefreshCw className="size-4" />}
-          disabled={check.isPending}
-          onClick={() => check.mutate()}
+          icon={checking ? <Spinner size="tiny" /> : <RefreshCw className="size-4" />}
+          disabled={checking}
+          onClick={() => {
+            setAsked(true);
+            void query.refetch();
+          }}
         >
-          {check.isPending ? m.application.checking : m.application.checkUpdates}
+          {checking ? m.application.checking : m.application.checkUpdates}
         </Button>
       </div>
       <div aria-live="polite">
-        {check.isError ? (
+        {asked && query.isError ? (
           <MessageBar intent="error" layout="multiline">
             <MessageBarBody>
               <MessageBarTitle>{m.application.checkFailed}</MessageBarTitle>
-              {errorMessage(check.error)}
+              {errorMessage(query.error)}
             </MessageBarBody>
           </MessageBar>
         ) : result ? (
@@ -769,9 +788,7 @@ const UpdateCheck: React.FC = () => {
               <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap font-sans text-xs">{result.notes}</pre>
             </details>
           ) : null}
-          <Button appearance="primary" icon={<ExternalLink className="size-4" />} disabled={openReleases.isPending} onClick={() => openReleases.mutate()}>
-            {m.application.openReleases}
-          </Button>
+          <UpdateActions update={result} />
         </div>
       ) : null}
     </div>

@@ -50,7 +50,7 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
 | AG-06 | P2 | Verified defect (in this branch's first cut) | The stopping side (cancel, stall) rewrote the whole task row and could overwrite usage the worker had just settled; a refused retry left the task queued; a fallback worktree branch name was not the stored task branch | Fixed |
 | BK-03 | P2 | Verified defect (in this branch's first cut) | Restore kept a workflow created after the backup, reported "put back" when rolling back failed, and backups were offered for a custom `--db-path` that restore cannot target | Fixed |
 | REL-01 | P2 | Gap | Release has no SBOM and no source-commit trace | Fixed |
-| REL-02 | P1 | Gap | No updater / update signing | Blocked (owner) |
+| REL-02 | P1 | Gap | No updater / update signing | Implemented; needs the signing secret and a Windows end-to-end check |
 | REL-03 | P1 | Gap | Authenticode certificate not configured | Blocked (owner) |
 | ID-01 | P2 | Verified defect | App identifier `com.openai.symphony.*` implies OpenAI ownership | Fixed |
 | DOC-01 | P3 | Verified defect | `WORKFLOW.md` names "Symphony Desktop 1.0", port 47800 | Fixed |
@@ -315,10 +315,10 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
 
 - **Pull request status is refreshed on request only** (see RV-04): no timer, so a CI result that arrives
   later is not shown until the user clicks *Refresh status*. Legacy commit statuses (not check runs) are not read.
-- **REL-02 (P1, Blocked)**: no auto-update. Tauri's updater needs an update-signing key pair (different from
-  Authenticode), a hosted HTTPS `latest.json`, the `tauri-plugin-updater` wiring, a capability and UI. None
-  of it can be verified without the key and a Windows build, and an updater that fails at startup is worse
-  than none, so no runtime code was added. Integration plan and the owner's steps: `docs/RELEASING.md`.
+- **REL-02 (P1)**: in-app updates are implemented (`tauri-plugin-updater` driven by host-side commands,
+  Settings card and banner, `latest.json` + `.sig` produced by the release workflow). Still needed from the
+  owner: the `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` secrets, and a real two-release test on Windows
+  (install v-old, publish v-new, update, data intact). Details: `docs/RELEASING.md`.
 - **REL-03 (P1, Blocked)**: Authenticode secrets (`WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD`);
   unsigned builds are labelled `UNSIGNED`; the workflow uploads them to a *draft* release and warns maintainers not to publish them, but nothing blocks publication (no pre-publication signing gate exists).
 - **PROV-01 (P2)**: provider = per project and per task (`preferred_provider`/`model`, task overrides) with
@@ -327,7 +327,8 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
   needs an adapter that provides tool execution, approvals, streaming and sessions; a raw chat endpoint must
   not be advertised as an autonomous coding runtime.
 - **HIST-01 (P2)**: events, attempts (thread/turn/session ids) and approvals are persisted, and
-  `/events/recent` and `/tasks/{id}/events` take `limit`. Missing: cursor pagination, retention policy,
+  `/events/recent` and `/tasks/{id}/events` take `limit`. Retention is implemented (`event_retention_days`, pruning of
+  finished tasks' events). Missing: cursor pagination,
   tool-call result persistence beyond raw event payloads, a "continue session" action in the UI.
 - **AG-04 (P2, unverified)**: `claude -p …` and `opencode` are started without a permission mode or an
   approval bridge; whether a headless run can edit files depends on the user's own Claude/OpenCode settings.

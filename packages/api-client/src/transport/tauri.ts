@@ -22,6 +22,21 @@ export interface UpdateCheck {
   prerelease: boolean;
   published_at: string | null;
   notes: string | null;
+  /**
+   * The app can download, verify and install this update itself. `false` for a release without a
+   * signed manifest: the user installs it from the releases page.
+   */
+  installable: boolean;
+}
+
+/** Answer of `install_update`. Without `confirmed`, running agents are reported first. */
+export type InstallOutcome = { status: "needs_confirmation"; running: number } | { status: "installed" };
+
+/** Download progress pushed by the host on `symphony://update-progress`. */
+export interface UpdateProgress {
+  phase: "downloading" | "installing";
+  downloaded: number;
+  total: number | null;
 }
 
 interface TauriInternals {
@@ -63,6 +78,12 @@ export const nativeHost = {
   openLogDirectory: () => invoke<string>("open_log_directory"),
   /** Asks GitHub for the newest release. Only runs on request; nothing is downloaded. */
   checkForUpdates: () => invoke<UpdateCheck>("check_for_updates"),
+  /**
+   * Downloads, verifies and installs the update found by the last `checkForUpdates`; the host
+   * takes no URL. With running agents it answers `needs_confirmation` until `confirmed` is true.
+   * On Windows the app exits for the installer, so the promise may never settle.
+   */
+  installUpdate: (confirmed: boolean) => invoke<InstallOutcome>("install_update", { confirmed }),
   /** Opens the project's releases page in the default browser (a fixed URL). */
   openReleasesPage: () => invoke<void>("open_releases_page")
 };
@@ -81,4 +102,10 @@ export async function listenNativeEvents(
     unlistenEvent();
     unlistenResync();
   };
+}
+
+/** Subscribe to update download progress. Resolves an unsubscribe function. */
+export async function listenUpdateProgress(onProgress: (progress: UpdateProgress) => void): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<UpdateProgress>("symphony://update-progress", (e) => onProgress(e.payload));
 }

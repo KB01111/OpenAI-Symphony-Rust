@@ -49,41 +49,50 @@ smoke test (`desktop-native.yml`); the installer is downloadable from that run f
 5. Branch protection on `main` for the checks in `ci.yml`, `desktop-native.yml`, `api-contract.yml`,
    `ui-e2e.yml`, `supply-chain.yml`.
 
-## In-app "Check for updates" and auto-update
+## In-app updates
 
-*Settings → Application → Check for updates* asks GitHub for the newest release when (and only when) the
-user presses the button, compares versions (pre-releases are only offered to pre-release builds) and opens
-the releases page. It downloads and installs nothing, so it needs no key. Installing stays a manual step.
+*Settings → Application → Updates* (and a banner at the top of the window) offer the newest release:
 
-## Auto-update (not implemented: needs owner decisions)
+1. The host asks the GitHub releases API for the newest release that suits the running build
+   (pre-releases are only offered to pre-release builds). This runs at startup and every six hours unless the
+   user turns *Check for updates automatically* off; the button always works.
+2. If that release has a `latest.json` asset, the Tauri updater reads it from
+   `releases/download/<tag>/latest.json`, and **Update now** downloads the installer it names, verifies its
+   minisign signature against the public key in `tauri.conf.json` (`plugins.updater.pubkey`) and only then
+   runs it (NSIS `passive` mode: progress bar, no questions). The installer replaces the app and starts it again.
+   Data directory and credential vault are untouched.
+3. If tasks are running, the app asks first: the installer ends the app and its agent processes, and unfinished
+   attempts are re-queued by crash recovery when it starts again.
+4. A release without `latest.json` (built before the key was configured, or a rebuilt draft) is still announced;
+   the button then opens the releases page.
 
-Tauri 2 updates through `tauri-plugin-updater`. **Update signing is a different mechanism from Authenticode**:
-the updater verifies a minisign-style signature of each update artifact against a public key compiled into
-the app; Authenticode is what Windows/SmartScreen checks on the installer. Both are needed.
+The webview supplies no URL or path to any of this: `check_for_updates` and `install_update` take at most a
+`confirmed` flag, and the plugin's own commands are not granted to the window.
 
-What is required and cannot be created from this repository:
+### The update key (one time, owner)
 
-- An update **key pair** (`pnpm tauri signer generate`), created outside the repository. The public key goes
-  into `tauri.conf.json` (`plugins.updater.pubkey`), the private key and its password into the secrets
-  `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Losing the private key means installed
-  apps can never be updated again; leaking it lets anyone ship an update.
-- A **hosted HTTPS manifest** (`latest.json`: version, notes, per-platform URL and signature), e.g. GitHub
-  release assets behind a stable URL, and a decision on stable vs. prerelease channels (two manifests).
+Update signing is a **different mechanism from Authenticode**: Windows/SmartScreen checks Authenticode on the
+installer, the app checks the update signature. The pair was created with `pnpm tauri signer generate`:
 
-Integration plan once those exist (each step needs a Windows build to verify, which is why none of it is
-merged unverified):
+- the **public key** is committed in `apps/desktop/src-tauri/tauri.conf.json` and compiled into every build;
+- the **private key** and its password are never committed. Add them as the repository secrets
+  `TAURI_SIGNING_PRIVATE_KEY` (the *contents* of the key file) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+  (*Settings → Secrets and variables → Actions*).
 
-1. `bundle.createUpdaterArtifacts: true` (only when the signing secret is present, through a `--config`
-   override like the Authenticode one) so the NSIS build emits the installer's `.sig`.
-2. Add `tauri-plugin-updater` and `tauri-plugin-process` (restart), grant only `updater:default` in
-   `capabilities/default.json`, `endpoints` over HTTPS only.
-3. A Settings → Application "Check for updates" action (opt-in; the app makes no network call on its own),
-   showing version, notes and download progress.
-4. **Running agents**: refuse to install while tasks are `Running` unless the user confirms; the installer
-   restarts the app and the Job Object ends agent trees, so unfinished attempts are re-queued by crash
-   recovery. Data directory and vault are untouched by an update.
-5. Release workflow: upload `latest.json` and the `.sig` files, include them in `SHA256SUMS.txt`.
-6. Test with a throw-away key pair against a local HTTPS server before the first real key is created.
+Without the secrets the release workflow still builds and publishes, but without `latest.json`. Losing the
+private key means installed apps can never be updated again (users would have to install by hand once, with a
+new public key); leaking it lets anyone ship an update. To rotate, generate a new pair, replace `pubkey`, ship
+a release signed with the **old** key that carries the new public key, then switch the secrets.
+
+What the workflow does when the secret exists: `tauri build` runs with `bundle.createUpdaterArtifacts`, which
+adds `<installer>.exe.sig`; `scripts/updater-manifest.mjs` writes `latest.json` (version, notes, installer URL,
+signature); both are uploaded and covered by `SHA256SUMS.txt`. Releases built UNSIGNED (Authenticode) are
+pre-releases, so only pre-release builds are offered them.
+
+Not enforced yet: `require_signed_version` (the updater would also check that the signature names the same
+version as the manifest, which blocks downgrade tricks through a forged manifest). The Tauri CLI used here
+does not record the version in the signature; enable it once it does. The downgrade guard that exists today is
+the updater's own "must be newer" comparison over HTTPS from github.com.
 
 ## Verifying a download
 
