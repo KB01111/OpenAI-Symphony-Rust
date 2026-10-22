@@ -11,7 +11,9 @@ on:
 
 concurrency:
   group: desktop-native-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded pull request runs are cancelled; runs on main are not, so every commit on main
+  # gets its installer artifact.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least privilege: these jobs only read the repository.
 permissions:
