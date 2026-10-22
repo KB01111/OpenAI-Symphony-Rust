@@ -69,9 +69,11 @@ pub fn notification_title(locale: NativeLocale, event_type: &str) -> Option<&'st
     })
 }
 
-/// Body of the notification for an orchestrator event. English keeps the orchestrator's own text;
-/// Swedish replaces its English sentence with a translated one, and for a failed run keeps the
-/// orchestrator's message as the technical detail.
+/// Body of the notification for an orchestrator event. English keeps the orchestrator's own text.
+/// Swedish translates its sentence and keeps the details that are in it: the requested action of an
+/// approval, the Merge Readiness score of a finished run and the error of a failed one. When the
+/// message does not have the expected shape the original text is appended instead, so a detail is
+/// never dropped.
 pub fn notification_body(
     locale: NativeLocale,
     event_type: &str,
@@ -79,10 +81,19 @@ pub fn notification_body(
     message: &str,
 ) -> String {
     let lead = match (locale, event_type) {
-        (NativeLocale::Sv, "approval/requested") => "väntar på ditt godkännande".to_string(),
-        (NativeLocale::Sv, "attempt/succeeded") => "klar för granskning".to_string(),
+        (NativeLocale::Sv, "approval/requested") => {
+            let detail = message
+                .strip_prefix("Approval requested: ")
+                .unwrap_or(message);
+            format!("väntar på ditt godkännande: {detail}")
+        }
+        (NativeLocale::Sv, "attempt/succeeded") => match merge_readiness(message) {
+            Some(score) => format!("klar för granskning (sammanslagningsberedskap {score})"),
+            None => format!("klar för granskning ({message})"),
+        },
         (NativeLocale::Sv, "attempt/failed") => {
-            format!("körningen misslyckades ({message})")
+            let detail = message.split_once(" failed: ").map_or(message, |(_, e)| e);
+            format!("körningen misslyckades: {detail}")
         }
         _ => message.to_string(),
     };
@@ -96,6 +107,13 @@ pub fn notification_body(
             }
         }
     }
+}
+
+/// The `n/5` of "... (Merge Readiness: n/5). ...".
+fn merge_readiness(message: &str) -> Option<&str> {
+    let (_, rest) = message.split_once("Merge Readiness: ")?;
+    let score = rest.split(')').next()?.trim();
+    (!score.is_empty()).then_some(score)
 }
 
 /// Title and body of the notification shown when `runtime.json` could not be published.
@@ -158,33 +176,38 @@ mod tests {
     }
 
     #[test]
-    fn swedish_notification_body_is_translated_and_keeps_identifier_and_detail() {
+    fn swedish_notification_body_is_translated_and_keeps_the_details() {
+        let sv = NativeLocale::Sv;
         assert_eq!(
             notification_body(
-                NativeLocale::Sv,
+                sv,
                 "approval/requested",
                 Some("ABC-1"),
-                "Approval requested"
+                "Approval requested: command_execution"
             ),
-            "ABC-1: väntar på ditt godkännande"
+            "ABC-1: väntar på ditt godkännande: command_execution"
         );
         assert_eq!(
             notification_body(
-                NativeLocale::Sv,
+                sv,
                 "attempt/succeeded",
-                None,
-                "Completed execution"
+                Some("ABC-1"),
+                "Completed execution for ABC-1 (Merge Readiness: 2/5). Ready for human review."
             ),
-            "Klar för granskning"
+            "ABC-1: klar för granskning (sammanslagningsberedskap 2/5)"
         );
         assert_eq!(
             notification_body(
-                NativeLocale::Sv,
+                sv,
                 "attempt/failed",
                 Some("ABC-1"),
-                "exit code 2"
+                "Task ABC-1 failed: exit code 2"
             ),
-            "ABC-1: körningen misslyckades (exit code 2)"
+            "ABC-1: körningen misslyckades: exit code 2"
+        );
+        assert_eq!(
+            notification_body(sv, "attempt/succeeded", None, "unexpected text"),
+            "Klar för granskning (unexpected text)"
         );
     }
 
