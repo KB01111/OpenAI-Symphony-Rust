@@ -96,7 +96,8 @@ Record the Windows build (`winver`), the commit and pass/fail for each step.
     icon) is Swedish at once (*Öppna Symphony Desktop*, *Pausa uppgiftsutskick* …), and a notification
     (step 11) is Swedish. Switch back: both are English again. Restart: the tray starts in the saved language.
 19. **Folders, shortcuts, updates** — Settings → Application: *Open data folder* and *Open log folder* open
-    Explorer on `%LOCALAPPDATA%\symphony-desktop` and its `logs` folder. *Show keyboard shortcuts* (also `F1`
+    Explorer on the data directory the app runs with (the fresh `SYMPHONY_DATA_DIR` folder if you started it
+    from the prepared shell, otherwise `%LOCALAPPDATA%\symphony-desktop`) and its `logs` subfolder. *Show keyboard shortcuts* (also `F1`
     and `Ctrl+/`) lists the shortcuts, and each one works. *Check for updates* with network access reports
     *up to date* (or an available version with *Open release page*); with the network off it shows an error,
     never *up to date*.

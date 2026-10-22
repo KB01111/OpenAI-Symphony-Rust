@@ -54,10 +54,12 @@ export function useGlobalShortcuts(): void {
         case "n":
           if (e.shiftKey) return;
           e.preventDefault();
+          store.setShortcutsOpen(false);
           store.setNewTaskOpen(true);
           break;
         case "p":
           e.preventDefault();
+          store.setShortcutsOpen(false);
           store.openPalette("projects");
           break;
         case "r":

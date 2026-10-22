@@ -10,9 +10,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: desktop-native-${{ github.ref }}
-  # Superseded pull request runs are cancelled; runs on main are not, so every commit on main
-  # gets its installer artifact.
+  # A pull request has one group (a newer push cancels the older run). Every other run gets its own
+  # group, so a queued run on main is never replaced by a newer one and every commit on main gets
+  # its installer artifact.
+  group: desktop-native-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least privilege: these jobs only read the repository.

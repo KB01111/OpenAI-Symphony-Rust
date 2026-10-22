@@ -284,9 +284,12 @@ jobs:
           if ($signed -and $env:RELEASE_VERSION -notmatch '-') {
             $ghArgs += '--prerelease=false'
             # Re-publishing an older stable tag must not move the "Latest" badge backwards.
-            $latestTag = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>$null
+            $latest = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>&1
+            if ($LASTEXITCODE -eq 0) { $latestTag = [string] $latest }
+            elseif ("$latest" -match '404|Not Found') { $latestTag = '' }   # no stable release yet
+            else { throw "Could not read the latest release, so the Latest badge cannot be decided safely: $latest" }
             # SemVer build metadata (+build.1) is not part of the precedence and [version] cannot parse it.
-            $isNewest = ($LASTEXITCODE -ne 0) -or (-not $latestTag) -or
+            $isNewest = (-not $latestTag) -or
               ([version] ($env:RELEASE_VERSION -replace '\+.*$', '') -ge [version] (($latestTag -replace '^v', '') -replace '\+.*$', ''))
             $ghArgs += if ($isNewest) { '--latest' } else { '--latest=false' }
           }

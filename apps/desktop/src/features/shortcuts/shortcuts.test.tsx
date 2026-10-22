@@ -38,6 +38,16 @@ describe("keyboard shortcut help", () => {
     expect(useUiStore.getState()).toMatchObject({ shortcutsOpen: false, paletteOpen: true });
   });
 
+  it("opening the new task dialog or the project switcher closes shortcut help", () => {
+    renderHarness();
+    act(() => useUiStore.getState().setShortcutsOpen(true));
+    fireEvent.keyDown(window, { key: "p", ctrlKey: true });
+    expect(useUiStore.getState()).toMatchObject({ shortcutsOpen: false, paletteOpen: true });
+    act(() => useUiStore.getState().setShortcutsOpen(true));
+    fireEvent.keyDown(window, { key: "n", ctrlKey: true });
+    expect(useUiStore.getState()).toMatchObject({ shortcutsOpen: false, newTaskOpen: true });
+  });
+
   it("toggles once per key press, not on every auto-repeat keydown", () => {
     renderHarness();
     fireEvent.keyDown(window, { key: "F1" });
@@ -65,8 +75,22 @@ describe("ShortcutsDialog", () => {
     act(() => useUiStore.setState({ shortcutsOpen: true, locale: "en" }));
     renderWithProviders(<ShortcutsDialog />, { runtime: createMockRuntime() });
     expect(await screen.findByRole("dialog", { name: m.title })).toBeInTheDocument();
-    for (const label of Object.values(m.items)) expect(screen.getByText(label)).toBeInTheDocument();
-    for (const key of ["K", "N", "P", "R", "B", "J", "I", "F1", "/"]) expect(screen.getAllByText(key).length).toBeGreaterThan(0);
+    // Each action is shown together with its own key combination (a swap would fail).
+    const expected: Record<keyof typeof m.items, string> = {
+      palette: "Ctrl+K",
+      newTask: "Ctrl+N",
+      projects: "Ctrl+P",
+      refresh: "Ctrl+R",
+      sidebar: "Ctrl+B",
+      activity: "Ctrl+J",
+      inspector: "Ctrl+I",
+      help: "F1+Ctrl+/"
+    };
+    for (const [item, combo] of Object.entries(expected)) {
+      const row = screen.getByText(m.items[item as keyof typeof m.items]).closest("li");
+      expect(row, item).not.toBeNull();
+      expect(Array.from(row!.querySelectorAll("kbd")).map((k) => k.textContent).join("+"), item).toBe(combo);
+    }
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(useUiStore.getState().shortcutsOpen).toBe(false);
   });
