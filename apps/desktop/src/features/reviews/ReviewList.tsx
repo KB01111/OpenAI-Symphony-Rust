@@ -9,6 +9,7 @@ import {
   SCORE_CHIP_CLASS,
   ciTone,
   hasActiveReviewFilters,
+  hasPullRequest,
   scoreTone,
   DEFAULT_REVIEW_FILTERS,
   type ApprovalFilter,
@@ -107,7 +108,9 @@ export const CiStatus: React.FC<{ status: string }> = ({ status }) => {
   return (
     <span className={cn("inline-flex items-center gap-1", tone === "success" ? "text-success" : tone === "danger" ? "text-destructive" : "text-warning")}>
       <Icon className="size-3.5" aria-hidden />
-      <span className="text-muted-foreground">{status ? formatMessage(m.list.ci, { status }) : m.list.ciUnknown}</span>
+      <span className="text-muted-foreground">
+        {status === "none" ? m.list.ciNone : status ? formatMessage(m.list.ci, { status }) : m.list.ciUnknown}
+      </span>
     </span>
   );
 };
@@ -138,7 +141,7 @@ const ReviewListItem = React.memo(function ReviewListItem({
       >
         <span className="flex items-start gap-2">
           <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-            <span className="text-muted-foreground">#{review.pr_number}</span> {review.title}
+            <span className="text-muted-foreground">{hasPullRequest(review) ? `#${review.pr_number}` : m.list.localReview}</span> {review.title}
           </span>
           <ScoreChip score={review.merge_readiness.score} />
         </span>

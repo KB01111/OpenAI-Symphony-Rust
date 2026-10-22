@@ -14,7 +14,7 @@ use symphony_agents::{
 use symphony_core::{
     compute_backoff_delay_ms, redact_secrets, render_continuation_prompt, render_workflow_prompt,
     sort_candidate_issues, AgentEvent, ApprovalDecision, ApprovalRequest, ApprovalStatus,
-    CodexTotals, HardwareSnapshot, Issue, LiveSession, MergeReadinessReport,
+    CodexTotals, ConflictCheck, HardwareSnapshot, Issue, LiveSession, MergeReadinessReport,
     OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus, PullRequestReview,
     RepositoryValidation, RetryEntry, RunAttempt, RunAttemptPhase, RunningSessionSummary,
     ServiceConfig, StateCounts, SymphonyError, SymphonyResult, Task, TaskDiff, TaskStatus,
@@ -26,7 +26,7 @@ use symphony_platform::{HardwareMonitor, SecretStore};
 pub const PROVIDER_CREDENTIAL_ENV_KEYS: &[&str] = &["OPENAI_API_KEY", "ANTHROPIC_API_KEY"];
 use symphony_storage::Storage;
 use symphony_trackers::{GitHubTracker, LinearTracker, TrackerAdapter};
-use symphony_workspaces::WorkspaceManager;
+use symphony_workspaces::{MergeCheck, WorkspaceManager};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
@@ -1490,7 +1490,14 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     Some(task.provider),
                     "pr/human_approved",
                     Some(RunAttemptPhase::Succeeded),
-                    format!("Human approved PR #{} ({})", review.pr_number, review.title),
+                    if review.pr_number == 0 {
+                        format!(
+                            "Human approved review of {} ({})",
+                            review.branch_name, review.title
+                        )
+                    } else {
+                        format!("Human approved PR #{} ({})", review.pr_number, review.title)
+                    },
                     None,
                 )
                 .await;
@@ -2674,19 +2681,42 @@ Please implement the requested changes cleanly in the current Git workspace, run
             );
         }
 
-        let merge_readiness = MergeReadinessReport::evaluate(
-            false,
-            "passed",
+        // What is known about the branch is measured, never assumed: the merge is simulated against
+        // the base branch, and a local review has no remote CI at all.
+        let merge_check = self
+            .workspaces
+            .check_mergeability(&allocated.path, &project.default_branch)
+            .await;
+        let (conflict_check, mergeable, has_conflicts) = match &merge_check {
+            MergeCheck::Clean => (ConflictCheck::Clean, true, false),
+            MergeCheck::Conflicts(_) => (ConflictCheck::Conflicts, false, true),
+            MergeCheck::Unavailable(reason) => {
+                warn!(reason = %reason, "merge conflicts could not be checked");
+                (ConflictCheck::NotChecked, false, false)
+            }
+        };
+        let ci_status = "none";
+        let mut merge_readiness = MergeReadinessReport::evaluate(
+            conflict_check,
+            ci_status,
             &validation_results,
             &security_warnings,
             changed_files.len(),
         );
+        if let MergeCheck::Conflicts(files) = &merge_check {
+            if !files.is_empty() {
+                merge_readiness
+                    .blockers
+                    .push(format!("Conflicting files: {}.", files.join(", ")));
+            }
+        }
 
         let pr_review = PullRequestReview {
             id: format!("pr-{}", task.id),
             task_id: task.id.clone(),
             project_id: project.id.clone(),
-            pr_number: task.pr_number.unwrap_or(task.attempt_count as u64),
+            // 0 = no pull request exists (yet): this is a review of the local worktree branch.
+            pr_number: task.pr_number.unwrap_or(0),
             title: format!("{}: {}", task.issue.identifier, task.issue.title),
             description: last_outcome
                 .and_then(|o| o.assistant_messages.last().cloned())
@@ -2703,9 +2733,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
             branch_name: allocated.branch_name.clone(),
             base_branch: project.default_branch.clone(),
             state: "open".to_string(),
-            ci_status: "passed".to_string(),
-            mergeable: true,
-            has_conflicts: false,
+            ci_status: ci_status.to_string(),
+            mergeable,
+            has_conflicts,
             changed_files,
             diff_preview,
             validation_results: validation_results.clone(),
@@ -3064,6 +3094,21 @@ mod tests {
         assert!(detail.pull_request.is_some());
         let pr = detail.pull_request.unwrap();
         assert!(pr.merge_readiness.score >= 4);
+        // A local review makes no claim about remote state it never looked at.
+        assert_eq!(
+            pr.pr_number, 0,
+            "no pull request exists for a local worktree review"
+        );
+        assert_eq!(pr.ci_status, "none");
+        assert!(
+            pr.mergeable && !pr.has_conflicts,
+            "the merge was simulated and is clean"
+        );
+        assert!(!pr
+            .merge_readiness
+            .evidence
+            .iter()
+            .any(|e| e.contains("Remote CI checks passed")));
         assert!(pr
             .changed_files
             .iter()

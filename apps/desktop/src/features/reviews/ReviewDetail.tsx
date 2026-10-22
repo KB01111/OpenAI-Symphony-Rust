@@ -17,7 +17,7 @@ import { paths } from "../../app/routes.js";
 import { useMessages } from "../../lib/i18n.js";
 import { useApprovePullRequest, usePullRequest } from "../../lib/queries.js";
 import { reviewMessages } from "./messages.js";
-import { isWebUrl } from "./reviewHelpers.js";
+import { hasPullRequest, isWebUrl } from "./reviewHelpers.js";
 import { CommentsTab, DiffTab, FilesChangedTab, SecurityTab, ValidationTab, type DiffSource } from "./ReviewTabs.js";
 
 type ReviewTab = "files" | "diff" | "validation" | "comments" | "security";
@@ -81,7 +81,7 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
         <div className="flex flex-wrap items-start gap-2">
           <GitPullRequest className="mt-0.5 size-5 shrink-0 text-accent" aria-hidden />
           <h2 id={`review-title-${review.id}`} className="min-w-0 flex-1 font-display text-lg font-semibold text-foreground">
-            <span className="text-muted-foreground">#{review.pr_number}</span> {review.title}
+            <span className="text-muted-foreground">{hasPullRequest(review) ? `#${review.pr_number}` : m.list.localReview}</span> {review.title}
           </h2>
           <SdkBadge size="sm" variant="outline" color="secondary" pill>
             {review.state}

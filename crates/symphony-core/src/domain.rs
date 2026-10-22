@@ -844,9 +844,22 @@ pub struct MergeReadinessReport {
     pub blockers: Vec<String>,
 }
 
+/// What is known about merge conflicts between a review's branch and its base branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictCheck {
+    /// A simulated merge succeeded.
+    Clean,
+    /// A simulated merge conflicts.
+    Conflicts,
+    /// The check could not run (no Git support, base branch missing): nothing is known.
+    NotChecked,
+}
+
 impl MergeReadinessReport {
+    /// Rate a review from evidence. Nothing is assumed: CI status `none` (a local review has no
+    /// remote CI) and an unchecked merge are reported as such and never counted as a pass.
     pub fn evaluate(
-        has_conflicts: bool,
+        conflicts: ConflictCheck,
         ci_status: &str,
         validations: &[ValidationResult],
         security_warnings: &[String],
@@ -856,11 +869,22 @@ impl MergeReadinessReport {
         let mut blockers = Vec::new();
         let mut score: i32 = 5;
 
-        if has_conflicts {
-            score -= 3;
-            blockers.push("Branch has unresolved Git merge conflicts.".to_string());
-        } else {
-            evidence.push("Clean Git merge base without conflicts.".to_string());
+        match conflicts {
+            ConflictCheck::Conflicts => {
+                score -= 3;
+                blockers.push("Branch has unresolved Git merge conflicts.".to_string());
+            }
+            ConflictCheck::Clean => {
+                evidence.push(
+                    "A simulated merge into the base branch completes without conflicts."
+                        .to_string(),
+                );
+            }
+            ConflictCheck::NotChecked => {
+                evidence.push(
+                    "Merge conflicts could not be checked; mergeability is unverified.".to_string(),
+                );
+            }
         }
 
         if !security_warnings.is_empty() {
@@ -903,6 +927,9 @@ impl MergeReadinessReport {
             "pending" | "running" => {
                 score -= 1;
                 evidence.push("Remote CI checks are still in progress.".to_string());
+            }
+            "none" | "not_applicable" => {
+                evidence.push("No remote CI run is associated with this local review.".to_string());
             }
             _ => {
                 evidence.push(format!("CI status: {ci_status}."));

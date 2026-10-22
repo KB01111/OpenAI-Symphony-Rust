@@ -49,6 +49,17 @@ function listTitles() {
 }
 
 describe("ReviewsPage", () => {
+  it("does not invent a pull request number or a CI result for a local worktree review", async () => {
+    const local = pullRequest({ id: "pr-local", pr_number: 0, ci_status: "none", title: "Local branch only" });
+    renderWithProviders(<ReviewsPage />, { runtime: runtimeWith([local]), route: "/reviews", path: "/reviews" });
+    await screen.findByText("Local branch only");
+    const item = listTitles()[0]!;
+    expect(item).toContain("Local review");
+    expect(item).toContain("No remote CI");
+    expect(item).not.toContain("#0");
+    expect(item).not.toMatch(/CI: (none|passed)/);
+  });
+
   it("lists reviews newest first and filters them", async () => {
     renderWithProviders(<ReviewsPage />, { runtime: runtimeWith(reviews), route: "/reviews", path: "/reviews" });
     await screen.findByText("Blocked refactor");

@@ -24,6 +24,8 @@ export const reviewMessages = defineMessages({
       score: "Readiness {score}/5",
       ci: "CI: {status}",
       ciUnknown: "CI: pending",
+      ciNone: "No remote CI",
+      localReview: "Local review",
       blockers: "{count} blocker(s)",
       unknownProject: "Unknown project",
       updated: "Updated"
@@ -144,6 +146,8 @@ export const reviewMessages = defineMessages({
       score: "Beredskap {score}/5",
       ci: "CI: {status}",
       ciUnknown: "CI: väntar",
+      ciNone: "Ingen fjärr-CI",
+      localReview: "Lokal granskning",
       blockers: "{count} blockerare",
       unknownProject: "Okänt projekt",
       updated: "Uppdaterad"

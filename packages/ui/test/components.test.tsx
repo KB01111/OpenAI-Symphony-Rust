@@ -205,6 +205,9 @@ describe("MergeReadinessCard", () => {
       security: "fail",
       reviewedComments: 0
     });
+    // An unchecked merge (not mergeable, no conflicts) is pending, never "clean".
+    expect(readinessEvidence({ ...review, mergeable: false }).conflicts).toBe("pending");
+    expect(readinessEvidence({ ...review, has_conflicts: true, mergeable: false }).conflicts).toBe("fail");
     const onApprove = vi.fn();
     render(
       <SymphonyDesignProvider themeMode="dark">

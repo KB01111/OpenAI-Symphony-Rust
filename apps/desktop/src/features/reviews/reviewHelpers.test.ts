@@ -8,6 +8,7 @@ import {
   diffForFile,
   filterReviews,
   hasActiveReviewFilters,
+  hasPullRequest,
   isWebUrl,
   scoreTone
 } from "./reviewHelpers.js";
@@ -86,6 +87,11 @@ describe("diff slicing", () => {
     "@@ -0,0 +1 @@",
     "+# Readme"
   ].join("\n");
+
+  it("treats pull request number 0 as no pull request", () => {
+    expect(hasPullRequest({ pr_number: 0 })).toBe(false);
+    expect(hasPullRequest({ pr_number: 12 })).toBe(true);
+  });
 
   it("restricts a unified diff to one file", () => {
     const only = diffForFile(diff, "README.md");

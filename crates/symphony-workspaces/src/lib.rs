@@ -25,6 +25,17 @@ pub const SECRET_ENV_VARS_TO_STRIP: &[&str] = &[
 
 const MAX_UNTRACKED_DIFF_FILES: usize = 200;
 
+/// Result of simulating a merge of a worktree into its base branch ([`WorkspaceManager::check_mergeability`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeCheck {
+    /// The changes merge cleanly into the base branch as it is now.
+    Clean,
+    /// Merging conflicts in these paths.
+    Conflicts(Vec<String>),
+    /// The check could not run; the reason is human-readable. Mergeability is unknown.
+    Unavailable(String),
+}
+
 /// `git` without a console window (the release desktop app is a GUI-subsystem process).
 pub fn git_command() -> Command {
     let mut cmd = Command::new("git");
@@ -610,6 +621,137 @@ impl WorkspaceManager {
         (diff, truncated || cut)
     }
 
+    /// Simulate merging the worktree's current state (committed and uncommitted changes, untracked
+    /// files included, `.gitignore` honoured) into `base_ref`, without touching the worktree, its
+    /// index or any branch. Uses `git merge-tree --write-tree` (Git 2.38+); the helper objects it
+    /// writes are unreferenced and left to `git gc`.
+    pub async fn check_mergeability(&self, workspace_path: &Path, base_ref: &str) -> MergeCheck {
+        match Self::simulate_merge(workspace_path, base_ref).await {
+            Ok(check) => check,
+            Err(reason) => MergeCheck::Unavailable(reason),
+        }
+    }
+
+    async fn simulate_merge(workspace_path: &Path, base_ref: &str) -> Result<MergeCheck, String> {
+        if !workspace_path.exists() {
+            return Err("the workspace no longer exists".into());
+        }
+        let base = if Self::git_ref_exists(workspace_path, base_ref).await {
+            base_ref.to_string()
+        } else if Self::git_ref_exists(workspace_path, &format!("origin/{base_ref}")).await {
+            format!("origin/{base_ref}")
+        } else {
+            return Err(format!("base branch `{base_ref}` was not found"));
+        };
+
+        let git_dir = git_stdout(workspace_path, &["rev-parse", "--absolute-git-dir"])
+            .await
+            .ok_or("not a Git worktree")?;
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let index = PathBuf::from(git_dir.trim()).join(format!(
+            "symphony-merge-check-{}-{unique}.index",
+            std::process::id()
+        ));
+        let result = Self::merge_tree_of_snapshot(workspace_path, &base, &index).await;
+        let _ = std::fs::remove_file(&index);
+        result
+    }
+
+    async fn merge_tree_of_snapshot(
+        workspace_path: &Path,
+        base: &str,
+        index: &Path,
+    ) -> Result<MergeCheck, String> {
+        // A private index holds the worktree's state, so the real index is never modified.
+        let run = |args: Vec<&str>, with_index: bool| {
+            let mut cmd = git_command();
+            cmd.arg("-C")
+                .arg(workspace_path)
+                .args(args)
+                .stdin(Stdio::null())
+                // The snapshot commit only exists to be merged: any identity will do.
+                .env("GIT_AUTHOR_NAME", "Symphony")
+                .env("GIT_AUTHOR_EMAIL", "symphony@localhost")
+                .env("GIT_COMMITTER_NAME", "Symphony")
+                .env("GIT_COMMITTER_EMAIL", "symphony@localhost");
+            if with_index {
+                cmd.env("GIT_INDEX_FILE", index);
+            }
+            async move {
+                cmd.output()
+                    .await
+                    .map_err(|e| format!("could not run git: {e}"))
+            }
+        };
+        let stdout_of = |out: &std::process::Output, what: &str| -> Result<String, String> {
+            if out.status.success() {
+                Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            } else {
+                Err(format!(
+                    "{what} failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ))
+            }
+        };
+
+        stdout_of(
+            &run(vec!["read-tree", "HEAD"], true).await?,
+            "git read-tree",
+        )?;
+        stdout_of(&run(vec!["add", "-A"], true).await?, "git add")?;
+        let tree = stdout_of(&run(vec!["write-tree"], true).await?, "git write-tree")?;
+        let commit = stdout_of(
+            &run(
+                vec![
+                    "commit-tree",
+                    &tree,
+                    "-p",
+                    "HEAD",
+                    "-m",
+                    "symphony merge check",
+                ],
+                false,
+            )
+            .await?,
+            "git commit-tree",
+        )?;
+        let merged = run(
+            vec![
+                "merge-tree",
+                "--write-tree",
+                "--name-only",
+                "--no-messages",
+                base,
+                &commit,
+            ],
+            false,
+        )
+        .await?;
+        match merged.status.code() {
+            Some(0) => Ok(MergeCheck::Clean),
+            // Exit status 1: the merge has conflicts; the output is the tree id followed by the
+            // conflicted paths.
+            Some(1) => {
+                let stdout = String::from_utf8_lossy(&merged.stdout);
+                let files = stdout
+                    .lines()
+                    .skip(1)
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                Ok(MergeCheck::Conflicts(files))
+            }
+            _ => Err(format!(
+                "git merge-tree is unavailable or failed (Git 2.38 or newer is required): {}",
+                String::from_utf8_lossy(&merged.stderr).trim()
+            )),
+        }
+    }
+
     /// Safely remove a workspace directory and detach its Git worktree registration.
     /// If `force` is false and the worktree has uncommitted user work, refuses deletion.
     pub async fn cleanup_workspace(
@@ -967,5 +1109,120 @@ mod tests {
             .await
             .unwrap();
         assert!(!allocated.path.exists());
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@localhost")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@localhost")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A repository on `main` holding `file.txt` and a worktree `wt` branched from it.
+    fn repo_with_worktree(root: &Path) -> (PathBuf, PathBuf) {
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        std::fs::write(repo.join("file.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(repo.join("other.txt"), "other\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "initial"]);
+        let wt = root.join("wt");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "task",
+                wt.to_str().unwrap(),
+                "main",
+            ],
+        );
+        (repo, wt)
+    }
+
+    #[tokio::test]
+    async fn mergeability_is_clean_when_the_base_moved_elsewhere() {
+        let dir = tempdir().unwrap();
+        let (repo, wt) = repo_with_worktree(dir.path());
+        // The agent edits `file.txt` (uncommitted) and adds an untracked file; main changes another file.
+        std::fs::write(wt.join("file.txt"), "one\nTWO\nthree\n").unwrap();
+        std::fs::write(wt.join("new.txt"), "new\n").unwrap();
+        std::fs::write(repo.join("other.txt"), "changed upstream\n").unwrap();
+        git(&repo, &["commit", "-am", "upstream change"]);
+
+        let check = WorkspaceManager::new()
+            .check_mergeability(&wt, "main")
+            .await;
+        assert_eq!(check, MergeCheck::Clean);
+        // The check left the worktree exactly as the agent left it.
+        let status = git_stdout(&wt, &["status", "--porcelain"]).await.unwrap();
+        assert!(
+            status.contains(" M file.txt") && status.contains("?? new.txt"),
+            "{status}"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(
+            git_stdout(&wt, &["rev-parse", "--absolute-git-dir"])
+                .await
+                .unwrap()
+                .trim(),
+        )
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("symphony-merge-check")
+        })
+        .collect();
+        assert!(leftovers.is_empty(), "temporary index must be removed");
+    }
+
+    #[tokio::test]
+    async fn mergeability_reports_the_conflicting_paths() {
+        let dir = tempdir().unwrap();
+        let (repo, wt) = repo_with_worktree(dir.path());
+        std::fs::write(wt.join("file.txt"), "one\nAGENT\nthree\n").unwrap();
+        std::fs::write(repo.join("file.txt"), "one\nUPSTREAM\nthree\n").unwrap();
+        git(&repo, &["commit", "-am", "conflicting upstream change"]);
+
+        let check = WorkspaceManager::new()
+            .check_mergeability(&wt, "main")
+            .await;
+        assert_eq!(check, MergeCheck::Conflicts(vec!["file.txt".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn mergeability_is_unavailable_for_an_unknown_base_branch() {
+        let dir = tempdir().unwrap();
+        let (_repo, wt) = repo_with_worktree(dir.path());
+        match WorkspaceManager::new()
+            .check_mergeability(&wt, "no-such-branch")
+            .await
+        {
+            MergeCheck::Unavailable(reason) => {
+                assert!(reason.contains("no-such-branch"), "{reason}")
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+        let gone = dir.path().join("gone");
+        assert!(matches!(
+            WorkspaceManager::new()
+                .check_mergeability(&gone, "main")
+                .await,
+            MergeCheck::Unavailable(_)
+        ));
     }
 }

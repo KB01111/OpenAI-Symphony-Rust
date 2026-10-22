@@ -91,6 +91,7 @@ export const shellMessages = defineMessages({
     },
     inspector: {
       ci: "CI checks",
+      noRemoteCi: "No remote CI",
       label: "Inspector",
       empty: "Nothing selected",
       emptyDetail: "Select a task, project, worktree, or pull request to inspect it.",
@@ -232,6 +233,7 @@ export const shellMessages = defineMessages({
     },
     inspector: {
       ci: "CI-kontroller",
+      noRemoteCi: "Ingen fjärr-CI",
       label: "Inspektör",
       empty: "Inget valt",
       emptyDetail: "Välj en uppgift, ett projekt, ett arbetsträd eller en pull request för att inspektera.",

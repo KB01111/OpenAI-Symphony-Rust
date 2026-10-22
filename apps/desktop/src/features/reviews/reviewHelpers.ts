@@ -40,7 +40,7 @@ export function filterReviews(
       if (filters.minScore !== null && r.merge_readiness.score < filters.minScore) return false;
       if (filters.hasBlockers && r.merge_readiness.blockers.length === 0) return false;
       if (!needle) return true;
-      const haystack = [r.title, r.branch_name, r.base_branch, `#${r.pr_number}`, r.task_id, projectNames.get(r.project_id) ?? ""]
+      const haystack = [r.title, r.branch_name, r.base_branch, r.pr_number > 0 ? `#${r.pr_number}` : "", r.task_id, projectNames.get(r.project_id) ?? ""]
         .join("\n")
         .toLowerCase();
       return haystack.includes(needle);
@@ -60,6 +60,11 @@ export const SCORE_CHIP_CLASS: Record<ScoreTone, string> = {
   warning: "bg-warning-subtle text-warning",
   danger: "bg-destructive-subtle text-destructive"
 };
+
+/** `pr_number` 0 means no pull request exists: the review covers a local worktree branch. */
+export function hasPullRequest(review: { pr_number: number }): boolean {
+  return review.pr_number > 0;
+}
 
 export type CiTone = "success" | "danger" | "pending";
 

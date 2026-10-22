@@ -19,6 +19,64 @@ mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
 
+    fn passing_validation() -> ValidationResult {
+        ValidationResult {
+            id: "v1".into(),
+            task_id: "t1".into(),
+            attempt_number: 1,
+            command: "cargo test".into(),
+            exit_code: 0,
+            passed: true,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 1,
+            executed_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn merge_readiness_never_claims_unverified_ci_or_merge_state() {
+        let report = MergeReadinessReport::evaluate(
+            ConflictCheck::NotChecked,
+            "none",
+            &[passing_validation()],
+            &[],
+            2,
+        );
+        let evidence = report.evidence.join("\n");
+        assert!(!evidence.contains("CI checks passed"), "{evidence}");
+        assert!(!evidence.contains("without conflicts"), "{evidence}");
+        assert!(evidence.contains("could not be checked"), "{evidence}");
+        assert!(evidence.contains("No remote CI run"), "{evidence}");
+        assert!(report.blockers.is_empty());
+    }
+
+    #[test]
+    fn merge_readiness_penalises_conflicts_and_failed_ci() {
+        let clean = MergeReadinessReport::evaluate(
+            ConflictCheck::Clean,
+            "passed",
+            &[passing_validation()],
+            &[],
+            1,
+        );
+        assert_eq!(clean.score, 5);
+        assert!(clean
+            .evidence
+            .iter()
+            .any(|e| e.contains("Remote CI checks passed")));
+
+        let conflicted = MergeReadinessReport::evaluate(
+            ConflictCheck::Conflicts,
+            "failed",
+            &[passing_validation()],
+            &[],
+            1,
+        );
+        assert_eq!(conflicted.score, 1);
+        assert_eq!(conflicted.blockers.len(), 2);
+    }
+
     #[test]
     fn test_workflow_parse_and_front_matter_validation() {
         let raw = "---\ntracker:\n  kind: github\n  required_labels:\n    - symphony\nagent:\n  max_concurrent_agents: 4\n---\nHello {{ issue.identifier }}: {{ issue.title }}";
