@@ -6,9 +6,9 @@ All notable changes to Symphony Desktop are documented here. The format follows
 the release tag as the release notes (`scripts/release-version.mjs --notes`), so every release needs
 one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`).
 
-## [2.0.0] - Unreleased
+## [2.0.0] - 2026-10-22
 
-First release. Replace "Unreleased" with the release date in the commit that is tagged `v2.0.0`.
+First release of Symphony Desktop 2.0: a Windows 11 app that runs coding agents against your issues in isolated Git worktrees. Download `Symphony-Desktop_2.0.0_x64-setup.exe` below; later versions can be installed from inside the app (Settings → Application).
 
 ### Added
 
