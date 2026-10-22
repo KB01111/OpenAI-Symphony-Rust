@@ -58,13 +58,36 @@ impl Drop for SafeHooksDir {
     }
 }
 
-/// `https://host/` of an `https://` remote URL, the scope of git's per-URL `http.<url>.extraheader`.
+/// `https://host[:port]/` of an `https://` remote URL: the scope of git's per-URL
+/// `http.<url>.extraheader`. The port is part of it (git matches the authority).
 fn https_origin(remote: &str) -> Option<String> {
     let url = url::Url::parse(remote).ok()?;
     if url.scheme() != "https" {
         return None;
     }
-    Some(format!("https://{}/", url.host_str()?))
+    Some(match url.port() {
+        Some(port) => format!("https://{}:{port}/", url.host_str()?),
+        None => format!("https://{}/", url.host_str()?),
+    })
+}
+
+/// Host (with an explicit port) and `owner/name` of an `https://` remote URL such as
+/// `https://github.com/acme/widgets.git`; `None` for ssh, local and malformed remotes.
+pub fn https_remote(remote: &str) -> Option<(String, String)> {
+    let url = url::Url::parse(remote).ok()?;
+    if url.scheme() != "https" {
+        return None;
+    }
+    let host = match url.port() {
+        Some(port) => format!("{}:{port}", url.host_str()?),
+        None => url.host_str()?.to_string(),
+    };
+    let path = url
+        .path()
+        .trim_matches('/')
+        .trim_end_matches(".git")
+        .to_string();
+    Some((host, path))
 }
 
 /// Result of simulating a merge of a worktree into its base branch ([`WorkspaceManager::check_mergeability`]).
@@ -133,6 +156,33 @@ async fn git_stdout_bounded(cwd: &Path, args: &[&str], limit: usize) -> (Vec<u8>
 /// Split NUL-terminated git output (`-z`) into raw, unquoted paths/records.
 fn split_nul(output: &str) -> impl Iterator<Item = &str> {
     output.split('\0').filter(|s| !s.is_empty())
+}
+
+/// `git diff --numstat -z` output as path -> (additions, deletions).
+fn parse_numstat(numstat: &str) -> std::collections::HashMap<String, (u32, u32)> {
+    let mut counts = std::collections::HashMap::new();
+    let mut records = split_nul(numstat);
+    while let Some(record) = records.next() {
+        let mut parts = record.splitn(3, '\t');
+        let (Some(add), Some(del), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        // Renames: `add\tdel\t` followed by the old and new path as separate records.
+        let path = if path.is_empty() {
+            let _old = records.next();
+            records.next().unwrap_or_default()
+        } else {
+            path
+        };
+        counts.insert(
+            path.to_string(),
+            (
+                add.parse::<u32>().unwrap_or(0),
+                del.parse::<u32>().unwrap_or(0),
+            ),
+        );
+    }
+    counts
 }
 
 fn count_text_lines(path: &Path) -> u32 {
@@ -559,29 +609,7 @@ impl WorkspaceManager {
         let numstat = git_stdout(workspace_path, &["diff", "--numstat", "-z", "HEAD"])
             .await
             .unwrap_or_default();
-        let mut counts = std::collections::HashMap::new();
-        let mut records = split_nul(&numstat);
-        while let Some(record) = records.next() {
-            let mut parts = record.splitn(3, '\t');
-            let (Some(add), Some(del), Some(path)) = (parts.next(), parts.next(), parts.next())
-            else {
-                continue;
-            };
-            // Renames: `add\tdel\t` followed by the old and new path as separate records.
-            let path = if path.is_empty() {
-                let _old = records.next();
-                records.next().unwrap_or_default()
-            } else {
-                path
-            };
-            counts.insert(
-                path.to_string(),
-                (
-                    add.parse::<u32>().unwrap_or(0),
-                    del.parse::<u32>().unwrap_or(0),
-                ),
-            );
-        }
+        let counts = parse_numstat(&numstat);
 
         let mut files = Vec::new();
         let mut entries = split_nul(&status);
@@ -618,6 +646,88 @@ impl WorkspaceManager {
         Ok(files)
     }
 
+    /// The commit a change set is reviewed against: where the worktree's branch left `base_branch`
+    /// (`git merge-base`, falling back to `origin/<base_branch>`). `None` when it cannot be found.
+    pub async fn review_base(&self, workspace_path: &Path, base_branch: &str) -> Option<String> {
+        if !workspace_path.exists() {
+            return None;
+        }
+        for candidate in [base_branch.to_string(), format!("origin/{base_branch}")] {
+            if let Some(out) = git_stdout(workspace_path, &["merge-base", "HEAD", &candidate]).await
+            {
+                let sha = out.trim().to_string();
+                if !sha.is_empty() {
+                    return Some(sha);
+                }
+            }
+        }
+        None
+    }
+
+    /// Everything the worktree changed since `base`: commits the agent made, uncommitted changes and
+    /// untracked files, with line counts. Unlike [`inspect_changed_files`](Self::inspect_changed_files)
+    /// this does not lose work the agent already committed.
+    pub async fn inspect_changes_since(
+        &self,
+        workspace_path: &Path,
+        base: &str,
+    ) -> SymphonyResult<Vec<ChangedFileSummary>> {
+        if !workspace_path.exists() {
+            return Ok(Vec::new());
+        }
+        let Some(names) =
+            git_stdout(workspace_path, &["diff", "--name-status", "-z", "-M", base]).await
+        else {
+            return Ok(Vec::new());
+        };
+        let numstat = git_stdout(workspace_path, &["diff", "--numstat", "-z", "-M", base])
+            .await
+            .unwrap_or_default();
+        let counts = parse_numstat(&numstat);
+        let mut files = Vec::new();
+        let mut tokens = split_nul(&names);
+        while let Some(code) = tokens.next() {
+            let letter = code.chars().next().unwrap_or('M');
+            // Renames and copies list the original path first, then the new one.
+            let path = if matches!(letter, 'R' | 'C') {
+                let _original = tokens.next();
+                tokens.next()
+            } else {
+                tokens.next()
+            };
+            let Some(path) = path else { break };
+            let status = match letter {
+                'A' => "added",
+                'D' => "deleted",
+                'R' => "renamed",
+                'M' => "modified",
+                _ => "changed",
+            };
+            let (additions, deletions) = counts.get(path).copied().unwrap_or((0, 0));
+            files.push(ChangedFileSummary {
+                path: path.to_string(),
+                status: status.to_string(),
+                additions,
+                deletions,
+            });
+        }
+        let untracked = git_stdout(
+            workspace_path,
+            &["ls-files", "-z", "--others", "--exclude-standard"],
+        )
+        .await
+        .unwrap_or_default();
+        for path in split_nul(&untracked).take(MAX_UNTRACKED_DIFF_FILES) {
+            files.push(ChangedFileSummary {
+                path: path.to_string(),
+                status: "added".to_string(),
+                additions: count_text_lines(&workspace_path.join(path)),
+                deletions: 0,
+            });
+        }
+        Ok(files)
+    }
+
     /// Get unified diff preview of the workspace (tracked changes plus untracked files), capped at 32 KB.
     pub async fn get_diff_preview(&self, workspace_path: &Path) -> SymphonyResult<String> {
         Ok(self.collect_diff(workspace_path, 32_000).await.0)
@@ -626,11 +736,24 @@ impl WorkspaceManager {
     /// Unified diff of tracked changes against `HEAD` followed by diffs for untracked files.
     /// Returns the diff (truncated on a UTF-8 boundary to `max_bytes`) and whether truncation occurred.
     pub async fn collect_diff(&self, workspace_path: &Path, max_bytes: usize) -> (String, bool) {
+        self.collect_diff_since(workspace_path, max_bytes, None)
+            .await
+    }
+
+    /// [`collect_diff`](Self::collect_diff) against `base` (a commit, typically
+    /// [`review_base`](Self::review_base)) instead of `HEAD`, so commits the agent made itself are
+    /// part of the diff next to its uncommitted changes.
+    pub async fn collect_diff_since(
+        &self,
+        workspace_path: &Path,
+        max_bytes: usize,
+        base: Option<&str>,
+    ) -> (String, bool) {
         if !workspace_path.exists() {
             return (String::new(), false);
         }
         let (tracked, mut truncated) =
-            git_stdout_bounded(workspace_path, &["diff", "HEAD"], max_bytes).await;
+            git_stdout_bounded(workspace_path, &["diff", base.unwrap_or("HEAD")], max_bytes).await;
         let mut diff = String::from_utf8_lossy(&tracked).into_owned();
         let untracked = git_stdout(
             workspace_path,
@@ -863,6 +986,30 @@ impl WorkspaceManager {
         .await?;
         let sha = Self::git_checked(workspace_path, &hooks, &[], &["rev-parse", "HEAD"]).await?;
         Ok(Some(sha.trim().to_string()))
+    }
+
+    /// The commit the worktree has checked out.
+    pub async fn head_commit(&self, workspace_path: &Path) -> SymphonyResult<String> {
+        let hooks = SafeHooksDir::new()?;
+        Self::git_checked(workspace_path, &hooks, &[], &["rev-parse", "HEAD"])
+            .await
+            .map(|s| s.trim().to_string())
+    }
+
+    /// URL of the repository's `origin` remote.
+    pub async fn origin_url(&self, workspace_path: &Path) -> SymphonyResult<String> {
+        let hooks = SafeHooksDir::new()?;
+        Self::git_checked(
+            workspace_path,
+            &hooks,
+            &[],
+            &["remote", "get-url", "origin"],
+        )
+        .await
+        .map(|u| u.trim().to_string())
+        .map_err(|_| {
+            SymphonyError::Conflict("the repository has no `origin` remote to push to".into())
+        })
     }
 
     /// Push `branch` to `origin` (never forced). `token` authenticates an `https://` remote for
@@ -1602,5 +1749,80 @@ mod tests {
         );
         assert_eq!(https_origin("git@github.com:acme/widgets.git"), None);
         assert_eq!(https_origin("/local/path.git"), None);
+    }
+
+    #[tokio::test]
+    async fn review_sees_commits_the_agent_made_next_to_uncommitted_work() {
+        let dir = tempdir().unwrap();
+        let (_repo, wt) = repo_with_worktree(dir.path());
+        let manager = WorkspaceManager::new();
+        // The agent commits some work, then keeps editing and adds an untracked file.
+        std::fs::write(wt.join("file.txt"), "one\ncommitted\nthree\n").unwrap();
+        git(&wt, &["commit", "-am", "agent commit"]);
+        std::fs::write(wt.join("other.txt"), "uncommitted\n").unwrap();
+        std::fs::write(wt.join("new.txt"), "fresh\n").unwrap();
+        std::fs::write(
+            wt.join("secret.env"),
+            "TOKEN=ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        )
+        .unwrap();
+        git(&wt, &["add", "-N", "secret.env"]);
+        git(&wt, &["rm", "--cached", "-q", "secret.env"]);
+
+        // Against HEAD the committed change is invisible; against the review base it is not.
+        let at_head = manager.inspect_changed_files(&wt).await.unwrap();
+        assert!(!at_head.iter().any(|f| f.path == "file.txt"), "{at_head:?}");
+        let base = manager.review_base(&wt, "main").await.expect("merge base");
+        let files = manager.inspect_changes_since(&wt, &base).await.unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        for expected in ["file.txt", "other.txt", "new.txt", "secret.env"] {
+            assert!(
+                paths.contains(&expected),
+                "{expected} missing from {paths:?}"
+            );
+        }
+        let committed = files.iter().find(|f| f.path == "file.txt").unwrap();
+        assert_eq!(
+            (
+                committed.status.as_str(),
+                committed.additions,
+                committed.deletions
+            ),
+            ("modified", 1, 1)
+        );
+
+        let (diff, truncated) = manager.collect_diff_since(&wt, 1 << 20, Some(&base)).await;
+        assert!(!truncated);
+        assert!(diff.contains("+committed"), "{diff}");
+        assert!(diff.contains("+uncommitted"), "{diff}");
+        assert!(
+            diff.contains("ghp_aaaaaaaa"),
+            "untracked content is part of the diff"
+        );
+        assert!(manager.review_base(&wt, "no-such-branch").await.is_none());
+    }
+
+    #[test]
+    fn https_remotes_are_parsed_with_their_port_and_repository() {
+        assert_eq!(
+            https_remote("https://github.com/Acme/Widgets.git"),
+            Some(("github.com".into(), "Acme/Widgets".into()))
+        );
+        assert_eq!(
+            https_remote("https://git.example.com:8443/acme/widgets"),
+            Some(("git.example.com:8443".into(), "acme/widgets".into()))
+        );
+        assert_eq!(https_remote("git@github.com:acme/widgets.git"), None);
+        assert_eq!(https_remote("ssh://git@github.com/acme/widgets.git"), None);
+        assert_eq!(https_remote("/srv/git/widgets.git"), None);
+        // The credential scope keeps the port, otherwise git would not send the header there.
+        assert_eq!(
+            https_origin("https://git.example.com:8443/acme/widgets.git").as_deref(),
+            Some("https://git.example.com:8443/")
+        );
+        assert_eq!(
+            https_origin("https://github.com/acme/widgets.git").as_deref(),
+            Some("https://github.com/")
+        );
     }
 }

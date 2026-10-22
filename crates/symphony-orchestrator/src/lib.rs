@@ -125,6 +125,10 @@ pub struct ProjectUpdate {
     pub validation_commands: Option<Vec<String>>,
 }
 
+fn short_sha(sha: &str) -> &str {
+    sha.get(..8).unwrap_or(sha)
+}
+
 /// The same error with credentials masked in its message (git and HTTP errors can echo URLs).
 fn with_redacted_message(error: SymphonyError, secrets: &[String]) -> SymphonyError {
     match error {
@@ -212,6 +216,10 @@ struct ActiveWorkerHandle {
 struct OrchestratorRuntimeMemory {
     pub scheduler_paused: bool,
     pub running: HashMap<String, ActiveWorkerHandle>,
+    /// Tasks whose worker was told to stop and has not finished winding down (settling the usage
+    /// of the interrupted turn). They are not dispatchable meanwhile: a new attempt would resume
+    /// from a thread baseline the old worker is about to move.
+    pub winding_down: HashSet<String>,
     pub claimed_issue_ids: HashSet<String>,
     pub retry_attempts: HashMap<String, RetryEntry>,
     pub completed_issue_ids: HashSet<String>,
@@ -425,6 +433,7 @@ impl SymphonyOrchestrator {
         let memory = Arc::new(RwLock::new(OrchestratorRuntimeMemory {
             scheduler_paused: false,
             running: HashMap::new(),
+            winding_down: HashSet::new(),
             claimed_issue_ids: HashSet::new(),
             retry_attempts,
             completed_issue_ids: completed_ids,
@@ -1204,7 +1213,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let cancel_tx = {
             let mut mem = self.memory.write().await;
             mem.retry_attempts.remove(task_id);
-            mem.running.remove(task_id).map(|h| h.cancel_tx)
+            let stopped = mem.running.remove(task_id).map(|h| h.cancel_tx);
+            if stopped.is_some() {
+                mem.winding_down.insert(task_id.to_string());
+            }
+            stopped
         };
         if let Some(tx) = cancel_tx {
             let _ = tx.send(reason.to_string());
@@ -1480,6 +1493,52 @@ Please implement the requested changes cleanly in the current Git workspace, run
         })
     }
 
+    /// Credential warnings for what the worktree changed since `base` (commits, uncommitted changes,
+    /// untracked files): up to [`SECRET_SCAN_DIFF_BYTES`] are scanned, and a change too large for
+    /// that says so instead of passing silently.
+    async fn scan_workspace_for_credentials(
+        &self,
+        workspace: &Path,
+        base: Option<&str>,
+    ) -> Vec<String> {
+        let (scan_diff, truncated) = self
+            .workspaces
+            .collect_diff_since(workspace, SECRET_SCAN_DIFF_BYTES, base)
+            .await;
+        let mut warnings: Vec<String> = detect_secrets_in_added_lines(&scan_diff)
+            .into_iter()
+            .map(|kind| format!("Possible {kind} added by the change."))
+            .collect();
+        if truncated {
+            warnings.push(format!(
+                "The diff is larger than the {} MiB scanned for credentials; part of it was not checked.",
+                SECRET_SCAN_DIFF_BYTES / (1024 * 1024)
+            ));
+        }
+        warnings
+    }
+
+    /// Whether `host` (with an explicit port, as in `https://host:port/`) is the GitHub host of this
+    /// runtime: github.com, or the host of the configured GitHub Enterprise API URL.
+    fn is_github_host(&self, host: &str) -> bool {
+        if host.eq_ignore_ascii_case("github.com") {
+            return true;
+        }
+        self.github_api_url
+            .as_deref()
+            .and_then(|api| url::Url::parse(api).ok())
+            .map(|api| {
+                let api_host = match (api.host_str(), api.port()) {
+                    (Some(h), Some(p)) => format!("{h}:{p}"),
+                    (Some(h), None) => h.to_string(),
+                    _ => return false,
+                };
+                host.eq_ignore_ascii_case(&api_host)
+                    || host.eq_ignore_ascii_case(api_host.strip_prefix("api.").unwrap_or(&api_host))
+            })
+            .unwrap_or(false)
+    }
+
     /// Use another GitHub REST API base URL (GitHub Enterprise Server) for pull requests.
     pub fn with_github_api_url(mut self, url: impl Into<String>) -> Self {
         self.github_api_url = Some(url.into()).filter(|u| !u.trim().is_empty());
@@ -1500,7 +1559,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .get_pr_review(review_id)
             .await?
             .ok_or_else(|| SymphonyError::NotFound(format!("PR review {review_id} not found")))?;
-        if review.pr_number > 0 {
+        if review.has_pull_request() {
             return Ok(review);
         }
         let task = self.get_task(&review.task_id).await?;
@@ -1560,14 +1619,58 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .clone()
             .unwrap_or_else(|| review.branch_name.clone());
 
+        // The review is a snapshot; what is published is the worktree as it is now. Check it again
+        // right before it leaves the machine.
+        let base = self
+            .workspaces
+            .review_base(&workspace, &review.base_branch)
+            .await;
+        let warnings = self
+            .scan_workspace_for_credentials(&workspace, base.as_deref())
+            .await;
+        if !warnings.is_empty() {
+            return Err(SymphonyError::Conflict(format!(
+                "the worktree changed since the review and now has security warnings: {}",
+                warnings.join(" ")
+            )));
+        }
+        if let MergeCheck::Conflicts(files) = self
+            .workspaces
+            .check_mergeability(&workspace, &review.base_branch)
+            .await
+        {
+            return Err(SymphonyError::Conflict(format!(
+                "the branch now conflicts with `{}` ({}); resolve the conflicts before opening a pull request",
+                review.base_branch,
+                files.join(", ")
+            )));
+        }
+
+        // The token is only ever sent to the repository this project is configured for.
+        let origin = self.workspaces.origin_url(&workspace).await?;
+        let push_token = match symphony_workspaces::https_remote(&origin) {
+            // ssh and local remotes use the user's own git credentials; nothing of ours is sent.
+            None => None,
+            Some((host, path)) => {
+                if self.is_github_host(&host) && path.eq_ignore_ascii_case(&repo) {
+                    Some(token.as_str())
+                } else {
+                    return Err(SymphonyError::Conflict(format!(
+                        "the repository's origin is https://{host}/{path}, not the project's GitHub repository {repo}; the GitHub token is not sent there"
+                    )));
+                }
+            }
+        };
+
         let title = format!("{}: {}", task.issue.identifier, task.issue.title);
         let secrets = self.secret_store.all_secret_values();
         self.workspaces
             .commit_changes(&workspace, &branch, &title)
             .await
             .map_err(|e| with_redacted_message(e, &secrets))?;
+        let pushed_commit = self.workspaces.head_commit(&workspace).await?;
         self.workspaces
-            .push_branch(&workspace, &branch, Some(&token))
+            .push_branch(&workspace, &branch, push_token)
             .await
             .map_err(|e| with_redacted_message(e, &secrets))?;
 
@@ -1584,6 +1687,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .await?;
 
         review.pr_number = opened.number;
+        review.reviewed_commit = Some(pushed_commit);
         if !opened.html_url.is_empty() {
             review.url = opened.html_url.clone();
         }
@@ -1644,7 +1748,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .get_pr_review(review_id)
             .await?
             .ok_or_else(|| SymphonyError::NotFound(format!("PR review {review_id} not found")))?;
-        if review.pr_number == 0 {
+        if !review.has_pull_request() {
             return Err(SymphonyError::Conflict(
                 "this review has no pull request yet; create one first".into(),
             ));
@@ -1680,9 +1784,16 @@ Please implement the requested changes cleanly in the current Git workspace, run
             review.state = "merged".to_string();
         } else if details.state == "closed" {
             review.state = "closed".to_string();
+        } else if matches!(review.state.as_str(), "closed" | "merged") {
+            // Reopened on GitHub; a recorded human approval stays visible.
+            review.state = if review.human_approved {
+                "approved_for_merge".to_string()
+            } else {
+                "open".to_string()
+            };
         }
         review.review_comments = details.review_comments;
-        review.merge_readiness = MergeReadinessReport::evaluate(
+        let mut readiness = MergeReadinessReport::evaluate(
             if review.has_conflicts {
                 ConflictCheck::Conflicts
             } else if review.mergeable {
@@ -1695,6 +1806,28 @@ Please implement the requested changes cleanly in the current Git workspace, run
             &review.security_warnings,
             review.changed_files.len(),
         );
+        // The local validation, diff and credential scan describe the commit Symphony pushed. If the
+        // pull request's head has moved beyond it, they are no evidence for what is there now.
+        let head_moved = match review.reviewed_commit.as_deref() {
+            Some(reviewed) => !details.head_sha.is_empty() && details.head_sha != reviewed,
+            None => false,
+        };
+        if head_moved {
+            readiness.blockers.push(format!(
+                "The pull request's head ({}) is not the commit that was reviewed ({}): the local validation, diff and credential scan do not cover it.",
+                short_sha(&details.head_sha),
+                short_sha(review.reviewed_commit.as_deref().unwrap_or_default())
+            ));
+            readiness.score = readiness.score.saturating_sub(2).max(1);
+            readiness.label = match readiness.score {
+                4 => "Strong Candidate (Minor Pending Items)",
+                3 => "Needs Review Attention",
+                2 => "Not Ready (Validation or CI Issues)",
+                _ => "Blocked (Conflicts or Critical Failures)",
+            }
+            .to_string();
+        }
+        review.merge_readiness = readiness;
         review.updated_at = Utc::now();
         self.storage.upsert_pr_review(&review).await?;
         Ok(review)
@@ -2202,7 +2335,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 warn!(task_id = %task_id, "Detected stalled agent session; cancelling and scheduling retry");
                 let cancel_tx = {
                     let mut mem = self.memory.write().await;
-                    mem.running.remove(&task_id).map(|h| h.cancel_tx)
+                    let stopped = mem.running.remove(&task_id).map(|h| h.cancel_tx);
+                    if stopped.is_some() {
+                        mem.winding_down.insert(task_id.clone());
+                    }
+                    stopped
                 };
                 if let Some(tx) = cancel_tx {
                     let _ = tx.send("stall_timeout".to_string());
@@ -2391,6 +2528,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
             if mem.running.contains_key(&task.id) {
                 return Ok(task);
             }
+            if mem.winding_down.contains(&task.id) {
+                return Err(SymphonyError::Conflict(format!(
+                    "the previous attempt of {} is still stopping; try again in a moment",
+                    task.issue.identifier
+                )));
+            }
             if !task.status.can_transition_to(TaskStatus::Running) {
                 return Err(SymphonyError::InvalidStateTransition {
                     from: task.status.as_str().to_string(),
@@ -2452,8 +2595,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let orch = self.clone();
         let task_clone = task.clone();
         tokio::spawn(async move {
+            let task_id = task_clone.id.clone();
             orch.run_worker_attempt(task_clone, project, cancel_rx)
                 .await;
+            // However the worker ended, the task may be dispatched again.
+            orch.memory.write().await.winding_down.remove(&task_id);
         });
 
         Ok(task)
@@ -2908,32 +3054,28 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
 
         // 8. Inspect workspace changes, diff, and construct structured PR review / merge-readiness report
-        let changed_files = self
+        // Reviewed against where the branch left the base, so commits the agent made itself are
+        // part of the review and of the credential scan next to its uncommitted work.
+        let review_base = self
             .workspaces
-            .inspect_changed_files(&allocated.path)
-            .await
-            .unwrap_or_default();
-        let diff_preview = self
-            .workspaces
-            .get_diff_preview(&allocated.path)
-            .await
-            .unwrap_or_default();
-
-        // Scan far more than the preview shows, and say so when even that is not enough.
-        let (scan_diff, scan_truncated) = self
-            .workspaces
-            .collect_diff(&allocated.path, SECRET_SCAN_DIFF_BYTES)
+            .review_base(&allocated.path, &project.default_branch)
             .await;
-        let mut security_warnings: Vec<String> = detect_secrets_in_added_lines(&scan_diff)
-            .into_iter()
-            .map(|kind| format!("Possible {kind} added by the change."))
-            .collect();
-        if scan_truncated {
-            security_warnings.push(format!(
-                "The diff is larger than the {} MiB scanned for credentials; part of it was not checked.",
-                SECRET_SCAN_DIFF_BYTES / (1024 * 1024)
-            ));
+        let changed_files = match &review_base {
+            Some(base) => {
+                self.workspaces
+                    .inspect_changes_since(&allocated.path, base)
+                    .await
+            }
+            None => self.workspaces.inspect_changed_files(&allocated.path).await,
         }
+        .unwrap_or_default();
+        let (diff_preview, _) = self
+            .workspaces
+            .collect_diff_since(&allocated.path, 32_000, review_base.as_deref())
+            .await;
+        let security_warnings = self
+            .scan_workspace_for_credentials(&allocated.path, review_base.as_deref())
+            .await;
 
         // What is known about the branch is measured, never assumed: the merge is simulated against
         // the base branch, and a local review has no remote CI at all.
@@ -2998,6 +3140,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             merge_readiness,
             human_approved: false,
             updated_at: Utc::now(),
+            reviewed_commit: None,
         };
         let _ = self.storage.upsert_pr_review(&pr_review).await;
 
@@ -4028,24 +4171,29 @@ rl.on('line', (line) => {
     async fn test_refreshing_a_pull_request_reports_what_github_says_and_never_guesses() {
         let temp = TempDir::new().unwrap();
         // GitHub: merge not computed yet (`mergeable: null`), no check run at all.
-        let state = Arc::new(std::sync::Mutex::new((Value::Null, json!([]))));
+        let state = Arc::new(std::sync::Mutex::new((
+            Value::Null,
+            json!([]),
+            "abc123".to_string(),
+            "open".to_string(),
+        )));
         let served = state.clone();
         let (api, _requests) = github_mock_with(Arc::new(move |method: &str, target: &str| {
-            let (mergeable, runs) = served.lock().unwrap().clone();
+            let (mergeable, runs, head_sha, pr_state) = served.lock().unwrap().clone();
             let path = target.split('?').next().unwrap_or(target);
             let payload = match (method, path) {
                 ("POST", _) => {
                     json!({ "number": 42, "html_url": "https://github.com/acme/widgets/pull/42" })
                 }
                 (_, "/repos/acme/widgets/pulls/42") => json!({
-                    "number": 42, "title": "t", "body": "b", "state": "open",
+                    "number": 42, "title": "t", "body": "b", "state": pr_state,
                     "html_url": "https://github.com/acme/widgets/pull/42",
-                    "head": { "ref": "branch", "sha": "abc123" }, "base": { "ref": "main" },
+                    "head": { "ref": "branch", "sha": head_sha }, "base": { "ref": "main" },
                     "mergeable": mergeable,
                     "mergeable_state": if mergeable.is_null() { "unknown" } else { "clean" },
                     "merged": false
                 }),
-                (_, "/repos/acme/widgets/commits/abc123/check-runs") => {
+                (_, p) if p.contains("/check-runs") => {
                     json!({ "check_runs": runs })
                 }
                 (_, p) if p.ends_with("/files") || p.ends_with("/comments") => json!([]),
@@ -4069,7 +4217,12 @@ rl.on('line', (line) => {
                 .code(),
             "conflict"
         );
-        orch.create_pull_request(&review.id).await.unwrap();
+        let opened = orch.create_pull_request(&review.id).await.unwrap();
+        // GitHub reports the commit Symphony pushed as the head.
+        state.lock().unwrap().2 = opened
+            .reviewed_commit
+            .clone()
+            .expect("pushed commit recorded");
 
         let unknown = orch.refresh_pull_request(&review.id).await.unwrap();
         assert_eq!(unknown.ci_status, "none", "no check run is not a pass");
@@ -4081,10 +4234,11 @@ rl.on('line', (line) => {
         assert!(!evidence.contains("Remote CI checks passed"), "{evidence}");
         assert!(evidence.contains("could not be checked"), "{evidence}");
 
-        *state.lock().unwrap() = (
-            json!(true),
-            json!([{ "status": "completed", "conclusion": "success" }]),
-        );
+        {
+            let mut s = state.lock().unwrap();
+            s.0 = json!(true);
+            s.1 = json!([{ "status": "completed", "conclusion": "success" }]);
+        }
         let green = orch.refresh_pull_request(&review.id).await.unwrap();
         assert_eq!(green.ci_status, "passed");
         assert!(green.mergeable);
@@ -4094,10 +4248,11 @@ rl.on('line', (line) => {
             .join("\n")
             .contains("Remote CI checks passed"));
 
-        *state.lock().unwrap() = (
-            json!(false),
-            json!([{ "status": "completed", "conclusion": "failure" }]),
-        );
+        {
+            let mut s = state.lock().unwrap();
+            s.0 = json!(false);
+            s.1 = json!([{ "status": "completed", "conclusion": "failure" }]);
+        }
         let red = orch.refresh_pull_request(&review.id).await.unwrap();
         assert_eq!(red.ci_status, "failed");
         assert!(red.has_conflicts && !red.mergeable);
@@ -4110,6 +4265,210 @@ rl.on('line', (line) => {
             .unwrap()
             .unwrap();
         assert_eq!(stored.ci_status, "failed");
+
+        // Someone pushes another commit: the local evidence no longer describes the head.
+        {
+            let mut s = state.lock().unwrap();
+            s.0 = json!(true);
+            s.1 = json!([{ "status": "completed", "conclusion": "success" }]);
+            s.2 = "deadbeefcafe0000".to_string();
+        }
+        let moved = orch.refresh_pull_request(&review.id).await.unwrap();
+        assert!(
+            moved
+                .merge_readiness
+                .blockers
+                .iter()
+                .any(|b| b.contains("not the commit that was reviewed")),
+            "{:?}",
+            moved.merge_readiness.blockers
+        );
+        assert!(moved.merge_readiness.score < green.merge_readiness.score);
+
+        // Closed on GitHub, then reopened: the state follows, keeping a recorded approval visible.
+        {
+            let mut s = state.lock().unwrap();
+            s.2 = moved.reviewed_commit.clone().unwrap();
+            s.3 = "closed".to_string();
+        }
+        assert_eq!(
+            orch.refresh_pull_request(&review.id).await.unwrap().state,
+            "closed"
+        );
+        state.lock().unwrap().3 = "open".to_string();
+        assert_eq!(
+            orch.refresh_pull_request(&review.id).await.unwrap().state,
+            "open"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publishing_rechecks_the_worktree_and_binds_the_token_to_the_origin() {
+        let temp = TempDir::new().unwrap();
+        let (api, requests) = github_mock(None).await;
+        let (orch, task, review) = finished_run(
+            &temp,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        let ws = PathBuf::from(task.workspace_path.clone().unwrap());
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&ws)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        // A credential is committed after the review was made: the review is stale, the scan is not.
+        std::fs::write(
+            ws.join("leak.env"),
+            "TOKEN=ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        )
+        .unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-m", "leak"]);
+        let err = orch.create_pull_request(&review.id).await.unwrap_err();
+        assert_eq!(err.code(), "conflict", "{err}");
+        assert!(err.to_string().contains("security warnings"), "{err}");
+        git(&["reset", "--hard", "HEAD~1"]);
+
+        // An origin that is not the project's repository never receives the GitHub token.
+        git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://evil.example/acme/widgets.git",
+        ]);
+        let err = orch.create_pull_request(&review.id).await.unwrap_err();
+        assert_eq!(err.code(), "conflict", "{err}");
+        assert!(err.to_string().contains("token is not sent"), "{err}");
+        git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/someone-else/widgets.git",
+        ]);
+        let err = orch.create_pull_request(&review.id).await.unwrap_err();
+        assert!(err.to_string().contains("token is not sent"), "{err}");
+
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "nothing reached GitHub"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_review_written_before_merge_facts_were_measured_is_normalised_and_publishable()
+    {
+        let temp = TempDir::new().unwrap();
+        let (api, _requests) = github_mock(None).await;
+        let (orch, _task, mut review) = finished_run(
+            &temp,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        // What 2.0.0 stored for a local review: the attempt count as the number, an invented pass.
+        review.pr_number = 2;
+        review.url = "local://worktree/symphony/sym-pr".to_string();
+        review.ci_status = "passed".to_string();
+        review.mergeable = true;
+        review.merge_readiness.evidence = vec!["Remote CI checks passed.".to_string()];
+        orch.storage.upsert_pr_review(&review).await.unwrap();
+
+        let legacy = orch
+            .storage
+            .get_pr_review(&review.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!legacy.has_pull_request());
+        assert_eq!(legacy.ci_status, "none");
+        assert!(!legacy.mergeable, "an unverified merge is not mergeable");
+        assert!(!legacy
+            .merge_readiness
+            .evidence
+            .join(" ")
+            .contains("Remote CI checks passed"));
+        assert!(orch
+            .storage
+            .list_pr_reviews(None)
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.ci_status != "passed"));
+
+        // The bogus number does not count as an existing pull request: the branch can be published.
+        let opened = orch.create_pull_request(&review.id).await.unwrap();
+        assert_eq!(opened.pr_number, 42);
+        assert!(opened.has_pull_request());
+    }
+
+    #[tokio::test]
+    async fn test_a_task_cannot_restart_while_its_cancelled_worker_is_still_settling() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect_in_memory().await.unwrap();
+        let (orch, task) = resumed_codex_task(
+            &temp,
+            storage,
+            "1000:500 1050:520,1080:520 hang",
+            Some(usage_of(1000, 500)),
+        )
+        .await;
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        for _ in 0..200 {
+            if orch
+                .state_snapshot()
+                .await
+                .unwrap()
+                .codex_totals
+                .total_tokens
+                == 100
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        orch.cancel_task(&task.id, "operator").await.unwrap();
+
+        // Retrying right away either is refused while the worker winds down, or finds the usage
+        // already settled; it never starts from a baseline the old worker is about to move.
+        let mut restarted = false;
+        for _ in 0..200 {
+            match orch.retry_task(&task.id).await {
+                Ok(_) => {
+                    restarted = true;
+                    break;
+                }
+                Err(e) => {
+                    assert!(
+                        e.to_string().contains("still stopping")
+                            || e.code() == "invalid_state_transition",
+                        "unexpected refusal: {e}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }
+        }
+        assert!(restarted, "the task must become dispatchable again");
+        let mid = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(
+            mid.total_tokens,
+            1500 + 100,
+            "the cancelled turn was settled once, before the restart"
+        );
+        assert_eq!(mid.thread_usage.unwrap().usage, usage_of(1080, 520));
+        orch.cancel_task(&task.id, "done").await.unwrap();
     }
 
     #[tokio::test]

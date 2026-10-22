@@ -69,8 +69,11 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
      - **`linear_graphql`**: queries (read-only); mutations limited to `commentCreate`, `commentUpdate`,
        `issueUpdate`, `attachmentCreate`, `attachmentLinkGitHubPR`, `attachmentLinkURL`; one operation per
        call; no subscriptions. The document is tokenized (aliases, comments, strings and fragments cannot
-       smuggle another mutation).
+       smuggle another mutation). **Limit**: Linear's key is workspace-wide and the policy checks
+       operations, not objects, so an allowed operation can still address another project's issue.
+       Confining the tool to the configured project is an open item (audit SEC-03).
      - Refused calls fail with a structured error and never reach the network; the session continues.
+       The agent-facing GitHub client never follows redirects.
    - Widening either list is a security change: add the tests that show what the new operation can do.
 
 ---
@@ -91,8 +94,10 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
     It is refused without a GitHub repository and token, while the branch conflicts with its base, while
     the review carries security warnings, and while the task is running. Repository hooks and
     `core.fsmonitor` are disabled for the commit and the push, so nothing an agent left in the repository
-    is executed on the user's behalf. The token reaches git through its environment for that one command
-    (not argv, not a config file) and is scrubbed from error messages. The endpoint is local-administration
+    is executed on the user's behalf. The worktree is re-scanned for credentials and conflicts right before
+    publishing. The token reaches git through its environment for that one command (not argv, not a config
+    file), is scrubbed from error messages, and is only sent to an `https://` origin that is github.com (or
+    the configured Enterprise host) **and** the project's own `owner/name`; any other HTTPS origin is refused. The endpoint is local-administration
     only: the remote companion listener answers `403 forbidden_scope`.
   - Merging remains a decision on the Git host. An automatic-merge policy would have to be an explicit,
     separately authorised setting; none exists.

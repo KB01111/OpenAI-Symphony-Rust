@@ -16,6 +16,10 @@ First release. Replace "Unreleased" with the release date in the commit that is 
   /api/v1/backups`), `symphony-cli verify-backup` and an offline `symphony-cli restore-backup` that keeps
   the replaced files and rolls back on failure. Credentials are never part of a backup
   (`docs/DATA_BACKUP.md`).
+- The review (changed files, diff, credential scan) now covers commits the agent made itself, not only
+  uncommitted changes. Reviews stored by earlier builds are normalised when read: their invented
+  "CI passed" becomes "No remote CI", and a number that was only an attempt count no longer blocks
+  *Create pull request*.
 - **Refresh status** on a review with a pull request re-reads CI, merge state and comments from GitHub
   (`POST /api/v1/prs/{id}/refresh`). A repository without any check run now reads as "no CI" instead of
   "passed", and a merge GitHub has not computed yet reads as unknown instead of clean.

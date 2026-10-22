@@ -11,6 +11,13 @@ use tokio::net::TcpListener;
 
 /// Records `METHOD target` + authorization of every request and answers `{}`.
 async fn recording_server() -> (String, Arc<Mutex<Vec<String>>>) {
+    recording_server_redirecting(None).await
+}
+
+/// Like [`recording_server`], answering `302` to `redirect` when given.
+async fn recording_server_redirecting(
+    redirect: Option<String>,
+) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -19,6 +26,7 @@ async fn recording_server() -> (String, Arc<Mutex<Vec<String>>>) {
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
             let log = log.clone();
+            let redirect = redirect.clone();
             tokio::spawn(async move {
                 let mut raw = Vec::new();
                 let mut buf = [0u8; 4096];
@@ -44,10 +52,15 @@ async fn recording_server() -> (String, Arc<Mutex<Vec<String>>>) {
                     .unwrap()
                     .push(format!("{method} {target} [{auth}]"));
                 let body = "{}";
-                let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
+                let reply = match &redirect {
+                    Some(location) => format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    ),
+                    None => format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    ),
+                };
                 let _ = stream.write_all(reply.as_bytes()).await;
                 let _ = stream.shutdown().await;
             });
@@ -131,4 +144,29 @@ async fn linear_mutations_outside_the_allowlist_never_leave_the_host() {
     // Reaches the (mock) API; the empty answer is reported as a GraphQL payload, not a policy error.
     let _ = ok;
     assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_redirect_never_carries_the_host_credentials_to_another_host() {
+    // A permitted repository GET whose answer redirects elsewhere (here: another origin).
+    let (elsewhere, elsewhere_seen) = recording_server().await;
+    let (api, api_seen) = recording_server_redirecting(Some(format!("{elsewhere}/steal"))).await;
+    let tracker = GitHubTracker::new(
+        Some(api),
+        "acme/widgets".into(),
+        Some("ghp_hosttoken_hosttoken_hosttoken".into()),
+        None,
+    );
+    let (ok, _) = tracker
+        .execute_github_dynamic_tool(
+            json!({ "method": "GET", "path": "/repos/acme/widgets/issues/1" }),
+        )
+        .await;
+    assert!(!ok, "a redirect is not a successful answer");
+    assert_eq!(api_seen.lock().unwrap().len(), 1);
+    assert!(
+        elsewhere_seen.lock().unwrap().is_empty(),
+        "the redirect target was contacted: {:?}",
+        elsewhere_seen.lock().unwrap()
+    );
 }

@@ -784,8 +784,9 @@ impl Storage {
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
             let json_str: String = r.get("review_json");
-            let pr: PullRequestReview = serde_json::from_str(&json_str)
+            let mut pr: PullRequestReview = serde_json::from_str(&json_str)
                 .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+            pr.normalize_legacy();
             out.push(pr);
         }
         Ok(out)
@@ -801,8 +802,9 @@ impl Storage {
         match row {
             Some(r) => {
                 let json_str: String = r.get("review_json");
-                let pr: PullRequestReview = serde_json::from_str(&json_str)
+                let mut pr: PullRequestReview = serde_json::from_str(&json_str)
                     .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+                pr.normalize_legacy();
                 Ok(Some(pr))
             }
             None => Ok(None),

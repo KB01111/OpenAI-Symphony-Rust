@@ -38,6 +38,14 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
 | SEC-01 | P1 | Verified defect | `github_api` / `linear_graphql` forward any request with the host's tokens | Fixed |
 | SEC-02 | P2 | Verified defect | Credential check on the review diff: 2 patterns, 32 KB preview only | Fixed |
 | BK-01 | P1 | Gap | No backup / restore | Fixed |
+| SEC-03 | P2 | Gap | `linear_graphql` cannot be limited to the configured Linear project (workspace-wide key) | Open |
+| SEC-04 | P1 | Verified defect (in this branch's first cut) | Create-PR sent the GitHub token to any HTTPS `origin` | Fixed |
+| SEC-05 | P2 | Verified defect (in this branch's first cut) | `github_api` followed redirects with the host's credentials | Fixed |
+| RV-06 | P1 | Verified defect | Commits the agent made itself were invisible to the review, the credential scan and the changed-file list | Fixed |
+| RV-07 | P2 | Verified defect | Reviews stored by 2.0.0 carry an invented number/CI pass and could not be published | Fixed |
+| RV-08 | P2 | Verified defect | An unverified merge could still rate 5/5; a moved pull request head kept the old evidence; reopened PRs stayed "closed"; >100 check runs read as passed | Fixed |
+| BK-02 | P2 | Verified defect (in this branch's first cut) | Restore rollback left files it wrote; saved files could be overwritten by a second restore in the same second; concurrent backups shared a staging directory | Fixed |
+| AG-05 | P2 | Verified defect (in this branch's first cut) | A task cancelled and retried at once could resume from a baseline the old worker was about to move | Fixed |
 | REL-01 | P2 | Gap | Release has no SBOM and no source-commit trace | Fixed |
 | REL-02 | P1 | Gap | No updater / update signing | Blocked (owner) |
 | REL-03 | P1 | Gap | Authenticode certificate not configured | Blocked (owner) |
@@ -223,6 +231,41 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
 `SECURITY.md` §3 described `require_human_approval_for_merge: true` and an "Approve & Enable Merge" button.
 Neither exists in the code or the UI (`grep` finds the setting only in that sentence). There is no merge
 operation at all; §3 now says exactly that and documents the real controls.
+
+### Findings from the automated review of this PR (SEC-04, SEC-05, RV-06 – RV-08, BK-02, AG-05)
+
+Bots reviewing PR #21 raised these; each was checked against the code before acting (two claims were
+wrong or out of proportion and are answered on their threads, see below). Verified and fixed, with tests:
+
+- **SEC-04** `push_branch` took the credential scope from whatever `origin` was. Now the GitHub token is
+  only sent to an `https://` origin whose host is github.com (or the configured Enterprise API host) **and**
+  whose path is the project's `owner/name`; any other HTTPS origin is refused; ssh/local origins use the
+  user's own git credentials. The per-URL scope keeps an explicit port. The worktree is re-scanned and
+  re-checked for conflicts immediately before publishing (the review is a snapshot).
+- **SEC-05** the agent-facing GitHub client no longer follows redirects (a redirecting answer cannot take
+  the host's token to another host).
+- **RV-06** the review, the changed-file list and the credential scan looked at `git diff HEAD` only; an
+  agent that commits its work showed no changes and no warnings, yet that commit gets published. They now
+  use the diff against the commit where the branch left the base (`git merge-base`), committed plus
+  uncommitted plus untracked.
+- **RV-07** `PullRequestReview::has_pull_request()` requires a web URL, and reviews written by 2.0.0 are
+  normalised on read (`ci_status passed → none`, merge unverified, readiness re-rated).
+- **RV-08** unknown mergeability costs a point (never "Ready"); `reviewed_commit` records what Symphony
+  pushed and a refresh flags a head that moved; a reopened pull request is open again; a check-run list
+  larger than what was read is `unknown`; an adopted pull request must target the requested base.
+- **BK-02** restore rollback removes every file the restore wrote (also when nothing was there before);
+  replaced files get a name that never exists yet (`…-2`); a backup's staging directory is reserved by
+  creating it.
+- **AG-05** a task whose worker was told to stop is not dispatchable until that worker has settled.
+- Smaller: the credential scan skipped added lines beginning with `++`; the real-Codex probe passed
+  `OPENAI_API_KEY` & co. through (it now scrubs the environment so it can never make a billable call);
+  the npm SBOM is scoped to the shipped desktop app.
+
+Not changed, on purpose: (a) **SEC-03** `linear_graphql` uses a workspace-wide key; allowed operations are
+limited but not confined to the configured project, because that would need membership resolution of every
+referenced object or high-level project-scoped tools instead of GraphQL. Open; `SECURITY.md` says so.
+(b) Claude/OpenCode report usage per finished invocation, so a killed invocation reports nothing (already
+listed). (c) Pull request status is refreshed on request only (a timer was rejected on purpose).
 
 ### REL-01, ID-01, DOC-01
 

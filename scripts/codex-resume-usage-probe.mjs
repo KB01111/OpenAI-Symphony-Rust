@@ -25,8 +25,19 @@ const codex = process.argv[2] ?? "codex";
 const home = mkdtempSync(join(tmpdir(), "symphony-codex-probe-"));
 const TOTAL = { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 500, reasoning_output_tokens: 0, total_tokens: 1500 };
 
+/** The caller's environment without any credential: the probe must never authenticate, or its
+ * "unauthenticated" turn would become a real, billable model call. */
+function probeEnv() {
+  const env = { ...process.env, CODEX_HOME: home };
+  for (const key of Object.keys(env)) {
+    if (/^(OPENAI|CODEX|ANTHROPIC|AZURE_OPENAI)_/i.test(key) && key !== "CODEX_HOME") delete env[key];
+    if (/(_API_KEY|_TOKEN|_SECRET)$/i.test(key)) delete env[key];
+  }
+  return env;
+}
+
 function appServer() {
-  const child = spawn(codex, ["app-server"], { env: { ...process.env, CODEX_HOME: home }, stdio: ["pipe", "pipe", "ignore"] });
+  const child = spawn(codex, ["app-server"], { env: probeEnv(), stdio: ["pipe", "pipe", "ignore"] });
   const messages = [];
   let buffer = "";
   child.stdout.on("data", (chunk) => {

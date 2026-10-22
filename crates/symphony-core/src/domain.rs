@@ -815,6 +815,40 @@ pub struct PullRequestReview {
     pub merge_readiness: MergeReadinessReport,
     pub human_approved: bool,
     pub updated_at: DateTime<Utc>,
+    /// The commit Symphony pushed when it opened the pull request: what the local validation and
+    /// security evidence describe. A pull request whose head moved beyond it is flagged on refresh.
+    #[serde(default)]
+    pub reviewed_commit: Option<String>,
+}
+
+impl PullRequestReview {
+    /// Whether a real pull request exists. Reviews written before 2.0 stored the attempt count as
+    /// `pr_number` for a local review, so a number alone proves nothing: the URL has to be one.
+    pub fn has_pull_request(&self) -> bool {
+        self.pr_number > 0 && (self.url.starts_with("https://") || self.url.starts_with("http://"))
+    }
+
+    /// Bring a review written before merge facts were measured in line with what is known: it
+    /// never ran CI and never checked a merge, whatever it recorded. Reviews that already carry
+    /// measured values (`ci_status` other than the old hardcoded `passed`) are left alone.
+    pub fn normalize_legacy(&mut self) {
+        if self.has_pull_request() || self.ci_status != "passed" {
+            return;
+        }
+        self.ci_status = "none".to_string();
+        self.mergeable = false;
+        self.merge_readiness = MergeReadinessReport::evaluate(
+            if self.has_conflicts {
+                ConflictCheck::Conflicts
+            } else {
+                ConflictCheck::NotChecked
+            },
+            &self.ci_status,
+            &self.validation_results,
+            &self.security_warnings,
+            self.changed_files.len(),
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -881,6 +915,8 @@ impl MergeReadinessReport {
                 );
             }
             ConflictCheck::NotChecked => {
+                // An unverified merge can never be the top rating.
+                score -= 1;
                 evidence.push(
                     "Merge conflicts could not be checked; mergeability is unverified.".to_string(),
                 );

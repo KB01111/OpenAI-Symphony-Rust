@@ -22,6 +22,7 @@ import { paths } from "../../app/routes.js";
 import { DiffViewer } from "../../components/DiffViewer.js";
 import { useLocale, useMessages, useT } from "../../lib/i18n.js";
 import { usePullRequests, useTaskAttempts, useTaskDiff, useTaskValidations } from "../../lib/queries.js";
+import { hasPullRequest } from "../reviews/reviewHelpers.js";
 import { executionMessages } from "./messages.js";
 
 type RightTab = "changes" | "validation" | "usage" | "pr";
@@ -163,7 +164,7 @@ const PullRequestTab: React.FC<{ task: Task }> = ({ task }) => {
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-foreground">{pr.title}</p>
           <p className="font-mono text-xs text-muted-foreground">
-            {pr.pr_number > 0 ? formatMessage(m.changes.prNumber, { number: pr.pr_number }) : m.changes.localReview} · {pr.branch_name} → {pr.base_branch}
+            {hasPullRequest(pr) ? formatMessage(m.changes.prNumber, { number: pr.pr_number }) : m.changes.localReview} · {pr.branch_name} → {pr.base_branch}
           </p>
         </div>
         <SdkBadge variant="soft" color={score >= 4 ? "success" : score >= 3 ? "warning" : "danger"} size="sm" pill>

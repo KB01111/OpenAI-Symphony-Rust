@@ -232,8 +232,9 @@ pub fn detect_secrets_in_added_lines(diff: &str) -> Vec<&'static str> {
         let Some(added) = line.strip_prefix('+') else {
             continue;
         };
-        if added.starts_with("++") {
-            // `+++ b/file` header, not content.
+        if line.starts_with("+++ b/") || line.starts_with("+++ /dev/null") {
+            // The `+++ b/file` header of a file section, not content. Added content that merely
+            // begins with `++` (a line `++x` shows up as `+++x`) is still scanned.
             continue;
         }
         for (name, re) in secret_patterns() {
@@ -263,6 +264,11 @@ mod tests {
         .is_empty());
         assert_eq!(
             detect_secrets_in_added_lines("+token = ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"),
+            vec!["GitHub token"]
+        );
+        // Content that starts with `++` is still content.
+        assert_eq!(
+            detect_secrets_in_added_lines("+++ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"),
             vec!["GitHub token"]
         );
         assert_eq!(

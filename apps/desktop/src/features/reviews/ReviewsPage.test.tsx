@@ -36,10 +36,11 @@ function runtimeWith(reviews: PullRequestReview[]) {
 }
 
 const reviews = [
-  pullRequest({ id: "pr-approved", pr_number: 1, title: "Approved docs", human_approved: true, updated_at: "2026-10-18T10:00:00Z" }),
+  pullRequest({ id: "pr-approved", pr_number: 1, url: "https://github.com/acme/widgets/pull/1", title: "Approved docs", human_approved: true, updated_at: "2026-10-18T10:00:00Z" }),
   pullRequest({
     id: "pr-blocked",
     pr_number: 2,
+    url: "https://github.com/acme/widgets/pull/2",
     title: "Blocked refactor",
     merge_readiness: { score: 2, label: "Needs work", evidence: [], blockers: ["Validation failed"] },
     updated_at: "2026-10-20T09:00:00Z"
@@ -47,6 +48,7 @@ const reviews = [
   pullRequest({
     id: "pr-ready",
     pr_number: 3,
+    url: "https://github.com/acme/widgets/pull/3",
     title: "Ready feature",
     merge_readiness: { score: 5, label: "Ready", evidence: ["All checks passed"], blockers: [] },
     updated_at: "2026-10-19T09:00:00Z"
@@ -211,7 +213,8 @@ describe("ReviewsPage", () => {
 
   it("renders local:// urls as text and web urls as safe links", async () => {
     const web = pullRequest({ id: "pr-web", url: "https://github.com/acme/repo/pull/7", title: "Web PR" });
-    renderWithProviders(<ReviewsPage />, { runtime: runtimeWith([...reviews, web]), route: "/reviews/pr-ready", path: "/reviews/:reviewId" });
+    const local = pullRequest({ id: "pr-local-url", pr_number: 0, ci_status: "none", url: "local://worktree/symphony/sym-1", title: "Local only" });
+    renderWithProviders(<ReviewsPage />, { runtime: runtimeWith([local, web]), route: "/reviews/pr-local-url", path: "/reviews/:reviewId" });
     expect(await screen.findByText("local://worktree/symphony/sym-1")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /local:\/\// })).not.toBeInTheDocument();
 

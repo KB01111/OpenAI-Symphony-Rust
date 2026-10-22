@@ -147,7 +147,7 @@ jobs:
           Copy-Item target/release/symphony-cli.exe (Join-Path $out "symphony-cli_$($env:RELEASE_VERSION)_windows-x64$suffix.exe")
           # CycloneDX software bills of materials of what is shipped (npm production dependencies
           # and the Rust dependency graph of both executables) ...
-          pnpm sbom --sbom-format cyclonedx --prod --out (Join-Path $out 'sbom-npm.cdx.json')
+          pnpm sbom --sbom-format cyclonedx --prod --filter @symphony/desktop --out (Join-Path $out 'sbom-npm.cdx.json')
           if ($LASTEXITCODE -ne 0) { throw 'pnpm sbom failed' }
           cargo install cargo-cyclonedx --version 0.5.9 --locked
           if ($LASTEXITCODE -ne 0) { throw 'installing cargo-cyclonedx failed' }

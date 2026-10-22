@@ -114,18 +114,26 @@ pub async fn create_backup(
 ) -> SymphonyResult<BackupInfo> {
     std::fs::create_dir_all(root)?;
     let created_at = Utc::now();
-    // Unique even for two backups within the same second.
-    let mut id = format!("{DIR_PREFIX}{}", created_at.format("%Y%m%dT%H%M%SZ"));
+    // Unique even for concurrent backups within the same second: the staging directory is
+    // reserved by creating it (`create_dir` fails if it exists), never by checking first.
+    let stamp = created_at.format("%Y%m%dT%H%M%SZ").to_string();
     let mut suffix = 1;
-    while root.join(&id).exists() || root.join(format!(".{id}.partial")).exists() {
+    let (id, partial) = loop {
+        let id = if suffix == 1 {
+            format!("{DIR_PREFIX}{stamp}")
+        } else {
+            format!("{DIR_PREFIX}{stamp}-{suffix}")
+        };
+        let partial = root.join(format!(".{id}.partial"));
+        if !root.join(&id).exists() {
+            match std::fs::create_dir(&partial) {
+                Ok(()) => break (id, partial),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
         suffix += 1;
-        id = format!(
-            "{DIR_PREFIX}{}-{suffix}",
-            created_at.format("%Y%m%dT%H%M%SZ")
-        );
-    }
-    let partial = root.join(format!(".{id}.partial"));
-    std::fs::create_dir_all(&partial)?;
+    };
 
     let built = build_backup(storage, &partial, workflow, created_at).await;
     if let Err(err) = built {
@@ -264,6 +272,8 @@ async fn check_integrity(db: &Path) -> SymphonyResult<()> {
     Ok(())
 }
 
+/// Rename `path` to `<name>.pre-restore-<stamp>`, or `…-2`, `…-3` when that name is taken: a
+/// file kept by an earlier restore is never replaced.
 fn aside(path: &Path, stamp: &str) -> SymphonyResult<Option<PathBuf>> {
     if !path.exists() {
         return Ok(None);
@@ -272,7 +282,12 @@ fn aside(path: &Path, stamp: &str) -> SymphonyResult<Option<PathBuf>> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let target = path.with_file_name(format!("{name}.pre-restore-{stamp}"));
+    let mut target = path.with_file_name(format!("{name}.pre-restore-{stamp}"));
+    let mut attempt = 1;
+    while target.exists() {
+        attempt += 1;
+        target = path.with_file_name(format!("{name}.pre-restore-{stamp}-{attempt}"));
+    }
     std::fs::rename(path, &target)?;
     Ok(Some(target))
 }
@@ -305,8 +320,9 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
         return Err(storage_err("the database copy does not match the backup"));
     }
 
-    // (original, moved-aside) pairs, to undo on failure.
+    // (original, moved-aside) pairs and every file the restore wrote, to undo on failure.
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut written: Vec<PathBuf> = Vec::new();
     let mut move_aside = |path: PathBuf| -> SymphonyResult<()> {
         if let Some(target) = aside(&path, &stamp)? {
             moved.push((path, target));
@@ -319,9 +335,12 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
             move_aside(data_dir.join(format!("{DATABASE_FILE}{suffix}")))?;
         }
         std::fs::rename(&staged, &live_db)?;
+        written.push(live_db.clone());
         if manifest.files.iter().any(|f| f.name == WORKFLOW_FILE) {
             move_aside(data_dir.join(WORKFLOW_FILE))?;
-            std::fs::copy(backup_dir.join(WORKFLOW_FILE), data_dir.join(WORKFLOW_FILE))?;
+            let workflow = data_dir.join(WORKFLOW_FILE);
+            written.push(workflow.clone());
+            std::fs::copy(backup_dir.join(WORKFLOW_FILE), &workflow)?;
         }
         // Opening applies pending migrations (an older backup) and proves the file is usable.
         let opened = Storage::connect(&live_db).await?;
@@ -336,10 +355,15 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
             previous_files: moved.into_iter().map(|(_, target)| target).collect(),
         }),
         Err(err) => {
-            // Put everything back: remove what the restore wrote, then rename the originals.
+            // Put everything back: remove everything the restore wrote (also where there was no
+            // previous file to restore), then rename the originals back.
             let _ = std::fs::remove_file(&staged);
+            for file in &written {
+                let _ = std::fs::remove_file(file);
+                let _ = std::fs::remove_file(format!("{}-wal", file.display()));
+                let _ = std::fs::remove_file(format!("{}-shm", file.display()));
+            }
             for (original, target) in moved.iter().rev() {
-                let _ = std::fs::remove_file(original);
                 let _ = std::fs::rename(target, original);
             }
             Err(storage_err(format!(

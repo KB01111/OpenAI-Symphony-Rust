@@ -49,6 +49,9 @@ mod tests {
         assert!(evidence.contains("could not be checked"), "{evidence}");
         assert!(evidence.contains("No remote CI run"), "{evidence}");
         assert!(report.blockers.is_empty());
+        // An unverified merge is never the top rating, with everything else in order.
+        assert_eq!(report.score, 4);
+        assert_ne!(report.label, "Ready for Human Approval & Merge");
     }
 
     #[test]

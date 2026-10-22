@@ -321,3 +321,147 @@ async fn a_restore_that_cannot_open_the_database_puts_everything_back() {
         "newer live workflow"
     );
 }
+
+#[tokio::test]
+async fn concurrent_backups_in_the_same_second_never_share_a_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let (storage, _) = storage_with_task(&data, "t").await;
+    let root = data.join("backups");
+    let results = futures_join(
+        (0..8)
+            .map(|_| {
+                let storage = storage.clone();
+                let root = root.clone();
+                async move { create_backup(&storage, &root, None).await }
+            })
+            .collect(),
+    )
+    .await;
+    let ids: std::collections::BTreeSet<String> =
+        results.into_iter().map(|r| r.unwrap().id).collect();
+    assert_eq!(ids.len(), 8, "every backup has its own directory");
+    let listed = list_backups(&root).unwrap();
+    assert_eq!(listed.len(), 8);
+    for backup in listed {
+        verify_backup(&backup.path).await.unwrap();
+    }
+}
+
+async fn futures_join<T: Send + 'static>(
+    futures: Vec<impl std::future::Future<Output = T> + Send + 'static>,
+) -> Vec<T> {
+    let handles: Vec<_> = futures.into_iter().map(tokio::spawn).collect();
+    let mut out = Vec::new();
+    for handle in handles {
+        out.push(handle.await.unwrap());
+    }
+    out
+}
+
+#[tokio::test]
+async fn restoring_twice_in_a_row_keeps_every_replaced_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let (storage, task) = storage_with_task(&data, "First").await;
+    let first = create_backup(&storage, &data.join("backups"), None)
+        .await
+        .unwrap();
+    let mut renamed = storage.get_task(&task.id).await.unwrap().unwrap();
+    renamed.issue.title = "Second".into();
+    storage.upsert_task(&renamed).await.unwrap();
+    let second = create_backup(&storage, &data.join("backups"), None)
+        .await
+        .unwrap();
+    storage.pool().close().await;
+
+    // Two restores, back to back (the same clock second).
+    restore_backup(&first.path, &data).await.unwrap();
+    restore_backup(&second.path, &data).await.unwrap();
+
+    let kept: Vec<_> = std::fs::read_dir(&data)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| {
+            n.starts_with("symphony.sqlite.pre-restore-")
+                && !n.contains("-wal")
+                && !n.contains("-shm")
+        })
+        .collect();
+    assert_eq!(
+        kept.len(),
+        2,
+        "the first restore's saved database must survive the second: {kept:?}"
+    );
+    let live = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    assert_eq!(
+        live.get_task(&task.id).await.unwrap().unwrap().issue.title,
+        "Second"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_restore_into_an_empty_data_directory_leaves_nothing_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let (storage, _) = storage_with_task(&source, "t").await;
+    std::fs::write(source.join(WORKFLOW_FILE), "workflow from the backup").unwrap();
+    let backup = create_backup(
+        &storage,
+        &source.join("backups"),
+        Some(&source.join(WORKFLOW_FILE)),
+    )
+    .await
+    .unwrap();
+    storage.pool().close().await;
+
+    // A copy that verifies but records a schema this build refuses to open.
+    let db = backup.path.join(DATABASE_FILE);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(SqliteConnectOptions::new().filename(&db))
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, 'future', 'x')",
+    )
+    .bind(SCHEMA_VERSION + 5)
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+    let manifest_path = backup.path.join(MANIFEST_FILE);
+    let mut manifest: BackupManifest =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    for file in &mut manifest.files {
+        let bytes = std::fs::read(backup.path.join(&file.name)).unwrap();
+        file.size_bytes = bytes.len() as u64;
+        file.sha256 = {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(&bytes))
+        };
+    }
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+    // A data directory with neither a database nor a workflow.
+    let empty = dir.path().join("fresh");
+    let err = restore_backup(&backup.path, &empty)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("put back"), "{err}");
+    assert!(
+        !empty.join(DATABASE_FILE).exists(),
+        "the rejected database must not stay"
+    );
+    assert!(
+        !empty.join(WORKFLOW_FILE).exists(),
+        "the backup's workflow must not stay"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(&empty)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}

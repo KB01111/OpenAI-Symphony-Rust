@@ -51,6 +51,9 @@ pub trait TrackerAdapter: Send + Sync {
 #[derive(Clone)]
 pub struct GitHubTracker {
     client: Client,
+    /// Used for the agent-facing tool: never follows a redirect, so a redirecting answer cannot
+    /// take the host's credentials to another host.
+    tool_client: Client,
     api_url: String,
     repo: String,
     token: Option<String>,
@@ -65,6 +68,8 @@ pub struct GitHubPullRequestDetails {
     pub html_url: String,
     pub state: String,
     pub head_ref: String,
+    /// The commit the pull request's head branch points to.
+    pub head_sha: String,
     pub base_ref: String,
     /// `None` while GitHub has not computed mergeability yet (`mergeable: null`): unknown, not "yes".
     pub mergeable: Option<bool>,
@@ -99,8 +104,16 @@ impl GitHubTracker {
             .build()
             .unwrap_or_else(|_| Client::new());
 
+        let tool_client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .user_agent("symphony-desktop-orchestrator/1.0")
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| Client::new());
+
         Self {
             client,
+            tool_client,
             api_url: api_url
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| "https://api.github.com".to_string())
@@ -277,7 +290,7 @@ impl GitHubTracker {
                 message: e.to_string(),
             })?;
 
-        let mut req = self.apply_headers(self.client.request(req_method, &url));
+        let mut req = self.apply_headers(self.tool_client.request(req_method, &url));
         if let Some(b) = body {
             req = req.json(b);
         }
@@ -331,7 +344,8 @@ impl GitHubTracker {
         }
         let text = resp.text().await.unwrap_or_default();
         if status.as_u16() == 422 && text.contains("already exists") {
-            if let Some(existing) = self.find_open_pull_request(head).await? {
+            // Only a pull request into the requested base is the one asked for.
+            if let Some(existing) = self.find_open_pull_request(head, base).await? {
                 return Ok(existing);
             }
         }
@@ -341,10 +355,11 @@ impl GitHubTracker {
         })
     }
 
-    /// The open pull request whose head is branch `head` of this repository, if any.
+    /// The open pull request from branch `head` of this repository into `base`, if any.
     pub async fn find_open_pull_request(
         &self,
         head: &str,
+        base: &str,
     ) -> SymphonyResult<Option<OpenedPullRequest>> {
         self.validate_config()?;
         let owner = self.repo.split('/').next().unwrap_or_default();
@@ -355,6 +370,7 @@ impl GitHubTracker {
             })?;
         url.query_pairs_mut()
             .append_pair("head", &format!("{owner}:{head}"))
+            .append_pair("base", base)
             .append_pair("state", "open");
         let resp = self
             .apply_headers(self.client.get(url))
@@ -551,7 +567,17 @@ impl GitHubTracker {
             {
                 if let Ok(val) = c_resp.json::<Value>().await {
                     if let Some(runs) = val.get("check_runs").and_then(|r| r.as_array()) {
-                        ci_status = summarize_check_runs(runs).to_string();
+                        let total = val
+                            .get("total_count")
+                            .and_then(|t| t.as_u64())
+                            .unwrap_or(runs.len() as u64);
+                        // More runs than were read: a failure may sit on a page that was not
+                        // read, so the summary is only trustworthy for what is a failure already.
+                        ci_status = match summarize_check_runs(runs) {
+                            "passed" | "pending" | "none" if total > runs.len() as u64 => "unknown",
+                            other => other,
+                        }
+                        .to_string();
                     }
                 }
             }
@@ -629,6 +655,7 @@ impl GitHubTracker {
             html_url,
             state,
             head_ref,
+            head_sha,
             base_ref,
             mergeable,
             has_conflicts,
