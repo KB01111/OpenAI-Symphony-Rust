@@ -21,6 +21,23 @@ Trigger: push a `v<version>` tag (or *Run workflow* with an existing tag). The w
 Unsigned builds carry `UNSIGNED` in their file names and a warning at the top of the release notes. They are
 for verification only and must not be published.
 
+## Cutting a release, step by step
+
+1. Put the date on the version's `CHANGELOG.md` section (`## [2.0.0] - YYYY-MM-DD`) and make sure every
+   manifest carries the same version (`node scripts/release-version.mjs --tag v2.0.0`).
+2. Merge to `main`, then tag and push: `git tag v2.0.0 && git push origin v2.0.0`. The workflow builds,
+   tests, runs the **installer smoke test** (silent install → installed app passes the native smoke test →
+   upgrade → uninstall → user data survives) and drafts the release with the installer, the CLI, SBOMs,
+   `BUILD-INFO.txt` and `SHA256SUMS.txt`.
+3. Review the draft under *Releases* and press **Publish** — or skip the click: *Actions → Release (Windows) →
+   Run workflow* with the tag and `publish` ticked publishes it when the build passes.
+4. Without the signing secrets the assets are `UNSIGNED`. Publishing them needs `allow_unsigned` as well
+   and produces a **pre-release** that keeps the SmartScreen warning in its notes. Add the secrets (next
+   section) for a normal, "latest" release.
+
+Every commit on `main` and every pull request also builds an unsigned installer and runs the same installer
+smoke test (`desktop-native.yml`); the installer is downloadable from that run for 7 days.
+
 ## What a maintainer must do before the first public release
 
 1. **Authenticode certificate** (`REL-03`): add the repository secrets `WINDOWS_CERTIFICATE` (base64 of the
@@ -31,6 +48,12 @@ for verification only and must not be published.
 4. Confirm `SHA256SUMS.txt`, the SBOMs and `BUILD-INFO.txt` match the commit, then publish the draft.
 5. Branch protection on `main` for the checks in `ci.yml`, `desktop-native.yml`, `api-contract.yml`,
    `ui-e2e.yml`, `supply-chain.yml`.
+
+## In-app "Check for updates" and auto-update
+
+*Settings → Application → Check for updates* asks GitHub for the newest release when (and only when) the
+user presses the button, compares versions (pre-releases are only offered to pre-release builds) and opens
+the releases page. It downloads and installs nothing, so it needs no key. Installing stays a manual step.
 
 ## Auto-update (not implemented: needs owner decisions)
 

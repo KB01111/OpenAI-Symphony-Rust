@@ -88,6 +88,11 @@ export function useRevokeRemoteToken() {
   });
 }
 
+/** Explicit "check for updates" through the desktop host (never runs on its own). */
+export function useCheckForUpdates() {
+  return useMutation({ mutationFn: () => nativeHost.checkForUpdates() });
+}
+
 /**
  * Desktop host IPC configuration (`get_local_api_config`), for host-side problems the HTTP API
  * cannot report, such as an unpublished discovery file. `null` outside the desktop host.

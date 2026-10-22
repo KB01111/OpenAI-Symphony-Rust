@@ -1,7 +1,7 @@
 import React, { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Dialog, DialogSurface, DialogTitle } from "@fluentui/react-components";
-import { FolderGit2, Languages, MoonStar, Pause, Play, Plus, RefreshCw, Rows3, SquareKanban } from "lucide-react";
+import { FolderGit2, Keyboard, Languages, MoonStar, Pause, Play, Plus, RefreshCw, Rows3, SquareKanban } from "lucide-react";
 import {
   Command,
   CommandEmpty,
@@ -85,6 +85,10 @@ export const CommandPalette: React.FC = () => {
                   </CommandItem>
                   <CommandItem onSelect={run(() => store().setLocale(store().locale === "en" ? "sv" : "en"))}>
                     <Languages /> {m.palette.switchLanguage}
+                  </CommandItem>
+                  <CommandItem onSelect={run(() => store().setShortcutsOpen(true))}>
+                    <Keyboard /> {m.palette.showShortcuts}
+                    <CommandShortcut>{m.shortcuts.help}</CommandShortcut>
                   </CommandItem>
                 </CommandGroup>
                 <CommandSeparator />

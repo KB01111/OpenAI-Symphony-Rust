@@ -4,6 +4,9 @@ name: Desktop native build (Windows)
 on:
   pull_request:
     branches: [main]
+  # A fresh (unsigned) installer artifact for every commit on main.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -68,6 +71,16 @@ jobs:
       - name: Native Windows runtime smoke test
         shell: pwsh
         run: pwsh -NoProfile -File scripts/windows-native-smoke.ps1 -DesktopExe target/release/symphony-desktop.exe -CliExe target/release/symphony-cli.exe
+
+      # Installs the installer silently, runs the installed app through the native smoke test,
+      # upgrades over it, uninstalls it and checks that user data survives (per-user, HKCU).
+      - name: Installer smoke test (install, run, upgrade, uninstall)
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer not found' }
+          pwsh -NoProfile -File scripts/windows-installer-smoke.ps1 -Installer $installer.FullName -CliExe target/release/symphony-cli.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Upload native binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

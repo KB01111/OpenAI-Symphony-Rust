@@ -180,8 +180,12 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
 - **Least-privilege IPC**: app commands are declared in `build.rs` (`AppManifest::commands`), so each needs an
   explicit `allow-*` permission in `capabilities/default.json`. The exposed commands are
   `get_local_api_config`, `open_task_workspace` (opens only a task worktree that validates inside its
-  project's workspace root), `pick_repository_folder`, `set_autostart` and `exit_application`. There is no
-  shell, filesystem or arbitrary command bridge.
+  project's workspace root), `pick_repository_folder`, `set_autostart`, `exit_application`,
+  `set_native_locale` (accepts only `en` or `sv`), `open_data_directory` and `open_log_directory` (no
+  arguments: they open the host's own data/log directory), `check_for_updates` (no arguments: one GET to a
+  compile-time GitHub releases URL, only when the user presses the button; nothing is downloaded or run) and
+  `open_releases_page` (no arguments: opens a constant URL). There is no shell, filesystem or arbitrary
+  command bridge.
 - **Single authoritative scheduler**: desktop and CLI share `symphony-runtime.lock` in the data directory.
   Ownership is an exclusive OS file lock held for the process lifetime (atomic across processes, released
   by the OS on crash); a second process attaches to the running runtime instead of starting a scheduler.

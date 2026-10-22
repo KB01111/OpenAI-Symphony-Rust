@@ -4,6 +4,11 @@ name: Release (Windows)
 # maintainer reviews the notes and assets before anything is public. Re-run it for an existing tag
 # with "Run workflow".
 #
+# To publish straight from CI instead of clicking "Publish" on the draft, run the workflow manually
+# with `publish` ticked. Signed builds are published as a normal release (marked "latest").
+# Unsigned builds are refused unless `allow_unsigned` is ticked as well; they are then published as
+# a PRE-RELEASE with the SmartScreen warning kept in the notes.
+#
 # Optional Authenticode signing: set the repository secrets WINDOWS_CERTIFICATE (base64 of a .pfx)
 # and WINDOWS_CERTIFICATE_PASSWORD. Without them the assets are built, tested and attached with
 # "UNSIGNED" in their names; unsigned builds trigger SmartScreen and are for verification only.
@@ -15,6 +20,14 @@ on:
       tag:
         description: Existing release tag to build (e.g. v2.1.0)
         required: true
+      publish:
+        description: Publish the release when the build succeeds (otherwise it stays a draft)
+        type: boolean
+        default: false
+      allow_unsigned:
+        description: Allow publishing UNSIGNED assets, as a pre-release (only with publish)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -133,6 +146,21 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File scripts/windows-native-smoke.ps1 -DesktopExe target/release/symphony-desktop.exe -CliExe target/release/symphony-cli.exe
 
+      # Installs the NSIS installer silently on the runner, runs the installed application through
+      # the native smoke test, upgrades over it, uninstalls it and checks that user data survives.
+      # A broken installer must never reach a release.
+      - name: Installer smoke test (install, run, upgrade, uninstall)
+        shell: pwsh
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+        run: |
+          $installer = Get-ChildItem target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer not found' }
+          $require = @()
+          if ($env:SIGNED -eq 'true') { $require = @('-RequireSignature') }
+          pwsh -NoProfile -File scripts/windows-installer-smoke.ps1 -Installer $installer.FullName -CliExe target/release/symphony-cli.exe -ExpectedVersion $env:RELEASE_VERSION @require
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
       - name: Stage assets and checksums
         shell: pwsh
         env:
@@ -228,6 +256,25 @@ jobs:
               --title "Symphony Desktop $env:RELEASE_VERSION" `
               --notes-file "$env:RUNNER_TEMP/release-notes.md" --repo $env:GITHUB_REPOSITORY
           }
+
+      - name: Publish the release (manual runs with "publish" only)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED: ${{ steps.signing.outputs.signed }}
+          ALLOW_UNSIGNED: ${{ github.event.inputs.allow_unsigned }}
+        run: |
+          $signed = $env:SIGNED -eq 'true'
+          if (-not $signed -and $env:ALLOW_UNSIGNED -ne 'true') {
+            throw 'Refusing to publish UNSIGNED assets. Tick allow_unsigned to publish them as a pre-release, or add the signing secrets.'
+          }
+          $ghArgs = @('release', 'edit', $env:RELEASE_TAG, '--draft=false', '--repo', $env:GITHUB_REPOSITORY)
+          if ($signed -and $env:RELEASE_VERSION -notmatch '-') { $ghArgs += @('--prerelease=false', '--latest') }
+          else { $ghArgs += '--prerelease' }
+          gh @ghArgs
+          if ($LASTEXITCODE -ne 0) { throw "gh release edit failed ($LASTEXITCODE)" }
+          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json url,isDraft,isPrerelease --jq '"published: \(.url) (draft: \(.isDraft), pre-release: \(.isPrerelease))"'
 
       - name: Remove the signing certificate
         if: always() && steps.signing.outputs.thumbprint != ''

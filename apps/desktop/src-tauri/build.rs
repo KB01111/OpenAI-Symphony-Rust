@@ -8,6 +8,11 @@ fn main() {
             "pick_repository_folder",
             "set_autostart",
             "exit_application",
+            "set_native_locale",
+            "open_data_directory",
+            "open_log_directory",
+            "check_for_updates",
+            "open_releases_page",
         ]),
     ))
     .expect("failed to run tauri-build");

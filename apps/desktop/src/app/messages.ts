@@ -49,7 +49,8 @@ export const shellMessages = defineMessages({
       newProject: "Add repository",
       toggleTheme: "Switch theme",
       toggleDensity: "Toggle compact density",
-      switchLanguage: "Byt språk till svenska"
+      switchLanguage: "Byt språk till svenska",
+      showShortcuts: "Keyboard shortcuts"
     },
     runtime: {
       connecting: "Connecting to the Symphony runtime…",
@@ -141,7 +142,8 @@ export const shellMessages = defineMessages({
       palette: "Ctrl+K",
       newTask: "Ctrl+N",
       projects: "Ctrl+P",
-      refresh: "Ctrl+R"
+      refresh: "Ctrl+R",
+      help: "F1"
     }
   },
   sv: {
@@ -191,7 +193,8 @@ export const shellMessages = defineMessages({
       newProject: "Lägg till repository",
       toggleTheme: "Byt tema",
       toggleDensity: "Växla kompakt täthet",
-      switchLanguage: "Switch language to English"
+      switchLanguage: "Switch language to English",
+      showShortcuts: "Kortkommandon"
     },
     runtime: {
       connecting: "Ansluter till Symphony-körtiden…",
@@ -283,7 +286,8 @@ export const shellMessages = defineMessages({
       palette: "Ctrl+K",
       newTask: "Ctrl+N",
       projects: "Ctrl+P",
-      refresh: "Ctrl+R"
+      refresh: "Ctrl+R",
+      help: "F1"
     }
   }
 });
