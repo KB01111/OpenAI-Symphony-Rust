@@ -9,6 +9,8 @@ use symphony_core::{
 };
 use tracing::warn;
 
+pub mod tool_policy;
+
 /// Pages read per state listing (startup cleanup of terminal issues) before giving up on the rest,
 /// so the closed history of an old repository cannot stall startup.
 const MAX_ISSUE_PAGES: usize = 10;
@@ -209,12 +211,12 @@ impl GitHubTracker {
     pub fn dynamic_tool_spec() -> Value {
         json!({
             "name": "github_api",
-            "description": "Execute an authenticated GitHub REST API request on the host side without exposing GITHUB_TOKEN to the agent subprocess.",
+            "description": "Execute an authenticated GitHub REST API request on the host side without exposing GITHUB_TOKEN to the agent subprocess. Limited to the project's own repository (paths under /repos/{owner}/{repo}/): read it, open and edit issues and pull requests and comment on them. Merging, deleting, administration and other repositories are not available.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "method": { "type": "string", "description": "HTTP method (GET, POST, PATCH, PUT, DELETE)" },
-                    "path": { "type": "string", "description": "Relative GitHub REST API path starting with '/'" },
+                    "method": { "type": "string", "description": "HTTP method (GET, POST or PATCH)" },
+                    "path": { "type": "string", "description": "Relative GitHub REST API path under /repos/{owner}/{repo}/" },
                     "body": { "type": "object", "description": "Optional JSON request body" }
                 },
                 "required": ["method", "path"]
@@ -229,6 +231,11 @@ impl GitHubTracker {
             .unwrap_or("GET");
         let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let body = arguments.get("body");
+        // The agent reads untrusted text: what it may ask the host to do with Symphony's own
+        // credentials is limited by `tool_policy`, before anything is sent.
+        if let Err(reason) = tool_policy::check_github_request(&self.repo, method, path) {
+            return (false, json!({ "error": { "message": reason } }).to_string());
+        }
         match self.execute_dynamic_tool(method, path, body).await {
             Ok((ok, val)) => (ok, serde_json::to_string_pretty(&val).unwrap_or_default()),
             Err(e) => (false, json!({ "error": e.to_string() }).to_string()),
@@ -862,7 +869,7 @@ impl LinearTracker {
     pub fn dynamic_tool_spec() -> Value {
         json!({
             "name": "linear_graphql",
-            "description": "Execute a single GraphQL query or mutation against Linear using Symphony's host-side authenticated session.",
+            "description": "Execute a single GraphQL operation against Linear using Symphony's host-side authenticated session. Queries are read-only; mutations are limited to commentCreate, commentUpdate, issueUpdate, attachmentCreate, attachmentLinkGitHubPR and attachmentLinkURL.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -884,6 +891,9 @@ impl LinearTracker {
                 )
             }
         };
+        if let Err(reason) = tool_policy::check_linear_document(query) {
+            return (false, json!({ "error": { "message": reason } }).to_string());
+        }
         let variables = arguments
             .get("variables")
             .cloned()
