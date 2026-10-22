@@ -8,6 +8,12 @@ function isEditable(target: EventTarget | null): boolean {
   return el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || Boolean(el.closest?.(".cm-editor"));
 }
 
+/** Shortcut help and the command palette are modal: opening one closes the other. */
+function toggleShortcuts(store: ReturnType<typeof useUiStore.getState>): void {
+  if (!store.shortcutsOpen) store.closePalette();
+  store.setShortcutsOpen(!store.shortcutsOpen);
+}
+
 /**
  * Global keyboard shortcuts:
  * Ctrl+K command palette · Ctrl+N new task · Ctrl+P project switcher · Ctrl+R refresh data
@@ -24,20 +30,23 @@ export function useGlobalShortcuts(): void {
       if (e.key === "F1" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         // Holding the key auto-repeats keydown: toggle once, not on every repeat.
-        if (!e.repeat) store.setShortcutsOpen(!store.shortcutsOpen);
+        if (!e.repeat) toggleShortcuts(store);
         return;
       }
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const key = e.key.toLowerCase();
       if (key === "/") {
         e.preventDefault();
-        if (!e.repeat) store.setShortcutsOpen(!store.shortcutsOpen);
+        if (!e.repeat) toggleShortcuts(store);
         return;
       }
       if (key === "k") {
         e.preventDefault();
         if (store.paletteOpen) store.closePalette();
-        else store.openPalette("all");
+        else {
+          store.setShortcutsOpen(false);
+          store.openPalette("all");
+        }
         return;
       }
       if (isEditable(e.target) && key !== "r") return;

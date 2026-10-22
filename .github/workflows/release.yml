@@ -281,7 +281,13 @@ jobs:
           # Unsigned assets without allow_unsigned were refused before the build started.
           $signed = $env:SIGNED -eq 'true'
           $ghArgs = @('release', 'edit', $env:RELEASE_TAG, '--draft=false', '--repo', $env:GITHUB_REPOSITORY)
-          if ($signed -and $env:RELEASE_VERSION -notmatch '-') { $ghArgs += @('--prerelease=false', '--latest') }
+          if ($signed -and $env:RELEASE_VERSION -notmatch '-') {
+            $ghArgs += '--prerelease=false'
+            # Re-publishing an older stable tag must not move the "Latest" badge backwards.
+            $latestTag = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>$null
+            $isNewest = ($LASTEXITCODE -ne 0) -or (-not $latestTag) -or ([version] $env:RELEASE_VERSION -ge [version] ($latestTag -replace '^v', ''))
+            $ghArgs += if ($isNewest) { '--latest' } else { '--latest=false' }
+          }
           else { $ghArgs += '--prerelease' }
           gh @ghArgs
           if ($LASTEXITCODE -ne 0) { throw "gh release edit failed ($LASTEXITCODE)" }

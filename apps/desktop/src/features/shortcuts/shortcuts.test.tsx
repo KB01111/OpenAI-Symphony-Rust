@@ -28,6 +28,16 @@ describe("keyboard shortcut help", () => {
     expect(useUiStore.getState().shortcutsOpen).toBe(true);
   });
 
+  it("replaces the command palette instead of stacking a second dialog", () => {
+    renderHarness();
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(useUiStore.getState().paletteOpen).toBe(true);
+    fireEvent.keyDown(window, { key: "F1" });
+    expect(useUiStore.getState()).toMatchObject({ shortcutsOpen: true, paletteOpen: false });
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(useUiStore.getState()).toMatchObject({ shortcutsOpen: false, paletteOpen: true });
+  });
+
   it("toggles once per key press, not on every auto-repeat keydown", () => {
     renderHarness();
     fireEvent.keyDown(window, { key: "F1" });

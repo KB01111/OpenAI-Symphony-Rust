@@ -361,7 +361,7 @@ export const settingsMessages = defineMessages({
       version: "Version {version}, schema {schema}",
       unavailable: "Den här körmiljön hanterar inte säkerhetskopior.",
       scope: "Ingår: databasen (projekt, uppgifter, körförsök, händelser, godkännanden, pull request-granskningar, valideringsresultat, inställningar) och aktiv WORKFLOW.md. Ingår inte: API-nycklar och token (lösenordsvalvet är bundet till ditt Windows-konto och kopieras aldrig in i en säkerhetskopia), Git-repon och arbetsträd, loggar.",
-      restore: "För att återställa: avsluta Symphony (aktivitetsfältets meny: Stop runtime and exit, som är på engelska) och kör nedladdningen symphony-cli från utgåvan med: symphony-cli [--data-dir <datamapp>] restore-backup <mapp> (ange --data-dir om Symphony startades med en egen datakatalog). Data som ersätts sparas bredvid originalet som .pre-restore-<tid>. Kontrollera en säkerhetskopia först med: symphony-cli verify-backup <mapp>."
+      restore: "För att återställa: avsluta Symphony (aktivitetsfältets meny: Stoppa körtiden och avsluta) och kör nedladdningen symphony-cli från utgåvan med: symphony-cli [--data-dir <datamapp>] restore-backup <mapp> (ange --data-dir om Symphony startades med en egen datakatalog). Data som ersätts sparas bredvid originalet som .pre-restore-<tid>. Kontrollera en säkerhetskopia först med: symphony-cli verify-backup <mapp>."
     },
     diagnostics: {
       intro: "Exportera ett maskerat JSON-paket (inställningar, körtidstillstånd, senaste fel) att bifoga en felrapport. Hemligheter maskeras av körtiden före export.",

@@ -77,7 +77,7 @@ describe("ApplicationSection: native host actions", () => {
     renderWithProviders(<ApplicationSection />, { runtime: createMockRuntime({ "GET /runtime": runtimeInfo }) });
     // The host is only contacted when asked.
     await screen.findByRole("button", { name: m.checkUpdates });
-    expect(invoke).not.toHaveBeenCalledWith("check_for_updates", expect.anything());
+    expect(invoke.mock.calls.map(([command]) => command)).not.toContain("check_for_updates");
 
     fireEvent.click(screen.getByRole("button", { name: m.checkUpdates }));
     expect(await screen.findByText("Version 2.1.0 is available. You are running 2.0.0.")).toBeInTheDocument();

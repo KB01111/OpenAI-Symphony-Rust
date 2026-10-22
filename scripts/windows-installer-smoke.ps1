@@ -46,6 +46,9 @@ $uninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
 $dataDir = Join-Path $env:LOCALAPPDATA 'symphony-desktop'
 $marker = Join-Path $dataDir 'installer-smoke-marker.txt'
 $createdDataDir = $false
+$createdMarker = $false
+$defaultInstallDir = Join-Path $env:LOCALAPPDATA $productName
+$createdInstallDir = $false
 
 function Step([string] $message) { Write-Host "==> $message" }
 function Fail([string] $message) { throw "INSTALLER SMOKE TEST FAILED: $message" }
@@ -113,17 +116,23 @@ $installDir = $null
 try {
   Step 'Preconditions'
   if (@(Get-UninstallEntries).Count -gt 0) { Fail "$productName is already installed for this user; run this test on a clean profile" }
+  # The cleanup below removes the install directory and the marker: only ever what this run created.
+  if (Test-Path $defaultInstallDir) { Fail "$defaultInstallDir already exists; run this test on a clean profile" }
+  if (Test-Path $marker) { Fail "$marker already exists; refusing to overwrite it" }
   if ($RequireSignature) { Assert-Signed $Installer }
 
   # Data that an uninstall must not remove: the real default data directory.
   if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir | Out-Null; $createdDataDir = $true }
   Set-Content -Path $marker -Value 'installer smoke test marker' -Encoding ascii
+  $createdMarker = $true
 
   Step 'Silent install'
   Invoke-Silent $Installer @('/S') 'the installer'
   $entry = Wait-Until { @(Get-UninstallEntries) | Select-Object -First 1 } 'the uninstall entry'
   $installDir = Get-InstallDir $entry
   Write-Host "installed to $installDir"
+  # Only a directory that did not exist before the install is this run's to delete.
+  $createdInstallDir = $true
   Stop-InstalledApp $installDir
 
   Step 'Uninstall entry and installed files'
@@ -177,8 +186,8 @@ try {
 finally {
   if ($installDir -and (Test-Path $installDir)) {
     Stop-InstalledApp $installDir
-    Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    if ($createdInstallDir) { Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue }
   }
-  Remove-Item $marker -Force -ErrorAction SilentlyContinue
+  if ($createdMarker) { Remove-Item $marker -Force -ErrorAction SilentlyContinue }
   if ($createdDataDir) { Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue }
 }

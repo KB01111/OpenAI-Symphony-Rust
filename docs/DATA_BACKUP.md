@@ -50,7 +50,7 @@ Settings → Integrations. There is no migration mechanism for the vault between
 Restoring replaces the database, so it is an **offline** operation. It needs the `symphony-cli` executable
 from the release assets (the installer ships the desktop app only).
 
-1. Quit Symphony (tray menu → *Stop runtime and exit*). The command refuses to run while a runtime owns the
+1. Quit Symphony (tray menu → *Stop runtime and exit*, in Swedish *Stoppa körtiden och avsluta*). The command refuses to run while a runtime owns the
    data directory.
 2. Check the backup: `symphony-cli verify-backup "<backup folder>"` (checksums, a schema this version can
    read, SQLite `integrity_check`).

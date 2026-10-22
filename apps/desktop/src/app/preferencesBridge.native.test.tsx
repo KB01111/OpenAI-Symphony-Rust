@@ -1,4 +1,5 @@
 import { act, waitFor } from "@testing-library/react";
+import { nativeHost } from "@symphony/api-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { settings } from "../test/fixtures.js";
 import { createMockRuntime, renderWithProviders } from "../test/renderWithProviders.js";
@@ -26,8 +27,10 @@ describe("PreferencesBridge: native language", () => {
   });
 
   it("does nothing outside the desktop host", async () => {
+    const spy = vi.spyOn(nativeHost, "setNativeLocale");
     renderWithProviders(<PreferencesBridge />, { runtime: createMockRuntime({ "GET /settings": () => settings() }) });
     act(() => useUiStore.getState().setLocale("sv"));
-    expect((globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__).toBeUndefined();
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });
