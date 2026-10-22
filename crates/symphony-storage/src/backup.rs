@@ -370,8 +370,10 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
             remove(&staged);
             for file in &written {
                 remove(file);
-                remove(Path::new(&format!("{}-wal", file.display())));
-                remove(Path::new(&format!("{}-shm", file.display())));
+            }
+            // SQLite sidecars belong to the database only, never to the other files written.
+            for suffix in ["-wal", "-shm"] {
+                remove(Path::new(&format!("{}{suffix}", live_db.display())));
             }
             for (original, target) in moved.iter().rev() {
                 if let Err(e) = std::fs::rename(target, original) {

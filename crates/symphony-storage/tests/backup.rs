@@ -446,6 +446,9 @@ async fn a_failed_restore_into_an_empty_data_directory_leaves_nothing_behind() {
 
     // A data directory with neither a database nor a workflow.
     let empty = dir.path().join("fresh");
+    // An unrelated file that merely looks like a SQLite sidecar of the workflow must survive.
+    std::fs::create_dir_all(&empty).unwrap();
+    std::fs::write(empty.join("WORKFLOW.md-wal"), "not ours").unwrap();
     let err = restore_backup(&backup.path, &empty)
         .await
         .unwrap_err()
@@ -459,11 +462,12 @@ async fn a_failed_restore_into_an_empty_data_directory_leaves_nothing_behind() {
         !empty.join(WORKFLOW_FILE).exists(),
         "the backup's workflow must not stay"
     );
-    let leftovers: Vec<_> = std::fs::read_dir(&empty)
+    let leftovers: Vec<String> = std::fs::read_dir(&empty)
         .unwrap()
         .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    assert!(leftovers.is_empty(), "{leftovers:?}");
+    assert_eq!(leftovers, vec!["WORKFLOW.md-wal".to_string()]);
 }
 
 #[tokio::test]
