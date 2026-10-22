@@ -82,9 +82,11 @@ pub fn notification_body(
 ) -> String {
     let lead = match (locale, event_type) {
         (NativeLocale::Sv, "approval/requested") => {
-            let detail = message
-                .strip_prefix("Approval requested: ")
-                .unwrap_or(message);
+            // Codex titles already start with the phrase the orchestrator prepends: drop every copy.
+            let mut detail = message;
+            while let Some(rest) = detail.strip_prefix("Approval requested: ") {
+                detail = rest;
+            }
             format!("väntar på ditt godkännande: {detail}")
         }
         (NativeLocale::Sv, "attempt/succeeded") => match merge_readiness(message) {
@@ -186,6 +188,25 @@ mod tests {
                 "Approval requested: command_execution"
             ),
             "ABC-1: väntar på ditt godkännande: command_execution"
+        );
+        // Codex approval titles already begin with the orchestrator's phrase.
+        assert_eq!(
+            notification_body(
+                sv,
+                "approval/requested",
+                Some("ABC-1"),
+                "Approval requested: Approval requested: command_execution"
+            ),
+            "ABC-1: väntar på ditt godkännande: command_execution"
+        );
+        assert_eq!(
+            notification_body(
+                sv,
+                "approval/requested",
+                None,
+                "Approval requested: Run validation command"
+            ),
+            "Väntar på ditt godkännande: Run validation command"
         );
         assert_eq!(
             notification_body(
