@@ -117,6 +117,14 @@ jobs:
           "config=$configPath" >> $env:GITHUB_OUTPUT
           "signtool=$($signtool.FullName)" >> $env:GITHUB_OUTPUT
 
+      # Fail before anything is built or uploaded: a refused publish must never touch an existing
+      # (possibly signed) draft release.
+      - name: Refuse to publish unsigned assets without allow_unsigned
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && steps.signing.outputs.signed != 'true' && github.event.inputs.allow_unsigned != 'true'
+        shell: pwsh
+        run: |
+          throw 'Refusing to publish UNSIGNED assets. Tick allow_unsigned to publish them as a pre-release, or add the signing secrets.'
+
       # Step outputs reach scripts through the environment, never through template expansion.
       - name: Build the desktop app and NSIS installer
         shell: pwsh
@@ -165,6 +173,8 @@ jobs:
         shell: pwsh
         env:
           SIGNED: ${{ steps.signing.outputs.signed }}
+          # Set only on a manual run that publishes unsigned assets on purpose (see below).
+          PUBLISH_UNSIGNED: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && github.event.inputs.allow_unsigned == 'true' }}
         run: |
           $signed = $env:SIGNED -eq 'true'
           $suffix = if ($signed) { '' } else { '-UNSIGNED' }
@@ -205,7 +215,11 @@ jobs:
           Get-Content (Join-Path $out 'SHA256SUMS.txt')
           if (-not $signed) {
             $notes = Get-Content "$env:RUNNER_TEMP/release-notes.md" -Raw
-            $warning = "> **Unsigned build.** These assets are not Authenticode-signed and trigger SmartScreen. Do not publish this draft; configure signing and re-run the release workflow.`n`n"
+            $warning = if ($env:PUBLISH_UNSIGNED -eq 'true') {
+              "> **Unsigned pre-release.** These assets are not Authenticode-signed, so Windows SmartScreen warns about them. Use them for testing; verify the download against ``SHA256SUMS.txt``.`n`n"
+            } else {
+              "> **Unsigned build.** These assets are not Authenticode-signed and trigger SmartScreen. Do not publish this draft; configure signing and re-run the release workflow.`n`n"
+            }
             Set-Content -Path "$env:RUNNER_TEMP/release-notes.md" -Value ($warning + $notes) -Encoding utf8
           }
 
@@ -263,12 +277,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SIGNED: ${{ steps.signing.outputs.signed }}
-          ALLOW_UNSIGNED: ${{ github.event.inputs.allow_unsigned }}
         run: |
+          # Unsigned assets without allow_unsigned were refused before the build started.
           $signed = $env:SIGNED -eq 'true'
-          if (-not $signed -and $env:ALLOW_UNSIGNED -ne 'true') {
-            throw 'Refusing to publish UNSIGNED assets. Tick allow_unsigned to publish them as a pre-release, or add the signing secrets.'
-          }
           $ghArgs = @('release', 'edit', $env:RELEASE_TAG, '--draft=false', '--repo', $env:GITHUB_REPOSITORY)
           if ($signed -and $env:RELEASE_VERSION -notmatch '-') { $ghArgs += @('--prerelease=false', '--latest') }
           else { $ghArgs += '--prerelease' }

@@ -69,6 +69,35 @@ pub fn notification_title(locale: NativeLocale, event_type: &str) -> Option<&'st
     })
 }
 
+/// Body of the notification for an orchestrator event. English keeps the orchestrator's own text;
+/// Swedish replaces its English sentence with a translated one, and for a failed run keeps the
+/// orchestrator's message as the technical detail.
+pub fn notification_body(
+    locale: NativeLocale,
+    event_type: &str,
+    identifier: Option<&str>,
+    message: &str,
+) -> String {
+    let lead = match (locale, event_type) {
+        (NativeLocale::Sv, "approval/requested") => "väntar på ditt godkännande".to_string(),
+        (NativeLocale::Sv, "attempt/succeeded") => "klar för granskning".to_string(),
+        (NativeLocale::Sv, "attempt/failed") => {
+            format!("körningen misslyckades ({message})")
+        }
+        _ => message.to_string(),
+    };
+    match identifier {
+        Some(id) => format!("{id}: {lead}"),
+        None => {
+            let mut chars = lead.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => lead,
+            }
+        }
+    }
+}
+
 /// Title and body of the notification shown when `runtime.json` could not be published.
 pub fn discovery_unavailable(locale: NativeLocale) -> (&'static str, &'static str) {
     match locale {
@@ -109,6 +138,54 @@ mod tests {
             assert!(!a.is_empty() && !b.is_empty());
             assert_ne!(a, b, "{a} has no Swedish translation");
         }
+    }
+
+    #[test]
+    fn english_notification_body_is_the_orchestrators_text() {
+        assert_eq!(
+            notification_body(
+                NativeLocale::En,
+                "attempt/failed",
+                Some("ABC-1"),
+                "Task failed"
+            ),
+            "ABC-1: Task failed"
+        );
+        assert_eq!(
+            notification_body(NativeLocale::En, "attempt/failed", None, "Task failed"),
+            "Task failed"
+        );
+    }
+
+    #[test]
+    fn swedish_notification_body_is_translated_and_keeps_identifier_and_detail() {
+        assert_eq!(
+            notification_body(
+                NativeLocale::Sv,
+                "approval/requested",
+                Some("ABC-1"),
+                "Approval requested"
+            ),
+            "ABC-1: väntar på ditt godkännande"
+        );
+        assert_eq!(
+            notification_body(
+                NativeLocale::Sv,
+                "attempt/succeeded",
+                None,
+                "Completed execution"
+            ),
+            "Klar för granskning"
+        );
+        assert_eq!(
+            notification_body(
+                NativeLocale::Sv,
+                "attempt/failed",
+                Some("ABC-1"),
+                "exit code 2"
+            ),
+            "ABC-1: körningen misslyckades (exit code 2)"
+        );
     }
 
     #[test]

@@ -389,18 +389,19 @@ fn open_secret_store(data_dir: &Path, locale: &str) -> Result<SecretStore, Strin
 
 /// Native notification for events an operator should act on while the window is not focused.
 fn notify_for_event(app: &AppHandle, event: &symphony_core::domain::AgentEvent) {
-    let Some(title) =
-        native_text::notification_title(native_locale(app), event.event_type.as_str())
-    else {
+    let locale = native_locale(app);
+    let Some(title) = native_text::notification_title(locale, event.event_type.as_str()) else {
         return;
     };
     if main_window_focused(app) {
         return;
     }
-    let body = match &event.issue_identifier {
-        Some(id) => format!("{id}: {}", event.message),
-        None => event.message.clone(),
-    };
+    let body = native_text::notification_body(
+        locale,
+        event.event_type.as_str(),
+        event.issue_identifier.as_deref(),
+        &event.message,
+    );
     let _ = app
         .notification()
         .builder()
