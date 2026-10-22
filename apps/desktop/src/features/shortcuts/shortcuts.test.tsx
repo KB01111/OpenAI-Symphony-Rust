@@ -28,6 +28,16 @@ describe("keyboard shortcut help", () => {
     expect(useUiStore.getState().shortcutsOpen).toBe(true);
   });
 
+  it("toggles once per key press, not on every auto-repeat keydown", () => {
+    renderHarness();
+    fireEvent.keyDown(window, { key: "F1" });
+    fireEvent.keyDown(window, { key: "F1", repeat: true });
+    fireEvent.keyDown(window, { key: "F1", repeat: true });
+    expect(useUiStore.getState().shortcutsOpen).toBe(true);
+    fireEvent.keyDown(window, { key: "/", ctrlKey: true, repeat: true });
+    expect(useUiStore.getState().shortcutsOpen).toBe(true);
+  });
+
   it("is reachable from a text field, but modified F1 is left to the OS", () => {
     renderHarness();
     fireEvent.keyDown(screen.getByLabelText("field"), { key: "/", ctrlKey: true });
@@ -46,7 +56,7 @@ describe("ShortcutsDialog", () => {
     renderWithProviders(<ShortcutsDialog />, { runtime: createMockRuntime() });
     expect(await screen.findByRole("dialog", { name: m.title })).toBeInTheDocument();
     for (const label of Object.values(m.items)) expect(screen.getByText(label)).toBeInTheDocument();
-    for (const key of ["K", "N", "P", "R", "B", "J", "I", "F1"]) expect(screen.getAllByText(key).length).toBeGreaterThan(0);
+    for (const key of ["K", "N", "P", "R", "B", "J", "I", "F1", "/"]) expect(screen.getAllByText(key).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(useUiStore.getState().shortcutsOpen).toBe(false);
   });

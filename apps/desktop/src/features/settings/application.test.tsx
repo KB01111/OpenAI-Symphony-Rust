@@ -86,6 +86,20 @@ describe("ApplicationSection: native host actions", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_releases_page", undefined));
   });
 
+  it("names the release page, not a folder, when it cannot be opened", async () => {
+    installHost({
+      check_for_updates: async () => ({ current: "2.0.0", latest: "2.1.0", update_available: true, prerelease: false, published_at: null, notes: null }),
+      open_releases_page: async () => {
+        throw "Failed to open explorer: not found";
+      }
+    });
+    renderWithProviders(<ApplicationSection />, { runtime: createMockRuntime({ "GET /runtime": runtimeInfo }) });
+    fireEvent.click(await screen.findByRole("button", { name: m.checkUpdates }));
+    fireEvent.click(await screen.findByRole("button", { name: m.openReleases }));
+    expect(await screen.findByText(m.openReleasesFailed)).toBeInTheDocument();
+    expect(screen.queryByText(m.openFailed)).not.toBeInTheDocument();
+  });
+
   it("says when the installed version is current and when nothing is published", async () => {
     let answer: unknown = { current: "2.0.0", latest: "2.0.0", update_available: false, prerelease: false, published_at: null, notes: null };
     installHost({ check_for_updates: async () => answer });

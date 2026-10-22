@@ -9,7 +9,8 @@
   use a disposable machine or a user that has no Symphony Desktop installed. It verifies:
 
     1. the installer runs silently and exits 0,
-    2. the per-user uninstall entry exists with the expected name, version and publisher,
+    2. the per-user uninstall entry exists with the product name, version and publisher that
+       tauri.conf.json declares,
     3. the application and its uninstaller are in the install directory,
     4. the INSTALLED application passes scripts/windows-native-smoke.ps1,
     5. installing the same installer again (the upgrade path) succeeds without a second entry,
@@ -36,7 +37,11 @@ Set-StrictMode -Version Latest
 $Installer = (Resolve-Path $Installer).Path
 $CliExe = (Resolve-Path $CliExe).Path
 $smokeScript = Join-Path $PSScriptRoot 'windows-native-smoke.ps1'
-$productName = 'Symphony Desktop'
+# The identity the installer must register comes from the Tauri config, not from this script.
+$tauriConfig = Get-Content (Join-Path $PSScriptRoot '..\apps\desktop\src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json
+$productName = [string] $tauriConfig.productName
+$expectedPublisher = [string] $tauriConfig.bundle.publisher
+if (-not $productName -or -not $expectedPublisher) { throw 'tauri.conf.json has no productName or bundle.publisher' }
 $uninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
 $dataDir = Join-Path $env:LOCALAPPDATA 'symphony-desktop'
 $marker = Join-Path $dataDir 'installer-smoke-marker.txt'
@@ -128,8 +133,10 @@ try {
   if ($ExpectedVersion -and $version -ne $ExpectedVersion) {
     Fail "uninstall entry version is '$version', expected '$ExpectedVersion'"
   }
-  if (-not $publisher) { Fail 'the uninstall entry has no publisher' }
-  Write-Host "entry: $(Get-Value $entry 'DisplayName') $version by $publisher"
+  $displayName = Get-Value $entry 'DisplayName'
+  if ($displayName -ne $productName) { Fail "uninstall entry is named '$displayName', expected '$productName'" }
+  if ($publisher -ne $expectedPublisher) { Fail "uninstall entry publisher is '$publisher', expected '$expectedPublisher'" }
+  Write-Host "entry: $displayName $version by $publisher"
   if (-not (Test-Path $installDir)) { Fail "install directory $installDir does not exist" }
   $uninstaller = Join-Path $installDir 'uninstall.exe'
   if (-not (Test-Path $uninstaller)) { Fail "no uninstall.exe in $installDir" }

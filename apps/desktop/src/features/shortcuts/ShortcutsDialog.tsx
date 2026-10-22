@@ -6,24 +6,24 @@ import { shortcutsMessages } from "./messages.js";
 
 type ItemKey = keyof (typeof shortcutsMessages)["en"]["items"];
 
-/** Rows of the help dialog; the keys mirror `useGlobalShortcuts`. */
-const GROUPS: ReadonlyArray<{ group: "general" | "layout"; items: ReadonlyArray<{ item: ItemKey; keys: string[] }> }> = [
+/** Rows of the help dialog; the key combinations (alternatives separated) mirror `useGlobalShortcuts`. */
+const GROUPS: ReadonlyArray<{ group: "general" | "layout"; items: ReadonlyArray<{ item: ItemKey; combos: string[][] }> }> = [
   {
     group: "general",
     items: [
-      { item: "palette", keys: ["Ctrl", "K"] },
-      { item: "newTask", keys: ["Ctrl", "N"] },
-      { item: "projects", keys: ["Ctrl", "P"] },
-      { item: "refresh", keys: ["Ctrl", "R"] },
-      { item: "help", keys: ["F1"] }
+      { item: "palette", combos: [["Ctrl", "K"]] },
+      { item: "newTask", combos: [["Ctrl", "N"]] },
+      { item: "projects", combos: [["Ctrl", "P"]] },
+      { item: "refresh", combos: [["Ctrl", "R"]] },
+      { item: "help", combos: [["F1"], ["Ctrl", "/"]] }
     ]
   },
   {
     group: "layout",
     items: [
-      { item: "sidebar", keys: ["Ctrl", "B"] },
-      { item: "activity", keys: ["Ctrl", "J"] },
-      { item: "inspector", keys: ["Ctrl", "I"] }
+      { item: "sidebar", combos: [["Ctrl", "B"]] },
+      { item: "activity", combos: [["Ctrl", "J"]] },
+      { item: "inspector", combos: [["Ctrl", "I"]] }
     ]
   }
 ];
@@ -48,14 +48,19 @@ export const ShortcutsDialog: React.FC = () => {
                 <section key={group} aria-label={m.groups[group]}>
                   <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{m.groups[group]}</h3>
                   <ul className="divide-y divide-border rounded-md border border-border">
-                    {items.map(({ item, keys }) => (
+                    {items.map(({ item, combos }) => (
                       <li key={item} className="flex items-center justify-between gap-4 px-3 py-1.5 text-sm">
                         <span>{m.items[item]}</span>
-                        <span className="flex shrink-0 gap-1">
-                          {keys.map((key) => (
-                            <kbd key={key} className="rounded border border-border bg-surface px-1.5 font-mono text-xs">
-                              {key}
-                            </kbd>
+                        <span className="flex shrink-0 items-center gap-1">
+                          {combos.map((keys, index) => (
+                            <React.Fragment key={keys.join("+")}>
+                              {index > 0 ? <span className="px-0.5 text-xs text-muted-foreground">{m.or}</span> : null}
+                              {keys.map((key) => (
+                                <kbd key={key} className="rounded border border-border bg-surface px-1.5 font-mono text-xs">
+                                  {key}
+                                </kbd>
+                              ))}
+                            </React.Fragment>
                           ))}
                         </span>
                       </li>

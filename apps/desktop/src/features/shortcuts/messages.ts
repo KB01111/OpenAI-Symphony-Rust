@@ -3,6 +3,7 @@ import { defineMessages } from "../../lib/i18n.js";
 export const shortcutsMessages = defineMessages({
   en: {
     title: "Keyboard shortcuts",
+    or: "or",
     description: "Available everywhere in Symphony. Typing in a text field is never intercepted.",
     groups: {
       general: "General",
@@ -21,6 +22,7 @@ export const shortcutsMessages = defineMessages({
   },
   sv: {
     title: "Kortkommandon",
+    or: "eller",
     description: "Fungerar överallt i Symphony. Text du skriver i ett fält fångas aldrig upp.",
     groups: {
       general: "Allmänt",

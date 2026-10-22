@@ -722,7 +722,7 @@ const UpdateCheck: React.FC = () => {
   const check = useCheckForUpdates();
   const openReleases = useMutation({
     mutationFn: () => nativeHost.openReleasesPage(),
-    onError: (error) => notify("error", m.application.openFailed, errorMessage(error))
+    onError: (error) => notify("error", m.application.openReleasesFailed, errorMessage(error))
   });
   const result = check.data;
   return (

@@ -23,14 +23,15 @@ export function useGlobalShortcuts(): void {
       const store = useUiStore.getState();
       if (e.key === "F1" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
         e.preventDefault();
-        store.setShortcutsOpen(!store.shortcutsOpen);
+        // Holding the key auto-repeats keydown: toggle once, not on every repeat.
+        if (!e.repeat) store.setShortcutsOpen(!store.shortcutsOpen);
         return;
       }
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const key = e.key.toLowerCase();
       if (key === "/") {
         e.preventDefault();
-        store.setShortcutsOpen(!store.shortcutsOpen);
+        if (!e.repeat) store.setShortcutsOpen(!store.shortcutsOpen);
         return;
       }
       if (key === "k") {
