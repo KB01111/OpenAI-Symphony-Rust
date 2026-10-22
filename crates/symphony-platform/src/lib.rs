@@ -621,7 +621,18 @@ mod tests {
         // A second owner is rejected while the first guard holds the lock.
         assert!(SingleInstanceGuard::try_acquire(dir.path()).is_err());
         drop(guard);
-        let guard2 = SingleInstanceGuard::acquire(dir.path()).unwrap();
+        // Sibling tests spawn child processes; a child forked while the lock was held keeps it
+        // until it execs, so the first attempt after the drop can still see it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let guard2 = loop {
+            match SingleInstanceGuard::try_acquire(dir.path()) {
+                Ok(guard) => break guard,
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Err(e) => panic!("the lock was not released after the guard was dropped: {e}"),
+            }
+        };
         assert_eq!(guard2.pid(), std::process::id());
     }
 

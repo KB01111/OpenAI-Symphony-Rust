@@ -74,13 +74,30 @@ DOC-02 (see the audit for each: location, evidence, expected behaviour, fix, tes
 Environment: Linux container, Rust 1.97.0, Node 22.22, pnpm 11.15, git 2.43, Chromium for Playwright; the
 Tauri crate was built and linted with GTK/WebKit dev packages installed. **Nothing below ran on Windows.**
 
-**Interim:** the full local run for the final commit (`cargo fmt/clippy/test`, `cargo deny`, `pnpm audit`,
-`generate:api`, `typecheck`, `test`, `build`) was still executing when this section was written, so no
-total is claimed here yet. Component results observed while developing (all passing): storage 18+, core
-24, agents 10 resume scenarios + lifecycle, orchestrator 21, trackers 12, workspaces 16, server 9 router
-tests + 16 remote-listener tests, desktop UI 86, `@symphony/ui` 10, API client integration 21 (real
-`symphony-cli`), Playwright 30. The authoritative record is the PR's CI; the final numbers replace this
-paragraph.
+**Final local run (Linux, after the review-round commits):**
+
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -D warnings` (including the Tauri
+  crate), `cargo deny check` and `pnpm audit`: clean.
+- `cargo test --workspace --locked --no-fail-fast`: every suite passed (core 24, storage 18+, agents 5 + 9
+  lifecycle + 10 resume + 4 usage, orchestrator 21, trackers, workspaces 16, server 7 + 9 router + 5 contract
+  + 16 remote-listener, CLI 2 backup/restore + 3 lifecycle, platform 37) except one test, see below.
+- `pnpm typecheck`, `pnpm test` (desktop 86, `@symphony/ui` 10, API client 18 + 21 against the real
+  `symphony-cli`, mobile 15, scripts 26) and `pnpm build`: passing. Playwright (30 flows) passed in an earlier
+  run on the same UI code and was not repeated after the last fixture-only change.
+
+What that run caught, all fixed before this report was finalised:
+
+- the committed OpenAPI document and generated client were **stale** (`reviewed_commit` was added to the Rust
+  type without regenerating); `openapi_document_is_up_to_date` failed and `pnpm generate:api` produced a diff.
+  Regenerated, and a second regeneration is a no-op;
+- two UI test fixtures lacked the new required field and failed `pnpm typecheck`;
+- `symphony-platform` `test_single_instance_lock` failed once under full-workspace load (re-acquiring the lock
+  right after the guard was dropped). It passed in isolation and on rerun. The cause was not proven; the
+  hypothesis is a child process forked by a sibling test holding the inherited lock until it execs. The test
+  now retries for up to five seconds and fails with a clear message otherwise. Production code was not changed.
+
+The exact final head has not had one uninterrupted green end-to-end run, because the failures above stopped
+the first pass and the fixes were verified per component. The authoritative record is the PR's CI.
 
 Which tests simulate and which use real software:
 

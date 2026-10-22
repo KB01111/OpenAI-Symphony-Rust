@@ -3961,7 +3961,8 @@
           "security_warnings",
           "merge_readiness",
           "human_approved",
-          "updated_at"
+          "updated_at",
+          "reviewed_commit"
         ],
         "properties": {
           "id": {
@@ -4041,6 +4042,13 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "reviewed_commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit Symphony pushed when it opened the pull request: what the local validation and\nsecurity evidence describe. A pull request whose head moved beyond it is flagged on refresh."
           }
         }
       },

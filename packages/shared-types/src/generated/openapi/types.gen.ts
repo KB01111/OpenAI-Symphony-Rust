@@ -498,6 +498,11 @@ export type PullRequestReview = {
     merge_readiness: MergeReadinessReport;
     human_approved: boolean;
     updated_at: string;
+    /**
+     * The commit Symphony pushed when it opened the pull request: what the local validation and
+     * security evidence describe. A pull request whose head moved beyond it is flagged on refresh.
+     */
+    reviewed_commit: string | null;
 };
 
 /**
