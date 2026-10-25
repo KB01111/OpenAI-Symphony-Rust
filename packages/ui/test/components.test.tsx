@@ -6,6 +6,7 @@ import {
   AiEventStreamCard,
   DataTable,
   MergeReadinessCard,
+  SdkCodeBlock,
   SymphonyDesignProvider,
   TaskStatusBadge,
   formatAgentEvent,
@@ -131,6 +132,19 @@ describe("AiEventStreamCard", () => {
     expect(screen.getByText("item/agentMessage")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Raw payload"));
     expect(screen.getByText("Hide payload")).toBeInTheDocument();
+  });
+
+  it("names every copy button, including the ones in code blocks and Markdown code", () => {
+    const withCode: AgentEvent = { ...baseEvent, message: "Run this:\n\n```bash\ncargo test\n```" };
+    render(
+      <SymphonyDesignProvider themeMode="dark" locale="sv">
+        <AiEventStreamCard event={withCode} mode="technical" />
+        <SdkCodeBlock language="json">{"{}"}</SdkCodeBlock>
+      </SymphonyDesignProvider>
+    );
+    for (const button of screen.getAllByRole("button")) expect(button).toHaveAccessibleName();
+    expect(screen.getByRole("button", { name: "Kopiera händelsetext" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Kopiera kod" }).length).toBeGreaterThanOrEqual(1);
   });
 });
 

@@ -42,6 +42,11 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 ### Fixed
 
 - OpenCode token usage and cost were always 0: the per-step token reports are now counted.
+- Accessibility (axe-core WCAG 2.1 A/AA audit of every view in light and dark against the real
+  runtime): caption, status and link colours now reach 4.5:1 on every surface (including the Apps SDK
+  badges, alerts and code highlighting, through its own theme variables); the approvals bell and
+  every copy button (event cards, code blocks, Markdown code) have an accessible name; scrollable
+  diffs and logs can be scrolled from the keyboard.
 
 ### Security
 

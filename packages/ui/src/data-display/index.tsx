@@ -183,7 +183,8 @@ export function VirtualList<T>({
   };
 
   return (
-    <div ref={parentRef} onScroll={onScroll} className={cn("relative overflow-auto", className)} role="list" aria-label={ariaLabel}>
+    // Focusable, so the list can be scrolled from the keyboard even when its rows hold no control.
+    <div ref={parentRef} onScroll={onScroll} tabIndex={0} className={cn("relative overflow-auto", className)} role="list" aria-label={ariaLabel}>
       <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
         {virtualizer.getVirtualItems().map((row) => (
           <div

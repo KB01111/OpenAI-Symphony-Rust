@@ -48,7 +48,9 @@ export const uiMessages = defineMessages({
     loading: "Loading…",
     workflowReloaded: "Reloaded WORKFLOW.md from {path}",
     workflowReloadFailed: "WORKFLOW.md could not be reloaded; the last valid version stays active: {error}",
-    workflowSaved: "Saved WORKFLOW.md to {path}"
+    workflowSaved: "Saved WORKFLOW.md to {path}",
+    copyCode: "Copy code",
+    copyEvent: "Copy event text"
   },
   sv: {
     approvalTitle: "Godkännande krävs · {identifier}",
@@ -95,7 +97,9 @@ export const uiMessages = defineMessages({
     loading: "Laddar…",
     workflowReloaded: "WORKFLOW.md lästes in på nytt från {path}",
     workflowReloadFailed: "WORKFLOW.md kunde inte läsas in på nytt; senaste giltiga version används: {error}",
-    workflowSaved: "WORKFLOW.md sparades i {path}"
+    workflowSaved: "WORKFLOW.md sparades i {path}",
+    copyCode: "Kopiera kod",
+    copyEvent: "Kopiera händelsetext"
   }
 });
 

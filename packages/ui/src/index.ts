@@ -32,8 +32,8 @@ export * from "./primitives/table.js";
 // Apps SDK UI building blocks used directly by feature views
 export { Badge as SdkBadge } from "@openai/apps-sdk-ui/components/Badge";
 export { Button as SdkButton, CopyButton as SdkCopyButton } from "@openai/apps-sdk-ui/components/Button";
-export { CodeBlock as SdkCodeBlock } from "@openai/apps-sdk-ui/components/CodeBlock";
-export { Markdown as SdkMarkdown } from "@openai/apps-sdk-ui/components/Markdown";
+// The SDK's code blocks and Markdown, with an accessible name on their copy buttons.
+export { CodeBlock as SdkCodeBlock, Markdown as SdkMarkdown } from "./ai/codeBlocks.js";
 export { Alert as SdkAlert } from "@openai/apps-sdk-ui/components/Alert";
 export { LoadingIndicator as SdkLoadingIndicator } from "@openai/apps-sdk-ui/components/Indicator";
 export { useDefaultLayout, type PanelImperativeHandle, type PanelSize } from "react-resizable-panels";
