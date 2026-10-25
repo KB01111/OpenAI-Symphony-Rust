@@ -313,7 +313,8 @@ const MAX_SESSION_DEPTH: usize = 8;
 /// Whether `id` is a sub-agent session under one of `sessions`, asked from the server. Sessions
 /// that existed before this turn (a resumed session's earlier sub-agents) announce no
 /// `session.created`, and their permission requests must still reach the approval gate. The chain
-/// found is added to `sessions`; a session that leads elsewhere is remembered in `foreign`.
+/// found is added to `sessions`; a session that leads elsewhere is remembered in `foreign`. A lookup
+/// that fails is not remembered, so the session's next event asks again.
 async fn session_belongs(
     server: &Server,
     id: &str,
@@ -329,13 +330,13 @@ async fn session_belongs(
         if foreign.contains(&current) || chain.len() >= MAX_SESSION_DEPTH {
             break false;
         }
-        let parent = match server.get(&format!("/session/{current}")).await {
-            Ok(info) => info
-                .get("parentID")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            Err(_) => None,
+        let Ok(info) = server.get(&format!("/session/{current}")).await else {
+            return false;
         };
+        let parent = info
+            .get("parentID")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         chain.push(current);
         match parent {
             Some(parent) if sessions.contains(&parent) => break true,

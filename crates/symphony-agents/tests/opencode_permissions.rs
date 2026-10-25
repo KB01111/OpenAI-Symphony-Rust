@@ -84,13 +84,18 @@ struct Seen {
 async fn stand_in(listener: TcpListener) -> Arc<Mutex<Seen>> {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let (events_tx, events_rx) = mpsc::unbounded_channel::<Value>();
+    let grand_lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let events_rx = Arc::new(tokio::sync::Mutex::new(Some(events_rx)));
     let state = seen.clone();
     tokio::spawn(async move {
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let (state, events_tx, events_rx) =
-                (state.clone(), events_tx.clone(), events_rx.clone());
+            let (state, events_tx, events_rx, grand_lookups) = (
+                state.clone(),
+                events_tx.clone(),
+                events_rx.clone(),
+                grand_lookups.clone(),
+            );
             tokio::spawn(async move {
                 let mut raw = Vec::new();
                 let mut buf = [0u8; 8192];
@@ -166,7 +171,9 @@ async fn stand_in(listener: TcpListener) -> Arc<Mutex<Seen>> {
                         let _ = events_tx.send(json!({ "type": "session.created", "properties": { "info": { "id": "ses_child", "parentID": session } } }));
                         let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_child" } }));
                         // The permission comes from the sub-agent of a sub-agent that existed
-                        // before this turn, so no `session.created` announced either.
+                        // before this turn, so no `session.created` announced either. Its first
+                        // lookup fails (on its idle); the permission's lookup asks again.
+                        let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_grand" } }));
                         let _ = events_tx.send(json!({ "type": "permission.asked", "properties": {
                             "id": "per_1", "sessionID": "ses_grand", "permission": "bash", "patterns": ["cargo test"],
                             "metadata": { "command": "cargo test" }, "always": ["cargo *"] } }));
@@ -189,6 +196,14 @@ async fn stand_in(listener: TcpListener) -> Arc<Mutex<Seen>> {
                         json!(true)
                     }
                     ("POST", "/session/ses_1/abort") => json!(true),
+                    ("GET", "/session/ses_grand")
+                        if grand_lookups.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 =>
+                    {
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                            .await;
+                        return;
+                    }
                     ("GET", "/session/ses_grand") => {
                         json!({ "id": "ses_grand", "parentID": "ses_old" })
                     }
@@ -348,13 +363,14 @@ async fn a_supervised_turn_asks_the_gate_and_replies_on_the_server() {
     assert_eq!(asked[0].command_or_diff.as_deref(), Some("cargo test"));
     // Asked by the sub-agent's session, and recorded as such.
     assert_eq!(asked[0].session_id, "ses_grand");
-    // Unannounced sessions are looked up along their parents, each once; announced ones are not.
+    // Unannounced sessions are looked up along their parents, each once (a failed lookup again);
+    // announced ones are not.
     let lookups: Vec<&str> = reqs
         .iter()
         .filter_map(|(t, _)| t.strip_prefix("GET /session/"))
         .map(|t| t.split('?').next().unwrap())
         .collect();
-    assert_eq!(lookups, ["ses_other", "ses_grand", "ses_old"]);
+    assert_eq!(lookups, ["ses_other", "ses_grand", "ses_grand", "ses_old"]);
     let reply = reqs
         .iter()
         .find(|(t, _)| t.starts_with("POST /permission/per_1/reply"))
