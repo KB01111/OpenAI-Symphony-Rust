@@ -68,6 +68,31 @@ afterEach(() => {
 });
 
 describe("ExecutionPage", () => {
+  it("loads older events on request, continuing from the oldest event shown", async () => {
+    const at = (i: number) => new Date(Date.UTC(2026, 9, 20, 10, 0, 0) + i * 1000).toISOString();
+    const newest = Array.from({ length: 500 }, (_, k) => ev(`n${499 - k}`, 0, { timestamp: at(1000 + 499 - k) }));
+    const olderPage = [ev("o1", 0, { timestamp: at(1) }), ev("o0", 0, { timestamp: at(0) })];
+    const rt = runtime(task(), {
+      "GET /tasks/:id/events": ({ query }) => (query.get("before") ? olderPage : newest)
+    });
+    renderPage(rt);
+    const load = await screen.findByRole("button", { name: "Load older events" });
+    expect(screen.getByText("500 events")).toBeInTheDocument();
+    fireEvent.click(load);
+    await waitFor(() => expect(screen.getByText("502 events")).toBeInTheDocument());
+    const paged = rt.calls.filter((c) => c.method === "GET" && c.path === "/tasks/t1/events");
+    expect(paged).toHaveLength(2);
+    // A short page means the beginning was reached: the control goes away.
+    expect(screen.queryByRole("button", { name: "Load older events" })).not.toBeInTheDocument();
+  });
+
+  it("does not offer older events when the first page was not full", async () => {
+    const rt = runtime(task(), { "GET /tasks/:id/events": () => [ev("e1", 1)] });
+    renderPage(rt);
+    await screen.findByText("1 events");
+    expect(screen.queryByRole("button", { name: "Load older events" })).not.toBeInTheDocument();
+  });
+
   it("focuses the inspector and renders history + live events in order without duplicates", async () => {
     const rt = runtime(task({ status: "running", current_phase: "streaming_turn" }), {
       "GET /tasks/:id/events": () => [ev("e3", 3), ev("e1", 1)]

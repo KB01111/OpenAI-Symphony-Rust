@@ -581,6 +581,24 @@ impl GitHubTracker {
                     }
                 }
             }
+            // CI systems that report commit statuses instead of check runs (Jenkins, Buildkite,
+            // older integrations): a red status must not hide behind green or absent check runs.
+            let status_url = format!(
+                "{}/repos/{}/commits/{head_sha}/status?per_page=100",
+                self.api_url, self.repo
+            );
+            let statuses = match self
+                .apply_headers(self.client.get(&status_url))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
+                    Ok(combined) => summarize_commit_statuses(&combined),
+                    Err(_) => "unknown",
+                },
+                _ => "unknown",
+            };
+            ci_status = combine_ci_signals(&ci_status, statuses).to_string();
         }
 
         // Fetch review comments and evaluate agent comments against actual changed files
@@ -669,6 +687,45 @@ impl GitHubTracker {
 
 /// CI status of a commit from its check runs. No check run means no CI ran: that is `none`, never
 /// `passed`; a cancelled, timed-out or action-required run is not a pass either.
+/// The combined commit status (`GET /commits/{sha}/status`): GitHub's own roll-up of the latest
+/// status per context.
+fn summarize_commit_statuses(combined: &Value) -> &'static str {
+    let count = combined
+        .get("statuses")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let total = combined
+        .get("total_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(count as u64);
+    if count == 0 && total == 0 {
+        return "none";
+    }
+    match combined.get("state").and_then(Value::as_str) {
+        Some("failure" | "error") => "failed",
+        Some("pending") => "pending",
+        Some("success") => "passed",
+        _ => "unknown",
+    }
+}
+
+/// One CI verdict from check runs and commit statuses: any failure fails; what could not be read
+/// is unknown (never a pass); otherwise pending wins over passed, and two absences are "none".
+fn combine_ci_signals(check_runs: &str, statuses: &str) -> &'static str {
+    let either = |value: &str| check_runs == value || statuses == value;
+    if either("failed") {
+        "failed"
+    } else if either("unknown") {
+        "unknown"
+    } else if either("pending") {
+        "pending"
+    } else if either("passed") {
+        "passed"
+    } else {
+        "none"
+    }
+}
+
 fn summarize_check_runs(runs: &[Value]) -> &'static str {
     if runs.is_empty() {
         return "none";
@@ -1446,6 +1503,33 @@ mod tests {
             summarize_check_runs(&[run("completed", Some("something_new"))]),
             "unknown"
         );
+    }
+
+    #[test]
+    fn commit_statuses_count_and_combine_with_check_runs() {
+        assert_eq!(summarize_commit_statuses(&json!({})), "none");
+        assert_eq!(
+            summarize_commit_statuses(
+                &json!({ "state": "pending", "statuses": [], "total_count": 0 })
+            ),
+            "none",
+            "GitHub reports `pending` for a commit without any status"
+        );
+        let combined = |state: &str| json!({ "state": state, "statuses": [{ "context": "ci/jenkins" }], "total_count": 1 });
+        assert_eq!(summarize_commit_statuses(&combined("success")), "passed");
+        assert_eq!(summarize_commit_statuses(&combined("pending")), "pending");
+        assert_eq!(summarize_commit_statuses(&combined("failure")), "failed");
+        assert_eq!(summarize_commit_statuses(&combined("error")), "failed");
+        assert_eq!(summarize_commit_statuses(&combined("weird")), "unknown");
+
+        assert_eq!(combine_ci_signals("passed", "failed"), "failed");
+        assert_eq!(combine_ci_signals("failed", "unknown"), "failed");
+        assert_eq!(combine_ci_signals("passed", "unknown"), "unknown");
+        assert_eq!(combine_ci_signals("none", "pending"), "pending");
+        assert_eq!(combine_ci_signals("passed", "pending"), "pending");
+        assert_eq!(combine_ci_signals("none", "passed"), "passed");
+        assert_eq!(combine_ci_signals("passed", "none"), "passed");
+        assert_eq!(combine_ci_signals("none", "none"), "none");
     }
 
     #[test]

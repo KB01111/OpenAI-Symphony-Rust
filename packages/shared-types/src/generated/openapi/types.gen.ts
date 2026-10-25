@@ -1466,7 +1466,15 @@ export type ListTaskEventsData = {
         id: string;
     };
     query?: {
+        /**
+         * Maximum number of events (1–500, default 500).
+         */
         limit?: number;
+        /**
+         * Return only events older than this event id of the same task (the oldest event of the
+         * previous page); omit for the newest events.
+         */
+        before?: string;
     };
     url: '/api/v1/tasks/{id}/events';
 };
@@ -1482,7 +1490,7 @@ export type ListTaskEventsError = ListTaskEventsErrors[keyof ListTaskEventsError
 
 export type ListTaskEventsResponses = {
     /**
-     * Newest first
+     * Newest first; 404 when `before` is not an event of this task
      */
     200: Array<AgentEvent>;
 };

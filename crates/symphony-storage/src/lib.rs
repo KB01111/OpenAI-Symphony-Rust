@@ -670,14 +670,14 @@ impl Storage {
         let capped = limit.clamp(1, 500) as i64;
         let rows = if let Some(tid) = task_id {
             sqlx::query(
-                "SELECT * FROM agent_events WHERE task_id = ?1 ORDER BY timestamp DESC LIMIT ?2",
+                "SELECT * FROM agent_events WHERE task_id = ?1 ORDER BY timestamp DESC, rowid DESC LIMIT ?2",
             )
             .bind(tid)
             .bind(capped)
             .fetch_all(&self.pool)
             .await
         } else {
-            sqlx::query("SELECT * FROM agent_events ORDER BY timestamp DESC LIMIT ?1")
+            sqlx::query("SELECT * FROM agent_events ORDER BY timestamp DESC, rowid DESC LIMIT ?1")
                 .bind(capped)
                 .fetch_all(&self.pool)
                 .await
@@ -685,6 +685,47 @@ impl Storage {
         .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
 
         rows.into_iter().map(row_to_event).collect()
+    }
+
+    /// A task's events older than `before` (an event id of the same task), newest first: the next
+    /// page of a timeline whose newest events were already read. The order is the one
+    /// `list_events` uses, so consecutive pages neither skip nor repeat an event, also when several
+    /// events share a timestamp. `None` when `before` is not an event of this task.
+    pub async fn list_task_events_before(
+        &self,
+        task_id: &str,
+        before: &str,
+        limit: u32,
+    ) -> SymphonyResult<Option<Vec<AgentEvent>>> {
+        let anchor = sqlx::query(
+            "SELECT timestamp, rowid AS rid FROM agent_events WHERE id = ?1 AND task_id = ?2",
+        )
+        .bind(before)
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let Some(anchor) = anchor else {
+            return Ok(None);
+        };
+        let timestamp: String = anchor.get("timestamp");
+        let rowid: i64 = anchor.get("rid");
+        let rows = sqlx::query(
+            "SELECT * FROM agent_events WHERE task_id = ?1 \
+             AND (timestamp < ?2 OR (timestamp = ?2 AND rowid < ?3)) \
+             ORDER BY timestamp DESC, rowid DESC LIMIT ?4",
+        )
+        .bind(task_id)
+        .bind(timestamp)
+        .bind(rowid)
+        .bind(limit.clamp(1, 500) as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        rows.into_iter()
+            .map(row_to_event)
+            .collect::<SymphonyResult<Vec<_>>>()
+            .map(Some)
     }
 
     // =========================================================================

@@ -971,17 +971,27 @@
           {
             "name": "limit",
             "in": "query",
+            "description": "Maximum number of events (1–500, default 500).",
             "required": false,
             "schema": {
               "type": "integer",
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return only events older than this event id of the same task (the oldest event of the\nprevious page); omit for the newest events.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Newest first",
+            "description": "Newest first; 404 when `before` is not an event of this task",
             "content": {
               "application/json": {
                 "schema": {
@@ -2363,7 +2373,7 @@
           },
           "default_model": {
             "type": "string",
-            "default": "gpt-5-codex"
+            "default": ""
           },
           "polling_interval_ms": {
             "type": "integer",

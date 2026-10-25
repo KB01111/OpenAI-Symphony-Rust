@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Button, ToggleButton } from "@fluentui/react-components";
-import { ArrowDownToLine } from "lucide-react";
+import { ArrowDownToLine, History } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { formatMessage, isActivePhase, type AgentEvent, type ApprovalDecision, type ApprovalRequest, type Task } from "@symphony/shared-types";
 import {
@@ -16,7 +16,7 @@ import {
   type AgentEventKind
 } from "@symphony/ui";
 import { useMessages, useT } from "../../lib/i18n.js";
-import { useApprovals, useDecideApproval, useTaskEventHistory } from "../../lib/queries.js";
+import { useApprovals, useDecideApproval, useOlderTaskEvents, useTaskEventHistory } from "../../lib/queries.js";
 import { useEventStore } from "../../runtime/eventStore.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { executionMessages } from "./messages.js";
@@ -86,6 +86,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
   const logMode = useUiStore((s) => s.logMode);
   const setLogMode = useUiStore((s) => s.setLogMode);
   const history = useTaskEventHistory(task.id);
+  const older = useOlderTaskEvents(task.id, history.data);
   // Shallow-compared selection: batches for other tasks do not re-render this timeline.
   const live = useEventStore(useShallow((s) => s.events.filter((e) => e.task_id === task.id)));
   const [hidden, setHidden] = useState<ReadonlySet<AgentEventKind>>(() => new Set());
@@ -93,7 +94,11 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
   const [pausedAt, setPausedAt] = useState<number | null>(null);
   const [epoch, setEpoch] = useState(0);
 
-  const all = useMemo(() => buildTaskTimeline(task.id, history.data, live), [task.id, history.data, live]);
+  const persisted = useMemo(
+    () => (older.older.length > 0 ? [...(history.data ?? []), ...older.older] : history.data),
+    [history.data, older.older]
+  );
+  const all = useMemo(() => buildTaskTimeline(task.id, persisted, live), [task.id, persisted, live]);
   const counts = useMemo(() => countByKind(all), [all]);
   const visible = useMemo(() => filterByKinds(all, hidden), [all, hidden]);
   // The pause baseline is a position in the unfiltered timeline, so changing kind filters while
@@ -154,6 +159,25 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
         <div role="status" className="flex shrink-0 items-center gap-2 border-b border-border bg-info-subtle px-3 py-1 text-xs text-info">
           <StreamingText>{formatMessage(m.timeline.streaming, { phase: t.phase[task.current_phase] })}</StreamingText>
           {operation ? <span className="min-w-0 flex-1 truncate text-muted-foreground">{operation}</span> : null}
+        </div>
+      ) : null}
+
+      {older.hasMore && history.data ? (
+        <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1 text-xs text-muted-foreground">
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<History className="size-4" />}
+            disabled={older.loading}
+            onClick={() => void older.loadOlder()}
+          >
+            {older.loading ? m.timeline.loadingOlder : m.timeline.loadOlder}
+          </Button>
+          {older.error ? (
+            <span role="alert" className="text-destructive">
+              {m.timeline.olderFailed}
+            </span>
+          ) : null}
         </div>
       ) : null}
 

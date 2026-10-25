@@ -6,6 +6,30 @@ All notable changes to Symphony Desktop are documented here. The format follows
 the release tag as the release notes (`scripts/release-version.mjs --notes`), so every release needs
 one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`).
 
+## [Unreleased]
+
+### Added
+
+- **Model discovery**: provider detection asks the installed CLI which models it offers (Codex
+  `model/list`, `opencode models`) instead of relying on a built-in list, cached for 30 minutes per
+  binary and version (a forced refresh re-reads it). A configured default model the CLI no longer
+  accepts is not passed to new runs; the provider status says which model is used instead. Claude
+  Code offers its aliases (`opus`, `sonnet`, `haiku`, `fable`) and the current model ids.
+- **Older activity**: the run timeline loads older events on request (`GET /api/v1/tasks/{id}/events?before=<event id>`,
+  a cursor that neither skips nor repeats events with equal timestamps).
+- Pull request CI also reads GitHub **commit statuses** (Jenkins, Buildkite, older integrations): a red
+  status fails the review even when check runs are green.
+- The inspector shows what is running and what needs attention (approvals, failed runs, reviews) while
+  nothing is selected.
+
+### Changed
+
+- The default model is empty by default, meaning each provider's own default; making a provider the
+  global default no longer copies another provider's model. Cost estimates use current per-family prices
+  (Claude Opus/Sonnet/Haiku/Fable 5.x and older generations).
+- Narrow panels stack labels above values (no more per-character wrapping of paths); the activity
+  drawer, readiness tiles, overview metrics and tab lists no longer clip their content.
+
 ## [2.0.0] - 2026-10-22
 
 First release of Symphony Desktop 2.0: a Windows 11 app that runs coding agents against your issues in isolated Git worktrees. Download `Symphony-Desktop_2.0.0_x64-setup.exe` below; later versions can be installed from inside the app (Settings → Application).

@@ -2,9 +2,11 @@
  * TanStack Query bindings for the runtime API. Components never fetch directly; they use these
  * hooks so caching, invalidation (driven by the event stream) and fallback polling are uniform.
  */
+import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from "@tanstack/react-query";
 import { errorMessage, isTauri, nativeHost, type SymphonyApiError } from "@symphony/api-client";
 import type {
+  AgentEvent,
   AppSettings,
   ApprovalDecision,
   ApprovalRequest,
@@ -74,14 +76,50 @@ export function useTask(id: string | null | undefined) {
   });
 }
 
+export const TASK_EVENT_PAGE = 500;
+
 export function useTaskEventHistory(id: string | null | undefined) {
   const client = useClient();
   return useQuery({
     queryKey: qk.taskEvents(id ?? ""),
-    queryFn: ({ signal }) => client.listTaskEvents(id!, 500, signal),
+    queryFn: ({ signal }) => client.listTaskEvents(id!, TASK_EVENT_PAGE, signal),
     enabled: Boolean(id),
     staleTime: 10_000
   });
+}
+
+/**
+ * Pages of a task's events older than the newest page (`useTaskEventHistory`), loaded on request.
+ * `hasMore` is true while the last page read was full, i.e. older events may exist.
+ */
+export function useOlderTaskEvents(id: string, newest: ReadonlyArray<AgentEvent> | undefined) {
+  const client = useClient();
+  const [older, setOlder] = useState<AgentEvent[]>([]);
+  const [lastPageFull, setLastPageFull] = useState<boolean | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  useEffect(() => {
+    setOlder([]);
+    setLastPageFull(null);
+    setError(null);
+  }, [id]);
+  const hasMore = lastPageFull ?? (newest?.length ?? 0) >= TASK_EVENT_PAGE;
+  const cursor = older.length > 0 ? older[older.length - 1]!.id : newest?.[newest.length - 1]?.id;
+  const loadOlder = useCallback(async () => {
+    if (!cursor || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const page = await client.listTaskEvents(id, TASK_EVENT_PAGE, undefined, cursor);
+      setOlder((prev) => [...prev, ...page]);
+      setLastPageFull(page.length >= TASK_EVENT_PAGE);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setLoading(false);
+    }
+  }, [client, cursor, id, loading]);
+  return { older, hasMore, loading, error, loadOlder };
 }
 
 export function useTaskAttempts(id: string | null | undefined) {

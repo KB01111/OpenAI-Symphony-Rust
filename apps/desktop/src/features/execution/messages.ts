@@ -114,6 +114,9 @@ export const executionMessages = defineMessages({
       notInstalled: "Not installed"
     },
     timeline: {
+      loadOlder: "Load older events",
+      loadingOlder: "Loading older events…",
+      olderFailed: "Older events could not be loaded",
       filters: "Event kinds",
       approvalsFailed: "Pending approvals could not be loaded",
       kinds: enKinds,
@@ -134,6 +137,7 @@ export const executionMessages = defineMessages({
       validation: "Validation",
       usage: "Usage",
       pullRequest: "Pull request",
+      pullRequestShort: "PR",
       files: "Changed files",
       noChanges: "No changes in the worktree yet.",
       noWorktree: "The worktree does not exist on disk yet.",
@@ -254,6 +258,9 @@ export const executionMessages = defineMessages({
       notInstalled: "Inte installerad"
     },
     timeline: {
+      loadOlder: "Läs in äldre händelser",
+      loadingOlder: "Läser in äldre händelser…",
+      olderFailed: "Äldre händelser kunde inte läsas in",
       filters: "Händelsetyper",
       approvalsFailed: "Väntande godkännanden kunde inte läsas in",
       kinds: svKinds,
@@ -274,6 +281,7 @@ export const executionMessages = defineMessages({
       validation: "Validering",
       usage: "Användning",
       pullRequest: "Pull request",
+      pullRequestShort: "PR",
       files: "Ändrade filer",
       noChanges: "Inga ändringar i arbetsträdet ännu.",
       noWorktree: "Arbetsträdet finns inte på disken ännu.",

@@ -255,6 +255,16 @@ pub struct LimitQuery {
 
 #[derive(Debug, Deserialize, Default, IntoParams)]
 #[into_params(parameter_in = Query)]
+pub struct TaskEventsQuery {
+    /// Maximum number of events (1–500, default 500).
+    pub limit: Option<u32>,
+    /// Return only events older than this event id of the same task (the oldest event of the
+    /// previous page); omit for the newest events.
+    pub before: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ApprovalsQuery {
     pub only_pending: Option<bool>,
 }
@@ -1304,16 +1314,24 @@ async fn retry_task_handler(State(state): State<ServerState>, Path(id): Path<Str
     path = "/tasks/{id}/events",
     operation_id = "listTaskEvents",
     tag = "tasks",
-    params(("id" = String, Path, description = "Task id"), LimitQuery),
-    responses((status = 200, description = "Newest first", body = Vec<AgentEvent>))
+    params(("id" = String, Path, description = "Task id"), TaskEventsQuery),
+    responses((status = 200, description = "Newest first; 404 when `before` is not an event of this task", body = Vec<AgentEvent>))
 )]
 async fn list_task_events_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-    Query(q): Query<LimitQuery>,
+    Query(q): Query<TaskEventsQuery>,
 ) -> Response {
     let limit = q.limit.unwrap_or(500).clamp(1, 500);
-    respond(state.orchestrator.list_events(Some(&id), limit).await)
+    match q.before.as_deref().filter(|b| !b.is_empty()) {
+        Some(before) => respond(
+            state
+                .orchestrator
+                .list_task_events_before(&id, before, limit)
+                .await,
+        ),
+        None => respond(state.orchestrator.list_events(Some(&id), limit).await),
+    }
 }
 
 #[utoipa::path(

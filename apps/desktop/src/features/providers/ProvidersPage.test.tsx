@@ -94,6 +94,21 @@ describe("ProvidersPage", () => {
     expect((put.body as AppSettings).polling_interval_ms).toBe(30000);
   });
 
+  it("makes a provider the global default without borrowing another provider's model", async () => {
+    const rt = runtime({ default_provider: "codex", default_model: "gpt-5-codex" });
+    rt.on("GET /providers", () => providers().map((p) => (p.provider === "claude_code" ? { ...p, installed: true } : p)));
+    renderWithProviders(<ProvidersPage />, { runtime: rt, route: "/providers", path: "/providers" });
+    const claude = await screen.findByRole("region", { name: "Claude Code" });
+    const button = within(claude).getByRole("button", { name: "Use as global default" });
+    await waitFor(() => expect(button).not.toBeDisabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(rt.calls.some((c) => c.method === "PUT" && c.path === "/settings")).toBe(true));
+    const put = rt.calls.find((c) => c.method === "PUT" && c.path === "/settings")!;
+    expect((put.body as AppSettings).default_provider).toBe("claude_code");
+    // Claude Code's own default applies, not Codex's model.
+    expect((put.body as AppSettings).default_model).toBe("");
+  });
+
   it("stores an API key through the vault and clears the input", async () => {
     const rt = runtime();
     renderWithProviders(<ProvidersPage />, { runtime: rt, route: "/providers", path: "/providers" });

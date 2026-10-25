@@ -740,16 +740,20 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
         let settings = self.storage.get_settings().await.unwrap_or_default();
         let vault_keys = self.secret_store.list_configured_keys();
-        let statuses = detect_provider_statuses(&vault_keys, |kind| {
-            settings
-                .provider_default_models
-                .get(&kind)
-                .cloned()
-                .or_else(|| {
-                    (kind == settings.default_provider && !settings.default_model.is_empty())
-                        .then(|| settings.default_model.clone())
-                })
-        })
+        let statuses = detect_provider_statuses(
+            &vault_keys,
+            |kind| {
+                settings
+                    .provider_default_models
+                    .get(&kind)
+                    .cloned()
+                    .or_else(|| {
+                        (kind == settings.default_provider && !settings.default_model.is_empty())
+                            .then(|| settings.default_model.clone())
+                    })
+            },
+            force_refresh,
+        )
         .await;
         self.memory.write().await.provider_cache = Some((Utc::now(), statuses.clone()));
         statuses
@@ -1428,6 +1432,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
         limit: u32,
     ) -> SymphonyResult<Vec<AgentEvent>> {
         self.storage.list_events(task_id, limit).await
+    }
+
+    /// The page of a task's events older than the event `before` (see `Storage::list_task_events_before`).
+    pub async fn list_task_events_before(
+        &self,
+        task_id: &str,
+        before: &str,
+        limit: u32,
+    ) -> SymphonyResult<Vec<AgentEvent>> {
+        self.storage
+            .list_task_events_before(task_id, before, limit)
+            .await?
+            .ok_or_else(|| SymphonyError::NotFound(format!("event {before} of task {task_id}")))
     }
 
     pub async fn list_run_attempts(&self, task_id: &str) -> SymphonyResult<Vec<RunAttempt>> {
@@ -4267,6 +4284,11 @@ rl.on('line', (line) => {
             "open".to_string(),
         )));
         let served = state.clone();
+        // Combined commit status (CI that reports statuses rather than check runs).
+        let statuses = Arc::new(std::sync::Mutex::new(
+            json!({ "state": "pending", "statuses": [], "total_count": 0 }),
+        ));
+        let served_statuses = statuses.clone();
         let (api, _requests) = github_mock_with(Arc::new(move |method: &str, target: &str| {
             let (mergeable, runs, head_sha, pr_state) = served.lock().unwrap().clone();
             let path = target.split('?').next().unwrap_or(target);
@@ -4285,6 +4307,7 @@ rl.on('line', (line) => {
                 (_, p) if p.contains("/check-runs") => {
                     json!({ "check_runs": runs })
                 }
+                (_, p) if p.ends_with("/status") => served_statuses.lock().unwrap().clone(),
                 (_, p) if p.ends_with("/files") || p.ends_with("/comments") => json!([]),
                 _ => json!({}),
             };
@@ -4336,6 +4359,16 @@ rl.on('line', (line) => {
             .evidence
             .join("\n")
             .contains("Remote CI checks passed"));
+
+        // Green check runs, but a CI that reports a commit status is red: the pull request is red.
+        *statuses.lock().unwrap() = json!({
+            "state": "failure",
+            "statuses": [{ "context": "ci/jenkins", "state": "failure" }],
+            "total_count": 1
+        });
+        let legacy_red = orch.refresh_pull_request(&review.id).await.unwrap();
+        assert_eq!(legacy_red.ci_status, "failed");
+        *statuses.lock().unwrap() = json!({ "state": "pending", "statuses": [], "total_count": 0 });
 
         {
             let mut s = state.lock().unwrap();

@@ -232,8 +232,9 @@ export class SymphonyClient {
   retryTask(id: string) {
     return this.call((o) => api.retryTask({ ...o, path: { id } }));
   }
-  listTaskEvents(id: string, limit = 500, signal?: AbortSignal) {
-    return this.call((o) => api.listTaskEvents({ ...o, path: { id }, query: { limit } }), signal);
+  /** Newest first. With `before` (an event id of this task), the page of events older than it. */
+  listTaskEvents(id: string, limit = 500, signal?: AbortSignal, before?: string) {
+    return this.call((o) => api.listTaskEvents({ ...o, path: { id }, query: before ? { limit, before } : { limit } }), signal);
   }
   listTaskAttempts(id: string, signal?: AbortSignal) {
     return this.call((o) => api.listTaskAttempts({ ...o, path: { id } }), signal);
