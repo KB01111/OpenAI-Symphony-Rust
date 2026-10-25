@@ -160,6 +160,7 @@ Idle CPU/RAM/startup on the reference laptop and GPU-wake behaviour are unmeasur
 | Release artifact integrity (checksums, SBOM, commit trace) | Implemented, **unexercised** until a release run |
 | Update signatures | **Blocked** (no updater, no key) |
 | Windows code signing | **Blocked** (no certificate) |
+| UI review | Approved by the owner on 2026-10-25 from the real-runtime screenshots (`docs/screenshots/`), after the axe-core WCAG 2.1 AA and keyboard audit |
 | Manual Windows checks | **Open** |
 | Remaining limitations documented | Yes: audit §3–§4 |
 

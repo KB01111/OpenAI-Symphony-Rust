@@ -173,6 +173,10 @@ async fn stand_in(listener: TcpListener) -> Arc<Mutex<Seen>> {
                         // A sub-agent (`task` tool) of this session: its own idle does not end
                         // the turn.
                         let _ = events_tx.send(json!({ "type": "session.created", "properties": { "info": { "id": "ses_child", "parentID": session } } }));
+                        // The sub-agent's own step: its tokens count towards the turn.
+                        let _ = events_tx.send(json!({ "type": "message.part.updated", "properties": { "sessionID": "ses_child", "part": {
+                            "id": "prt_child_s1", "sessionID": "ses_child", "type": "step-finish",
+                            "tokens": { "input": 2, "output": 3, "reasoning": 0, "cache": { "read": 0, "write": 0 } } } } }));
                         let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_child" } }));
                         // The permission comes from the sub-agent of a sub-agent that existed
                         // before this turn, so no `session.created` announced either. The first
@@ -402,10 +406,11 @@ async fn a_supervised_turn_asks_the_gate_and_replies_on_the_server() {
         r.outcome.assistant_messages,
         vec!["Running the tests.".to_string()]
     );
-    // input 10 + cache read 4, output 5 + reasoning 1; the repeated step counts once.
+    // input 10 + cache read 4, output 5 + reasoning 1; the repeated step counts once; the
+    // sub-agent's step adds input 2, output 3.
     assert_eq!(
         (r.outcome.usage.input_tokens, r.outcome.usage.output_tokens),
-        (14, 6)
+        (16, 9)
     );
 }
 
