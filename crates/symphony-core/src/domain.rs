@@ -848,6 +848,12 @@ impl PullRequestReview {
         self.pr_number > 0 && (self.url.starts_with("https://") || self.url.starts_with("http://"))
     }
 
+    /// A pull request exists, but what this review describes was never pushed to it: the task ran
+    /// again (continued) after the pull request was opened, and only publishing sends the new work.
+    pub fn has_unpushed_changes(&self) -> bool {
+        self.has_pull_request() && self.reviewed_commit.is_none()
+    }
+
     /// Bring a review written before merge facts were measured in line with what is known: it
     /// never ran CI and never checked a merge, whatever it recorded. Reviews that already carry
     /// measured values (`ci_status` other than the old hardcoded `passed`) are left alone.

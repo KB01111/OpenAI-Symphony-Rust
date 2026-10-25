@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AgentEvent, Task, TaskDiff } from "@symphony/shared-types";
+import { Link } from "react-router-dom";
 import ExecutionPage from "./ExecutionPage.js";
 import { createMockRuntime, renderWithProviders, type MockHandler } from "../../test/renderWithProviders.js";
 import { approval, project, providerStatus, snapshot, task } from "../../test/fixtures.js";
@@ -83,6 +84,45 @@ describe("ExecutionPage", () => {
     await waitFor(() => expect(rt.calls.some((c) => c.method === "POST" && c.path === "/tasks/t1/continue")).toBe(true));
     expect(rt.calls.find((c) => c.path === "/tasks/t1/continue")!.body).toEqual({ instructions: "Also handle empty input." });
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("closes the continue dialog when another run is opened, so its text cannot reach that run", async () => {
+    const first = task({ id: "t1", status: "human_review" });
+    const second = task({ id: "t2", status: "failed", issue: { ...first.issue, identifier: "SYM-2", title: "Second run title" } });
+    const rt = runtime(first, { "GET /tasks/:id": ({ path }) => (path.endsWith("/t2") ? second : first) });
+    renderWithProviders(
+      <>
+        <ExecutionPage />
+        <Link to="/runs/t1">first run</Link>
+        <Link to="/runs/t2">next run</Link>
+      </>,
+      { runtime: rt, route: "/runs/t1", path: "/runs/:taskId" }
+    );
+    // Visit both once, so switching between them is instant (cached) and keeps the page mounted.
+    await screen.findByRole("button", { name: "Continue…" });
+    fireEvent.click(screen.getByText("next run"));
+    expect((await screen.findAllByText(/Second run title/)).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText("first run"));
+    await waitFor(() => expect(screen.queryAllByText(/Second run title/)).toHaveLength(0));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue…" }));
+    fireEvent.change(within(await screen.findByRole("dialog")).getByRole("textbox"), { target: { value: "for SYM-1 only" } });
+    fireEvent.click(screen.getByText("next run"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // Reopened for the second run, it is that run's dialog and starts empty.
+    fireEvent.click(await screen.findByRole("button", { name: "Continue…" }));
+    expect(await screen.findByText("Continue SYM-2")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/For example/)).toHaveValue("");
+  });
+
+  it("counts instructions in characters as the runtime does, so emoji are not counted twice", async () => {
+    renderPage(runtime(task({ status: "human_review" })));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue…" }));
+    const dialog = await screen.findByRole("dialog");
+    // 10 001 emoji are 20 002 UTF-16 units but 10 001 characters: within the 20 000 limit.
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "😀".repeat(10_001) } });
+    expect(within(dialog).getByRole("button", { name: "Continue run" })).toBeEnabled();
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "x".repeat(20_001) } });
+    expect(within(dialog).getByRole("button", { name: "Continue run" })).toBeDisabled();
   });
 
   it("offers no continuation while a task runs", async () => {

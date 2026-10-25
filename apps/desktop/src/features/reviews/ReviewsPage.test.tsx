@@ -16,7 +16,10 @@ function runtimeWith(reviews: PullRequestReview[]) {
     },
     "POST /prs/:id/create-pull-request": ({ path }) => {
       const id = decodeURIComponent(path.split("/")[2]!);
-      const opened = { ...store.get(id)!, pr_number: 42, url: "https://github.com/acme/widgets/pull/42", ci_status: "unknown" };
+      const current = store.get(id)!;
+      const opened = current.pr_number > 0
+        ? { ...current, reviewed_commit: "def5678" }
+        : { ...current, pr_number: 42, url: "https://github.com/acme/widgets/pull/42", ci_status: "unknown", reviewed_commit: "abc1234" };
       store.set(id, opened);
       return opened;
     },
@@ -98,7 +101,7 @@ describe("ReviewsPage", () => {
   });
 
   it("refreshes a published pull request from GitHub on request", async () => {
-    const published = pullRequest({ id: "pr-live", pr_number: 9, ci_status: "unknown", url: "https://github.com/acme/widgets/pull/9", title: "Published" });
+    const published = pullRequest({ id: "pr-live", pr_number: 9, ci_status: "unknown", url: "https://github.com/acme/widgets/pull/9", title: "Published", reviewed_commit: "abc1234" });
     const runtime = runtimeWith([published]);
     renderWithProviders(<ReviewsPage />, { runtime, route: "/reviews/pr-live", path: "/reviews/:reviewId" });
     fireEvent.click(await screen.findByRole("button", { name: "Refresh status" }));
@@ -107,6 +110,24 @@ describe("ReviewsPage", () => {
     );
     // A local review has nothing to refresh.
     expect(screen.queryByRole("button", { name: "Create pull request" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Push changes/ })).not.toBeInTheDocument();
+  });
+
+  it("offers to push a continued run's changes to the pull request that is already open", async () => {
+    // The task ran again after #9 was opened: the review links #9, but its work was never pushed.
+    const continued = pullRequest({ id: "pr-cont", pr_number: 9, url: "https://github.com/acme/widgets/pull/9", title: "Continued", branch_name: "symphony/sym-9", reviewed_commit: null });
+    const runtime = runtimeWith([continued]);
+    renderWithProviders(<ReviewsPage />, { runtime, route: "/reviews/pr-cont", path: "/reviews/:reviewId" });
+    fireEvent.click(await screen.findByRole("button", { name: "Push changes to #9" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/updates pull request #9/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Push changes" }));
+    await waitFor(() =>
+      expect(runtime.calls.filter((c) => c.method === "POST")).toEqual([
+        { method: "POST", path: "/prs/pr-cont/create-pull-request", body: undefined }
+      ])
+    );
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Push changes/ })).not.toBeInTheDocument());
   });
 
   it("blocks creating a pull request while the branch conflicts or has security warnings", async () => {

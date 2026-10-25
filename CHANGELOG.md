@@ -18,7 +18,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   Code offers its aliases (`opus`, `sonnet`, `haiku`, `fable`) and the current model ids.
 - **Continue a run**: *Continue…* on a task in review, failed or completed sends follow-up instructions;
   the agent resumes its conversation in the same worktree and the result is reviewed again
-  (`POST /api/v1/tasks/{id}/continue`, local only).
+  (`POST /api/v1/tasks/{id}/continue`, local only). The instructions are stored (schema migration 3)
+  until the agent has started with them, so a restart does not lose them; a plain *Retry* drops them.
+  If the task already has a pull request, the new review links it, says the work is not on it yet
+  and offers *Push changes to #N*, which pushes the branch and so updates that pull request.
 - **Older activity**: the run timeline loads older events on request (`GET /api/v1/tasks/{id}/events?before=<event id>`,
   a cursor that neither skips nor repeats events with equal timestamps).
 - **Claude Code approvals**: Claude Code runs as a host-controlled session, so tool uses its permission

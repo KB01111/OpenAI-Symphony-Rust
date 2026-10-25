@@ -32,7 +32,8 @@ export const ContinueDialog: React.FC<{ task: Task; open: boolean; onOpenChange:
   const continueTask = useContinueTask();
   const [instructions, setInstructions] = useState("");
   const trimmed = instructions.trim();
-  const tooLong = instructions.length > MAX_INSTRUCTIONS;
+  // Counted in code points, as the runtime counts (`chars()`), not UTF-16 units: an emoji is one.
+  const tooLong = [...instructions].length > MAX_INSTRUCTIONS;
   const close = () => {
     if (!continueTask.isPending) onOpenChange(false);
   };

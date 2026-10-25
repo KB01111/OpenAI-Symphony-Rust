@@ -17,7 +17,7 @@ import { paths } from "../../app/routes.js";
 import { useMessages } from "../../lib/i18n.js";
 import { useApprovePullRequest, useCreatePullRequest, usePullRequest, useRefreshPullRequest } from "../../lib/queries.js";
 import { reviewMessages } from "./messages.js";
-import { hasPullRequest, isWebUrl } from "./reviewHelpers.js";
+import { hasPullRequest, hasUnpushedChanges, isWebUrl } from "./reviewHelpers.js";
 import { CommentsTab, DiffTab, FilesChangedTab, SecurityTab, ValidationTab, type DiffSource } from "./ReviewTabs.js";
 
 type ReviewTab = "files" | "diff" | "validation" | "comments" | "security";
@@ -76,11 +76,17 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
   };
 
   const publishing = useRef(false);
+  // A pull request exists, but the task ran again after it was opened: publishing pushes the update.
+  const pushing = hasUnpushedChanges(review);
+  const canPublish = !hasPullRequest(review) || pushing;
   const confirmPublish = () => {
-    if (publishing.current || publish.isPending || hasPullRequest(review)) return;
+    if (publishing.current || publish.isPending || !canPublish) return;
     publishing.current = true;
     publish.mutate(review.id, {
-      onSuccess: (pr) => notify("success", m.publish.success, formatMessage(m.publish.successBody, { number: pr.pr_number })),
+      onSuccess: (pr) =>
+        pushing
+          ? notify("success", m.publish.pushSuccess, formatMessage(m.publish.pushSuccessBody, { number: pr.pr_number }))
+          : notify("success", m.publish.success, formatMessage(m.publish.successBody, { number: pr.pr_number })),
       onSettled: () => {
         publishing.current = false;
         setPublishOpen(false);
@@ -151,14 +157,14 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
         onApprove={review.human_approved ? undefined : () => setConfirmOpen(true)}
       />
 
-      {!hasPullRequest(review) ? (
+      {canPublish ? (
         <div className="flex flex-wrap items-center gap-2">
           <Button
             icon={<GitPullRequest className="size-4" aria-hidden />}
             disabled={publish.isPending || publishBlocked !== null}
             onClick={() => setPublishOpen(true)}
           >
-            {m.publish.button}
+            {pushing ? formatMessage(m.publish.pushButton, { number: review.pr_number }) : m.publish.button}
           </Button>
           {publishBlocked ? <span className="text-xs text-muted-foreground">{publishBlocked}</span> : null}
         </div>
@@ -252,11 +258,15 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
       <ConfirmDialog
         open={publishOpen}
         onOpenChange={setPublishOpen}
-        title={m.publish.title}
-        confirmLabel={m.publish.confirm}
+        title={pushing ? formatMessage(m.publish.pushTitle, { number: review.pr_number }) : m.publish.title}
+        confirmLabel={pushing ? m.publish.pushConfirm : m.publish.confirm}
         pending={publish.isPending}
         onConfirm={confirmPublish}
-        description={formatMessage(m.publish.body, { branch: review.branch_name, base: review.base_branch })}
+        description={
+          pushing
+            ? formatMessage(m.publish.pushBody, { branch: review.branch_name, number: review.pr_number })
+            : formatMessage(m.publish.body, { branch: review.branch_name, base: review.base_branch })
+        }
       >
         <p className="font-semibold">{m.publish.noMerge}</p>
       </ConfirmDialog>

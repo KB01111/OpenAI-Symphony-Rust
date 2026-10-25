@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -397,10 +398,14 @@ fn model_cache() -> &'static ModelCache {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Bumped by every clear: a probe that started before a clear must not store what it read then.
+static MODEL_CACHE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
 /// Forget every discovered catalogue, e.g. after a credential change (catalogues can depend on the
 /// account a CLI is signed in with).
 pub fn clear_model_catalogues() {
     if let Ok(mut cache) = model_cache().lock() {
+        MODEL_CACHE_GENERATION.fetch_add(1, Ordering::SeqCst);
         cache.clear();
     }
 }
@@ -428,6 +433,7 @@ async fn discover_models(
             }
         }
     }
+    let generation = MODEL_CACHE_GENERATION.load(Ordering::SeqCst);
     let found = match kind {
         ProviderKind::Codex => discover_codex_models(binary).await,
         ProviderKind::OpenCode => discover_opencode_models(binary).await,
@@ -435,7 +441,10 @@ async fn discover_models(
         ProviderKind::ClaudeCode | ProviderKind::Simulated => None,
     };
     if let Ok(mut cache) = model_cache().lock() {
-        cache.insert(key, (Instant::now(), found.clone()));
+        // Cleared while probing (credentials changed): the answer may describe the old account.
+        if MODEL_CACHE_GENERATION.load(Ordering::SeqCst) == generation {
+            cache.insert(key, (Instant::now(), found.clone()));
+        }
     }
     found
 }
@@ -755,6 +764,38 @@ done
                 .map(|d| d.models),
             Some(vec!["x/y".to_string(), "x/z".to_string()])
         );
+    }
+
+    /// A probe still running when the catalogues are cleared (a credential changed) must not store
+    /// what it read for the old account afterwards.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_probe_cleared_while_running_does_not_repopulate_the_cache() {
+        let _serial = FAKE_CLI_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let opencode = fake_cli(
+            dir.path(),
+            "opencode",
+            "[ \"$1\" = models ] && sleep 0.4 && printf 'old/account\\n'\n",
+        );
+        let key = (
+            ProviderKind::OpenCode,
+            opencode.clone(),
+            Some("race-1".to_string()),
+        );
+        for _ in 0..10 {
+            let path = opencode.clone();
+            let probe = tokio::spawn(async move {
+                discover_models(ProviderKind::OpenCode, &path, Some("race-1"), true).await
+            });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            clear_model_catalogues();
+            if probe.await.unwrap().is_some() {
+                assert!(!model_cache().lock().unwrap().contains_key(&key));
+                return;
+            }
+        }
+        panic!("the fake CLI never answered");
     }
 
     /// Opt-in check against a real CLI (no login, no model call):

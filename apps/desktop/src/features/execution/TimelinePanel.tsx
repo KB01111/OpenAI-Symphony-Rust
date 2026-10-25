@@ -20,7 +20,7 @@ import { useApprovals, useDecideApproval, useOlderTaskEvents, useTaskEventHistor
 import { useEventStore } from "../../runtime/eventStore.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { executionMessages } from "./messages.js";
-import { buildTaskTimeline, countByKind, filterByKinds, toggleKind, unseenSince } from "./timeline.js";
+import { buildTaskTimeline, countByKind, filterByKinds, toggleKind, unseenSince, type PauseAnchor } from "./timeline.js";
 
 /** Pending approvals for one task, pinned above the timeline. One decision in flight per approval. */
 const TaskApprovals: React.FC<{ taskId: string }> = ({ taskId }) => {
@@ -91,9 +91,9 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
   const live = useEventStore(useShallow((s) => s.events.filter((e) => e.task_id === task.id)));
   const [hidden, setHidden] = useState<ReadonlySet<AgentEventKind>>(() => new Set());
   const [following, setFollowing] = useState(true);
-  // The newest event when the operator stopped following; everything after it is new. An id, not a
-  // position, so loading older events (prepended) does not count as new activity.
-  const [pausedAfter, setPausedAfter] = useState<string | null>(null);
+  // The newest event when the operator stopped following; everything after it is new. An event, not
+  // a position, so loading older events (prepended) does not count as new activity.
+  const [pausedAfter, setPausedAfter] = useState<PauseAnchor | "" | null>(null);
   const [epoch, setEpoch] = useState(0);
 
   const persisted = useMemo(
@@ -105,12 +105,13 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
   const visible = useMemo(() => filterByKinds(all, hidden), [all, hidden]);
   // The pause baseline is taken from the unfiltered timeline, so changing kind filters while
   // paused neither invents nor hides "new" events.
-  const newestId = useRef<string | null>(null);
-  newestId.current = all[all.length - 1]?.id ?? null;
+  const newest = useRef<PauseAnchor | null>(null);
+  const last = all[all.length - 1];
+  newest.current = last ? { id: last.id, timestamp: last.timestamp } : null;
 
   const onFollowChange = useCallback((next: boolean) => {
     setFollowing(next);
-    setPausedAfter(next ? null : newestId.current ?? "");
+    setPausedAfter(next ? null : newest.current ?? "");
   }, []);
   const jumpToLatest = useCallback(() => {
     // Remounting the list restores tail-following and scrolls to the newest event.

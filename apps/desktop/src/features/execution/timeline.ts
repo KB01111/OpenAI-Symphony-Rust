@@ -55,18 +55,26 @@ export function toggleKind(hidden: ReadonlySet<AgentEventKind>, kind: AgentEvent
 }
 
 
+/** The event the operator last saw when they stopped following the tail. */
+export interface PauseAnchor {
+  id: string;
+  timestamp: string;
+}
+
 /**
  * Events (of the visible kinds) after the event the operator last saw when they stopped following
- * the tail. `pausedAfter` is that event's id, `""` when the timeline was empty, `null` while
- * following. Older events prepended meanwhile are not counted.
+ * the tail. `pausedAfter` is that event, `""` when the timeline was empty, `null` while following.
+ * Older events prepended meanwhile are not counted. If the anchor itself has left the timeline
+ * (bounded live retention), events newer than its timestamp are.
  */
 export function unseenSince(
   events: AgentEvent[],
-  pausedAfter: string | null,
+  pausedAfter: PauseAnchor | "" | null,
   hidden: ReadonlySet<AgentEventKind>
 ): number {
   if (pausedAfter === null) return 0;
-  const at = pausedAfter === "" ? -1 : events.findIndex((e) => e.id === pausedAfter);
-  if (at < 0 && pausedAfter !== "") return 0;
-  return filterByKinds(events.slice(at + 1), hidden).length;
+  if (pausedAfter === "") return filterByKinds(events, hidden).length;
+  const at = events.findIndex((e) => e.id === pausedAfter.id);
+  const after = at >= 0 ? events.slice(at + 1) : events.filter((e) => e.timestamp > pausedAfter.timestamp);
+  return filterByKinds(after, hidden).length;
 }

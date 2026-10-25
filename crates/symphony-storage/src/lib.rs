@@ -43,10 +43,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "usage_accounting",
         sql: include_str!("../migrations/0002_usage_accounting.sql"),
     },
+    Migration {
+        version: 3,
+        name: "task_follow_ups",
+        sql: include_str!("../migrations/0003_task_follow_ups.sql"),
+    },
 ];
 
 /// The schema version this build reads and writes.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticBundle {
@@ -477,6 +482,46 @@ impl Storage {
             .await
             .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
         Ok(())
+    }
+
+    /// Store the operator's follow-up instructions for the next attempt of a task, replacing any
+    /// that were still waiting.
+    pub async fn set_task_follow_up(
+        &self,
+        task_id: &str,
+        instructions: &str,
+    ) -> SymphonyResult<()> {
+        sqlx::query(
+            "INSERT INTO task_follow_ups (task_id, instructions, created_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(task_id) DO UPDATE SET instructions = excluded.instructions,
+                                                created_at = excluded.created_at",
+        )
+        .bind(task_id)
+        .bind(instructions)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Follow-up instructions waiting for the next attempt of a task, if any.
+    pub async fn task_follow_up(&self, task_id: &str) -> SymphonyResult<Option<String>> {
+        sqlx::query_scalar("SELECT instructions FROM task_follow_ups WHERE task_id = ?1")
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))
+    }
+
+    /// Drop the waiting follow-up of a task; returns whether there was one.
+    pub async fn clear_task_follow_up(&self, task_id: &str) -> SymphonyResult<bool> {
+        let done = sqlx::query("DELETE FROM task_follow_ups WHERE task_id = ?1")
+            .bind(task_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(done.rows_affected() > 0)
     }
 
     /// Crash recovery helper (Section 5):

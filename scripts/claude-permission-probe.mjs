@@ -13,7 +13,7 @@
  * Verified with claude 2.1.310 (docs/PRODUCTION_GAP_AUDIT.md, AG-04).
  * Exit code 0 = protocol as expected, 1 = it was not, 2 = probe error.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,6 +57,15 @@ const server = createServer((req, res) => {
   });
 });
 
+/** Stop the CLI and what it started: on Windows `child` is the shell around the `.cmd` shim. */
+function stop(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+  } else {
+    child.kill();
+  }
+}
+
 function run(port, behavior) {
   const dir = join(root, behavior);
   const home = join(dir, "home");
@@ -84,7 +93,7 @@ function run(port, behavior) {
         send({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response } });
       } else if (m.type === "result") child.stdin.end();
     });
-    const timer = setTimeout(() => { child.kill(); reject(new Error(`${behavior}: claude did not finish`)); }, 60_000);
+    const timer = setTimeout(() => { stop(child); reject(new Error(`${behavior}: claude did not finish`)); }, 60_000);
     child.on("error", reject);
     child.on("exit", () => { clearTimeout(timer); resolve({ asked, wrote: existsSync(join(ws, "probe.txt")) }); });
   });
