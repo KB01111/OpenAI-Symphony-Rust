@@ -56,7 +56,7 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
 | DOC-01 | P3 | Verified defect | `WORKFLOW.md` names "Symphony Desktop 1.0", port 47800 | Fixed |
 | SCH-01 | P0 | Verified (negative) | Concurrent ticks / manual dispatch can start a task twice | **No defect** (stress test added) |
 | WIN-01 | P1 | Unverified | All native Windows behaviour (see §4) | Blocked (Windows) |
-| PROV-01 | P2 | Gap | Provider profiles / compatible endpoints / health model | Partly fixed (endpoints via OpenCode, live model catalogues); named profiles and fallback policy open |
+| PROV-01 | P2 | Gap | Provider profiles / compatible endpoints / health model | Fixed as scoped (endpoints via OpenCode, live model catalogues); named profiles and automatic fallback decided against for now |
 | HIST-01 | P2 | Gap | Durable session history: pagination and retention | Fixed (retention, cursor pages, continue a run); tool-result persistence open |
 | PERF-01 | P2 | Unverified | Idle CPU / memory on the reference laptop | Blocked (hardware) |
 | AG-04 | P2 | Verified defect | Claude Code / OpenCode run headless without an approval path | Fixed |
@@ -333,8 +333,12 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
   not be advertised as an autonomous coding runtime. Since the follow-up, compatible endpoints are reached
   through OpenCode, which is such an adapter: whatever providers the user configures in OpenCode
   (OpenRouter, OpenCode Zen, local models) are listed by detection (`opencode models`), selectable per
-  project or task as `provider/model`, run with Symphony's approvals (AG-04) and report usage. Still open
-  (product decisions): multiple named profiles per provider and an automatic fallback policy.
+  project or task as `provider/model`, run with Symphony's approvals (AG-04) and report usage.
+  **Decided by the owner (2026-10-25):** no multiple named profiles per provider for now (one profile per
+  provider; the model is chosen per project or task, other endpoints go through OpenCode), and **no automatic
+  fallback**: a task whose provider is missing, signed out or rate limited fails visibly, and the operator
+  picks another provider for the retry. This avoids unexpected cost and work by an agent nobody chose.
+  Revisit both if users ask for them.
 - **HIST-01 (P2)**: events, attempts (thread/turn/session ids) and approvals are persisted, and
   `/events/recent` and `/tasks/{id}/events` take `limit`. Retention is implemented (`event_retention_days`, pruning of
   finished tasks' events). Cursor pagination of a task's events (`before=<event id>`) and a
