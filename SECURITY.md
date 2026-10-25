@@ -70,9 +70,12 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
      - **`linear_graphql`**: queries (read-only); mutations limited to `commentCreate`, `commentUpdate`,
        `issueUpdate`, `attachmentCreate`, `attachmentLinkGitHubPR`, `attachmentLinkURL`; one operation per
        call; no subscriptions. The document is tokenized (aliases, comments, strings and fragments cannot
-       smuggle another mutation). **Limit**: Linear's key is workspace-wide and the policy checks
-       operations, not objects, so an allowed operation can still address another project's issue.
-       Confining the tool to the configured project is an open item (audit SEC-03).
+       smuggle another mutation). Mutations are also confined to the configured project: every issue or
+       comment a mutation names (`id`/`issueId`, as a string or a variable, also inside input objects)
+       is looked up first and must belong to the project's `slugId`; a mutation whose targets cannot
+       all be read, or that sets `projectId`/`teamId`/`projectMilestoneId`, is refused before it is
+       sent. **Limit**: Linear's key is workspace-wide and *reads* are not confined, so an agent can
+       read other projects' issues the key can see (audit SEC-03).
      - Refused calls fail with a structured error and never reach the network; the session continues.
        The agent-facing GitHub client never follows redirects.
    - Widening either list is a security change: add the tests that show what the new operation can do.

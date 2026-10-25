@@ -38,7 +38,7 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
 | SEC-01 | P1 | Verified defect | `github_api` / `linear_graphql` forward any request with the host's tokens | Fixed |
 | SEC-02 | P2 | Verified defect | Credential check on the review diff: 2 patterns, 32 KB preview only | Fixed |
 | BK-01 | P1 | Gap | No backup / restore | Fixed |
-| SEC-03 | P2 | Gap | `linear_graphql` cannot be limited to the configured Linear project (workspace-wide key) | Open |
+| SEC-03 | P2 | Gap | `linear_graphql` cannot be limited to the configured Linear project (workspace-wide key) | Fixed for mutations; reads open |
 | SEC-04 | P1 | Verified defect (in this branch's first cut) | Create-PR sent the GitHub token to any HTTPS `origin` | Fixed |
 | SEC-05 | P2 | Verified defect (in this branch's first cut) | `github_api` followed redirects with the host's credentials | Fixed |
 | RV-06 | P1 | Verified defect | Commits the agent made itself were invisible to the review, the credential scan and the changed-file list | Fixed |
@@ -277,9 +277,13 @@ wrong or out of proportion and are answered on their threads, see below). Verifi
   `OPENAI_API_KEY` & co. through (it now scrubs the environment so it can never make a billable call);
   the npm SBOM is scoped to the shipped desktop app.
 
-Not changed, on purpose: (a) **SEC-03** `linear_graphql` uses a workspace-wide key; allowed operations are
-limited but not confined to the configured project, because that would need membership resolution of every
-referenced object or high-level project-scoped tools instead of GraphQL. Open; `SECURITY.md` says so.
+Not changed at first: (a) **SEC-03** `linear_graphql` uses a workspace-wide key. Fixed for mutations in the
+follow-up: the targets of every allowed mutation (`id`/`issueId` literals and variables, nested inputs
+included) are resolved through `issue(id)`/`comment(id)` and must belong to the configured project's
+`slugId`; moving an issue (`projectId`/`teamId`/`projectMilestoneId`) and mutations whose targets cannot be
+read are refused before anything is sent (tests: `tool_policy` target extraction,
+`linear_mutations_change_only_issues_of_the_configured_project`). Reads stay workspace-wide; `SECURITY.md`
+says so.
 (b) Claude/OpenCode report usage per finished invocation, so a killed invocation reports nothing (already
 listed). (c) Pull request status is refreshed on request only (a timer was rejected on purpose).
 

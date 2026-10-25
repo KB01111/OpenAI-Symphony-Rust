@@ -1092,7 +1092,7 @@ impl LinearTracker {
     pub fn dynamic_tool_spec() -> Value {
         json!({
             "name": "linear_graphql",
-            "description": "Execute a single GraphQL operation against Linear using Symphony's host-side authenticated session. Queries are read-only; mutations are limited to commentCreate, commentUpdate, issueUpdate, attachmentCreate, attachmentLinkGitHubPR and attachmentLinkURL.",
+            "description": "Execute a single GraphQL operation against Linear using Symphony's host-side authenticated session. Queries are read-only; mutations are limited to commentCreate, commentUpdate, issueUpdate, attachmentCreate, attachmentLinkGitHubPR and attachmentLinkURL, on issues (and their comments) of the configured project only; name the target with an `id`/`issueId` string or variable. Issues cannot be moved to another project or team.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1121,10 +1121,58 @@ impl LinearTracker {
             .get("variables")
             .cloned()
             .unwrap_or_else(|| json!({}));
+        // Mutations only change issues (and their comments) of the configured project; the key
+        // itself is workspace-wide.
+        match tool_policy::linear_mutation_targets(query, &variables) {
+            Err(reason) => return (false, json!({ "error": { "message": reason } }).to_string()),
+            Ok(Some(targets)) => {
+                if let Err(reason) = self.check_linear_targets_in_project(&targets).await {
+                    return (false, json!({ "error": { "message": reason } }).to_string());
+                }
+            }
+            Ok(None) => {}
+        }
         match self.graphql(query, variables).await {
             Ok(val) => (true, serde_json::to_string_pretty(&val).unwrap_or_default()),
             Err(e) => (false, json!({ "error": e.to_string() }).to_string()),
         }
+    }
+
+    /// The configured project's `slugId` of an issue (by id or identifier) or of a comment's issue;
+    /// `None` when it is neither, or has no project.
+    async fn linear_target_project(&self, id: &str) -> Option<String> {
+        const ISSUE: &str =
+            "query SymphonyScopeIssue($id: String!) { issue(id: $id) { project { slugId } } }";
+        const COMMENT: &str = "query SymphonyScopeComment($id: String!) { comment(id: $id) { issue { project { slugId } } } }";
+        if let Ok(body) = self.graphql(ISSUE, json!({ "id": id })).await {
+            if let Some(slug) = body
+                .pointer("/data/issue/project/slugId")
+                .and_then(Value::as_str)
+            {
+                return Some(slug.to_string());
+            }
+        }
+        let body = self.graphql(COMMENT, json!({ "id": id })).await.ok()?;
+        body.pointer("/data/comment/issue/project/slugId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+
+    async fn check_linear_targets_in_project(&self, targets: &[String]) -> Result<(), String> {
+        if self.project_slug.is_empty() {
+            return Err("linear_graphql mutations need a configured Linear project".into());
+        }
+        for target in targets {
+            match self.linear_target_project(target).await {
+                Some(slug) if slug == self.project_slug => {}
+                _ => {
+                    return Err(format!(
+                        "linear_graphql may only change issues of the configured project; `{target}` is not one of them"
+                    ))
+                }
+            }
+        }
+        Ok(())
     }
 
     pub async fn graphql(&self, query: &str, variables: Value) -> SymphonyResult<Value> {
