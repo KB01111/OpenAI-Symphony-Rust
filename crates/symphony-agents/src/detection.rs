@@ -458,13 +458,13 @@ fn apply_discovered_models(
     discovered: Option<DiscoveredModels>,
 ) -> Option<String> {
     let Some(discovered) = discovered else {
-        // Claude Code never lists its models, but a name that is not a Claude model (a settings
-        // file from before per-provider defaults still holds `gpt-5-codex`) fails every run.
+        // Claude Code never lists its models, but another provider's model (a settings file from
+        // before per-provider defaults still holds `gpt-5-codex`) fails every run.
         if capabilities.provider == ProviderKind::ClaudeCode {
             if let Some(model) = configured_default.as_deref() {
-                if !is_claude_model(&capabilities.models, model) {
+                if is_other_providers_model(model) {
                     capabilities.status_message = format!(
-                        "{} · Configured default model `{model}` is not a Claude model; using the CLI's default.",
+                        "{} · Configured default model `{model}` is another provider's model; using the CLI's default.",
                         capabilities.status_message
                     );
                     return None;
@@ -500,10 +500,15 @@ fn apply_discovered_models(
     }
 }
 
-/// A model name Claude Code accepts: one of its aliases, or an id naming a Claude model (also the
-/// Bedrock and Vertex forms, such as `us.anthropic.claude-…`).
-fn is_claude_model(aliases: &[String], model: &str) -> bool {
-    aliases.iter().any(|alias| alias == model) || model.to_ascii_lowercase().contains("claude")
+/// A model id of another provider (OpenAI, Google), which Claude Code cannot run. Anything else is
+/// kept: besides its aliases and `claude-…` ids, Claude Code takes Bedrock inference profile ARNs
+/// and custom Foundry deployment names, which need not name the model.
+fn is_other_providers_model(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    let o_series = model
+        .strip_prefix('o')
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+    model.starts_with("gpt-") || model.starts_with("gemini-") || model.contains("codex") || o_series
 }
 
 /// Detect a single provider's installation, version, authentication, and capabilities.
@@ -676,16 +681,27 @@ mod tests {
         // Without a catalogue no built-in id is forced on the CLI; the test agent keeps its model.
         let mut caps = ProviderKind::ClaudeCode.default_capabilities();
         assert_eq!(apply_discovered_models(&mut caps, None, None), None);
-        // Claude Code keeps its aliases and Claude ids, but not another provider's model.
+        // Claude Code keeps its aliases, Claude ids and custom deployment names, but not another
+        // provider's model.
         for model in [
             "sonnet",
+            "opus",
             "claude-opus-5-5",
             "us.anthropic.claude-sonnet-5-5-v1:0",
+            "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/team-a",
+            "team-a-deployment",
         ] {
             let mut caps = ProviderKind::ClaudeCode.default_capabilities();
             assert_eq!(
                 apply_discovered_models(&mut caps, Some(model.into()), None).as_deref(),
                 Some(model)
+            );
+        }
+        for model in ["gpt-6-sol", "o4-mini", "gemini-3-pro"] {
+            let mut caps = ProviderKind::ClaudeCode.default_capabilities();
+            assert_eq!(
+                apply_discovered_models(&mut caps, Some(model.into()), None),
+                None
             );
         }
         let mut caps = ProviderKind::ClaudeCode.default_capabilities();
@@ -695,7 +711,7 @@ mod tests {
         );
         assert!(caps
             .status_message
-            .contains("`gpt-5-codex` is not a Claude model"));
+            .contains("`gpt-5-codex` is another provider's model"));
         let mut caps = ProviderKind::Simulated.default_capabilities();
         assert_eq!(
             apply_discovered_models(&mut caps, None, None).as_deref(),

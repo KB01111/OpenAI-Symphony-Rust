@@ -16,8 +16,8 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   longer accepts is no longer offered as the model of new tasks; the provider status says which model
   is used instead (a model already saved on a project or task is still passed as it is). Claude
   Code offers its aliases (`opus`, `sonnet`, `haiku`, `fable`) and the current model ids; a
-  configured default that is not a Claude model (such as an older settings file's `gpt-5-codex`) is
-  not offered for it.
+  configured default that is another provider's model (such as an older settings file's
+  `gpt-5-codex`) is not offered for it, while custom deployment names and inference profiles are.
 - **Continue a run**: *Continue…* on a task in review, failed or completed sends follow-up instructions;
   the agent resumes its conversation in the same worktree and the result is reviewed again
   (`POST /api/v1/tasks/{id}/continue`, local only). The instructions are stored (schema migration 3)
