@@ -35,7 +35,7 @@ export const projectMessages = defineMessages({
       created: "Created"
     },
     counts: {
-      total: "{count} tasks",
+      total: "{count, plural, one {# task} other {# tasks}}",
       running: "{count} running",
       review: "{count} in review",
       failed: "{count} failed",
@@ -109,7 +109,7 @@ export const projectMessages = defineMessages({
       confirm: "Delete project",
       deleted: "{name} deleted",
       error: "The project could not be deleted",
-      runningWarning: "{count} task(s) are running in this project. The runtime refuses to delete a project with running agent sessions; cancel them first."
+      runningWarning: "{count, plural, one {# task is} other {# tasks are}} running in this project. The runtime refuses to delete a project with running agent sessions; cancel them first."
     },
     add: {
       title: "Add repository",
@@ -184,7 +184,7 @@ export const projectMessages = defineMessages({
       created: "Skapad"
     },
     counts: {
-      total: "{count} uppgifter",
+      total: "{count, plural, one {# uppgift} other {# uppgifter}}",
       running: "{count} körs",
       review: "{count} i granskning",
       failed: "{count} misslyckade",
@@ -258,7 +258,7 @@ export const projectMessages = defineMessages({
       confirm: "Ta bort projekt",
       deleted: "{name} borttaget",
       error: "Projektet kunde inte tas bort",
-      runningWarning: "{count} uppgift(er) körs i projektet. Körmiljön vägrar ta bort ett projekt med aktiva agentsessioner; avbryt dem först."
+      runningWarning: "{count, plural, one {# uppgift} other {# uppgifter}} körs i projektet. Körmiljön vägrar ta bort ett projekt med aktiva agentsessioner; avbryt dem först."
     },
     add: {
       title: "Lägg till förråd",

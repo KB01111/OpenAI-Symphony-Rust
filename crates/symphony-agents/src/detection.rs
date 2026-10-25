@@ -377,10 +377,10 @@ async fn discover_opencode_models(binary: &Path) -> Option<DiscoveredModels> {
 }
 
 type ModelCacheKey = (ProviderKind, PathBuf, Option<String>);
+type ModelCache = Mutex<HashMap<ModelCacheKey, (Instant, Option<DiscoveredModels>)>>;
 
-fn model_cache() -> &'static Mutex<HashMap<ModelCacheKey, (Instant, Option<DiscoveredModels>)>> {
-    static CACHE: OnceLock<Mutex<HashMap<ModelCacheKey, (Instant, Option<DiscoveredModels>)>>> =
-        OnceLock::new();
+fn model_cache() -> &'static ModelCache {
+    static CACHE: OnceLock<ModelCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 

@@ -56,6 +56,12 @@ export const ConnectScreen: React.FC<ConnectScreenProps> = ({ initial, rejected,
   return (
     <main className="mx-auto flex min-h-full w-full max-w-md flex-col justify-center gap-4 p-4">
       <header className="space-y-1">
+        <span className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+          <span aria-hidden className="grid size-8 place-items-center rounded-lg bg-accent font-display text-sm font-bold text-accent-foreground">
+            S
+          </span>
+          {t.appName}
+        </span>
         <h1 className="font-display text-xl font-semibold text-foreground">{m.connectTitle}</h1>
         <p className="text-sm text-muted-foreground">{m.connectDescription}</p>
       </header>

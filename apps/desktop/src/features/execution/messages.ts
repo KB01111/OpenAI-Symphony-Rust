@@ -80,7 +80,7 @@ export const executionMessages = defineMessages({
       startedAt: "Started",
       finishedAt: "Finished",
       inProgress: "In progress",
-      turns: "{count} turn(s)",
+      turns: "{count, plural, one {# turn} other {# turns}}",
       tokens: "{count} tokens",
       lastError: "Last error",
       nextRetry: "Next retry",
@@ -129,7 +129,7 @@ export const executionMessages = defineMessages({
       jumpNew: "Jump to latest ({count} new)",
       streaming: "Agent is working · {phase}",
       approvals: "Pending approvals for this task",
-      events: "{count} events"
+      events: "{count, plural, one {# event} other {# events}}"
     },
     changes: {
       tabs: "Changes and validation",
@@ -167,7 +167,7 @@ export const executionMessages = defineMessages({
       ci: "CI",
       noRemoteCi: "No remote CI",
       state: "State",
-      blockers: "{count} blocker(s)",
+      blockers: "{count, plural, one {# blocker} other {# blockers}}",
       blockersLabel: "Blockers",
       humanApproved: "Human approved",
       openReview: "Open review"
@@ -224,7 +224,7 @@ export const executionMessages = defineMessages({
       startedAt: "Startad",
       finishedAt: "Avslutad",
       inProgress: "Pågår",
-      turns: "{count} tur(er)",
+      turns: "{count, plural, one {# tur} other {# turer}}",
       tokens: "{count} tokens",
       lastError: "Senaste fel",
       nextRetry: "Nästa försök",
@@ -273,7 +273,7 @@ export const executionMessages = defineMessages({
       jumpNew: "Hoppa till senaste ({count} nya)",
       streaming: "Agenten arbetar · {phase}",
       approvals: "Väntande godkännanden för uppgiften",
-      events: "{count} händelser"
+      events: "{count, plural, one {# händelse} other {# händelser}}"
     },
     changes: {
       tabs: "Ändringar och validering",

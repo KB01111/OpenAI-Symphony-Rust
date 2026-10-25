@@ -237,7 +237,7 @@ export const HardwareTelemetryStrip: React.FC<{ hardware: HardwareSnapshot; clas
           {ui.throttled}
         </span>
       ) : null}
-      <Tooltip content={hardware.dispatch_delayed_reason ?? ui.maxAgents.replace("{count}", String(hardware.recommended_max_concurrency))} relationship="description">
+      <Tooltip content={hardware.dispatch_delayed_reason ?? formatMessage(ui.maxAgents, { count: hardware.recommended_max_concurrency })} relationship="description">
         <span className={chip}>{formatMessage(ui.maxAgents, { count: hardware.effective_max_concurrency })}</span>
       </Tooltip>
     </div>

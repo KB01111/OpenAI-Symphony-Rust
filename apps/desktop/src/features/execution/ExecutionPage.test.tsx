@@ -89,7 +89,7 @@ describe("ExecutionPage", () => {
   it("does not offer older events when the first page was not full", async () => {
     const rt = runtime(task(), { "GET /tasks/:id/events": () => [ev("e1", 1)] });
     renderPage(rt);
-    await screen.findByText("1 events");
+    await screen.findByText("1 event");
     expect(screen.queryByRole("button", { name: "Load older events" })).not.toBeInTheDocument();
   });
 

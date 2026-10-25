@@ -4,7 +4,7 @@ import { defineMessages } from "../../lib/i18n.js";
 export const worktreesMessages = defineMessages({
   en: {
     title: "Worktrees",
-    description: "{total} worktree(s) · {dirty} with uncommitted changes",
+    description: "{total, plural, one {# worktree} other {# worktrees}} · {dirty} with uncommitted changes",
     filters: "Worktree filters",
     project: "Project",
     allProjects: "All projects",
