@@ -102,7 +102,9 @@ export const DesktopShell: React.FC = () => {
           <ResizablePanel
             id="inspector"
             panelRef={inspectorRef}
-            defaultSize={320}
+            // Start collapsed when the stored state says closed: an imperative collapse() before the
+            // group's first layout is not applied.
+            defaultSize={inspectorOpen ? 320 : 0}
             minSize={260}
             maxSize="45"
             collapsible

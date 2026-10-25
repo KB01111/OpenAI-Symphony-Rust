@@ -4,6 +4,9 @@ import type { Locale, TaskStatus } from "@symphony/shared-types";
 import type { Density, ThemeMode } from "@symphony/ui";
 import { safeJSONStorage } from "./safeStorage.js";
 
+/** Window width below which the inspector starts closed on a first launch. */
+export const INSPECTOR_DEFAULT_MIN_WIDTH = 1200;
+
 export type InspectorTarget =
   | { kind: "task"; id: string }
   | { kind: "project"; id: string }
@@ -98,7 +101,9 @@ export const useUiStore = create<UiState>()(
       density: "compact",
       themeMode: "system",
       locale: "en",
-      inspectorOpen: true,
+      // First start on a narrow window: the content gets the width; selecting something opens the
+      // inspector anyway, and the user's choice is remembered from then on.
+      inspectorOpen: typeof window === "undefined" || window.innerWidth >= INSPECTOR_DEFAULT_MIN_WIDTH,
       drawerOpen: true,
       drawerTab: "events",
       logMode: "concise",
