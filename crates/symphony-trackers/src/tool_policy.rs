@@ -249,12 +249,24 @@ fn tokenize(source: &str) -> Result<Vec<Token>, String> {
 /// [`LINEAR_ALLOWED_MUTATIONS`] (every root field, aliases resolved, must be on the list).
 pub fn check_linear_document(query: &str) -> Result<(), String> {
     let tokens = tokenize(query)?;
+    match linear_operations(&tokens)?.as_slice() {
+        [] => Err("linear_graphql needs one query or mutation".into()),
+        [(_, "subscription")] => Err("linear_graphql does not allow subscriptions".into()),
+        [(_, "query")] => Ok(()),
+        [(start, "mutation")] => check_linear_mutation(&tokens[*start..]),
+        _ => Err("linear_graphql accepts a single operation per call".into()),
+    }
+}
+
+/// The operations of a document: where each starts and its kind. Fragment definitions are not
+/// operations, wherever they stand.
+fn linear_operations(tokens: &[Token]) -> Result<Vec<(usize, &'static str)>, String> {
     // Operations are the top-level `query | mutation | subscription` keywords or a bare `{`.
     // Inside `( … )` (variable definitions and arguments) keywords are names and `{` opens an
     // object value, so neither starts an operation.
     let mut depth = 0i32;
     let mut parens = 0i32;
-    let mut operations: Vec<(usize, &str)> = Vec::new();
+    let mut operations: Vec<(usize, &'static str)> = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         match token {
             Token::Punct('(') => parens += 1,
@@ -294,28 +306,26 @@ pub fn check_linear_document(query: &str) -> Result<(), String> {
     if depth != 0 || parens != 0 {
         return Err("the GraphQL document has unbalanced braces".into());
     }
-    match operations.as_slice() {
-        [] => Err("linear_graphql needs one query or mutation".into()),
-        [(_, "subscription")] => Err("linear_graphql does not allow subscriptions".into()),
-        [(_, "query")] => Ok(()),
-        [(start, "mutation")] => check_linear_mutation(&tokens[*start..]),
-        _ => Err("linear_graphql accepts a single operation per call".into()),
+    Ok(operations)
+}
+
+/// Index of the selection set that opens an operation starting at `tokens[0]`: past its header,
+/// whose variable definitions may hold `{ … }` default values inside `( … )`.
+fn selection_set_start(tokens: &[Token]) -> usize {
+    let mut parens = 0;
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            Token::Punct('(') => parens += 1,
+            Token::Punct(')') => parens -= 1,
+            Token::Punct('{') if parens == 0 => return i,
+            _ => {}
+        }
     }
+    tokens.len()
 }
 
 fn check_linear_mutation(tokens: &[Token]) -> Result<(), String> {
-    // Skip the operation header up to the selection set that opens the operation.
-    let mut i = 0;
-    let mut parens = 0;
-    while i < tokens.len() {
-        match &tokens[i] {
-            Token::Punct('(') => parens += 1,
-            Token::Punct(')') => parens -= 1,
-            Token::Punct('{') if parens == 0 => break,
-            _ => {}
-        }
-        i += 1;
-    }
+    let mut i = selection_set_start(tokens);
     let (mut depth, mut parens) = (0i32, 0i32);
     let mut fields: Vec<&str> = Vec::new();
     let mut previous: Option<&Token> = None;
@@ -401,26 +411,29 @@ pub fn linear_mutation_targets(
     query: &str,
     variables: &Value,
 ) -> Result<Option<Vec<String>>, String> {
-    let tokens = tokenize(query)?;
-    // A checked document has one operation: its first keyword (or a bare `{`) says which.
-    let is_mutation = matches!(
-        tokens.iter().find(|t| matches!(t, Token::Punct('{'))
-            || matches!(t, Token::Name(n) if matches!(n.as_str(), "query" | "mutation" | "subscription"))),
-        Some(Token::Name(n)) if n == "mutation"
-    );
-    if !is_mutation {
-        return Ok(None);
-    }
+    let all = tokenize(query)?;
+    // The same operation `check_linear_document` found, however the document starts (a fragment
+    // definition may come first): anything else that is not a single mutation is not scoped here.
+    let operation = match linear_operations(&all)?.as_slice() {
+        [(start, "mutation")] => *start,
+        [(_, "query")] => return Ok(None),
+        _ => return Err("linear_graphql accepts a single query or mutation per call".into()),
+    };
+    let tokens = &all[operation..];
     let mut targets = Vec::new();
-    // Skip the operation header (its variable definitions are not arguments).
-    let start = tokens
-        .iter()
-        .position(|t| matches!(t, Token::Punct('{')))
-        .unwrap_or(tokens.len());
-    let mut parens = 0i32;
-    let mut i = start;
+    // Skip the operation header (its variable definitions are not arguments), then read only this
+    // operation's selection set.
+    let mut i = selection_set_start(tokens);
+    let (mut parens, mut depth) = (0i32, 0i32);
     while i < tokens.len() {
         match &tokens[i] {
+            Token::Punct('{') => depth += 1,
+            Token::Punct('}') => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
             Token::Punct('(') => parens += 1,
             Token::Punct(')') => parens -= 1,
             Token::Name(key)
@@ -636,6 +649,36 @@ mod tests {
             json!({})
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_leading_fragment_or_a_default_object_does_not_hide_the_mutation() {
+        use serde_json::json;
+        // A fragment definition first: still the document's mutation, so it is scoped.
+        let fragment_first = "fragment F on Issue { id title } mutation { issueUpdate(id: \"ENG-7\", input: { title: \"t\" }) { success } }";
+        assert!(linear(fragment_first).is_ok());
+        assert_eq!(
+            targets(fragment_first, json!({})),
+            Ok(Some(vec!["ENG-7".to_string()]))
+        );
+        // A default object value in the header is not the selection set.
+        let default_object = "mutation U($id: String! = \"ENG-8\", $in: IssueUpdateInput = { title: \"t\" }) { issueUpdate(id: $id, input: $in) { success } }";
+        assert!(linear(default_object).is_ok());
+        assert_eq!(
+            targets(
+                default_object,
+                json!({ "id": "ENG-8", "in": { "title": "t" } })
+            ),
+            Ok(Some(vec!["ENG-8".to_string()]))
+        );
+        // A query after a fragment stays an unscoped read.
+        assert_eq!(
+            targets(
+                "fragment F on Issue { id } query { issue(id: \"x\") { ...F } }",
+                json!({})
+            ),
+            Ok(None)
+        );
     }
 
     #[test]

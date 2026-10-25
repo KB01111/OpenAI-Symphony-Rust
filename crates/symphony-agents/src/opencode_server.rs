@@ -346,6 +346,9 @@ impl OpenCodeSession {
         let mut text_order: Vec<String> = Vec::new();
         let mut texts: HashMap<String, String> = HashMap::new();
         let mut error: Option<String> = None;
+        // This turn's session and the sub-agent sessions it starts (OpenCode's `task` tool): their
+        // permission requests and token use belong to this turn too.
+        let mut sessions: HashSet<String> = HashSet::from([session_id.clone()]);
         loop {
             let event = match tokio::time::timeout_at(deadline, events.recv()).await {
                 Ok(Some(event)) => event,
@@ -358,9 +361,27 @@ impl OpenCodeSession {
                 Err(_) => return Err(SymphonyError::TurnTimeout(timeout_ms)),
             };
             let props = event.get("properties").cloned().unwrap_or(Value::Null);
-            if event_session(&props) != Some(session_id.as_str()) {
-                continue;
+            let kind = event
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if matches!(kind, "session.created" | "session.updated") {
+                if let (Some(child), Some(parent)) = (
+                    props.pointer("/info/id").and_then(Value::as_str),
+                    props.pointer("/info/parentID").and_then(Value::as_str),
+                ) {
+                    if sessions.contains(parent) {
+                        sessions.insert(child.to_string());
+                    }
+                }
             }
+            let Some(event_session_id) = event_session(&props)
+                .filter(|id| sessions.contains(*id))
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let root = event_session_id == session_id;
             match event
                 .get("type")
                 .and_then(Value::as_str)
@@ -375,7 +396,8 @@ impl OpenCodeSession {
                     {
                         ApprovalDecision::Decline
                     } else {
-                        let approval = opencode_approval_request(&self.config, &session_id, &props);
+                        let approval =
+                            opencode_approval_request(&self.config, &event_session_id, &props);
                         tokio::time::timeout_at(
                             deadline,
                             self.approval_gate.request_approval(approval),
@@ -413,7 +435,8 @@ impl OpenCodeSession {
                         "step-start" | "step-finish" => true,
                         _ => false,
                     };
-                    if part_type == "text" {
+                    // A sub-agent's text is its report to this session, not the turn's answer.
+                    if part_type == "text" && root {
                         if let Some(text) = part.get("text").and_then(Value::as_str) {
                             if !texts.contains_key(&part_id) {
                                 text_order.push(part_id.clone());
@@ -448,7 +471,9 @@ impl OpenCodeSession {
                         .await;
                     }
                 }
-                "session.error" => {
+                // A sub-agent's error is reported to (and handled by) this session; its idle is
+                // not the end of the turn.
+                "session.error" if root => {
                     error = Some(
                         props
                             .pointer("/error/data/message")
@@ -458,7 +483,7 @@ impl OpenCodeSession {
                             .to_string(),
                     );
                 }
-                "session.idle" => break,
+                "session.idle" if root => break,
                 _ => {}
             }
         }

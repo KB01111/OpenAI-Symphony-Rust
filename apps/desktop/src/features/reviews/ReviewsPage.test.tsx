@@ -18,7 +18,7 @@ function runtimeWith(reviews: PullRequestReview[]) {
       const id = decodeURIComponent(path.split("/")[2]!);
       const current = store.get(id)!;
       const opened = current.pr_number > 0
-        ? { ...current, reviewed_commit: "def5678" }
+        ? { ...current, reviewed_commit: "def5678", unpushed_changes: false }
         : { ...current, pr_number: 42, url: "https://github.com/acme/widgets/pull/42", ci_status: "unknown", reviewed_commit: "abc1234" };
       store.set(id, opened);
       return opened;
@@ -113,9 +113,16 @@ describe("ReviewsPage", () => {
     expect(screen.queryByRole("button", { name: /Push changes/ })).not.toBeInTheDocument();
   });
 
+  it("does not offer a push for a review published by an older release (no recorded commit)", async () => {
+    const legacy = pullRequest({ id: "pr-old", pr_number: 9, url: "https://github.com/acme/widgets/pull/9", title: "Older", reviewed_commit: null, unpushed_changes: false });
+    renderWithProviders(<ReviewsPage />, { runtime: runtimeWith([legacy]), route: "/reviews/pr-old", path: "/reviews/:reviewId" });
+    expect(await screen.findByRole("button", { name: "Refresh status" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Push changes/ })).not.toBeInTheDocument();
+  });
+
   it("offers to push a continued run's changes to the pull request that is already open", async () => {
     // The task ran again after #9 was opened: the review links #9, but its work was never pushed.
-    const continued = pullRequest({ id: "pr-cont", pr_number: 9, url: "https://github.com/acme/widgets/pull/9", title: "Continued", branch_name: "symphony/sym-9", reviewed_commit: null });
+    const continued = pullRequest({ id: "pr-cont", pr_number: 9, url: "https://github.com/acme/widgets/pull/9", title: "Continued", branch_name: "symphony/sym-9", unpushed_changes: true });
     const runtime = runtimeWith([continued]);
     renderWithProviders(<ReviewsPage />, { runtime, route: "/reviews/pr-cont", path: "/reviews/:reviewId" });
     fireEvent.click(await screen.findByRole("button", { name: "Push changes to #9" }));

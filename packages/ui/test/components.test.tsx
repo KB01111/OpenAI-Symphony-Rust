@@ -135,7 +135,8 @@ describe("AiEventStreamCard", () => {
   });
 
   it("names every copy button, including the ones in code blocks and Markdown code", () => {
-    const withCode: AgentEvent = { ...baseEvent, message: "Run this:\n\n```bash\ncargo test\n```" };
+    const text = "Run this:\n\n```bash\ncargo test\n```";
+    const withCode: AgentEvent = { ...baseEvent, message: text, payload: { item: { type: "agentMessage", text } } };
     render(
       <SymphonyDesignProvider themeMode="dark" locale="sv">
         <AiEventStreamCard event={withCode} mode="technical" />
@@ -144,7 +145,8 @@ describe("AiEventStreamCard", () => {
     );
     for (const button of screen.getAllByRole("button")) expect(button).toHaveAccessibleName();
     expect(screen.getByRole("button", { name: "Kopiera händelsetext" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Kopiera kod" }).length).toBeGreaterThanOrEqual(1);
+    // One in the Markdown code of the event, one in the standalone block.
+    expect(screen.getAllByRole("button", { name: "Kopiera kod" })).toHaveLength(2);
   });
 });
 
@@ -207,6 +209,7 @@ const review: PullRequestReview = {
   security_warnings: ["leaked key"],
   merge_readiness: { score: 2, label: "Not ready", evidence: ["Clean merge"], blockers: ["Security warning: leaked key"] },
   reviewed_commit: null,
+  unpushed_changes: false,
   human_approved: false,
   updated_at: "2026-01-01T00:00:00Z"
 };

@@ -30,10 +30,13 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 - **OpenCode approvals**: under an approval policy OpenCode runs through Symphony's own `opencode serve`,
   so its bash, edit and web requests become Symphony approvals instead of running unasked (OpenCode's
   default) or being rejected automatically (`opencode run` with `ask` rules).
+  Requests from sub-agents (OpenCode's `task` tool, in child sessions) are asked too, and their
+  tokens are counted.
 
 - The agent `linear_graphql` tool changes only issues (and their comments) of the configured Linear
   project: each mutation's targets are looked up first, and moving issues to another project or team is
-  refused.
+  refused. The mutation is found the same way the document check finds it, so a fragment definition
+  before it or a default object in its variable definitions cannot make it pass as an unscoped read.
 - Pull request CI also reads GitHub **commit statuses** (Jenkins, Buildkite, older integrations): a red
   status fails the review even when check runs are green.
 - The inspector shows what is running and what needs attention (approvals, failed runs, reviews) while

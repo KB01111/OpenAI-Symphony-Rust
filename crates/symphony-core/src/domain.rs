@@ -839,6 +839,11 @@ pub struct PullRequestReview {
     /// security evidence describe. A pull request whose head moved beyond it is flagged on refresh.
     #[serde(default)]
     pub reviewed_commit: Option<String>,
+    /// Set on the review of a run that continued a task after its pull request was opened: that
+    /// work is not on the pull request until it is published. Reviews stored before this field
+    /// existed read as `false`, so an older published review is never mistaken for one.
+    #[serde(default)]
+    pub unpushed_changes: bool,
 }
 
 impl PullRequestReview {
@@ -851,7 +856,7 @@ impl PullRequestReview {
     /// A pull request exists, but what this review describes was never pushed to it: the task ran
     /// again (continued) after the pull request was opened, and only publishing sends the new work.
     pub fn has_unpushed_changes(&self) -> bool {
-        self.has_pull_request() && self.reviewed_commit.is_none()
+        self.has_pull_request() && self.unpushed_changes
     }
 
     /// Bring a review written before merge facts were measured in line with what is known: it

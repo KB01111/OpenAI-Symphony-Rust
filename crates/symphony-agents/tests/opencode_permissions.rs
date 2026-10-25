@@ -159,8 +159,12 @@ async fn stand_in(listener: TcpListener) -> Arc<Mutex<Seen>> {
                     ("POST", "/session/ses_1/prompt_async") => {
                         // Another session's events are ignored.
                         let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_other" } }));
+                        // The permission comes from a sub-agent (`task` tool) of this session,
+                        // whose own idle does not end the turn.
+                        let _ = events_tx.send(json!({ "type": "session.created", "properties": { "info": { "id": "ses_child", "parentID": session } } }));
+                        let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_child" } }));
                         let _ = events_tx.send(json!({ "type": "permission.asked", "properties": {
-                            "id": "per_1", "sessionID": session, "permission": "bash", "patterns": ["cargo test"],
+                            "id": "per_1", "sessionID": "ses_child", "permission": "bash", "patterns": ["cargo test"],
                             "metadata": { "command": "cargo test" }, "always": ["cargo *"] } }));
                         Value::Null
                     }
@@ -333,6 +337,8 @@ async fn a_supervised_turn_asks_the_gate_and_replies_on_the_server() {
     assert_eq!(asked[0].provider, ProviderKind::OpenCode);
     assert_eq!(asked[0].kind, "command_execution");
     assert_eq!(asked[0].command_or_diff.as_deref(), Some("cargo test"));
+    // Asked by the sub-agent's session, and recorded as such.
+    assert_eq!(asked[0].session_id, "ses_child");
     let reply = reqs
         .iter()
         .find(|(t, _)| t.starts_with("POST /permission/per_1/reply"))

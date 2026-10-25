@@ -71,10 +71,10 @@ export function hasPullRequest(review: { pr_number: number; url: string }): bool
 
 /**
  * A pull request exists but this review's work is not on it: the task ran again after it was
- * opened. Publishing pushes the new commit to the same branch (`reviewed_commit` is set then).
+ * opened (the runtime sets `unpushed_changes`). Publishing pushes it to the same branch.
  */
-export function hasUnpushedChanges(review: { pr_number: number; url: string; reviewed_commit?: string | null }): boolean {
-  return hasPullRequest(review) && !review.reviewed_commit;
+export function hasUnpushedChanges(review: { pr_number: number; url: string; unpushed_changes: boolean }): boolean {
+  return hasPullRequest(review) && review.unpushed_changes;
 }
 
 export type CiTone = "success" | "danger" | "pending";

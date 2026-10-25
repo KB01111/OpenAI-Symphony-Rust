@@ -231,3 +231,88 @@ async fn backup_is_a_consistent_copy_including_uncheckpointed_wal_content() {
         "an existing backup is never overwritten"
     );
 }
+
+/// A database as the previous release (schema 2) left it: migrations 1 and 2 recorded, a task with
+/// a thread baseline and a stored pull-request review. Opening it applies 3 and keeps everything.
+#[tokio::test]
+async fn upgrades_the_previous_schema_without_losing_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("symphony.sqlite");
+    write_legacy_database(&db).await;
+    {
+        let pool = open_raw(&db).await;
+        sqlx::raw_sql(include_str!("../migrations/0002_usage_accounting.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, applied_at TEXT NOT NULL);
+             INSERT INTO schema_migrations (version, name, applied_at) VALUES
+                (1, 'init', '2026-10-22T00:00:00Z'), (2, 'usage_accounting', '2026-10-22T00:00:00Z');
+             UPDATE tasks SET thread_usage_thread_id = 'thread-old', thread_usage_input_tokens = 900,
+                thread_usage_output_tokens = 100, thread_usage_total_tokens = 1000 WHERE id = 't1';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // A review published by the previous release: no `unpushed_changes` in its JSON.
+        let review = serde_json::json!({
+            "id": "pr-t1", "task_id": "t1", "project_id": "p1", "pr_number": 9, "title": "SYM-1: Legacy",
+            "description": "", "url": "https://github.com/acme/widgets/pull/9", "branch_name": "sym-1",
+            "base_branch": "main", "state": "open", "ci_status": "unknown", "mergeable": true,
+            "has_conflicts": false, "changed_files": [], "diff_preview": "", "validation_results": [],
+            "review_comments": [], "security_warnings": [],
+            "merge_readiness": { "score": 4, "label": "x", "evidence": [], "blockers": [] },
+            "human_approved": false, "updated_at": "2026-10-22T00:00:00Z"
+        })
+        .to_string();
+        sqlx::query(
+            "INSERT INTO pull_request_reviews (id, task_id, project_id, pr_number, review_json, updated_at)
+             VALUES ('pr-t1', 't1', 'p1', 9, ?1, '2026-10-22T00:00:00Z')",
+        )
+        .bind(review)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+    }
+
+    let storage = Storage::connect(&db).await.unwrap();
+
+    let task = storage
+        .get_task("t1")
+        .await
+        .unwrap()
+        .expect("task survives");
+    assert_eq!(task.total_tokens, 1000);
+    assert_eq!(
+        task.thread_usage.as_ref().map(|u| u.usage.total_tokens),
+        Some(1000)
+    );
+    let review = storage
+        .get_pr_review("pr-t1")
+        .await
+        .unwrap()
+        .expect("review survives");
+    assert!(review.has_pull_request());
+    assert!(
+        !review.has_unpushed_changes(),
+        "an older published review is not taken for unpublished work"
+    );
+    // The new table works on the upgraded database.
+    storage
+        .set_task_follow_up("t1", "add a test")
+        .await
+        .unwrap();
+    assert_eq!(
+        storage.task_follow_up("t1").await.unwrap().as_deref(),
+        Some("add a test")
+    );
+    let versions: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+    assert_eq!(versions, (1..=SCHEMA_VERSION).collect::<Vec<_>>());
+}

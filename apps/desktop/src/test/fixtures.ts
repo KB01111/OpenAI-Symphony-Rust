@@ -214,6 +214,7 @@ export function pullRequest(overrides: Partial<PullRequestReview> = {}): PullReq
     security_warnings: [],
     merge_readiness: { score: 4, label: "Strong Candidate", evidence: ["Clean merge"], blockers: [] },
     reviewed_commit: null,
+    unpushed_changes: false,
     human_approved: false,
     updated_at: now,
     ...overrides

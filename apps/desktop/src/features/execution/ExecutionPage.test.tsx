@@ -44,6 +44,18 @@ function runtime(current: Task, overrides: Record<string, MockHandler> = {}) {
   });
 }
 
+/**
+ * The open continue dialog, once it is in the accessibility tree: Fluent hides a dialog from it
+ * for a moment while it opens, so a role query right after the click can miss its controls.
+ */
+async function continueDialog() {
+  return waitFor(() => {
+    const dialog = screen.getByRole("dialog");
+    within(dialog).getByRole("textbox");
+    return dialog;
+  });
+}
+
 function renderPage(rt: ReturnType<typeof runtime>) {
   return renderWithProviders(<ExecutionPage />, { runtime: rt, route: "/runs/t1", path: "/runs/:taskId" });
 }
@@ -76,7 +88,7 @@ describe("ExecutionPage", () => {
     });
     renderPage(rt);
     fireEvent.click(await screen.findByRole("button", { name: "Continue…" }));
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await continueDialog();
     const submit = within(dialog).getByRole("button", { name: "Continue run" });
     expect(submit).toBeDisabled();
     fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "  Also handle empty input.  " } });
@@ -105,7 +117,8 @@ describe("ExecutionPage", () => {
     fireEvent.click(screen.getByText("first run"));
     await waitFor(() => expect(screen.queryAllByText(/Second run title/)).toHaveLength(0));
     fireEvent.click(await screen.findByRole("button", { name: "Continue…" }));
-    fireEvent.change(within(await screen.findByRole("dialog")).getByRole("textbox"), { target: { value: "for SYM-1 only" } });
+    // Not by role: Fluent hides the dialog from the accessibility tree for a moment while it opens.
+    fireEvent.change(await screen.findByPlaceholderText(/For example/), { target: { value: "for SYM-1 only" } });
     fireEvent.click(screen.getByText("next run"));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     // Reopened for the second run, it is that run's dialog and starts empty.
@@ -117,7 +130,7 @@ describe("ExecutionPage", () => {
   it("counts instructions in characters as the runtime does, so emoji are not counted twice", async () => {
     renderPage(runtime(task({ status: "human_review" })));
     fireEvent.click(await screen.findByRole("button", { name: "Continue…" }));
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await continueDialog();
     // 10 001 emoji are 20 002 UTF-16 units but 10 001 characters: within the 20 000 limit.
     fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "😀".repeat(10_001) } });
     expect(within(dialog).getByRole("button", { name: "Continue run" })).toBeEnabled();

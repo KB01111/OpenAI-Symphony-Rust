@@ -4053,7 +4053,8 @@
           "merge_readiness",
           "human_approved",
           "updated_at",
-          "reviewed_commit"
+          "reviewed_commit",
+          "unpushed_changes"
         ],
         "properties": {
           "id": {
@@ -4140,6 +4141,10 @@
               "null"
             ],
             "description": "The commit Symphony pushed when it opened the pull request: what the local validation and\nsecurity evidence describe. A pull request whose head moved beyond it is flagged on refresh."
+          },
+          "unpushed_changes": {
+            "type": "boolean",
+            "description": "Set on the review of a run that continued a task after its pull request was opened: that\nwork is not on the pull request until it is published. Reviews stored before this field\nexisted read as `false`, so an older published review is never mistaken for one."
           }
         }
       },

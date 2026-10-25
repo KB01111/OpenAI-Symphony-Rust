@@ -1389,19 +1389,26 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     Some(task.provider),
                     "task/follow_up",
                     None,
+                    // The message is redacted on the way out; a payload would not be.
                     format!("Follow-up instructions: {instructions}"),
-                    Some(json!({ "instructions": instructions })),
+                    None,
                 )
                 .await;
                 Ok(task)
             }
             Err(err) => {
                 // Refused: leave the task's follow-up as this request found it.
-                let _ = match earlier {
+                let restored = match earlier {
                     Some(previous) => self.storage.set_task_follow_up(task_id, &previous).await,
                     None => self.storage.clear_task_follow_up(task_id).await.map(|_| ()),
                 };
-                Err(err)
+                match restored {
+                    Ok(()) => Err(err),
+                    // Say so: the stored instructions are now this refused request's.
+                    Err(restore) => Err(SymphonyError::StorageError(format!(
+                        "{err}; the earlier follow-up instructions could not be restored: {restore}"
+                    ))),
+                }
             }
         }
     }
@@ -1927,22 +1934,30 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .await
             .map_err(|e| with_redacted_message(e, &secrets))?;
 
-        let tracker = GitHubTracker::new(self.github_api_url.clone(), repo, Some(token), None);
-        let body = redact_secrets(
-            &format!(
-                "{}\n\n---\nOpened by Symphony Desktop after explicit human approval of this review (merge readiness {}/5). Nothing is merged automatically.",
-                review.description, review.merge_readiness.score
-            ),
-            &secrets,
-        );
-        let opened = tracker
-            .open_pull_request(&title, &branch, &review.base_branch, &body)
-            .await?;
+        // Updating: the push above already put the work on the open pull request; nothing is
+        // created on GitHub.
+        let (number, html_url, already_existed) = if updating {
+            (review.pr_number, review.url.clone(), true)
+        } else {
+            let tracker = GitHubTracker::new(self.github_api_url.clone(), repo, Some(token), None);
+            let body = redact_secrets(
+                &format!(
+                    "{}\n\n---\nOpened by Symphony Desktop after explicit human approval of this review (merge readiness {}/5). Nothing is merged automatically.",
+                    review.description, review.merge_readiness.score
+                ),
+                &secrets,
+            );
+            let opened = tracker
+                .open_pull_request(&title, &branch, &review.base_branch, &body)
+                .await?;
+            (opened.number, opened.html_url, opened.already_existed)
+        };
 
-        review.pr_number = opened.number;
+        review.pr_number = number;
         review.reviewed_commit = Some(pushed_commit);
-        if !opened.html_url.is_empty() {
-            review.url = opened.html_url.clone();
+        review.unpushed_changes = false;
+        if !html_url.is_empty() {
+            review.url = html_url;
         }
         // A real pull request now exists, so remote CI is real but not yet known.
         review.ci_status = "unknown".to_string();
@@ -1962,7 +1977,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
         // Only the pull request fields: the worker's copy of the task may be stale.
         if let Ok(mut current) = self.get_task(&task.id).await {
-            current.pr_number = Some(opened.number);
+            current.pr_number = Some(number);
             current.pr_url = Some(review.url.clone());
             current.updated_at = Utc::now();
             self.storage.upsert_task(&current).await?;
@@ -1977,20 +1992,20 @@ Please implement the requested changes cleanly in the current Git workspace, run
             if updating {
                 format!(
                     "Pushed the new changes of {} to pull request #{}",
-                    task.issue.identifier, opened.number
+                    task.issue.identifier, number
                 )
-            } else if opened.already_existed {
+            } else if already_existed {
                 format!(
                     "Linked {} to its open pull request #{}",
-                    task.issue.identifier, opened.number
+                    task.issue.identifier, number
                 )
             } else {
                 format!(
                     "Opened pull request #{} for {}",
-                    opened.number, task.issue.identifier
+                    number, task.issue.identifier
                 )
             },
-            Some(json!({ "pr_number": opened.number, "url": review.url, "branch": branch })),
+            Some(json!({ "pr_number": number, "url": review.url, "branch": branch })),
         )
         .await;
         Ok(review)
@@ -3005,7 +3020,21 @@ Please implement the requested changes cleanly in the current Git workspace, run
         // An operator follow-up continues the agent's thread (same worktree) with new instructions.
         // It stays stored until the agent has started with it: an attempt that fails before that,
         // or a restart, leaves it for the next attempt of this task.
-        let follow_up = self.storage.task_follow_up(&task.id).await.ok().flatten();
+        let follow_up = match self.storage.task_follow_up(&task.id).await {
+            Ok(found) => found,
+            Err(err) => {
+                // Never fall back to the plain prompt: the run would end without what was asked.
+                // The instructions stay stored for the next attempt.
+                self.finish_failed_attempt(
+                    &mut task,
+                    &mut attempt_record,
+                    RunAttemptPhase::Failed,
+                    format!("could not read the follow-up instructions: {err}"),
+                )
+                .await;
+                return;
+            }
+        };
         let delivers_follow_up = follow_up.is_some();
         if let Some(instructions) = follow_up {
             first_turn_prompt = render_follow_up_prompt(
@@ -3135,10 +3164,6 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 return;
             }
         };
-        if delivers_follow_up {
-            // The first turn below sends it.
-            let _ = self.storage.clear_task_follow_up(&task.id).await;
-        }
 
         // 5. Multi-turn execution loop (up to `agent.max_turns`, SPEC.md Section 7.1)
         let max_turns = config.agent.max_turns.max(1);
@@ -3152,6 +3177,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 return;
             }
 
+            if turn_number == 1 && delivers_follow_up {
+                // Sent right below: from here on the instructions belong to this attempt. A cancel
+                // or failed start before this point leaves them for the next one.
+                let _ = self.storage.clear_task_follow_up(&task.id).await;
+            }
             let prompt = if turn_number == 1 {
                 first_turn_prompt.clone()
             } else {
@@ -3381,7 +3411,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
             }
         }
         // A continued task already has a pull request; this run's work is not on it until pushed.
-        if let Some(number) = task.pr_number.filter(|n| *n > 0) {
+        let continued_pr = task.pr_number.filter(|n| *n > 0);
+        if let Some(number) = continued_pr {
             demote_readiness(&mut merge_readiness, unpushed_changes_blocker(number));
         }
 
@@ -3419,6 +3450,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             human_approved: false,
             updated_at: Utc::now(),
             reviewed_commit: None,
+            unpushed_changes: continued_pr.is_some(),
         };
         let _ = self.storage.upsert_pr_review(&pr_review).await;
 
@@ -4466,7 +4498,22 @@ rl.on('line', (line) => {
         let pushed = orch.create_pull_request(&review.id).await.unwrap();
         assert_eq!(pushed.pr_number, 42);
         assert!(!pushed.has_unpushed_changes());
-        assert!(requests.lock().unwrap().len() > calls_before);
+        // The push updates #42; nothing is created on GitHub.
+        assert_eq!(requests.lock().unwrap().len(), calls_before);
+        let branch = task.branch_name.clone().unwrap();
+        let head = std::process::Command::new("git")
+            .args([
+                "-C",
+                temp.path().join("origin.git").to_str().unwrap(),
+                "rev-parse",
+                &format!("refs/heads/{branch}"),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&head.stdout).trim(),
+            pushed.reviewed_commit.as_deref().unwrap()
+        );
         let events = orch.list_events(Some(&task.id), 200).await.unwrap();
         assert!(events
             .iter()
@@ -4521,9 +4568,14 @@ rl.on('line', (line) => {
             "conflict"
         );
         let events = orch.list_events(Some(&done.id), 200).await.unwrap();
-        assert!(events
+        let recorded = events
             .iter()
-            .any(|e| e.event_type == "task/follow_up" && e.message.contains("empty input")));
+            .find(|e| e.event_type == "task/follow_up" && e.message.contains("empty input"))
+            .expect("the follow-up is in the activity log");
+        assert!(
+            recorded.payload.is_none(),
+            "only the redacted message holds the text"
+        );
         // Taken by the attempt: later attempts do not repeat the instructions.
         assert_eq!(orch.storage.task_follow_up(&done.id).await.unwrap(), None);
 

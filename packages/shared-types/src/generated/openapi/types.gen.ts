@@ -521,6 +521,12 @@ export type PullRequestReview = {
      * security evidence describe. A pull request whose head moved beyond it is flagged on refresh.
      */
     reviewed_commit: string | null;
+    /**
+     * Set on the review of a run that continued a task after its pull request was opened: that
+     * work is not on the pull request until it is published. Reviews stored before this field
+     * existed read as `false`, so an older published review is never mistaken for one.
+     */
+    unpushed_changes: boolean;
 };
 
 /**
