@@ -624,11 +624,34 @@ mod tests {
         path
     }
 
+    /// Tests that write and run fake CLIs take this lock, so one does not fork while another still
+    /// has a freshly written script open for writing.
+    #[cfg(unix)]
+    static FAKE_CLI_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// A probe that is expected to succeed, retried briefly: a thread outside the lock that forks
+    /// while a script is being written makes its exec fail once with ETXTBSY.
+    #[cfg(unix)]
+    async fn eventually<F, Fut>(probe: F) -> Option<DiscoveredModels>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Option<DiscoveredModels>>,
+    {
+        for _ in 0..10 {
+            if let Some(found) = probe().await {
+                return Some(found);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        None
+    }
+
     /// The exchange with a real process: initialize, initialized, then `model/list` pages until the
     /// cursor ends, skipping notifications; the app-server exits when stdin closes.
     #[cfg(unix)]
     #[tokio::test]
     async fn codex_catalogue_is_read_from_the_app_server_across_pages() {
+        let _serial = FAKE_CLI_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let codex = fake_cli(
             dir.path(),
@@ -645,7 +668,9 @@ while IFS= read -r line; do
 done
 "#,
         );
-        let found = discover_codex_models(&codex).await.expect("catalogue");
+        let found = eventually(|| discover_codex_models(&codex))
+            .await
+            .expect("catalogue");
         assert_eq!(found.models, ["m-b", "m-a", "m-c"]);
         assert_eq!(found.default.as_deref(), Some("m-b"));
         assert!(found.known.contains("m-hidden"));
@@ -654,6 +679,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn a_cli_without_a_model_listing_reports_nothing() {
+        let _serial = FAKE_CLI_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let codex = fake_cli(
             dir.path(),
@@ -673,7 +699,9 @@ done
             "[ \"$1\" = models ] && printf 'x/y\\nx/z\\n'\n",
         );
         assert_eq!(
-            discover_opencode_models(&opencode).await.map(|d| d.models),
+            eventually(|| discover_opencode_models(&opencode))
+                .await
+                .map(|d| d.models),
             Some(vec!["x/y".to_string(), "x/z".to_string()])
         );
     }
