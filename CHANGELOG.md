@@ -15,13 +15,16 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   binary and version (a forced refresh re-reads it). A configured provider default that the CLI no
   longer accepts is no longer offered as the model of new tasks; the provider status says which model
   is used instead (a model already saved on a project or task is still passed as it is). Claude
-  Code offers its aliases (`opus`, `sonnet`, `haiku`, `fable`) and the current model ids.
+  Code offers its aliases (`opus`, `sonnet`, `haiku`, `fable`) and the current model ids; a
+  configured default that is not a Claude model (such as an older settings file's `gpt-5-codex`) is
+  not offered for it.
 - **Continue a run**: *Continue…* on a task in review, failed or completed sends follow-up instructions;
   the agent resumes its conversation in the same worktree and the result is reviewed again
   (`POST /api/v1/tasks/{id}/continue`, local only). The instructions are stored (schema migration 3)
-  until the agent has started with them, so a restart does not lose them; a plain *Retry* drops them.
-  If the task already has a pull request, the new review links it, says the work is not on it yet
-  and offers *Push changes to #N*, which pushes the branch and so updates that pull request.
+  until the agent's first turn with them has finished, so a restart does not lose them; a plain
+  *Retry* drops them. If the task already has a pull request, the new review links it, says the work
+  is not on it yet and offers *Push changes to #N*, which pushes the branch and so updates that pull
+  request; if it has been merged or closed in the meantime, a new pull request is opened instead.
 - **Older activity**: the run timeline loads older events on request (`GET /api/v1/tasks/{id}/events?before=<event id>`,
   a cursor that neither skips nor repeats events with equal timestamps).
 - **Claude Code approvals**: Claude Code runs as a host-controlled session, so tool uses its permission
@@ -31,12 +34,15 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   so its bash, edit and web requests become Symphony approvals instead of running unasked (OpenCode's
   default) or being rejected automatically (`opencode run` with `ask` rules).
   Requests from sub-agents (OpenCode's `task` tool, in child sessions) are asked too, and their
-  tokens are counted.
+  tokens are counted; a session the turn did not see start (a resumed session's earlier sub-agents)
+  is looked up along its parents.
 
 - The agent `linear_graphql` tool changes only issues (and their comments) of the configured Linear
   project: each mutation's targets are looked up first, and moving issues to another project or team is
   refused. The mutation is found the same way the document check finds it, so a fragment definition
-  before it or a default object in its variable definitions cannot make it pass as an unscoped read.
+  before it or a default object in its variable definitions cannot make it pass as an unscoped read,
+  and a variable it uses must be passed in `variables` when the operation declares a default for it
+  (Linear would apply the unchecked default).
 - Pull request CI also reads GitHub **commit statuses** (Jenkins, Buildkite, older integrations): a red
   status fails the review even when check runs are green.
 - The inspector shows what is running and what needs attention (approvals, failed runs, reviews) while

@@ -222,12 +222,25 @@ impl Server {
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value> {
+        self.call(reqwest::Method::POST, path, Some(body)).await
+    }
+
+    async fn get(&self, path: &str) -> Result<Value> {
+        self.call(reqwest::Method::GET, path, None).await
+    }
+
+    async fn call(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
         let exchange = async {
-            let resp = self
-                .request(reqwest::Method::POST, path)
-                .json(&body)
-                .send()
-                .await?;
+            let mut request = self.request(method, path);
+            if let Some(body) = &body {
+                request = request.json(body);
+            }
+            let resp = request.send().await?;
             let status = resp.status();
             Ok::<_, reqwest::Error>((status, resp.text().await?))
         };
@@ -294,6 +307,50 @@ fn protocol_error(code: &str, e: impl std::fmt::Display) -> SymphonyError {
     }
 }
 
+/// How many `parentID` links a session lookup follows before it gives up.
+const MAX_SESSION_DEPTH: usize = 8;
+
+/// Whether `id` is a sub-agent session under one of `sessions`, asked from the server. Sessions
+/// that existed before this turn (a resumed session's earlier sub-agents) announce no
+/// `session.created`, and their permission requests must still reach the approval gate. The chain
+/// found is added to `sessions`; a session that leads elsewhere is remembered in `foreign`.
+async fn session_belongs(
+    server: &Server,
+    id: &str,
+    sessions: &mut HashSet<String>,
+    foreign: &mut HashSet<String>,
+) -> bool {
+    if sessions.contains(id) {
+        return true;
+    }
+    let mut chain = Vec::new();
+    let mut current = id.to_string();
+    let belongs = loop {
+        if foreign.contains(&current) || chain.len() >= MAX_SESSION_DEPTH {
+            break false;
+        }
+        let parent = match server.get(&format!("/session/{current}")).await {
+            Ok(info) => info
+                .get("parentID")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            Err(_) => None,
+        };
+        chain.push(current);
+        match parent {
+            Some(parent) if sessions.contains(&parent) => break true,
+            Some(parent) => current = parent,
+            None => break false,
+        }
+    };
+    if belongs {
+        sessions.extend(chain);
+    } else {
+        foreign.extend(chain);
+    }
+    belongs
+}
+
 fn event_session(props: &Value) -> Option<&str> {
     props
         .get("sessionID")
@@ -349,6 +406,7 @@ impl OpenCodeSession {
         // This turn's session and the sub-agent sessions it starts (OpenCode's `task` tool): their
         // permission requests and token use belong to this turn too.
         let mut sessions: HashSet<String> = HashSet::from([session_id.clone()]);
+        let mut foreign: HashSet<String> = HashSet::new();
         loop {
             let event = match tokio::time::timeout_at(deadline, events.recv()).await {
                 Ok(Some(event)) => event,
@@ -375,12 +433,12 @@ impl OpenCodeSession {
                     }
                 }
             }
-            let Some(event_session_id) = event_session(&props)
-                .filter(|id| sessions.contains(*id))
-                .map(str::to_string)
-            else {
+            let Some(event_session_id) = event_session(&props).map(str::to_string) else {
                 continue;
             };
+            if !session_belongs(&server, &event_session_id, &mut sessions, &mut foreign).await {
+                continue;
+            }
             let root = event_session_id == session_id;
             match event
                 .get("type")

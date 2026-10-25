@@ -324,6 +324,20 @@ fn selection_set_start(tokens: &[Token]) -> usize {
     tokens.len()
 }
 
+/// Whether an operation header declares a default (`$name: Type = …`) for `$name`.
+fn variable_has_default(header: &[Token], name: &str) -> bool {
+    let Some(at) = header
+        .windows(2)
+        .position(|w| matches!(w, [Token::Punct('$'), Token::Name(n)] if n == name))
+    else {
+        return false;
+    };
+    header[at + 2..]
+        .iter()
+        .take_while(|t| !matches!(t, Token::Punct('$')))
+        .any(|t| matches!(t, Token::Punct('=')))
+}
+
 fn check_linear_mutation(tokens: &[Token]) -> Result<(), String> {
     let mut i = selection_set_start(tokens);
     let (mut depth, mut parens) = (0i32, 0i32);
@@ -423,7 +437,9 @@ pub fn linear_mutation_targets(
     let mut targets = Vec::new();
     // Skip the operation header (its variable definitions are not arguments), then read only this
     // operation's selection set.
-    let mut i = selection_set_start(tokens);
+    let header_end = selection_set_start(tokens);
+    let header = &tokens[..header_end];
+    let mut i = header_end;
     let (mut parens, mut depth) = (0i32, 0i32);
     while i < tokens.len() {
         match &tokens[i] {
@@ -448,7 +464,16 @@ pub fn linear_mutation_targets(
                 match (tokens.get(i + 2), tokens.get(i + 3)) {
                     (Some(Token::Str(id)), _) if target_key => targets.push(id.clone()),
                     (Some(Token::Punct('$')), Some(Token::Name(variable))) => {
-                        let value = variables.get(variable).cloned().unwrap_or(Value::Null);
+                        let value = match variables.get(variable) {
+                            Some(value) => value.clone(),
+                            // Linear would apply the header's default, which is not checked here.
+                            None if variable_has_default(header, variable) => {
+                                return Err(format!(
+                                    "variable `${variable}` has a default value; pass it in `variables` so it can be checked"
+                                ))
+                            }
+                            None => Value::Null,
+                        };
                         match value {
                             Value::String(id) if target_key => targets.push(id),
                             _ if target_key => {
@@ -671,6 +696,21 @@ mod tests {
             ),
             Ok(Some(vec!["ENG-8".to_string()]))
         );
+        // A default the caller does not pass is not checked, so the mutation is refused: it could
+        // move the issue or name a target in another project.
+        for (query, variables) in [
+            ("mutation U($in: IssueUpdateInput = { projectId: \"other\" }) { issueUpdate(id: \"ENG-1\", input: $in) { success } }", json!({})),
+            ("mutation C($in: CommentCreateInput = { issueId: \"FOREIGN-1\", body: \"x\" }) { a: commentCreate(input: { issueId: \"ENG-1\", body: \"y\" }) { success } b: commentCreate(input: $in) { success } }", json!({})),
+        ] {
+            assert!(linear(query).is_ok(), "a valid document: {query}");
+            assert!(targets(query, variables).is_err(), "must be refused: {query}");
+        }
+        // Passed explicitly, the same variable is checked as usual.
+        assert!(targets(
+            "mutation U($in: IssueUpdateInput = { projectId: \"other\" }) { issueUpdate(id: \"ENG-1\", input: $in) { success } }",
+            json!({ "in": { "projectId": "other" } })
+        )
+        .is_err());
         // A query after a fragment stays an unscoped read.
         assert_eq!(
             targets(

@@ -157,14 +157,18 @@ async fn stand_in(listener: TcpListener) -> Arc<Mutex<Seen>> {
                 let answer = match (method.as_str(), path.as_str()) {
                     ("POST", "/session") => json!({ "id": session }),
                     ("POST", "/session/ses_1/prompt_async") => {
-                        // Another session's events are ignored.
-                        let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_other" } }));
-                        // The permission comes from a sub-agent (`task` tool) of this session,
-                        // whose own idle does not end the turn.
+                        // Another session's events are ignored (it is looked up once).
+                        for _ in 0..2 {
+                            let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_other" } }));
+                        }
+                        // A sub-agent (`task` tool) of this session: its own idle does not end
+                        // the turn.
                         let _ = events_tx.send(json!({ "type": "session.created", "properties": { "info": { "id": "ses_child", "parentID": session } } }));
                         let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_child" } }));
+                        // The permission comes from the sub-agent of a sub-agent that existed
+                        // before this turn, so no `session.created` announced either.
                         let _ = events_tx.send(json!({ "type": "permission.asked", "properties": {
-                            "id": "per_1", "sessionID": "ses_child", "permission": "bash", "patterns": ["cargo test"],
+                            "id": "per_1", "sessionID": "ses_grand", "permission": "bash", "patterns": ["cargo test"],
                             "metadata": { "command": "cargo test" }, "always": ["cargo *"] } }));
                         Value::Null
                     }
@@ -185,6 +189,11 @@ async fn stand_in(listener: TcpListener) -> Arc<Mutex<Seen>> {
                         json!(true)
                     }
                     ("POST", "/session/ses_1/abort") => json!(true),
+                    ("GET", "/session/ses_grand") => {
+                        json!({ "id": "ses_grand", "parentID": "ses_old" })
+                    }
+                    ("GET", "/session/ses_old") => json!({ "id": "ses_old", "parentID": session }),
+                    ("GET", "/session/ses_other") => json!({ "id": "ses_other" }),
                     _ => json!({ "error": "unexpected" }),
                 };
                 let text = answer.to_string();
@@ -338,7 +347,14 @@ async fn a_supervised_turn_asks_the_gate_and_replies_on_the_server() {
     assert_eq!(asked[0].kind, "command_execution");
     assert_eq!(asked[0].command_or_diff.as_deref(), Some("cargo test"));
     // Asked by the sub-agent's session, and recorded as such.
-    assert_eq!(asked[0].session_id, "ses_child");
+    assert_eq!(asked[0].session_id, "ses_grand");
+    // Unannounced sessions are looked up along their parents, each once; announced ones are not.
+    let lookups: Vec<&str> = reqs
+        .iter()
+        .filter_map(|(t, _)| t.strip_prefix("GET /session/"))
+        .map(|t| t.split('?').next().unwrap())
+        .collect();
+    assert_eq!(lookups, ["ses_other", "ses_grand", "ses_old"]);
     let reply = reqs
         .iter()
         .find(|(t, _)| t.starts_with("POST /permission/per_1/reply"))

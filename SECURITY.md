@@ -74,7 +74,8 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
        comment a mutation names (`id`/`issueId`, as a string or a variable, also inside input objects)
        is looked up first and must belong to the project's `slugId`; a mutation whose targets cannot
        all be read, or that sets `projectId`/`teamId`/`projectMilestoneId`, is refused before it is
-       sent. **Limit**: Linear's key is workspace-wide and *reads* are not confined, so an agent can
+       sent; so is one that uses a variable with a default the call does not pass (Linear would apply
+       the unchecked default). **Limit**: Linear's key is workspace-wide and *reads* are not confined, so an agent can
        read other projects' issues the key can see (audit SEC-03).
      - Refused calls fail with a structured error and never reach the network; the session continues.
        The agent-facing GitHub client never follows redirects.

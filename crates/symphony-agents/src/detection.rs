@@ -458,6 +458,19 @@ fn apply_discovered_models(
     discovered: Option<DiscoveredModels>,
 ) -> Option<String> {
     let Some(discovered) = discovered else {
+        // Claude Code never lists its models, but a name that is not a Claude model (a settings
+        // file from before per-provider defaults still holds `gpt-5-codex`) fails every run.
+        if capabilities.provider == ProviderKind::ClaudeCode {
+            if let Some(model) = configured_default.as_deref() {
+                if !is_claude_model(&capabilities.models, model) {
+                    capabilities.status_message = format!(
+                        "{} · Configured default model `{model}` is not a Claude model; using the CLI's default.",
+                        capabilities.status_message
+                    );
+                    return None;
+                }
+            }
+        }
         // Without a catalogue, no built-in id is forced on the CLI (it may be stale or cost more
         // than the CLI's own choice); only the deterministic test agent has a fixed model.
         return configured_default.or_else(|| {
@@ -485,6 +498,12 @@ fn apply_discovered_models(
         }
         None => fallback,
     }
+}
+
+/// A model name Claude Code accepts: one of its aliases, or an id naming a Claude model (also the
+/// Bedrock and Vertex forms, such as `us.anthropic.claude-…`).
+fn is_claude_model(aliases: &[String], model: &str) -> bool {
+    aliases.iter().any(|alias| alias == model) || model.to_ascii_lowercase().contains("claude")
 }
 
 /// Detect a single provider's installation, version, authentication, and capabilities.
@@ -657,6 +676,26 @@ mod tests {
         // Without a catalogue no built-in id is forced on the CLI; the test agent keeps its model.
         let mut caps = ProviderKind::ClaudeCode.default_capabilities();
         assert_eq!(apply_discovered_models(&mut caps, None, None), None);
+        // Claude Code keeps its aliases and Claude ids, but not another provider's model.
+        for model in [
+            "sonnet",
+            "claude-opus-5-5",
+            "us.anthropic.claude-sonnet-5-5-v1:0",
+        ] {
+            let mut caps = ProviderKind::ClaudeCode.default_capabilities();
+            assert_eq!(
+                apply_discovered_models(&mut caps, Some(model.into()), None).as_deref(),
+                Some(model)
+            );
+        }
+        let mut caps = ProviderKind::ClaudeCode.default_capabilities();
+        assert_eq!(
+            apply_discovered_models(&mut caps, Some("gpt-5-codex".into()), None),
+            None
+        );
+        assert!(caps
+            .status_message
+            .contains("`gpt-5-codex` is not a Claude model"));
         let mut caps = ProviderKind::Simulated.default_capabilities();
         assert_eq!(
             apply_discovered_models(&mut caps, None, None).as_deref(),

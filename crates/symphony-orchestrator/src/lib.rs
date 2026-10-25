@@ -1821,7 +1821,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         if review.has_pull_request() && !review.has_unpushed_changes() {
             return Ok(review);
         }
-        let updating = review.has_pull_request();
+        let mut updating = review.has_pull_request();
         let task = self.get_task(&review.task_id).await?;
         if !matches!(task.status, TaskStatus::HumanReview | TaskStatus::Completed) {
             return Err(SymphonyError::Conflict(format!(
@@ -1904,6 +1904,24 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 review.base_branch,
                 files.join(", ")
             )));
+        }
+
+        // An update goes to the recorded pull request only while it is still open on this branch;
+        // pushing to a merged or closed one would publish the work nowhere. Then a new pull request
+        // is opened for it instead.
+        if updating {
+            let details = GitHubTracker::new(
+                self.github_api_url.clone(),
+                repo.clone(),
+                Some(token.clone()),
+                None,
+            )
+            .fetch_pull_request_details(review.pr_number)
+            .await
+            .map_err(|e| with_redacted_message(e, &self.secret_store.all_secret_values()))?;
+            if details.merged || details.state != "open" || details.head_ref != branch {
+                updating = false;
+            }
         }
 
         // The token is only ever sent to the repository this project is configured for.
@@ -3177,11 +3195,6 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 return;
             }
 
-            if turn_number == 1 && delivers_follow_up {
-                // Sent right below: from here on the instructions belong to this attempt. A cancel
-                // or failed start before this point leaves them for the next one.
-                let _ = self.storage.clear_task_follow_up(&task.id).await;
-            }
             let prompt = if turn_number == 1 {
                 first_turn_prompt.clone()
             } else {
@@ -3234,6 +3247,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
             match outcome_res {
                 Ok(outcome) => {
+                    if turn_number == 1 && delivers_follow_up {
+                        // The agent took the instructions and ran a turn on them. Until here a
+                        // cancel, a refused prompt or a restart leaves them for the next attempt.
+                        let _ = self.storage.clear_task_follow_up(&task.id).await;
+                    }
                     task.current_thread_id = Some(outcome.thread_id.clone());
                     task.current_turn_id = Some(outcome.turn_id.clone());
                     task.current_session_id = Some(outcome.session_id.clone());
@@ -4461,10 +4479,51 @@ rl.on('line', (line) => {
         );
     }
 
+    /// The stand-in GitHub for continued pull requests: `POST` opens #42 then #43; #42 is served
+    /// with the state and head branch in `pr42`.
+    async fn continued_pr_github(
+        pr42: Arc<std::sync::Mutex<(String, bool, String)>>,
+    ) -> (
+        String,
+        Arc<std::sync::Mutex<Vec<(String, String, String, String)>>>,
+    ) {
+        let opened = Arc::new(std::sync::atomic::AtomicU64::new(42));
+        github_mock_with(Arc::new(move |method: &str, target: &str| {
+            let path = target.split('?').next().unwrap_or(target);
+            let payload = match (method, path) {
+                ("POST", "/repos/acme/widgets/pulls") => {
+                    let n = opened.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    json!({ "number": n, "html_url": format!("https://github.com/acme/widgets/pull/{n}") })
+                }
+                (_, "/repos/acme/widgets/pulls/42") => {
+                    let (state, merged, head) = pr42.lock().unwrap().clone();
+                    json!({
+                        "number": 42, "title": "t", "body": "b", "state": state, "merged": merged,
+                        "html_url": "https://github.com/acme/widgets/pull/42",
+                        "head": { "ref": head, "sha": "x" }, "base": { "ref": "main" },
+                        "mergeable": true, "mergeable_state": "clean"
+                    })
+                }
+                (_, p) if p.contains("/check-runs") => json!({ "check_runs": [] }),
+                (_, p) if p.ends_with("/status") => {
+                    json!({ "state": "pending", "statuses": [], "total_count": 0 })
+                }
+                _ => json!([]),
+            };
+            ("200 OK".to_string(), payload)
+        }))
+        .await
+    }
+
     #[tokio::test]
     async fn test_continuing_a_task_with_an_open_pull_request_pushes_the_new_work_to_it() {
         let temp = TempDir::new().unwrap();
-        let (api, requests) = github_mock(None).await;
+        let pr42 = Arc::new(std::sync::Mutex::new((
+            "open".to_string(),
+            false,
+            String::new(),
+        )));
+        let (api, requests) = continued_pr_github(pr42.clone()).await;
         let (orch, task, review) = finished_run(
             &temp,
             Some("acme/widgets"),
@@ -4472,7 +4531,10 @@ rl.on('line', (line) => {
             &api,
         )
         .await;
+        let branch = task.branch_name.clone().unwrap();
+        pr42.lock().unwrap().2 = branch.clone();
         let opened = orch.create_pull_request(&review.id).await.unwrap();
+        assert_eq!(opened.pr_number, 42);
         assert!(!opened.has_unpushed_changes());
 
         orch.continue_task(&task.id, "Also update the changelog.")
@@ -4494,13 +4556,15 @@ rl.on('line', (line) => {
             .iter()
             .any(|b| b.contains("not on pull request #42 yet")));
 
-        let calls_before = requests.lock().unwrap().len();
+        let posts = |log: &[(String, String, String, String)]| {
+            log.iter().filter(|(m, ..)| m == "POST").count()
+        };
+        let posts_before = posts(&requests.lock().unwrap());
         let pushed = orch.create_pull_request(&review.id).await.unwrap();
         assert_eq!(pushed.pr_number, 42);
         assert!(!pushed.has_unpushed_changes());
-        // The push updates #42; nothing is created on GitHub.
-        assert_eq!(requests.lock().unwrap().len(), calls_before);
-        let branch = task.branch_name.clone().unwrap();
+        // #42 is still open on this branch: the push updates it, nothing is created.
+        assert_eq!(posts(&requests.lock().unwrap()), posts_before);
         let head = std::process::Command::new("git")
             .args([
                 "-C",
@@ -4522,6 +4586,44 @@ rl.on('line', (line) => {
         let calls = requests.lock().unwrap().len();
         orch.create_pull_request(&review.id).await.unwrap();
         assert_eq!(requests.lock().unwrap().len(), calls);
+    }
+
+    #[tokio::test]
+    async fn test_continued_work_after_its_pull_request_was_merged_gets_a_new_one() {
+        let temp = TempDir::new().unwrap();
+        let pr42 = Arc::new(std::sync::Mutex::new((
+            "open".to_string(),
+            false,
+            String::new(),
+        )));
+        let (api, _requests) = continued_pr_github(pr42.clone()).await;
+        let (orch, task, review) = finished_run(
+            &temp,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        pr42.lock().unwrap().2 = task.branch_name.clone().unwrap();
+        assert_eq!(
+            orch.create_pull_request(&review.id)
+                .await
+                .unwrap()
+                .pr_number,
+            42
+        );
+        // Someone merges #42; the task is then continued.
+        *pr42.lock().unwrap() = ("closed".into(), true, task.branch_name.clone().unwrap());
+        orch.continue_task(&task.id, "One more fix.").await.unwrap();
+        wait_for_status(&orch, &task.id, &[TaskStatus::HumanReview]).await;
+
+        let published = orch.create_pull_request(&review.id).await.unwrap();
+        assert_eq!(
+            published.pr_number, 43,
+            "a new pull request, not merged #42"
+        );
+        assert!(!published.has_unpushed_changes());
+        assert_eq!(orch.get_task(&task.id).await.unwrap().pr_number, Some(43));
     }
 
     #[tokio::test]
@@ -4576,14 +4678,21 @@ rl.on('line', (line) => {
             recorded.payload.is_none(),
             "only the redacted message holds the text"
         );
-        // Taken by the attempt: later attempts do not repeat the instructions.
-        assert_eq!(orch.storage.task_follow_up(&done.id).await.unwrap(), None);
+        // Mid-turn the instructions are still stored: a cancel or restart now keeps them.
+        assert!(orch
+            .storage
+            .task_follow_up(&done.id)
+            .await
+            .unwrap()
+            .is_some());
 
         orch.resolve_approval(&approval.id, ApprovalDecision::Accept)
             .await
             .unwrap();
         let again = wait_for_status(&orch, &done.id, &[TaskStatus::HumanReview]).await;
         assert_eq!(again.workspace_path, done.workspace_path, "same worktree");
+        // Taken once the turn ran on them: later attempts do not repeat the instructions.
+        assert_eq!(orch.storage.task_follow_up(&done.id).await.unwrap(), None);
     }
 
     #[tokio::test]
