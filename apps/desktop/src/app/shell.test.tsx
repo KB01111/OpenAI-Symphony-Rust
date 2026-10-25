@@ -1,8 +1,8 @@
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AppRoutes } from "./AppRouter.js";
 import { createMockRuntime, renderWithProviders } from "../test/renderWithProviders.js";
-import { approval, settings, snapshot } from "../test/fixtures.js";
+import { approval, settings, snapshot, task } from "../test/fixtures.js";
 import { useUiStore } from "../store/uiStore.js";
 
 function runtime() {
@@ -41,5 +41,26 @@ describe("Desktop shell", () => {
     const link = await screen.findByRole("link", { name: "Projects" });
     expect(link).not.toHaveTextContent("Projects");
     useUiStore.getState().setSidebarCollapsed(false);
+  });
+  it("shows what runs and what needs attention while nothing is inspected, and opens it on click", async () => {
+    useUiStore.getState().inspect(null);
+    useUiStore.getState().setInspectorOpen(true);
+    const failed = task({ id: "t-failed", identifier: "SYM-7", status: "failed", last_error: "tests failed" });
+    const rt = createMockRuntime({
+      "GET /state": () => snapshot(),
+      "GET /settings": () => settings(),
+      "GET /projects": () => [],
+      "GET /tasks": () => [failed],
+      "GET /tasks/:id": () => failed,
+      "GET /approvals": () => [approval({ issue_identifier: "SYM-3" })],
+      "GET /providers": () => []
+    });
+    renderWithProviders(<AppRoutes />, { runtime: rt, route: "/settings" });
+    const inspector = await screen.findByRole("complementary", { name: "Inspector" });
+    expect(within(inspector).getByText("No agent is running.")).toBeInTheDocument();
+    expect(await within(inspector).findByText("SYM-3 is waiting for approval")).toBeInTheDocument();
+    fireEvent.click(await within(inspector).findByText("SYM-7 failed"));
+    await waitFor(() => expect(useUiStore.getState().inspector).toEqual({ kind: "task", id: "t-failed" }));
+    useUiStore.getState().inspect(null);
   });
 });

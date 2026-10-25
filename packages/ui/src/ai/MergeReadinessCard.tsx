@@ -144,7 +144,7 @@ export const MergeReadinessCard: React.FC<MergeReadinessCardProps> = ({ review, 
               )}
               {row.label}
             </dt>
-            <dd className="mt-0.5 truncate text-sm font-medium text-foreground">{row.value}</dd>
+            <dd className="mt-0.5 line-clamp-2 text-sm font-medium [overflow-wrap:anywhere] text-foreground" title={typeof row.value === "string" ? row.value : undefined}>{row.value}</dd>
           </div>
         ))}
       </dl>

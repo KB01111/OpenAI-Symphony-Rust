@@ -200,7 +200,7 @@ export const ChangesPanel: React.FC<{ task: Task; liveSince?: string | null }> =
         selectedValue={tab}
         onTabSelect={(_, d) => setTab(d.value as RightTab)}
         aria-label={m.changes.tabs}
-        className="shrink-0 border-b border-border px-1"
+        className="shrink-0 flex-nowrap overflow-x-auto border-b border-border px-1 [scrollbar-width:none]"
       >
         <Tab value="changes">{m.changes.changes}</Tab>
         <Tab value="validation">{m.changes.validation}</Tab>

@@ -65,7 +65,7 @@ const TaskApprovals: React.FC<{ taskId: string }> = ({ taskId }) => {
   }
   if (list.length === 0) return null;
   return (
-    <section aria-label={m.timeline.approvals} className="max-h-[45%] shrink-0 space-y-2 overflow-auto border-b border-border p-2">
+    <section aria-label={m.timeline.approvals} className="max-h-[60%] shrink-0 space-y-2 overflow-auto border-b border-border p-2">
       {list.map((a) => (
         <AiApprovalBanner key={a.id} approval={a} pendingDecision={pending[a.id] ?? null} onDecide={onDecide} />
       ))}

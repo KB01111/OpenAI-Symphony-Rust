@@ -48,14 +48,20 @@ export const KeyValueList: React.FC<{ items: ReadonlyArray<{ label: string; valu
   items,
   className
 }) => (
-  <dl className={cn("grid grid-cols-[minmax(96px,auto)_1fr] gap-x-3 gap-y-1.5 text-sm", className)}>
-    {items.map((item) => (
-      <React.Fragment key={item.label}>
-        <dt className="text-muted-foreground">{item.label}</dt>
-        <dd className={cn("min-w-0 break-words text-foreground", item.mono && "font-mono text-xs leading-5")}>{item.value ?? "—"}</dd>
-      </React.Fragment>
-    ))}
-  </dl>
+  // Side by side when there is room; in a narrow panel the label sits above its value, so long
+  // values (paths, branches, model ids) keep a readable width instead of wrapping per character.
+  <div className={cn("@container", className)}>
+    <dl className="grid grid-cols-1 gap-x-3 gap-y-0.5 text-sm @[17rem]:grid-cols-[minmax(96px,max-content)_minmax(0,1fr)] @[17rem]:gap-y-1.5">
+      {items.map((item) => (
+        <React.Fragment key={item.label}>
+          <dt className="text-xs text-muted-foreground @[17rem]:text-sm">{item.label}</dt>
+          <dd className={cn("mb-1.5 min-w-0 [overflow-wrap:anywhere] text-foreground @[17rem]:mb-0", item.mono && "font-mono text-xs leading-5")}>
+            {item.value ?? "—"}
+          </dd>
+        </React.Fragment>
+      ))}
+    </dl>
+  </div>
 );
 
 function relativeTime(iso: string, now: number, locale: ReturnType<typeof getTranslations>): string {

@@ -222,7 +222,7 @@ export const ActivityDrawer: React.FC<{ collapsed: boolean; onToggle: () => void
 
   return (
     <section aria-label={m.drawer.label} className="flex h-full min-h-0 flex-col border-t border-border bg-surface">
-      <header className="flex h-8 shrink-0 items-center gap-2 px-1">
+      <header className="flex h-9 shrink-0 items-center gap-2 overflow-hidden border-b border-border px-1">
         <TabList size="small" selectedValue={tab} onTabSelect={(_, d) => setTab(d.value as DrawerTab)} aria-label={m.drawer.label}>
           {tabs.map((x) => (
             <Tab key={x.key} value={x.key}>
@@ -240,7 +240,7 @@ export const ActivityDrawer: React.FC<{ collapsed: boolean; onToggle: () => void
         </Tooltip>
       </header>
       {collapsed ? null : (
-        <div className="min-h-0 flex-1" role="tabpanel">
+        <div className="min-h-0 flex-1 overflow-hidden" role="tabpanel">
           {tab === "events" ? (
             <EventFeed events={events} showIdentifier emptyTitle={m.drawer.noEvents} emptyDetail={m.drawer.noEventsDetail} />
           ) : tab === "agent" ? (

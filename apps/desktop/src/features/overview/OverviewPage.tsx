@@ -210,7 +210,7 @@ export default function OverviewPage() {
         {!metrics ? (
           <LoadingRows rows={2} />
         ) : (
-          <section aria-label={m.title} className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-9">
+          <section aria-label={m.title} className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5 xl:[&>*:last-child]:col-span-2 2xl:grid-cols-9 2xl:[&>*:last-child]:col-span-1">
             <MetricTile
               label={m.metrics.activeAgents}
               icon={<Bot className="size-3.5" aria-hidden />}
