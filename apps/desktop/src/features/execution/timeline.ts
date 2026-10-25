@@ -54,7 +54,19 @@ export function toggleKind(hidden: ReadonlySet<AgentEventKind>, kind: AgentEvent
   return next;
 }
 
-/** Number of events that arrived after the operator stopped following the tail. */
-export function newSince(total: number, pausedAt: number | null): number {
-  return pausedAt === null ? 0 : Math.max(0, total - pausedAt);
+
+/**
+ * Events (of the visible kinds) after the event the operator last saw when they stopped following
+ * the tail. `pausedAfter` is that event's id, `""` when the timeline was empty, `null` while
+ * following. Older events prepended meanwhile are not counted.
+ */
+export function unseenSince(
+  events: AgentEvent[],
+  pausedAfter: string | null,
+  hidden: ReadonlySet<AgentEventKind>
+): number {
+  if (pausedAfter === null) return 0;
+  const at = pausedAfter === "" ? -1 : events.findIndex((e) => e.id === pausedAfter);
+  if (at < 0 && pausedAfter !== "") return 0;
+  return filterByKinds(events.slice(at + 1), hidden).length;
 }

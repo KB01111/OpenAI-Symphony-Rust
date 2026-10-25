@@ -690,15 +690,14 @@ impl GitHubTracker {
 /// The combined commit status (`GET /commits/{sha}/status`): GitHub's own roll-up of the latest
 /// status per context.
 fn summarize_commit_statuses(combined: &Value) -> &'static str {
-    let count = combined
-        .get("statuses")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    let total = combined
-        .get("total_count")
-        .and_then(Value::as_u64)
-        .unwrap_or(count as u64);
-    if count == 0 && total == 0 {
+    // Without the documented fields the answer says nothing about the commit: unknown, never "none".
+    let (Some(statuses), Some(total)) = (
+        combined.get("statuses").and_then(Value::as_array),
+        combined.get("total_count").and_then(Value::as_u64),
+    ) else {
+        return "unknown";
+    };
+    if statuses.is_empty() && total == 0 {
         return "none";
     }
     match combined.get("state").and_then(Value::as_str) {
@@ -1555,7 +1554,11 @@ mod tests {
 
     #[test]
     fn commit_statuses_count_and_combine_with_check_runs() {
-        assert_eq!(summarize_commit_statuses(&json!({})), "none");
+        assert_eq!(summarize_commit_statuses(&json!({})), "unknown");
+        assert_eq!(
+            summarize_commit_statuses(&json!({ "state": "success" })),
+            "unknown"
+        );
         assert_eq!(
             summarize_commit_statuses(
                 &json!({ "state": "pending", "statuses": [], "total_count": 0 })

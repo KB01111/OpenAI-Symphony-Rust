@@ -109,6 +109,20 @@ describe("ProvidersPage", () => {
     expect((put.body as AppSettings).default_model).toBe("");
   });
 
+  it("does not pin a detected default when making a provider the global default", async () => {
+    const rt = runtime({ default_provider: "claude_code", default_model: "" });
+    renderWithProviders(<ProvidersPage />, { runtime: rt, route: "/providers", path: "/providers" });
+    const codex = await screen.findByRole("region", { name: "OpenAI Codex" });
+    const button = within(codex).getByRole("button", { name: "Use as global default" });
+    await waitFor(() => expect(button).not.toBeDisabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(rt.calls.some((c) => c.method === "PUT" && c.path === "/settings")).toBe(true));
+    const put = rt.calls.find((c) => c.method === "PUT" && c.path === "/settings")!;
+    expect((put.body as AppSettings).default_provider).toBe("codex");
+    // Codex reports "gpt-5-codex" as its default, but the CLI keeps choosing: nothing is pinned.
+    expect((put.body as AppSettings).default_model).toBe("");
+  });
+
   it("stores an API key through the vault and clears the input", async () => {
     const rt = runtime();
     renderWithProviders(<ProvidersPage />, { runtime: rt, route: "/providers", path: "/providers" });

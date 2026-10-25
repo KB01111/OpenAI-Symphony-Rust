@@ -169,14 +169,33 @@ fn tokenize(source: &str) -> Result<Vec<Token>, String> {
                                     Some('n') => text.push('\n'),
                                     Some('t') => text.push('\t'),
                                     Some('u') => {
-                                        let hex: String =
-                                            chars.iter().skip(i + 2).take(4).collect();
-                                        let c = u32::from_str_radix(&hex, 16)
-                                            .ok()
-                                            .and_then(char::from_u32)
+                                        let unit = |at: usize| {
+                                            let hex: String =
+                                                chars.iter().skip(at).take(4).collect();
+                                            u32::from_str_radix(&hex, 16).ok()
+                                        };
+                                        let first = unit(i + 2)
                                             .ok_or("invalid unicode escape in a string")?;
-                                        text.push(c);
-                                        i += 4;
+                                        // A UTF-16 surrogate pair (`\uD83D\uDE00`) is one character.
+                                        let paired = (0xD800..0xDC00).contains(&first)
+                                            && chars.get(i + 6) == Some(&'\\')
+                                            && chars.get(i + 7) == Some(&'u');
+                                        let low = if paired {
+                                            unit(i + 8).filter(|l| (0xDC00..0xE000).contains(l))
+                                        } else {
+                                            None
+                                        };
+                                        let code = match low {
+                                            Some(low) => {
+                                                0x10000 + ((first - 0xD800) << 10) + (low - 0xDC00)
+                                            }
+                                            None => first,
+                                        };
+                                        text.push(
+                                            char::from_u32(code)
+                                                .ok_or("invalid unicode escape in a string")?,
+                                        );
+                                        i += if low.is_some() { 10 } else { 4 };
                                     }
                                     Some(other) => text.push(*other),
                                     None => return Err("unterminated string".into()),
@@ -615,6 +634,22 @@ mod tests {
         assert!(targets(
             "mutation { commentCreate(input: { body: \"b\" }) { comment { id } } }",
             json!({})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn escaped_non_bmp_characters_are_decoded() {
+        use serde_json::json;
+        assert_eq!(
+            targets(
+                "mutation { commentCreate(input: { issueId: \"i-\\uD83D\\uDE00\", body: \"\\uD83D\\uDE00 done\" }) { success } }",
+                json!({})
+            ),
+            Ok(Some(vec!["i-\u{1F600}".to_string()]))
+        );
+        assert!(linear(
+            "mutation { commentCreate(input: { issueId: \"i\", body: \"\\uD83D\" }) { success } }"
         )
         .is_err());
     }

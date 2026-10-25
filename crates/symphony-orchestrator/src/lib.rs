@@ -788,6 +788,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
     /// Drop cached provider detection (e.g. after credentials or settings change).
     pub async fn invalidate_provider_cache(&self) {
+        symphony_agents::clear_model_catalogues();
         self.memory.write().await.provider_cache = None;
     }
 

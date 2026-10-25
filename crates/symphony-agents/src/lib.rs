@@ -22,7 +22,9 @@ use tokio::time::timeout;
 
 pub mod detection;
 mod opencode_server;
-pub use detection::{detect_provider_status, detect_provider_statuses, find_on_path};
+pub use detection::{
+    clear_model_catalogues, detect_provider_status, detect_provider_statuses, find_on_path,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLaunchConfig {

@@ -20,7 +20,7 @@ import { useApprovals, useDecideApproval, useOlderTaskEvents, useTaskEventHistor
 import { useEventStore } from "../../runtime/eventStore.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { executionMessages } from "./messages.js";
-import { buildTaskTimeline, countByKind, filterByKinds, toggleKind } from "./timeline.js";
+import { buildTaskTimeline, countByKind, filterByKinds, toggleKind, unseenSince } from "./timeline.js";
 
 /** Pending approvals for one task, pinned above the timeline. One decision in flight per approval. */
 const TaskApprovals: React.FC<{ taskId: string }> = ({ taskId }) => {
@@ -91,7 +91,9 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
   const live = useEventStore(useShallow((s) => s.events.filter((e) => e.task_id === task.id)));
   const [hidden, setHidden] = useState<ReadonlySet<AgentEventKind>>(() => new Set());
   const [following, setFollowing] = useState(true);
-  const [pausedAt, setPausedAt] = useState<number | null>(null);
+  // The newest event when the operator stopped following; everything after it is new. An id, not a
+  // position, so loading older events (prepended) does not count as new activity.
+  const [pausedAfter, setPausedAfter] = useState<string | null>(null);
   const [epoch, setEpoch] = useState(0);
 
   const persisted = useMemo(
@@ -101,30 +103,27 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
   const all = useMemo(() => buildTaskTimeline(task.id, persisted, live), [task.id, persisted, live]);
   const counts = useMemo(() => countByKind(all), [all]);
   const visible = useMemo(() => filterByKinds(all, hidden), [all, hidden]);
-  // The pause baseline is a position in the unfiltered timeline, so changing kind filters while
+  // The pause baseline is taken from the unfiltered timeline, so changing kind filters while
   // paused neither invents nor hides "new" events.
-  const allCount = useRef(all.length);
-  allCount.current = all.length;
+  const newestId = useRef<string | null>(null);
+  newestId.current = all[all.length - 1]?.id ?? null;
 
   const onFollowChange = useCallback((next: boolean) => {
     setFollowing(next);
-    setPausedAt(next ? null : allCount.current);
+    setPausedAfter(next ? null : newestId.current ?? "");
   }, []);
   const jumpToLatest = useCallback(() => {
     // Remounting the list restores tail-following and scrolls to the newest event.
     setEpoch((e) => e + 1);
     setFollowing(true);
-    setPausedAt(null);
+    setPausedAfter(null);
   }, []);
 
   const renderItem = useCallback((e: AgentEvent) => <AiEventStreamCard event={e} mode={logMode} />, [logMode]);
   const getKey = useCallback((e: AgentEvent) => e.id, []);
 
   const chips = EVENT_KINDS.filter((k) => counts[k] > 0 || hidden.has(k));
-  const unseen = useMemo(
-    () => (pausedAt === null ? 0 : filterByKinds(all.slice(pausedAt), hidden).length),
-    [all, hidden, pausedAt]
-  );
+  const unseen = useMemo(() => unseenSince(all, pausedAfter, hidden), [all, hidden, pausedAfter]);
   const active = isActivePhase(task.current_phase);
 
   return (

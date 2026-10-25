@@ -95,16 +95,20 @@ describe("ExecutionPage", () => {
     const at = (i: number) => new Date(Date.UTC(2026, 9, 20, 10, 0, 0) + i * 1000).toISOString();
     const newest = Array.from({ length: 500 }, (_, k) => ev(`n${499 - k}`, 0, { timestamp: at(1000 + 499 - k) }));
     const olderPage = [ev("o1", 0, { timestamp: at(1) }), ev("o0", 0, { timestamp: at(0) })];
+    const cursors: (string | null)[] = [];
     const rt = runtime(task(), {
-      "GET /tasks/:id/events": ({ query }) => (query.get("before") ? olderPage : newest)
+      "GET /tasks/:id/events": ({ query }) => {
+        cursors.push(query.get("before"));
+        return query.get("before") ? olderPage : newest;
+      }
     });
     renderPage(rt);
     const load = await screen.findByRole("button", { name: "Load older events" });
     expect(screen.getByText("500 events")).toBeInTheDocument();
     fireEvent.click(load);
     await waitFor(() => expect(screen.getByText("502 events")).toBeInTheDocument());
-    const paged = rt.calls.filter((c) => c.method === "GET" && c.path === "/tasks/t1/events");
-    expect(paged).toHaveLength(2);
+    // The second request continues from the oldest event of the first page.
+    expect(cursors).toEqual([null, "n0"]);
     // A short page means the beginning was reached: the control goes away.
     expect(screen.queryByRole("button", { name: "Load older events" })).not.toBeInTheDocument();
   });

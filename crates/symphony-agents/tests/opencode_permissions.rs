@@ -81,9 +81,7 @@ struct Seen {
 
 /// The stand-in `opencode serve`: one session `ses_1`; prompting asks for a bash permission; the
 /// reply decides whether the tool part completes or fails; then a text part, a step and idle.
-async fn stand_in() -> (u16, Arc<Mutex<Seen>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
+async fn stand_in(listener: TcpListener) -> Arc<Mutex<Seen>> {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let (events_tx, events_rx) = mpsc::unbounded_channel::<Value>();
     let events_rx = Arc::new(tokio::sync::Mutex::new(Some(events_rx)));
@@ -202,7 +200,37 @@ async fn stand_in() -> (u16, Arc<Mutex<Seen>>) {
             });
         }
     });
-    (port, seen)
+    seen
+}
+
+/// A scripted `opencode`: it records how it was started and the port the driver chose, waits for
+/// the test to put the stand-in on that port, then announces it like the real server (or the
+/// address in `announce`, when the test wants a wrong one).
+const FAKE_SERVE: &str = r#"printf '%s\n' "$@" > serve-args.txt
+printf '%s' "$OPENCODE_SERVER_PASSWORD" > password.txt
+printf '%s' "$OPENCODE_PERMISSION" > permission.txt
+port=""; prev=""
+for a in "$@"; do [ "$prev" = "--port" ] && port="$a"; prev="$a"; done
+printf '%s' "$port" > port.txt.tmp && mv port.txt.tmp port.txt
+while [ ! -f ready ]; do sleep 0.05; done
+echo "opencode server listening on http://127.0.0.1:$(cat announce 2>/dev/null || echo "$port")"
+sleep 60"#;
+
+/// Bind the stand-in to the port the fake reports, then let the fake announce itself.
+async fn serve_when_ready(dir: PathBuf) -> Arc<Mutex<Seen>> {
+    let port_file = dir.join("port.txt");
+    let port: u16 = loop {
+        if let Ok(text) = std::fs::read_to_string(&port_file) {
+            if let Ok(port) = text.trim().parse() {
+                break port;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+    let seen = stand_in(listener).await;
+    std::fs::write(dir.join("ready"), "").unwrap();
+    seen
 }
 
 struct Run {
@@ -213,16 +241,9 @@ struct Run {
 }
 
 async fn run(decision: ApprovalDecision) -> Run {
-    let (port, seen) = stand_in().await;
     let dir = tempfile::tempdir().unwrap();
-    // Records how it was started, then pretends to be the server at the stand-in's address.
-    let fake = script(
-        dir.path(),
-        "opencode",
-        &format!(
-            "printf '%s\\n' \"$@\" > serve-args.txt\nprintf '%s' \"$OPENCODE_SERVER_PASSWORD\" > password.txt\nprintf '%s' \"$OPENCODE_PERMISSION\" > permission.txt\necho 'opencode server listening on http://127.0.0.1:{port}'\nsleep 60"
-        ),
-    );
+    let fake = script(dir.path(), "opencode", FAKE_SERVE);
+    let serving = tokio::spawn(serve_when_ready(dir.path().to_path_buf()));
     let gate = Arc::new(Gate {
         decision,
         seen: Mutex::new(Vec::new()),
@@ -250,6 +271,7 @@ async fn run(decision: ApprovalDecision) -> Run {
     .await
     .expect("the turn ends at session.idle")
     .unwrap();
+    let seen = serving.await.unwrap();
     Run {
         dir,
         gate,
@@ -327,6 +349,35 @@ async fn a_supervised_turn_asks_the_gate_and_replies_on_the_server() {
     assert_eq!(
         (r.outcome.usage.input_tokens, r.outcome.usage.output_tokens),
         (14, 6)
+    );
+}
+
+/// The password and the prompt go only to the address Symphony chose for the server.
+#[tokio::test]
+async fn a_server_announcing_another_address_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("announce"), "1").unwrap();
+    std::fs::write(dir.path().join("ready"), "").unwrap();
+    let fake = script(dir.path(), "opencode", FAKE_SERVE);
+    let gate = Arc::new(Gate {
+        decision: ApprovalDecision::Accept,
+        seen: Mutex::new(Vec::new()),
+    });
+    let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(64);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut session = start_agent_session(
+        config(&fake, dir.path(), json!("on-request"), None),
+        None,
+        None,
+        gate,
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let err = session.run_turn("work", tx).await.unwrap_err();
+    assert!(
+        err.to_string().contains("not on http://127.0.0.1:"),
+        "{err}"
     );
 }
 

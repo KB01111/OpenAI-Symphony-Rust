@@ -12,8 +12,9 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 - **Model discovery**: provider detection asks the installed CLI which models it offers (Codex
   `model/list`, `opencode models`) instead of relying on a built-in list, cached for 30 minutes per
-  binary and version (a forced refresh re-reads it). A configured default model the CLI no longer
-  accepts is not passed to new runs; the provider status says which model is used instead. Claude
+  binary and version (a forced refresh re-reads it). A configured provider default that the CLI no
+  longer accepts is no longer offered as the model of new tasks; the provider status says which model
+  is used instead (a model already saved on a project or task is still passed as it is). Claude
   Code offers its aliases (`opus`, `sonnet`, `haiku`, `fable`) and the current model ids.
 - **Continue a run**: *Continue…* on a task in review, failed or completed sends follow-up instructions;
   the agent resumes its conversation in the same worktree and the result is reviewed again

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@symphony/shared-types";
-import { buildTaskTimeline, countByKind, eventKind, filterByKinds, newSince, toggleKind } from "./timeline.js";
+import { buildTaskTimeline, countByKind, eventKind, filterByKinds, toggleKind, unseenSince } from "./timeline.js";
 
 function ev(id: string, second: number, overrides: Partial<AgentEvent> = {}): AgentEvent {
   return {
@@ -47,8 +47,15 @@ describe("execution timeline", () => {
   });
 
   it("counts events that arrived after following paused", () => {
-    expect(newSince(10, null)).toBe(0);
-    expect(newSince(12, 10)).toBe(2);
-    expect(newSince(5, 10)).toBe(0);
+  });
+
+  it("counts only events after the one last seen, not older pages loaded later", () => {
+    const ev = (id: string) => ({ id, task_id: "t1", issue_identifier: null, session_id: null, provider: null, event_type: "task/updated", phase: null, message: id, payload: null, timestamp: "2026-10-20T10:00:00Z" });
+    const seen = [ev("b"), ev("c")];
+    expect(unseenSince(seen, null, new Set())).toBe(0);
+    expect(unseenSince([...seen, ev("d")], "c", new Set())).toBe(1);
+    // Two older events prepended while paused: still one new event.
+    expect(unseenSince([ev("x"), ev("a"), ...seen, ev("d")], "c", new Set())).toBe(1);
+    expect(unseenSince([ev("a")], "", new Set())).toBe(1);
   });
 });

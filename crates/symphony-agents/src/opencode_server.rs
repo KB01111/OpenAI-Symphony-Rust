@@ -101,6 +101,9 @@ struct Server {
     password: String,
     directory: String,
     client: reqwest::Client,
+    /// The turn's deadline: no request to the server may outlive it.
+    deadline: tokio::time::Instant,
+    timeout_ms: u64,
 }
 
 impl Server {
@@ -161,11 +164,18 @@ impl Server {
         let base = loop {
             match tokio::time::timeout_at(start_deadline, lines.next_line()).await {
                 Ok(Ok(Some(line))) => {
-                    if let Some(url) = line
-                        .split_whitespace()
-                        .find(|w| w.starts_with("http://127.0.0.1:"))
-                    {
-                        break url.trim_end_matches('/').to_string();
+                    if let Some(url) = line.split_whitespace().find(|w| w.starts_with("http://")) {
+                        // The password and the prompt only ever go to the address Symphony chose.
+                        let expected = format!("http://127.0.0.1:{port}");
+                        if url.trim_end_matches('/') != expected {
+                            return Err(SymphonyError::AgentProtocolError {
+                                code: "opencode_server_address".into(),
+                                message: format!(
+                                    "The OpenCode server listens on {url}, not on {expected}"
+                                ),
+                            });
+                        }
+                        break expected;
                     }
                 }
                 Ok(_) => {
@@ -199,6 +209,8 @@ impl Server {
             password,
             directory: config.workspace_path.to_string_lossy().to_string(),
             client,
+            deadline,
+            timeout_ms: config.turn_timeout_ms,
         })
     }
 
@@ -210,16 +222,18 @@ impl Server {
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value> {
-        let resp = self
-            .request(reqwest::Method::POST, path)
-            .json(&body)
-            .send()
+        let exchange = async {
+            let resp = self
+                .request(reqwest::Method::POST, path)
+                .json(&body)
+                .send()
+                .await?;
+            let status = resp.status();
+            Ok::<_, reqwest::Error>((status, resp.text().await?))
+        };
+        let (status, text) = tokio::time::timeout_at(self.deadline, exchange)
             .await
-            .map_err(|e| protocol_error("opencode_request_failed", e))?;
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
+            .map_err(|_| SymphonyError::TurnTimeout(self.timeout_ms))?
             .map_err(|e| protocol_error("opencode_request_failed", e))?;
         if !status.is_success() {
             return Err(SymphonyError::AgentProtocolError {
@@ -232,11 +246,13 @@ impl Server {
 
     /// Server-sent events, one JSON object per event, until the server goes away.
     async fn events(&self) -> Result<mpsc::Receiver<Value>> {
-        let resp = self
-            .request(reqwest::Method::GET, "/event")
-            .send()
-            .await
-            .map_err(|e| protocol_error("opencode_events_failed", e))?;
+        let resp = tokio::time::timeout_at(
+            self.deadline,
+            self.request(reqwest::Method::GET, "/event").send(),
+        )
+        .await
+        .map_err(|_| SymphonyError::TurnTimeout(self.timeout_ms))?
+        .map_err(|e| protocol_error("opencode_events_failed", e))?;
         if !resp.status().is_success() {
             return Err(SymphonyError::AgentProtocolError {
                 code: "opencode_events_failed".into(),
@@ -246,11 +262,14 @@ impl Server {
         let (tx, rx) = mpsc::channel(256);
         tokio::spawn(async move {
             let mut stream = resp.bytes_stream();
-            let mut buffer = String::new();
+            // Bytes, not text: a UTF-8 character may be split across chunks. Only complete
+            // events (ending in a blank line) are decoded.
+            let mut buffer: Vec<u8> = Vec::new();
             while let Some(Ok(chunk)) = stream.next().await {
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(end) = buffer.find("\n\n") {
-                    let block: String = buffer.drain(..end + 2).collect();
+                buffer.extend_from_slice(&chunk);
+                while let Some(end) = buffer.windows(2).position(|w| w == b"\n\n") {
+                    let block_bytes: Vec<u8> = buffer.drain(..end + 2).collect();
+                    let block = String::from_utf8_lossy(&block_bytes);
                     let data: String = block
                         .lines()
                         .filter_map(|l| l.strip_prefix("data:"))

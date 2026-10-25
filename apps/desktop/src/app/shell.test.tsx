@@ -63,4 +63,21 @@ describe("Desktop shell", () => {
     await waitFor(() => expect(useUiStore.getState().inspector).toEqual({ kind: "task", id: "t-failed" }));
     useUiStore.getState().inspect(null);
   });
+
+  it("does not claim all clear when attention data could not be loaded", async () => {
+    useUiStore.getState().inspect(null);
+    useUiStore.getState().setInspectorOpen(true);
+    const rt = createMockRuntime({
+      "GET /state": () => snapshot(),
+      "GET /settings": () => settings(),
+      "GET /projects": () => [],
+      "GET /tasks": () => [],
+      "GET /approvals": () => ({ status: 500, body: { error: { code: "internal", message: "boom" } } }),
+      "GET /providers": () => []
+    });
+    renderWithProviders(<AppRoutes />, { runtime: rt, route: "/settings" });
+    const inspector = await screen.findByRole("complementary", { name: "Inspector" });
+    expect(await within(inspector).findByRole("alert")).toHaveTextContent("could not be loaded");
+    expect(within(inspector).queryByText("Nothing needs your attention.")).not.toBeInTheDocument();
+  });
 });

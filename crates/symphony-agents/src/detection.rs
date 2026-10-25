@@ -24,6 +24,9 @@ const MODEL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// every minute while the UI is open, so a discovered list is reused for this long unless a refresh is
 /// forced, rather than starting another process each time.
 const MODEL_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
+/// A failed probe (cold start past the timeout, a CLI still being set up) is retried sooner, but
+/// not on every one-minute detection.
+const FAILED_PROBE_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_DISCOVERED_MODELS: usize = 300;
 const MAX_CODEX_MODEL_PAGES: u32 = 5;
 
@@ -199,6 +202,9 @@ pub struct DiscoveredModels {
     pub known: HashSet<String>,
     /// The model the CLI uses when none is given.
     pub default: Option<String>,
+    /// `false` when the listing was cut off (page or size limit): `known` is then only a prefix of
+    /// what the CLI accepts and cannot prove that a model is unsupported.
+    pub complete: bool,
 }
 
 /// A model id as a CLI prints it: no whitespace or control characters, bounded length.
@@ -329,7 +335,11 @@ async fn discover_codex_models(binary: &Path) -> Option<DiscoveredModels> {
             found.default = found.default.or(default);
             match next {
                 Some(next) if found.known.len() < MAX_DISCOVERED_MODELS => cursor = Some(next),
-                _ => break,
+                Some(_) => break,
+                None => {
+                    found.complete = true;
+                    break;
+                }
             }
         }
         Some(found)
@@ -368,8 +378,11 @@ async fn discover_opencode_models(binary: &Path) -> Option<DiscoveredModels> {
     if !output.status.success() {
         return None;
     }
-    let models = parse_opencode_models(&String::from_utf8_lossy(&output.stdout));
+    let listed = String::from_utf8_lossy(&output.stdout);
+    let models = parse_opencode_models(&listed);
+    let complete = models.len() < MAX_DISCOVERED_MODELS;
     (!models.is_empty()).then(|| DiscoveredModels {
+        complete,
         known: models.iter().cloned().collect(),
         models,
         default: None,
@@ -384,6 +397,14 @@ fn model_cache() -> &'static ModelCache {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Forget every discovered catalogue, e.g. after a credential change (catalogues can depend on the
+/// account a CLI is signed in with).
+pub fn clear_model_catalogues() {
+    if let Ok(mut cache) = model_cache().lock() {
+        cache.clear();
+    }
+}
+
 /// Models the installed CLI offers, cached per binary and version (a failed probe is cached too,
 /// so an older CLI without a model listing is not started again every minute).
 async fn discover_models(
@@ -396,7 +417,12 @@ async fn discover_models(
     if !refresh {
         if let Ok(cache) = model_cache().lock() {
             if let Some((at, found)) = cache.get(&key) {
-                if at.elapsed() < MODEL_CACHE_TTL {
+                let ttl = if found.is_some() {
+                    MODEL_CACHE_TTL
+                } else {
+                    FAILED_PROBE_CACHE_TTL
+                };
+                if at.elapsed() < ttl {
                     return found.clone();
                 }
             }
@@ -423,14 +449,20 @@ fn apply_discovered_models(
     discovered: Option<DiscoveredModels>,
 ) -> Option<String> {
     let Some(discovered) = discovered else {
-        return configured_default.or_else(|| capabilities.models.first().cloned());
+        // Without a catalogue, no built-in id is forced on the CLI (it may be stale or cost more
+        // than the CLI's own choice); only the deterministic test agent has a fixed model.
+        return configured_default.or_else(|| {
+            (capabilities.provider == ProviderKind::Simulated)
+                .then(|| capabilities.models.first().cloned())
+                .flatten()
+        });
     };
     capabilities.models = discovered.models.clone();
     // Only a default the CLI names itself: OpenCode lists models without one, and then its own
     // configuration decides (no `--model`), not whichever model happens to be listed first.
     let fallback = discovered.default.clone();
     match configured_default {
-        Some(model) if discovered.known.contains(&model) => Some(model),
+        Some(model) if discovered.known.contains(&model) || !discovered.complete => Some(model),
         Some(model) => {
             capabilities.status_message = format!(
                 "{} · Configured default model `{model}` is not offered by this CLI; using {}.",
@@ -567,6 +599,7 @@ mod tests {
             models: models.iter().map(|m| m.to_string()).collect(),
             known: models.iter().chain(hidden).map(|m| m.to_string()).collect(),
             default: default.map(str::to_string),
+            complete: true,
         }
     }
 
@@ -601,6 +634,24 @@ mod tests {
         assert_eq!(
             apply_discovered_models(&mut caps, None, Some(found)).as_deref(),
             Some("gpt-new")
+        );
+
+        // A cut-off catalogue cannot prove a configured model unsupported.
+        let mut caps = ProviderKind::Codex.default_capabilities();
+        let mut partial = discovered(&["gpt-new"], &[], Some("gpt-new"));
+        partial.complete = false;
+        assert_eq!(
+            apply_discovered_models(&mut caps, Some("gpt-page-9".into()), Some(partial)).as_deref(),
+            Some("gpt-page-9")
+        );
+
+        // Without a catalogue no built-in id is forced on the CLI; the test agent keeps its model.
+        let mut caps = ProviderKind::ClaudeCode.default_capabilities();
+        assert_eq!(apply_discovered_models(&mut caps, None, None), None);
+        let mut caps = ProviderKind::Simulated.default_capabilities();
+        assert_eq!(
+            apply_discovered_models(&mut caps, None, None).as_deref(),
+            Some("simulated-deterministic-v1")
         );
 
         // A CLI that names no default (OpenCode) keeps its own configuration: no model is forced.

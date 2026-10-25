@@ -2,7 +2,7 @@
  * TanStack Query bindings for the runtime API. Components never fetch directly; they use these
  * hooks so caching, invalidation (driven by the event stream) and fallback polling are uniform.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from "@tanstack/react-query";
 import { errorMessage, isTauri, nativeHost, type SymphonyApiError } from "@symphony/api-client";
 import type {
@@ -90,36 +90,51 @@ export function useTaskEventHistory(id: string | null | undefined) {
 
 /**
  * Pages of a task's events older than the newest page (`useTaskEventHistory`), loaded on request.
- * `hasMore` is true while the last page read was full, i.e. older events may exist.
+ * The newest page as it was when paging started is kept as well (`older` begins with it), so events
+ * that later move out of a refreshed newest page never fall into a gap. A response for a task that is
+ * no longer shown is dropped. `hasMore` is true while the last page read was full.
  */
 export function useOlderTaskEvents(id: string, newest: ReadonlyArray<AgentEvent> | undefined) {
   const client = useClient();
-  const [older, setOlder] = useState<AgentEvent[]>([]);
-  const [lastPageFull, setLastPageFull] = useState<boolean | null>(null);
+  const [state, setState] = useState<{ id: string; anchor: AgentEvent[]; pages: AgentEvent[]; lastPageFull: boolean | null }>(
+    () => ({ id, anchor: [], pages: [], lastPageFull: null })
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const current = useRef(id);
+  current.current = id;
+  // State of another task is never shown.
+  const own = state.id === id ? state : { id, anchor: [], pages: [], lastPageFull: null };
   useEffect(() => {
-    setOlder([]);
-    setLastPageFull(null);
+    setState({ id, anchor: [], pages: [], lastPageFull: null });
     setError(null);
+    setLoading(false);
   }, [id]);
-  const hasMore = lastPageFull ?? (newest?.length ?? 0) >= TASK_EVENT_PAGE;
-  const cursor = older.length > 0 ? older[older.length - 1]!.id : newest?.[newest.length - 1]?.id;
+  const hasMore = own.lastPageFull ?? (newest?.length ?? 0) >= TASK_EVENT_PAGE;
   const loadOlder = useCallback(async () => {
-    if (!cursor || loading) return;
+    if (loading) return;
+    const anchor = own.anchor.length > 0 ? own.anchor : [...(newest ?? [])];
+    const cursor = own.pages.length > 0 ? own.pages[own.pages.length - 1]!.id : anchor[anchor.length - 1]?.id;
+    if (!cursor) return;
+    const forTask = id;
     setLoading(true);
     setError(null);
     try {
-      const page = await client.listTaskEvents(id, TASK_EVENT_PAGE, undefined, cursor);
-      setOlder((prev) => [...prev, ...page]);
-      setLastPageFull(page.length >= TASK_EVENT_PAGE);
+      const page = await client.listTaskEvents(forTask, TASK_EVENT_PAGE, undefined, cursor);
+      if (current.current !== forTask) return;
+      setState((prev) =>
+        prev.id === forTask
+          ? { id: forTask, anchor, pages: [...prev.pages, ...page], lastPageFull: page.length >= TASK_EVENT_PAGE }
+          : prev
+      );
     } catch (e) {
-      setError(e);
+      if (current.current === forTask) setError(e);
     } finally {
-      setLoading(false);
+      if (current.current === forTask) setLoading(false);
     }
-  }, [client, cursor, id, loading]);
-  return { older, hasMore, loading, error, loadOlder };
+  }, [client, id, loading, newest, own.anchor, own.pages]);
+  const older = useMemo(() => [...own.anchor, ...own.pages], [own.anchor, own.pages]);
+  return { older, pageCount: own.pages.length, hasMore, loading, error, loadOlder };
 }
 
 export function useTaskAttempts(id: string | null | undefined) {

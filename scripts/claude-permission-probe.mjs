@@ -68,7 +68,9 @@ function run(port, behavior) {
       cwd: ws,
       // No credential of the caller's: the stand-in server is the only "API".
       env: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude"), ANTHROPIC_API_KEY: "sk-ant-probe-not-a-key", ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, DISABLE_TELEMETRY: "1", DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
-      stdio: ["pipe", "pipe", "ignore"]
+      stdio: ["pipe", "pipe", "ignore"],
+      // On Windows `claude` is usually an npm `.cmd` shim, which only a shell can start.
+      shell: process.platform === "win32"
     });
     let asked = false;
     const send = (m) => child.stdin.write(JSON.stringify(m) + "\n");

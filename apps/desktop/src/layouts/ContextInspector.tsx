@@ -241,7 +241,10 @@ const GlanceInspector: React.FC = () => {
         label: formatMessage(t.status === "failed" ? m.inspector.glanceFailed : m.inspector.glanceReview, { identifier: t.issue.identifier }),
         detail: t.status === "failed" ? (t.last_error ?? t.issue.title) : t.issue.title
       }))
-  ].slice(0, 8);
+  ];
+  // "All clear" only once both sources answered; otherwise say what is unknown.
+  const attentionLoading = (approvals.isLoading && !approvals.data) || (tasks.isLoading && !tasks.data);
+  const attentionFailed = (!approvals.data && approvals.isError) || (!tasks.data && tasks.isError);
   return (
     <div className="space-y-1 p-3">
       <h3 className="text-sm font-semibold text-foreground">{m.inspector.glance}</h3>
@@ -266,9 +269,16 @@ const GlanceInspector: React.FC = () => {
       </section>
       <section aria-label={m.inspector.glanceAttention} className="pt-3">
         <h4 className="px-2 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{m.inspector.glanceAttention}</h4>
-        {attention.length === 0 ? (
+        {attentionFailed ? (
+          <p role="alert" className="px-2 text-sm text-warning">
+            {m.inspector.glanceUnavailable}
+          </p>
+        ) : null}
+        {attention.length === 0 && attentionLoading ? (
+          <p className="px-2 text-sm text-muted-foreground">{m.inspector.glanceLoading}</p>
+        ) : attention.length === 0 && !attentionFailed ? (
           <p className="px-2 text-sm text-muted-foreground">{m.inspector.glanceAllClear}</p>
-        ) : (
+        ) : attention.length === 0 ? null : (
           <ul className="space-y-0.5">
             {attention.map((a) => (
               <GlanceItem key={a.key} icon={a.icon} label={a.label} detail={a.detail} onSelect={() => select(a.taskId)} />
