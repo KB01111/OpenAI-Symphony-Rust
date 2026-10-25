@@ -28,6 +28,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 - The inspector shows what is running and what needs attention (approvals, failed runs, reviews) while
   nothing is selected.
 
+### Security
+
+- `ctutils` 0.4.3 → 0.4.4 (RUSTSEC-2026-0385, non-constant-time comparisons; pulled in by `digest`).
+
 ### Changed
 
 - The default model is empty by default, meaning each provider's own default; making a provider the
