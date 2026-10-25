@@ -29,6 +29,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   (Claude Opus/Sonnet/Haiku/Fable 5.x and older generations).
 - Narrow panels stack labels above values (no more per-character wrapping of paths); the activity
   drawer, readiness tiles, overview metrics and tab lists no longer clip their content.
+- Counts read naturally in English and Swedish ("1 blocker", "2 körningar") instead of "blocker(s)";
+  messages can use the ICU plural subset (`{count, plural, one {…} other {…}}`).
+- On a first launch in a window narrower than 1200 px the inspector starts closed; selecting
+  something opens it. The companion's connect screen shows the Symphony mark.
 
 ## [2.0.0] - 2026-10-22
 
