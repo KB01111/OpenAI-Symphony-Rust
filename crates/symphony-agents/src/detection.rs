@@ -500,15 +500,28 @@ fn apply_discovered_models(
     }
 }
 
-/// A model id of another provider (OpenAI, Google), which Claude Code cannot run. Anything else is
-/// kept: besides its aliases and `claude-…` ids, Claude Code takes Bedrock inference profile ARNs
-/// and custom Foundry deployment names, which need not name the model.
+/// Providers whose models Claude Code cannot run, as OpenCode-style `provider/model` ids name them.
+const OTHER_PROVIDERS: &[&str] = &["openai", "google", "gemini", "xai", "mistral", "deepseek"];
+
+/// A model id of another provider (OpenAI, Google, …), which Claude Code cannot run, told apart by
+/// an unambiguous prefix only: `gpt-5-codex`, `o4-mini`, `openai/gpt-5`. Anything else is kept:
+/// besides its aliases and `claude-…` ids, Claude Code takes Bedrock inference profile ARNs and
+/// custom Foundry deployment names, which need not name the model and may contain any word.
 fn is_other_providers_model(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
-    let o_series = model
-        .strip_prefix('o')
-        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
-    model.starts_with("gpt-") || model.starts_with("gemini-") || model.contains("codex") || o_series
+    if model.starts_with("arn:") {
+        return false;
+    }
+    model.split('/').any(|segment| {
+        let o_series = segment
+            .strip_prefix('o')
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+        OTHER_PROVIDERS.contains(&segment)
+            || ["gpt-", "chatgpt-", "gemini-", "codex-"]
+                .iter()
+                .any(|prefix| segment.starts_with(prefix))
+            || o_series
+    })
 }
 
 /// Detect a single provider's installation, version, authentication, and capabilities.
@@ -690,6 +703,8 @@ mod tests {
             "us.anthropic.claude-sonnet-5-5-v1:0",
             "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/team-a",
             "team-a-deployment",
+            "claude-codex-prod",
+            "anthropic/claude-sonnet-5-5",
         ] {
             let mut caps = ProviderKind::ClaudeCode.default_capabilities();
             assert_eq!(
@@ -697,7 +712,15 @@ mod tests {
                 Some(model)
             );
         }
-        for model in ["gpt-6-sol", "o4-mini", "gemini-3-pro"] {
+        for model in [
+            "gpt-6-sol",
+            "o4-mini",
+            "gemini-3-pro",
+            "codex-mini-latest",
+            "openai/gpt-5",
+            "openrouter/openai/gpt-5",
+            "google/gemini-3-pro",
+        ] {
             let mut caps = ProviderKind::ClaudeCode.default_capabilities();
             assert_eq!(
                 apply_discovered_models(&mut caps, Some(model.into()), None),
