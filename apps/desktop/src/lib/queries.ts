@@ -300,6 +300,17 @@ export function useRetryTask() {
   return useTaskAction((id) => client.retryTask(id));
 }
 
+export function useContinueTask() {
+  const client = useClient();
+  const invalidate = useTaskInvalidation();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: ({ id, instructions }: { id: string; instructions: string }) => client.continueTask(id, instructions),
+    onSuccess: (task) => invalidate(task),
+    onError
+  });
+}
+
 export function useCancelTask() {
   const client = useClient();
   return useTaskAction((id) => client.cancelTask(id));

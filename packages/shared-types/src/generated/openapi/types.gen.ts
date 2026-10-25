@@ -186,6 +186,16 @@ export type CodexTotals = {
     estimated_cost_usd: number;
 };
 
+/**
+ * Operator instructions that continue a task's agent thread (`POST /tasks/{id}/continue`).
+ */
+export type ContinueTaskRequest = {
+    /**
+     * What the agent should do next (1–20 000 characters).
+     */
+    instructions: string;
+};
+
 export type CreateProjectRequest = {
     name: string;
     repo_path: string;
@@ -1456,6 +1466,36 @@ export type RetryTaskResponses = {
 };
 
 export type RetryTaskResponse = RetryTaskResponses[keyof RetryTaskResponses];
+
+export type ContinueTaskData = {
+    body: ContinueTaskRequest;
+    path: {
+        /**
+         * Task id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/tasks/{id}/continue';
+};
+
+export type ContinueTaskErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ContinueTaskError = ContinueTaskErrors[keyof ContinueTaskErrors];
+
+export type ContinueTaskResponses = {
+    /**
+     * The task, dispatched with the instructions; 409 while it runs
+     */
+    200: Task;
+};
+
+export type ContinueTaskResponse = ContinueTaskResponses[keyof ContinueTaskResponses];
 
 export type ListTaskEventsData = {
     body?: never;

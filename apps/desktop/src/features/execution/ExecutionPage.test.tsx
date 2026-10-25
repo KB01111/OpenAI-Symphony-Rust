@@ -68,6 +68,29 @@ afterEach(() => {
 });
 
 describe("ExecutionPage", () => {
+  it("continues a reviewed task with the operator's instructions", async () => {
+    const reviewed = task({ status: "human_review", current_thread_id: "thread-1" });
+    const rt = runtime(reviewed, {
+      "POST /tasks/:id/continue": () => ({ ...reviewed, status: "running", attempt_count: reviewed.attempt_count + 1 })
+    });
+    renderPage(rt);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue…" }));
+    const dialog = await screen.findByRole("dialog");
+    const submit = within(dialog).getByRole("button", { name: "Continue run" });
+    expect(submit).toBeDisabled();
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "  Also handle empty input.  " } });
+    fireEvent.click(submit);
+    await waitFor(() => expect(rt.calls.some((c) => c.method === "POST" && c.path === "/tasks/t1/continue")).toBe(true));
+    expect(rt.calls.find((c) => c.path === "/tasks/t1/continue")!.body).toEqual({ instructions: "Also handle empty input." });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("offers no continuation while a task runs", async () => {
+    renderPage(runtime(task({ status: "running", current_phase: "streaming_turn" })));
+    await screen.findByRole("toolbar", { name: "Execution controls" });
+    expect(screen.queryByRole("button", { name: "Continue…" })).not.toBeInTheDocument();
+  });
+
   it("loads older events on request, continuing from the oldest event shown", async () => {
     const at = (i: number) => new Date(Date.UTC(2026, 9, 20, 10, 0, 0) + i * 1000).toISOString();
     const newest = Array.from({ length: 500 }, (_, k) => ev(`n${499 - k}`, 0, { timestamp: at(1000 + 499 - k) }));

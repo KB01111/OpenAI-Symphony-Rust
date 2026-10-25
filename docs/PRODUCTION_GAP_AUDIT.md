@@ -334,8 +334,10 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
 - **HIST-01 (P2)**: events, attempts (thread/turn/session ids) and approvals are persisted, and
   `/events/recent` and `/tasks/{id}/events` take `limit`. Retention is implemented (`event_retention_days`, pruning of
   finished tasks' events). Cursor pagination of a task's events (`before=<event id>`) and a
-  *Load older events* control were added in the follow-up. Missing: tool-call result persistence beyond
-  raw event payloads, a "continue session" action in the UI.
+  *Load older events* control were added in the follow-up, and so was *Continue…* on a run that ended
+  (`POST /api/v1/tasks/{id}/continue`, local only): the next attempt resumes the agent's thread in the same
+  worktree with the operator's instructions as its prompt. Missing: tool-call result persistence beyond
+  raw event payloads.
 - **AG-04 (P2)**: verified against the real `claude` 2.1.310 with a scripted Messages API (no model, no
   key): a headless `claude -p` without a host **silently denies** every tool use its own rules would ask
   about (`permission_denied`) and reports success. Fixed for Claude Code in the follow-up: the driver runs

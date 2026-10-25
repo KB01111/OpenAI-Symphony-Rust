@@ -952,6 +952,63 @@
         "x-symphony-remote": true
       }
     },
+    "/api/v1/tasks/{id}/continue": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "operationId": "continueTask",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Task id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContinueTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The task, dispatched with the instructions; 409 while it runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
     "/api/v1/tasks/{id}/events": {
       "get": {
         "tags": [
@@ -2768,6 +2825,19 @@
           "estimated_cost_usd": {
             "type": "number",
             "format": "double"
+          }
+        }
+      },
+      "ContinueTaskRequest": {
+        "type": "object",
+        "description": "Operator instructions that continue a task's agent thread (`POST /tasks/{id}/continue`).",
+        "required": [
+          "instructions"
+        ],
+        "properties": {
+          "instructions": {
+            "type": "string",
+            "description": "What the agent should do next (1–20 000 characters)."
           }
         }
       },

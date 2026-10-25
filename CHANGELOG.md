@@ -15,6 +15,9 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   binary and version (a forced refresh re-reads it). A configured default model the CLI no longer
   accepts is not passed to new runs; the provider status says which model is used instead. Claude
   Code offers its aliases (`opus`, `sonnet`, `haiku`, `fable`) and the current model ids.
+- **Continue a run**: *Continue…* on a task in review, failed or completed sends follow-up instructions;
+  the agent resumes its conversation in the same worktree and the result is reviewed again
+  (`POST /api/v1/tasks/{id}/continue`, local only).
 - **Older activity**: the run timeline loads older events on request (`GET /api/v1/tasks/{id}/events?before=<event id>`,
   a cursor that neither skips nor repeats events with equal timestamps).
 - **Claude Code approvals**: Claude Code runs as a host-controlled session, so tool uses its permission

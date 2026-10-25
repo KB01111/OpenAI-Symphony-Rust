@@ -38,6 +38,29 @@ use uuid::Uuid;
 
 /// How long provider detection results are reused before re-probing CLIs.
 const PROVIDER_CACHE_TTL_SECS: i64 = 60;
+/// Upper bound for operator follow-up instructions (`continue_task`).
+pub const MAX_FOLLOW_UP_CHARS: usize = 20_000;
+
+/// First prompt of an attempt that continues a task with operator instructions. A resumed thread
+/// already holds the task and its earlier turns, so it gets the instructions alone; a fresh one gets
+/// the task prompt followed by them.
+fn render_follow_up_prompt(
+    issue: &Issue,
+    instructions: &str,
+    resumes_thread: bool,
+    task_prompt: &str,
+) -> String {
+    if resumes_thread {
+        format!(
+            "Follow-up from the operator on `{}` ({}):\n\n{instructions}\n\n\
+             Continue in the current workspace; your earlier work and this conversation are still here. \
+             Address the follow-up, run the relevant checks and end the turn when it is done.",
+            issue.identifier, issue.title
+        )
+    } else {
+        format!("{task_prompt}\n\nAdditional instructions from the operator:\n\n{instructions}")
+    }
+}
 /// First activity-log pruning pass after startup (not competing with startup work) ...
 const EVENT_PRUNE_STARTUP_DELAY: Duration = Duration::from_secs(120);
 /// ... and how often it repeats while the runtime keeps running.
@@ -235,6 +258,9 @@ struct OrchestratorRuntimeMemory {
     pub workflow_error: Option<String>,
     pub pending_approvals: HashMap<String, oneshot::Sender<ApprovalDecision>>,
     pub provider_cache: Option<(DateTime<Utc>, Vec<ProviderStatus>)>,
+    /// Operator instructions for the next attempt of a task (`continue_task`), taken by that
+    /// attempt when it renders its first prompt.
+    pub follow_ups: HashMap<String, String>,
     /// Where the workflow is saved when no `WORKFLOW.md` was loaded at startup.
     pub workflow_fallback_path: Option<PathBuf>,
 }
@@ -449,6 +475,7 @@ impl SymphonyOrchestrator {
             workflow_error,
             pending_approvals: HashMap::new(),
             provider_cache: None,
+            follow_ups: HashMap::new(),
             workflow_fallback_path: None,
         }));
 
@@ -1297,6 +1324,59 @@ Please implement the requested changes cleanly in the current Git workspace, run
         .await;
 
         Ok(task)
+    }
+
+    /// Continue a task whose run ended (review, failure or completion) with new instructions from
+    /// the operator: the next attempt resumes the agent's thread in the same worktree and gets the
+    /// instructions as its prompt. Refused while the task runs.
+    pub async fn continue_task(&self, task_id: &str, instructions: &str) -> SymphonyResult<Task> {
+        let instructions = instructions.trim();
+        if instructions.is_empty() {
+            return Err(SymphonyError::InvalidConfig(
+                "follow-up instructions must not be empty".into(),
+            ));
+        }
+        if instructions.chars().count() > MAX_FOLLOW_UP_CHARS {
+            return Err(SymphonyError::InvalidConfig(format!(
+                "follow-up instructions are limited to {MAX_FOLLOW_UP_CHARS} characters"
+            )));
+        }
+        let task = self.get_task(task_id).await?;
+        if !matches!(
+            task.status,
+            TaskStatus::HumanReview | TaskStatus::Failed | TaskStatus::Completed
+        ) {
+            return Err(SymphonyError::Conflict(format!(
+                "{} can be continued once its run has ended (it is {})",
+                task.issue.identifier,
+                task.status.as_str()
+            )));
+        }
+        self.memory
+            .write()
+            .await
+            .follow_ups
+            .insert(task.id.clone(), instructions.to_string());
+        match self.retry_task(task_id).await {
+            Ok(task) => {
+                self.emit_event(
+                    Some(task.id.clone()),
+                    Some(task.issue.identifier.clone()),
+                    None,
+                    Some(task.provider),
+                    "task/follow_up",
+                    None,
+                    format!("Follow-up instructions: {instructions}"),
+                    Some(json!({ "instructions": instructions })),
+                )
+                .await;
+                Ok(task)
+            }
+            Err(err) => {
+                self.memory.write().await.follow_ups.remove(task_id);
+                Err(err)
+            }
+        }
     }
 
     pub async fn retry_task(&self, task_id: &str) -> SymphonyResult<Task> {
@@ -2830,7 +2910,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
 
         // 3. Render workflow prompt (SPEC.md Section 5.4 & 12)
-        let first_turn_prompt = match render_workflow_prompt(
+        let mut first_turn_prompt = match render_workflow_prompt(
             &workflow,
             &task.issue,
             if task.attempt_count > 1 {
@@ -2851,6 +2931,17 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 return;
             }
         };
+
+        // An operator follow-up continues the agent's thread (same worktree) with new instructions.
+        let follow_up = self.memory.write().await.follow_ups.remove(&task.id);
+        if let Some(instructions) = follow_up {
+            first_turn_prompt = render_follow_up_prompt(
+                &task.issue,
+                &instructions,
+                task.current_thread_id.is_some(),
+                &first_turn_prompt,
+            );
+        }
 
         // 4. Launch agent session
         task.current_phase = Some(RunAttemptPhase::LaunchingAgentProcess);
@@ -4201,6 +4292,63 @@ rl.on('line', (line) => {
             .unwrap()
             .unwrap();
         (orch, done, review)
+    }
+
+    #[tokio::test]
+    async fn test_continuing_a_task_resumes_its_thread_with_the_operator_instructions() {
+        let temp = TempDir::new().unwrap();
+        let (orch, done, _review) = finished_run(&temp, None, None, "http://127.0.0.1:9").await;
+        assert!(done.current_thread_id.is_some());
+
+        assert!(orch.continue_task(&done.id, "   ").await.is_err());
+        assert!(orch
+            .continue_task(&done.id, &"x".repeat(MAX_FOLLOW_UP_CHARS + 1))
+            .await
+            .is_err());
+
+        // The simulated agent asks for an approval when its prompt carries this marker: the request
+        // shows that the instructions became the prompt of the next attempt.
+        let continued = orch
+            .continue_task(&done.id, "Also handle the empty input. SIMULATE_APPROVAL")
+            .await
+            .unwrap();
+        assert_eq!(continued.attempt_count, done.attempt_count + 1);
+        let mut approval = None;
+        for _ in 0..300 {
+            approval = orch
+                .storage
+                .list_approvals(true)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|a| a.task_id == done.id);
+            if approval.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let approval = approval.expect("the follow-up prompt reached the agent");
+
+        // While it runs, it cannot be continued again.
+        assert_eq!(
+            orch.continue_task(&done.id, "more")
+                .await
+                .unwrap_err()
+                .code(),
+            "conflict"
+        );
+        let events = orch.list_events(Some(&done.id), 200).await.unwrap();
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == "task/follow_up" && e.message.contains("empty input")));
+        // Taken by the attempt: later attempts do not repeat the instructions.
+        assert!(orch.memory.read().await.follow_ups.is_empty());
+
+        orch.resolve_approval(&approval.id, ApprovalDecision::Accept)
+            .await
+            .unwrap();
+        let again = wait_for_status(&orch, &done.id, &[TaskStatus::HumanReview]).await;
+        assert_eq!(again.workspace_path, done.workspace_path, "same worktree");
     }
 
     #[tokio::test]

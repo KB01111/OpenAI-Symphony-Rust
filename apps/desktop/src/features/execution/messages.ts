@@ -39,7 +39,18 @@ export const executionMessages = defineMessages({
       retry: "Retry",
       cancel: "Cancel run",
       openWorkspace: "Open workspace",
-      back: "Back to agent runs"
+      back: "Back to agent runs",
+      continue: "Continue…"
+    },
+    continueDialog: {
+      title: "Continue {identifier}",
+      description:
+        "The agent picks up its conversation in the same worktree and gets your instructions as its next prompt. The result is reviewed again.",
+      label: "Instructions for the agent",
+      placeholder: "For example: also handle an empty input and add a test for it.",
+      tooLong: "At most {max} characters.",
+      cancel: "Cancel",
+      confirm: "Continue run"
     },
     cancelDialog: {
       title: "Cancel {identifier}?",
@@ -183,7 +194,18 @@ export const executionMessages = defineMessages({
       retry: "Försök igen",
       cancel: "Avbryt körning",
       openWorkspace: "Öppna arbetsyta",
-      back: "Tillbaka till agentkörningar"
+      back: "Tillbaka till agentkörningar",
+      continue: "Fortsätt…"
+    },
+    continueDialog: {
+      title: "Fortsätt {identifier}",
+      description:
+        "Agenten fortsätter sin konversation i samma arbetsträd och får dina instruktioner som nästa prompt. Resultatet granskas igen.",
+      label: "Instruktioner till agenten",
+      placeholder: "Till exempel: hantera även tom indata och lägg till ett test för det.",
+      tooLong: "Högst {max} tecken.",
+      cancel: "Avbryt",
+      confirm: "Fortsätt körningen"
     },
     cancelDialog: {
       title: "Avbryta {identifier}?",

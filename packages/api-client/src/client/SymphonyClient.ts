@@ -232,6 +232,10 @@ export class SymphonyClient {
   retryTask(id: string) {
     return this.call((o) => api.retryTask({ ...o, path: { id } }));
   }
+  /** Continue a finished, failed or reviewed task's agent thread with new instructions. */
+  continueTask(id: string, instructions: string) {
+    return this.call((o) => api.continueTask({ ...o, path: { id }, body: { instructions } }));
+  }
   /** Newest first. With `before` (an event id of this task), the page of events older than it. */
   listTaskEvents(id: string, limit = 500, signal?: AbortSignal, before?: string) {
     return this.call((o) => api.listTaskEvents({ ...o, path: { id }, query: before ? { limit, before } : { limit } }), signal);

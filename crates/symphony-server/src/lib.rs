@@ -247,6 +247,13 @@ pub struct CancelTaskRequest {
     pub reason: Option<String>,
 }
 
+/// Operator instructions that continue a task's agent thread (`POST /tasks/{id}/continue`).
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct ContinueTaskRequest {
+    /// What the agent should do next (1–20 000 characters).
+    pub instructions: String,
+}
+
 #[derive(Debug, Deserialize, Default, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct LimitQuery {
@@ -516,6 +523,7 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(dispatch_task_handler))
         .routes(routes!(cancel_task_handler))
         .routes(routes!(retry_task_handler))
+        .routes(routes!(continue_task_handler))
         .routes(routes!(list_task_events_handler))
         .routes(routes!(list_task_attempts_handler))
         .routes(routes!(list_task_validations_handler))
@@ -1307,6 +1315,28 @@ async fn cancel_task_handler(
 )]
 async fn retry_task_handler(State(state): State<ServerState>, Path(id): Path<String>) -> Response {
     respond(state.orchestrator.retry_task(&id).await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/tasks/{id}/continue",
+    operation_id = "continueTask",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = ContinueTaskRequest,
+    responses((status = 200, description = "The task, dispatched with the instructions; 409 while it runs", body = Task))
+)]
+async fn continue_task_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    Json(req): Json<ContinueTaskRequest>,
+) -> Response {
+    respond(
+        state
+            .orchestrator
+            .continue_task(&id, &req.instructions)
+            .await,
+    )
 }
 
 #[utoipa::path(

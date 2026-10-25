@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "@fluentui/react-components";
 import { isSymphonyApiError } from "@symphony/api-client";
-import { ArrowLeft, FolderOpen, Play, RotateCcw, Square } from "lucide-react";
+import { ArrowLeft, FolderOpen, MessageSquarePlus, Play, RotateCcw, Square } from "lucide-react";
 import { canCancel, canDispatch, canRetry, formatMessage, providerActions, type Task } from "@symphony/shared-types";
 import {
   ConfirmDialog,
@@ -25,6 +25,7 @@ import { useCancelTask, useDispatchTask, useProjects, useProviders, useRetryTask
 import { safeStateStorage } from "../../store/safeStorage.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { ChangesPanel } from "./ChangesPanel.js";
+import { ContinueDialog } from "./ContinueDialog.js";
 import { ContextPanel } from "./ContextPanel.js";
 import { executionMessages } from "./messages.js";
 import { TimelinePanel } from "./TimelinePanel.js";
@@ -48,6 +49,9 @@ const ExecutionControls: React.FC<{ task: Task }> = ({ task }) => {
   const cancel = useCancelTask();
   const workspace = useWorkspaceOpener();
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [continueOpen, setContinueOpen] = useState(false);
+  // A run that ended can be continued with instructions (its thread and worktree are kept).
+  const continuable = task.status === "human_review" || task.status === "failed" || task.status === "completed";
   const capabilities = providers.data?.find((p) => p.provider === task.provider)?.capabilities;
   const actions = providerActions(capabilities);
   const busy = dispatch.isPending || retry.isPending || cancel.isPending;
@@ -64,6 +68,11 @@ const ExecutionControls: React.FC<{ task: Task }> = ({ task }) => {
           {m.actions.retry}
         </Button>
       ) : null}
+      {continuable ? (
+        <Button size="small" icon={<MessageSquarePlus className="size-4" />} disabled={busy} onClick={() => setContinueOpen(true)}>
+          {m.actions.continue}
+        </Button>
+      ) : null}
       {canCancel(task.status) && actions.cancel ? (
         <Button size="small" icon={<Square className="size-4" />} disabled={busy} onClick={() => setConfirmCancel(true)}>
           {m.actions.cancel}
@@ -74,6 +83,7 @@ const ExecutionControls: React.FC<{ task: Task }> = ({ task }) => {
           {m.actions.openWorkspace}
         </Button>
       ) : null}
+      {continuable ? <ContinueDialog task={task} open={continueOpen} onOpenChange={setContinueOpen} /> : null}
       <ConfirmDialog
         open={confirmCancel}
         title={formatMessage(m.cancelDialog.title, { identifier: task.issue.identifier })}
