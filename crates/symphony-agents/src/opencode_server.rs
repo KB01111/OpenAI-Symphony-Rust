@@ -307,14 +307,37 @@ fn protocol_error(code: &str, e: impl std::fmt::Display) -> SymphonyError {
     }
 }
 
-/// How many `parentID` links a session lookup follows before it gives up.
-const MAX_SESSION_DEPTH: usize = 8;
+/// How many `parentID` links a session lookup follows before it stops without an answer.
+const MAX_SESSION_DEPTH: usize = 64;
+/// How often one session is asked for before its event is given up (a permission request is sent
+/// once, so a single failed request must not drop it).
+const SESSION_LOOKUP_ATTEMPTS: u32 = 3;
+
+/// One session's parent, asked from the server: `Ok(None)` for a root session, `Err` when the
+/// server did not answer, after a short retry within the turn's deadline.
+async fn session_parent(server: &Server, id: &str) -> std::result::Result<Option<String>, ()> {
+    for attempt in 1..=SESSION_LOOKUP_ATTEMPTS {
+        if let Ok(info) = server.get(&format!("/session/{id}")).await {
+            return Ok(info
+                .get("parentID")
+                .and_then(Value::as_str)
+                .map(str::to_string));
+        }
+        if attempt < SESSION_LOOKUP_ATTEMPTS {
+            let pause =
+                tokio::time::Instant::now() + Duration::from_millis(200 * u64::from(attempt));
+            tokio::time::sleep_until(pause.min(server.deadline)).await;
+        }
+    }
+    Err(())
+}
 
 /// Whether `id` is a sub-agent session under one of `sessions`, asked from the server. Sessions
 /// that existed before this turn (a resumed session's earlier sub-agents) announce no
 /// `session.created`, and their permission requests must still reach the approval gate. The chain
-/// found is added to `sessions`; a session that leads elsewhere is remembered in `foreign`. A lookup
-/// that fails is not remembered, so the session's next event asks again.
+/// found is added to `sessions`; one proven to lead elsewhere (to another root, or round in a
+/// circle) is remembered in `foreign`. An unanswered lookup or an over-long chain is not
+/// remembered, so the session's next event asks again.
 async fn session_belongs(
     server: &Server,
     id: &str,
@@ -324,19 +347,18 @@ async fn session_belongs(
     if sessions.contains(id) {
         return true;
     }
-    let mut chain = Vec::new();
+    let mut chain: Vec<String> = Vec::new();
     let mut current = id.to_string();
     let belongs = loop {
-        if foreign.contains(&current) || chain.len() >= MAX_SESSION_DEPTH {
+        if foreign.contains(&current) || chain.contains(&current) {
             break false;
         }
-        let Ok(info) = server.get(&format!("/session/{current}")).await else {
+        if chain.len() >= MAX_SESSION_DEPTH {
+            return false;
+        }
+        let Ok(parent) = session_parent(server, &current).await else {
             return false;
         };
-        let parent = info
-            .get("parentID")
-            .and_then(Value::as_str)
-            .map(str::to_string);
         chain.push(current);
         match parent {
             Some(parent) if sessions.contains(&parent) => break true,

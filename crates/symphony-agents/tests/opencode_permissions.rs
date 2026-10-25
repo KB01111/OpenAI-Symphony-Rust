@@ -166,14 +166,17 @@ async fn stand_in(listener: TcpListener) -> Arc<Mutex<Seen>> {
                         for _ in 0..2 {
                             let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_other" } }));
                         }
+                        // Sessions whose parents go round in a circle never reach this one.
+                        for _ in 0..2 {
+                            let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_loop_a" } }));
+                        }
                         // A sub-agent (`task` tool) of this session: its own idle does not end
                         // the turn.
                         let _ = events_tx.send(json!({ "type": "session.created", "properties": { "info": { "id": "ses_child", "parentID": session } } }));
                         let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_child" } }));
                         // The permission comes from the sub-agent of a sub-agent that existed
-                        // before this turn, so no `session.created` announced either. Its first
-                        // lookup fails (on its idle); the permission's lookup asks again.
-                        let _ = events_tx.send(json!({ "type": "session.idle", "properties": { "sessionID": "ses_grand" } }));
+                        // before this turn, so no `session.created` announced either. The first
+                        // lookup fails; the permission is sent only once, so it is asked again.
                         let _ = events_tx.send(json!({ "type": "permission.asked", "properties": {
                             "id": "per_1", "sessionID": "ses_grand", "permission": "bash", "patterns": ["cargo test"],
                             "metadata": { "command": "cargo test" }, "always": ["cargo *"] } }));
@@ -209,6 +212,12 @@ async fn stand_in(listener: TcpListener) -> Arc<Mutex<Seen>> {
                     }
                     ("GET", "/session/ses_old") => json!({ "id": "ses_old", "parentID": session }),
                     ("GET", "/session/ses_other") => json!({ "id": "ses_other" }),
+                    ("GET", "/session/ses_loop_a") => {
+                        json!({ "id": "ses_loop_a", "parentID": "ses_loop_b" })
+                    }
+                    ("GET", "/session/ses_loop_b") => {
+                        json!({ "id": "ses_loop_b", "parentID": "ses_loop_a" })
+                    }
                     _ => json!({ "error": "unexpected" }),
                 };
                 let text = answer.to_string();
@@ -363,14 +372,24 @@ async fn a_supervised_turn_asks_the_gate_and_replies_on_the_server() {
     assert_eq!(asked[0].command_or_diff.as_deref(), Some("cargo test"));
     // Asked by the sub-agent's session, and recorded as such.
     assert_eq!(asked[0].session_id, "ses_grand");
-    // Unannounced sessions are looked up along their parents, each once (a failed lookup again);
-    // announced ones are not.
+    // Unannounced sessions are looked up along their parents, each once (a failed lookup is
+    // retried); announced ones are not.
     let lookups: Vec<&str> = reqs
         .iter()
         .filter_map(|(t, _)| t.strip_prefix("GET /session/"))
         .map(|t| t.split('?').next().unwrap())
         .collect();
-    assert_eq!(lookups, ["ses_other", "ses_grand", "ses_grand", "ses_old"]);
+    assert_eq!(
+        lookups,
+        [
+            "ses_other",
+            "ses_loop_a",
+            "ses_loop_b",
+            "ses_grand",
+            "ses_grand",
+            "ses_old"
+        ]
+    );
     let reply = reqs
         .iter()
         .find(|(t, _)| t.starts_with("POST /permission/per_1/reply"))
