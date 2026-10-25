@@ -206,6 +206,13 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
 
 ## 6. Agent and Subprocess Lifecycle
 
+- **Claude Code approvals**: Claude Code runs as a host-controlled session
+  (`--permission-prompt-tool stdio`). A tool use that Claude Code's own permission rules would ask about is
+  sent to Symphony's approval gate; an approval "for the session" is remembered in memory for the exact
+  tool input and never written to Claude settings files. With `approval_policy: never` nobody is asked and
+  the request is denied, because Claude Code (unlike Codex) has no sandbox. OpenCode has no such channel
+  in `opencode run`; Symphony never passes `--auto`.
+
 - Every agent (Codex, Claude Code, OpenCode), lifecycle hook and validation command runs as an owned
   **process tree** (`symphony_workspaces::process::ProcessTree`): a Windows Job Object with
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (the kernel also kills the tree when the host crashes), a dedicated

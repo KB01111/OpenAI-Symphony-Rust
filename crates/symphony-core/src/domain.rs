@@ -354,7 +354,7 @@ impl ProviderKind {
                 supports_mid_turn_pause: false,
                 supports_cancel: true,
                 supports_streaming_events: true,
-                supports_approvals: false,
+                supports_approvals: true,
                 supports_dynamic_tools: false,
                 supports_token_usage: true,
                 // Claude Code has no model listing. Its aliases always mean the newest model of a

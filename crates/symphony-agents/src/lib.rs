@@ -162,7 +162,7 @@ pub async fn start_agent_session(
             Ok(Box::new(session))
         }
         ProviderKind::ClaudeCode => {
-            let session = ClaudeCodeSession::new(config, existing_thread_id);
+            let session = ClaudeCodeSession::new(config, existing_thread_id, approval_gate);
             Ok(Box::new(session))
         }
         ProviderKind::OpenCode => {
@@ -1028,6 +1028,8 @@ struct CliTurnProcess {
     tree: ProcessTree,
     child: Child,
     lines: Lines<BufReader<ChildStdout>>,
+    /// Open only for agents that talk to the host while they run (Claude Code's control protocol).
+    stdin: Option<ChildStdin>,
     deadline: tokio::time::Instant,
     timeout_ms: u64,
 }
@@ -1041,15 +1043,32 @@ impl CliTurnProcess {
         label: &str,
         exe: &str,
     ) -> Result<Self> {
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        Self::spawn_with_stdin(cmd, config, event_tx, not_found_code, label, exe, false)
+    }
+
+    fn spawn_with_stdin(
+        cmd: &mut Command,
+        config: &AgentLaunchConfig,
+        event_tx: &mpsc::Sender<AgentStreamEvent>,
+        not_found_code: &str,
+        label: &str,
+        exe: &str,
+        interactive: bool,
+    ) -> Result<Self> {
+        cmd.stdin(if interactive {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
         prepare_tree_command(cmd);
         let mut child = cmd.spawn().map_err(|e| SymphonyError::AgentProtocolError {
             code: not_found_code.into(),
             message: format!("Failed to spawn {label} ('{exe}'): {e}"),
         })?;
         let tree = ProcessTree::attach(&child);
+        let stdin = child.stdin.take();
         let stdout = child
             .stdout
             .take()
@@ -1066,6 +1085,7 @@ impl CliTurnProcess {
             tree,
             child,
             lines: BufReader::new(stdout).lines(),
+            stdin,
             deadline: tokio::time::Instant::now() + turn_timeout,
             timeout_ms: config.turn_timeout_ms,
         })
@@ -1093,6 +1113,40 @@ impl CliTurnProcess {
                 Err(SymphonyError::TurnTimeout(self.timeout_ms))
             }
         }
+    }
+
+    /// Write one JSON line to the agent's stdin, bounded by the turn deadline. A closed input is not
+    /// an error of its own (see below).
+    async fn write_json(&mut self, message: &Value) -> Result<()> {
+        let Some(stdin) = self.stdin.as_mut() else {
+            // Input already closed: nothing can be delivered any more.
+            return Ok(());
+        };
+        let mut line = message.to_string();
+        line.push('\n');
+        let write = async {
+            stdin.write_all(line.as_bytes()).await?;
+            stdin.flush().await
+        };
+        match tokio::time::timeout_at(self.deadline, write).await {
+            Ok(Ok(())) => Ok(()),
+            // The agent closed its input (it exited, or stopped reading): what it printed and
+            // its exit status decide the turn, not this write.
+            Ok(Err(err)) => {
+                tracing::debug!("agent input closed: {err}");
+                self.stdin = None;
+                Ok(())
+            }
+            Err(_) => {
+                self.tree.kill();
+                Err(SymphonyError::TurnTimeout(self.timeout_ms))
+            }
+        }
+    }
+
+    /// End of input: the agent finishes and exits once its current work is done.
+    fn close_stdin(&mut self) {
+        self.stdin = None;
     }
 
     /// Forward an event, bounded by the same deadline: a consumer that stops reading must not keep
@@ -1124,7 +1178,10 @@ impl CliTurnProcess {
     }
 }
 
-/// Provider 2: Claude Code CLI (`claude -p --output-format stream-json --verbose`)
+/// Provider 2: Claude Code CLI in its host mode (`claude -p --input-format stream-json
+/// --output-format stream-json --permission-prompt-tool stdio`): every tool use that Claude Code's
+/// own permission rules would ask about arrives as a `can_use_tool` control request and is decided
+/// by Symphony's approval gate. Without a host, a headless run silently denies such tool uses.
 pub struct ClaudeCodeSession {
     config: AgentLaunchConfig,
     session_id: Option<String>,
@@ -1132,17 +1189,172 @@ pub struct ClaudeCodeSession {
     cancelled: Arc<Mutex<bool>>,
     /// Usage of the finished turns; each CLI run reports only its own.
     completed_usage: TokenUsage,
+    approval_gate: Arc<dyn ApprovalGate>,
+    /// Tool uses approved "for this session": the same tool with the same input is not asked
+    /// again in later turns.
+    session_approvals: std::collections::HashSet<String>,
 }
 
 impl ClaudeCodeSession {
-    pub fn new(config: AgentLaunchConfig, existing_session_id: Option<String>) -> Self {
+    pub fn new(
+        config: AgentLaunchConfig,
+        existing_session_id: Option<String>,
+        approval_gate: Arc<dyn ApprovalGate>,
+    ) -> Self {
         Self {
             config,
             session_id: existing_session_id,
             pid: None,
             cancelled: Arc::new(Mutex::new(false)),
             completed_usage: TokenUsage::default(),
+            approval_gate,
+            session_approvals: std::collections::HashSet::new(),
         }
+    }
+
+    /// Decide a `can_use_tool` request; returns the permission result for Claude Code and whether
+    /// the operator aborted the turn.
+    async fn answer_permission(
+        &mut self,
+        request: &Value,
+        deadline: tokio::time::Instant,
+    ) -> Result<(Value, bool)> {
+        let key = claude_permission_key(request);
+        if self.session_approvals.contains(&key) {
+            return Ok((
+                claude_permission_result(request, ApprovalDecision::Accept),
+                false,
+            ));
+        }
+        // `never` means nobody is asked. Unlike Codex, Claude Code runs without a sandbox, so a
+        // request its own permission rules did not already allow is denied rather than approved:
+        // the same outcome as a headless run without a host.
+        let ask_nobody = self.config.approval_policy == json!("never")
+            && !self.config.require_human_approval_for_requests;
+        if ask_nobody {
+            return Ok((
+                json!({
+                    "behavior": "deny",
+                    "message": "Not allowed by Claude Code's permission rules, and Symphony's approval policy is `never`, so nobody can approve it."
+                }),
+                false,
+            ));
+        }
+        let approval = claude_approval_request(&self.config, self.session_id.as_deref(), request);
+        let decision =
+            tokio::time::timeout_at(deadline, self.approval_gate.request_approval(approval))
+                .await
+                .map_err(|_| SymphonyError::TurnTimeout(self.config.turn_timeout_ms))??;
+        if decision == ApprovalDecision::AcceptForSession {
+            self.session_approvals.insert(key);
+        }
+        Ok((
+            claude_permission_result(request, decision),
+            decision == ApprovalDecision::Cancel,
+        ))
+    }
+}
+
+/// Identity of a tool use for "approve for session": the tool and its exact input.
+fn claude_permission_key(request: &Value) -> String {
+    format!(
+        "{}\u{0}{}",
+        request
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        request.get("input").cloned().unwrap_or(Value::Null)
+    )
+}
+
+const CLAUDE_FILE_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
+
+/// The approval Symphony shows for a Claude Code `can_use_tool` request.
+fn claude_approval_request(
+    config: &AgentLaunchConfig,
+    session_id: Option<&str>,
+    request: &Value,
+) -> ApprovalRequest {
+    let tool = request
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("tool");
+    let input = request.get("input").cloned().unwrap_or(Value::Null);
+    let kind = if tool == "Bash" {
+        "command_execution"
+    } else if CLAUDE_FILE_TOOLS.contains(&tool) {
+        "file_change"
+    } else {
+        "tool_use"
+    };
+    let preview = match input.get("command").and_then(Value::as_str) {
+        Some(command) if tool == "Bash" => command.to_string(),
+        _ => serde_json::to_string_pretty(&input).unwrap_or_default(),
+    };
+    const MAX_PREVIEW: usize = 8 * 1024;
+    let preview = if preview.len() > MAX_PREVIEW {
+        let mut cut = MAX_PREVIEW;
+        while !preview.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}\n…", &preview[..cut])
+    } else {
+        preview
+    };
+    let description = request
+        .get("description")
+        .or_else(|| input.get("description"))
+        .and_then(Value::as_str)
+        .filter(|d| !d.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Claude Code wants to use {tool}"));
+    ApprovalRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        task_id: config.task_id.clone(),
+        issue_identifier: config.issue_identifier.clone(),
+        session_id: session_id.unwrap_or("claude-pending").to_string(),
+        provider: ProviderKind::ClaudeCode,
+        kind: kind.to_string(),
+        title: format!("Approval requested: {tool}"),
+        description,
+        command_or_diff: Some(preview),
+        status: ApprovalStatus::Pending,
+        decision: None,
+        created_at: Utc::now(),
+        resolved_at: None,
+    }
+}
+
+/// Claude Code's permission result for a decision. "For this session" also hands Claude Code its
+/// own suggested rules, but only with the `session` destination: Symphony never lets an approval
+/// write the user's or the repository's Claude settings.
+fn claude_permission_result(request: &Value, decision: ApprovalDecision) -> Value {
+    let input = request.get("input").cloned().unwrap_or_else(|| json!({}));
+    match decision {
+        ApprovalDecision::Accept => json!({ "behavior": "allow", "updatedInput": input }),
+        ApprovalDecision::AcceptForSession => {
+            let rules: Vec<Value> = request
+                .get("permission_suggestions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|s| s.get("type").and_then(Value::as_str) == Some("addRules"))
+                .map(|s| {
+                    let mut s = s.clone();
+                    s["destination"] = json!("session");
+                    s
+                })
+                .collect();
+            json!({ "behavior": "allow", "updatedInput": input, "updatedPermissions": rules })
+        }
+        ApprovalDecision::Decline => {
+            json!({ "behavior": "deny", "message": "The operator declined this in Symphony." })
+        }
+        ApprovalDecision::Cancel => json!({
+            "behavior": "deny",
+            "message": "The operator aborted the turn in Symphony.",
+            "interrupt": true
+        }),
     }
 }
 
@@ -1186,10 +1398,13 @@ impl AgentSession for ClaudeCodeSession {
 
         let mut cmd = Command::new(exe);
         cmd.arg("-p")
-            .arg(prompt)
+            .arg("--input-format")
+            .arg("stream-json")
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose")
+            .arg("--permission-prompt-tool")
+            .arg("stdio")
             .current_dir(&self.config.workspace_path);
 
         if let Some(ref sid) = self.session_id {
@@ -1205,15 +1420,22 @@ impl AgentSession for ClaudeCodeSession {
             cmd.env(k, v);
         }
 
-        let mut process = CliTurnProcess::spawn(
+        let mut process = CliTurnProcess::spawn_with_stdin(
             &mut cmd,
             &self.config,
             &event_tx,
             "claude_code_not_found",
             "Claude Code CLI",
             exe,
+            true,
         )?;
         self.pid = process.pid();
+        process
+            .write_json(&json!({
+                "type": "user",
+                "message": { "role": "user", "content": prompt }
+            }))
+            .await?;
         let mut usage = TokenUsage::default();
         let mut messages = Vec::new();
         let mut discovered_session = self
@@ -1225,6 +1447,38 @@ impl AgentSession for ClaudeCodeSession {
             if let Ok(val) = serde_json::from_str::<Value>(&line) {
                 if let Some(sid) = val.get("session_id").and_then(|v| v.as_str()) {
                     discovered_session = sid.to_string();
+                }
+                match val.get("type").and_then(Value::as_str) {
+                    Some("control_request") => {
+                        let request_id = val.get("request_id").cloned().unwrap_or(Value::Null);
+                        let request = val.get("request").cloned().unwrap_or(Value::Null);
+                        let response = if request.get("subtype").and_then(Value::as_str)
+                            == Some("can_use_tool")
+                        {
+                            self.session_id
+                                .get_or_insert_with(|| discovered_session.clone());
+                            let (result, interrupted) =
+                                self.answer_permission(&request, process.deadline).await?;
+                            if interrupted {
+                                *self.cancelled.lock().await = true;
+                            }
+                            json!({ "subtype": "success", "request_id": request_id, "response": result })
+                        } else {
+                            json!({
+                                "subtype": "error",
+                                "request_id": request_id,
+                                "error": "Symphony does not handle this request"
+                            })
+                        };
+                        process
+                            .write_json(
+                                &json!({ "type": "control_response", "response": response }),
+                            )
+                            .await?;
+                    }
+                    // The answer is complete: end the input so the CLI exits.
+                    Some("result") => process.close_stdin(),
+                    _ => {}
                 }
                 if let Some(u) = extract_token_usage(&val) {
                     usage = u;

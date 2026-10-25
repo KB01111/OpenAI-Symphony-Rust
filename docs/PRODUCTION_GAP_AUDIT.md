@@ -59,7 +59,7 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
 | PROV-01 | P2 | Gap | Provider profiles / compatible endpoints / health model | Open |
 | HIST-01 | P2 | Gap | Durable session history: pagination and retention | Open |
 | PERF-01 | P2 | Unverified | Idle CPU / memory on the reference laptop | Blocked (hardware) |
-| AG-04 | P2 | Concern | Claude Code / OpenCode run headless without an approval path | Open |
+| AG-04 | P2 | Verified defect | Claude Code / OpenCode run headless without an approval path | Fixed for Claude Code; OpenCode open |
 
 ---
 
@@ -304,8 +304,8 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
   one `run_attempts` row, over 5 repeated runs. PR #20's retry and manual-move races have their own tests.
 - **Workspace path validation** (`validate_workspace_path`): reviewed, canonicalizes root and target and
   rejects symlink escapes; unchanged (safety invariant).
-- **Provider capabilities are typed and honest**: Claude Code and OpenCode report
-  `supports_approvals = false`, `supports_dynamic_tools = false`.
+- **Provider capabilities are typed and honest**: OpenCode reports `supports_approvals = false`; Claude
+  Code reports `true` since the follow-up (AG-04); neither supports dynamic tools.
 - **Remote scope**: the existing allowlist test fails on unclassified endpoints; the new endpoints
   (`/backups`, `/prs/{id}/create-pull-request`, `approve-merge`) were added to the forbidden-remotely list.
 - **Playwright** (`pnpm --filter @symphony/desktop e2e`): 30 passed against the real `symphony-cli` with the
@@ -332,9 +332,19 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
   finished tasks' events). Cursor pagination of a task's events (`before=<event id>`) and a
   *Load older events* control were added in the follow-up. Missing: tool-call result persistence beyond
   raw event payloads, a "continue session" action in the UI.
-- **AG-04 (P2, unverified)**: `claude -p …` and `opencode` are started without a permission mode or an
-  approval bridge; whether a headless run can edit files depends on the user's own Claude/OpenCode settings.
-  Needs a live run and a product decision (`--permission-mode`, allowed tools, or an MCP permission tool).
+- **AG-04 (P2)**: verified against the real `claude` 2.1.310 with a scripted Messages API (no model, no
+  key): a headless `claude -p` without a host **silently denies** every tool use its own rules would ask
+  about (`permission_denied`) and reports success. Fixed for Claude Code in the follow-up: the driver runs
+  it as a host (`--input-format stream-json --permission-prompt-tool stdio`) and answers each
+  `can_use_tool` request through Symphony's approval gate (accept, accept for the session — remembered per
+  exact tool input, and Claude's own rule suggestions passed on only with the `session` destination, so
+  nothing is written to the user's or the repository's settings —, decline, abort = deny + interrupt).
+  With `approval_policy: never` nobody is asked and such a request stays denied (Claude Code has no sandbox,
+  so auto-approving would widen what a run may do). End to end through `symphony-cli`: with `on-request` the
+  Bash command appears as a pending approval and the file is written only after *Approve*; with *Decline*
+  or `never` it is not. Opt-in re-check: `node scripts/claude-permission-probe.mjs`.
+  **OpenCode stays open**: `opencode run` has no host channel (only `--auto`, which approves everything);
+  a bridge needs `opencode serve` and its HTTP permission API.
 - **Claude/OpenCode usage is exact only per invocation**; a killed invocation reports nothing: a turn that
   times out or is cancelled after the CLI printed usage but before it finished is not in the settlement, and
   the task is not marked estimated for it. Fixing it needs a live run of both CLIs.

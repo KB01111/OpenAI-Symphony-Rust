@@ -17,6 +17,9 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   Code offers its aliases (`opus`, `sonnet`, `haiku`, `fable`) and the current model ids.
 - **Older activity**: the run timeline loads older events on request (`GET /api/v1/tasks/{id}/events?before=<event id>`,
   a cursor that neither skips nor repeats events with equal timestamps).
+- **Claude Code approvals**: Claude Code runs as a host-controlled session, so tool uses its permission
+  rules would ask about become Symphony approvals (approve once, for the session, decline, abort) instead
+  of being silently denied in a headless run. Under `approval_policy: never` they stay denied.
 - Pull request CI also reads GitHub **commit statuses** (Jenkins, Buildkite, older integrations): a red
   status fails the review even when check runs are green.
 - The inspector shows what is running and what needs attention (approvals, failed runs, reviews) while
