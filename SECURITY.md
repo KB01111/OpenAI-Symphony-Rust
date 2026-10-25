@@ -213,8 +213,13 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   (`--permission-prompt-tool stdio`). A tool use that Claude Code's own permission rules would ask about is
   sent to Symphony's approval gate; an approval "for the session" is remembered in memory for the exact
   tool input and never written to Claude settings files. With `approval_policy: never` nobody is asked and
-  the request is denied, because Claude Code (unlike Codex) has no sandbox. OpenCode has no such channel
-  in `opencode run`; Symphony never passes `--auto`.
+  the request is denied, because Claude Code (unlike Codex) has no sandbox.
+- **OpenCode approvals**: under any approval policy other than `never`, Symphony runs its own
+  `opencode serve` per turn (bound to `127.0.0.1`, random password via `OPENCODE_SERVER_PASSWORD`, never
+  on the command line) with `ask` rules for bash, edits, web fetches and external directories, and
+  answers each permission request through the approval gate. Under `never`, `opencode run` is used and
+  the user's own OpenCode permissions decide (OpenCode's defaults allow bash and edits). Symphony never
+  passes `--auto`.
 
 - Every agent (Codex, Claude Code, OpenCode), lifecycle hook and validation command runs as an owned
   **process tree** (`symphony_workspaces::process::ProcessTree`): a Windows Job Object with

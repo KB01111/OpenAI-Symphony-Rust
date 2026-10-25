@@ -21,6 +21,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 
 pub mod detection;
+mod opencode_server;
 pub use detection::{detect_provider_status, detect_provider_statuses, find_on_path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,7 +167,7 @@ pub async fn start_agent_session(
             Ok(Box::new(session))
         }
         ProviderKind::OpenCode => {
-            let session = OpenCodeSession::new(config, existing_thread_id);
+            let session = OpenCodeSession::new(config, existing_thread_id, approval_gate);
             Ok(Box::new(session))
         }
         ProviderKind::Simulated => {
@@ -1562,17 +1563,31 @@ pub struct OpenCodeSession {
     cancelled: Arc<Mutex<bool>>,
     /// Usage of the finished turns; each CLI run reports only its own.
     completed_usage: TokenUsage,
+    approval_gate: Arc<dyn ApprovalGate>,
 }
 
 impl OpenCodeSession {
-    pub fn new(config: AgentLaunchConfig, existing_session_id: Option<String>) -> Self {
+    pub fn new(
+        config: AgentLaunchConfig,
+        existing_session_id: Option<String>,
+        approval_gate: Arc<dyn ApprovalGate>,
+    ) -> Self {
         Self {
             config,
             session_id: existing_session_id,
             pid: None,
             cancelled: Arc::new(Mutex::new(false)),
             completed_usage: TokenUsage::default(),
+            approval_gate,
         }
+    }
+
+    /// Turns under an approval policy run through Symphony's own `opencode serve`, so permission
+    /// requests reach the approval gate; with `never`, `opencode run` and the user's own OpenCode
+    /// permissions decide, as before.
+    fn supervised(&self) -> bool {
+        self.config.approval_policy != json!("never")
+            || self.config.require_human_approval_for_requests
     }
 }
 
@@ -1613,6 +1628,10 @@ impl AgentSession for OpenCodeSession {
             } else {
                 self.config.command.trim()
             };
+        if self.supervised() {
+            let exe = exe.to_string();
+            return self.run_server_turn(&exe, prompt, event_tx).await;
+        }
 
         let mut cmd = Command::new(exe);
         cmd.arg("run")
@@ -1661,6 +1680,14 @@ impl AgentSession for OpenCodeSession {
                 }
                 if let Some(u) = extract_token_usage(&val) {
                     usage = u;
+                } else if val.get("type").and_then(Value::as_str) == Some("step_finish") {
+                    // `opencode run --format json` reports each step's tokens on its own.
+                    if let Some(step) = val
+                        .get("part")
+                        .and_then(opencode_server::opencode_step_usage)
+                    {
+                        usage.add(&step);
+                    }
                 }
                 let text = val
                     .get("text")

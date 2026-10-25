@@ -20,6 +20,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 - **Claude Code approvals**: Claude Code runs as a host-controlled session, so tool uses its permission
   rules would ask about become Symphony approvals (approve once, for the session, decline, abort) instead
   of being silently denied in a headless run. Under `approval_policy: never` they stay denied.
+- **OpenCode approvals**: under an approval policy OpenCode runs through Symphony's own `opencode serve`,
+  so its bash, edit and web requests become Symphony approvals instead of running unasked (OpenCode's
+  default) or being rejected automatically (`opencode run` with `ask` rules).
+
 - The agent `linear_graphql` tool changes only issues (and their comments) of the configured Linear
   project: each mutation's targets are looked up first, and moving issues to another project or team is
   refused.
@@ -27,6 +31,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   status fails the review even when check runs are green.
 - The inspector shows what is running and what needs attention (approvals, failed runs, reviews) while
   nothing is selected.
+
+### Fixed
+
+- OpenCode token usage and cost were always 0: the per-step token reports are now counted.
 
 ### Security
 

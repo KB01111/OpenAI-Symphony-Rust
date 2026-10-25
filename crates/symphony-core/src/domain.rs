@@ -381,7 +381,7 @@ impl ProviderKind {
                 supports_mid_turn_pause: false,
                 supports_cancel: true,
                 supports_streaming_events: true,
-                supports_approvals: false,
+                supports_approvals: true,
                 supports_dynamic_tools: false,
                 supports_token_usage: true,
                 // Fallback only: detection replaces it with `opencode models`, i.e. the models of the
