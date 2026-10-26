@@ -37,7 +37,10 @@ export const useEventStore = create<EventStoreState>((set) => ({
 /** Merge persisted history (newest-first from the API) with live events, deduped, oldest first. */
 export function mergeEventHistory(history: AgentEvent[] | undefined, live: AgentEvent[]): AgentEvent[] {
   const map = new Map<string, AgentEvent>();
-  for (const e of history ?? []) map.set(e.id, e);
+  // The API returns history newest first; inserting it oldest first keeps events that share a
+  // timestamp in the order they happened (the sort below is stable).
+  const past = history ?? [];
+  for (let i = past.length - 1; i >= 0; i--) map.set(past[i]!.id, past[i]!);
   for (const e of live) map.set(e.id, e);
   return Array.from(map.values()).sort((a, b) => (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0));
 }

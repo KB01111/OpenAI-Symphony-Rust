@@ -424,3 +424,28 @@ async fn creating_a_pull_request_needs_a_token_and_an_existing_review() {
         .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn task_events_page_backwards_from_a_known_event_only() {
+    let (app, _dir) = router().await;
+    let ok = app
+        .clone()
+        .oneshot(authed(Method::GET, "/api/v1/tasks/t1/events?limit=5", None))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+    assert_eq!(json_body(ok).await, json!([]));
+
+    // A cursor that is not an event of the task is an error, never an empty "beginning of history".
+    let resp = app
+        .clone()
+        .oneshot(authed(
+            Method::GET,
+            "/api/v1/tasks/t1/events?limit=5&before=unknown-event",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json_body(resp).await["error"]["code"], json!("not_found"));
+}

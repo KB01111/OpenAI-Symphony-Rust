@@ -1,10 +1,10 @@
 import React from "react";
 import { Alert } from "@openai/apps-sdk-ui/components/Alert";
 import { Button } from "@openai/apps-sdk-ui/components/Button";
-import { CodeBlock } from "@openai/apps-sdk-ui/components/CodeBlock";
 import { formatMessage, type ApprovalDecision, type ApprovalRequest } from "@symphony/shared-types";
 import { useUiStrings } from "../i18n.js";
 import { ProviderBadge } from "./badges.js";
+import { CodeBlock } from "./codeBlocks.js";
 
 export interface AiApprovalBannerProps {
   approval: ApprovalRequest;

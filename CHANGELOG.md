@@ -6,6 +6,73 @@ All notable changes to Symphony Desktop are documented here. The format follows
 the release tag as the release notes (`scripts/release-version.mjs --notes`), so every release needs
 one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`).
 
+## [Unreleased]
+
+### Added
+
+- **Model discovery**: provider detection asks the installed CLI which models it offers (Codex
+  `model/list`, `opencode models`) instead of relying on a built-in list, cached for 30 minutes per
+  binary and version (a forced refresh re-reads it). A configured provider default that the CLI no
+  longer accepts is no longer offered as the model of new tasks; the provider status says which model
+  is used instead (a model already saved on a project or task is still passed as it is). Claude
+  Code offers its aliases (`opus`, `sonnet`, `haiku`, `fable`) and the current model ids; a
+  configured default that is another provider's model (such as an older settings file's
+  `gpt-5-codex`) is not offered for it, while custom deployment names and inference profiles are.
+- **Continue a run**: *Continue…* on a task in review, failed or completed sends follow-up instructions;
+  the agent resumes its conversation in the same worktree and the result is reviewed again
+  (`POST /api/v1/tasks/{id}/continue`, local only). The instructions are stored (schema migration 3)
+  until the agent's first turn with them has finished, so a restart does not lose them; a plain
+  *Retry* drops them. If the task already has a pull request, the new review links it, says the work
+  is not on it yet and offers *Push changes to #N*, which pushes the branch and so updates that pull
+  request; if it has been merged or closed in the meantime, a new pull request is opened instead.
+- **Older activity**: the run timeline loads older events on request (`GET /api/v1/tasks/{id}/events?before=<event id>`,
+  a cursor that neither skips nor repeats events with equal timestamps).
+- **Claude Code approvals**: Claude Code runs as a host-controlled session, so tool uses its permission
+  rules would ask about become Symphony approvals (approve once, for the session, decline, abort) instead
+  of being silently denied in a headless run. Under `approval_policy: never` they stay denied.
+- **OpenCode approvals**: under an approval policy OpenCode runs through Symphony's own `opencode serve`,
+  so its bash, edit and web requests become Symphony approvals instead of running unasked (OpenCode's
+  default) or being rejected automatically (`opencode run` with `ask` rules).
+  Requests from sub-agents (OpenCode's `task` tool, in child sessions) are asked too, and their
+  tokens are counted; a session the turn did not see start (a resumed session's earlier sub-agents)
+  is looked up along its parents.
+
+- The agent `linear_graphql` tool changes only issues (and their comments) of the configured Linear
+  project: each mutation's targets are looked up first, and moving issues to another project or team is
+  refused. The mutation is found the same way the document check finds it, so a fragment definition
+  before it or a default object in its variable definitions cannot make it pass as an unscoped read,
+  and a variable it uses must be passed in `variables` when the operation declares a default for it
+  (Linear would apply the unchecked default).
+- Pull request CI also reads GitHub **commit statuses** (Jenkins, Buildkite, older integrations): a red
+  status fails the review even when check runs are green.
+- The inspector shows what is running and what needs attention (approvals, failed runs, reviews) while
+  nothing is selected.
+
+### Fixed
+
+- OpenCode token usage and cost were always 0: the per-step token reports are now counted.
+- Accessibility (axe-core WCAG 2.1 A/AA audit of every view in light and dark against the real
+  runtime): caption, status and link colours now reach 4.5:1 on every surface (including the Apps SDK
+  badges, alerts and code highlighting, through its own theme variables); the approvals bell and
+  every copy button (event cards, code blocks, Markdown code) have an accessible name; scrollable
+  diffs and logs can be scrolled from the keyboard.
+
+### Security
+
+- `ctutils` 0.4.3 → 0.4.4 (RUSTSEC-2026-0385, non-constant-time comparisons; pulled in by `digest`).
+
+### Changed
+
+- The default model is empty by default, meaning each provider's own default; making a provider the
+  global default no longer copies another provider's model. Cost estimates use current per-family prices
+  (Claude Opus/Sonnet/Haiku/Fable 5.x and older generations).
+- Narrow panels stack labels above values (no more per-character wrapping of paths); the activity
+  drawer, readiness tiles, overview metrics and tab lists no longer clip their content.
+- Counts read naturally in English and Swedish ("1 blocker", "2 körningar") instead of "blocker(s)";
+  messages can use the ICU plural subset (`{count, plural, one {…} other {…}}`).
+- On a first launch in a window narrower than 1200 px the inspector starts closed; selecting
+  something opens it. The companion's connect screen shows the Symphony mark.
+
 ## [2.0.0] - 2026-10-22
 
 First release of Symphony Desktop 2.0: a Windows 11 app that runs coding agents against your issues in isolated Git worktrees. Download `Symphony-Desktop_2.0.0_x64-setup.exe` below; later versions can be installed from inside the app (Settings → Application).

@@ -170,3 +170,125 @@ async fn a_redirect_never_carries_the_host_credentials_to_another_host() {
         elsewhere_seen.lock().unwrap()
     );
 }
+
+/// A Linear stand-in that answers the scope lookups (`issue(id)` / `comment(id)`) from a table and
+/// records every other operation it receives.
+async fn linear_with_projects() -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let log = log.clone();
+            tokio::spawn(async move {
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 8192];
+                let body = loop {
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let length = head
+                            .lines()
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= length {
+                            break body.to_string();
+                        }
+                    }
+                };
+                let request: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                let query = request["query"].as_str().unwrap_or_default();
+                let id = request["variables"]["id"].as_str().unwrap_or_default();
+                let project = |slug: &str| json!({ "slugId": slug });
+                let answer = if query.contains("SymphonyScopeIssue") {
+                    match id {
+                        "issue-in" => {
+                            json!({ "data": { "issue": { "project": project("proj") } } })
+                        }
+                        "issue-out" => {
+                            json!({ "data": { "issue": { "project": project("elsewhere") } } })
+                        }
+                        _ => json!({ "errors": [{ "message": "Entity not found" }] }),
+                    }
+                } else if query.contains("SymphonyScopeComment") {
+                    match id {
+                        "comment-in" => {
+                            json!({ "data": { "comment": { "issue": { "project": project("proj") } } } })
+                        }
+                        _ => json!({ "errors": [{ "message": "Entity not found" }] }),
+                    }
+                } else {
+                    log.lock().unwrap().push(query.to_string());
+                    json!({ "data": { "ok": true } })
+                };
+                let text = answer.to_string();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                    text.len()
+                );
+                let _ = stream.write_all(reply.as_bytes()).await;
+            });
+        }
+    });
+    (base, seen)
+}
+
+#[tokio::test]
+async fn linear_mutations_change_only_issues_of_the_configured_project() {
+    let (base, sent) = linear_with_projects().await;
+    let tracker = LinearTracker::new(
+        Some(base),
+        "proj".into(),
+        Some("lin_api_hosttoken_hosttoken".into()),
+        Vec::new(),
+    );
+    let comment = "mutation C($i: String!) { commentCreate(input: { issueId: $i, body: \"done\" }) { success } }";
+
+    let (ok, output) = tracker
+        .execute_linear_dynamic_tool(json!({ "query": comment, "variables": { "i": "issue-in" } }))
+        .await;
+    assert!(ok, "{output}");
+    assert_eq!(
+        sent.lock().unwrap().len(),
+        1,
+        "the mutation on the project's issue is sent"
+    );
+
+    for (query, variables) in [
+        (comment, json!({ "i": "issue-out" })),
+        (comment, json!({ "i": "unknown" })),
+        ("mutation { commentUpdate(id: \"comment-elsewhere\", input: { body: \"x\" }) { success } }", json!({})),
+        // One target in the project does not let a second one through.
+        ("mutation { a: issueUpdate(id: \"issue-in\", input: {}) { success } b: issueUpdate(id: \"issue-out\", input: {}) { success } }", json!({})),
+    ] {
+        let (ok, output) = tracker.execute_linear_dynamic_tool(json!({ "query": query, "variables": variables })).await;
+        assert!(!ok, "must be refused: {query}");
+        assert!(message(&output).contains("configured project"), "{output}");
+    }
+    assert_eq!(
+        sent.lock().unwrap().len(),
+        1,
+        "refused mutations never reach Linear"
+    );
+
+    let (ok, output) = tracker
+        .execute_linear_dynamic_tool(json!({ "query": "mutation { commentUpdate(id: \"comment-in\", input: { body: \"x\" }) { success } }" }))
+        .await;
+    assert!(ok, "{output}");
+    // Reads stay possible (they are not confined to the project).
+    let (ok, _) = tracker
+        .execute_linear_dynamic_tool(json!({ "query": "query { viewer { id } }" }))
+        .await;
+    assert!(ok);
+    assert_eq!(sent.lock().unwrap().len(), 3);
+}

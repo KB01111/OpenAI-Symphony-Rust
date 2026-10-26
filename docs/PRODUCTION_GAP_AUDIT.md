@@ -38,7 +38,7 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
 | SEC-01 | P1 | Verified defect | `github_api` / `linear_graphql` forward any request with the host's tokens | Fixed |
 | SEC-02 | P2 | Verified defect | Credential check on the review diff: 2 patterns, 32 KB preview only | Fixed |
 | BK-01 | P1 | Gap | No backup / restore | Fixed |
-| SEC-03 | P2 | Gap | `linear_graphql` cannot be limited to the configured Linear project (workspace-wide key) | Open |
+| SEC-03 | P2 | Gap | `linear_graphql` cannot be limited to the configured Linear project (workspace-wide key) | Fixed for mutations; reads open |
 | SEC-04 | P1 | Verified defect (in this branch's first cut) | Create-PR sent the GitHub token to any HTTPS `origin` | Fixed |
 | SEC-05 | P2 | Verified defect (in this branch's first cut) | `github_api` followed redirects with the host's credentials | Fixed |
 | RV-06 | P1 | Verified defect | Commits the agent made itself were invisible to the review, the credential scan and the changed-file list | Fixed |
@@ -56,10 +56,10 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
 | DOC-01 | P3 | Verified defect | `WORKFLOW.md` names "Symphony Desktop 1.0", port 47800 | Fixed |
 | SCH-01 | P0 | Verified (negative) | Concurrent ticks / manual dispatch can start a task twice | **No defect** (stress test added) |
 | WIN-01 | P1 | Unverified | All native Windows behaviour (see §4) | Blocked (Windows) |
-| PROV-01 | P2 | Gap | Provider profiles / compatible endpoints / health model | Open |
-| HIST-01 | P2 | Gap | Durable session history: pagination and retention | Open |
+| PROV-01 | P2 | Gap | Provider profiles / compatible endpoints / health model | Fixed as scoped (endpoints via OpenCode, live model catalogues); named profiles and automatic fallback decided against for now |
+| HIST-01 | P2 | Gap | Durable session history: pagination and retention | Fixed (retention, cursor pages, continue a run); tool-result persistence open |
 | PERF-01 | P2 | Unverified | Idle CPU / memory on the reference laptop | Blocked (hardware) |
-| AG-04 | P2 | Concern | Claude Code / OpenCode run headless without an approval path | Open |
+| AG-04 | P2 | Verified defect | Claude Code / OpenCode run headless without an approval path | Fixed |
 
 ---
 
@@ -277,9 +277,13 @@ wrong or out of proportion and are answered on their threads, see below). Verifi
   `OPENAI_API_KEY` & co. through (it now scrubs the environment so it can never make a billable call);
   the npm SBOM is scoped to the shipped desktop app.
 
-Not changed, on purpose: (a) **SEC-03** `linear_graphql` uses a workspace-wide key; allowed operations are
-limited but not confined to the configured project, because that would need membership resolution of every
-referenced object or high-level project-scoped tools instead of GraphQL. Open; `SECURITY.md` says so.
+Not changed at first: (a) **SEC-03** `linear_graphql` uses a workspace-wide key. Fixed for mutations in the
+follow-up: the targets of every allowed mutation (`id`/`issueId` literals and variables, nested inputs
+included) are resolved through `issue(id)`/`comment(id)` and must belong to the configured project's
+`slugId`; moving an issue (`projectId`/`teamId`/`projectMilestoneId`) and mutations whose targets cannot be
+read are refused before anything is sent (tests: `tool_policy` target extraction,
+`linear_mutations_change_only_issues_of_the_configured_project`). Reads stay workspace-wide; `SECURITY.md`
+says so.
 (b) Claude/OpenCode report usage per finished invocation, so a killed invocation reports nothing (already
 listed). (c) Pull request status is refreshed on request only (a timer was rejected on purpose).
 
@@ -304,8 +308,8 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
   one `run_attempts` row, over 5 repeated runs. PR #20's retry and manual-move races have their own tests.
 - **Workspace path validation** (`validate_workspace_path`): reviewed, canonicalizes root and target and
   rejects symlink escapes; unchanged (safety invariant).
-- **Provider capabilities are typed and honest**: Claude Code and OpenCode report
-  `supports_approvals = false`, `supports_dynamic_tools = false`.
+- **Provider capabilities are typed and honest**: Claude Code and OpenCode report `supports_approvals = true`
+  since the follow-up (AG-04); neither supports dynamic tools.
 - **Remote scope**: the existing allowlist test fails on unclassified endpoints; the new endpoints
   (`/backups`, `/prs/{id}/create-pull-request`, `approve-merge`) were added to the forbidden-remotely list.
 - **Playwright** (`pnpm --filter @symphony/desktop e2e`): 30 passed against the real `symphony-cli` with the
@@ -314,7 +318,8 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
 ## 3. Open
 
 - **Pull request status is refreshed on request only** (see RV-04): no timer, so a CI result that arrives
-  later is not shown until the user clicks *Refresh status*. Legacy commit statuses (not check runs) are not read.
+  later is not shown until the user clicks *Refresh status*. Legacy commit statuses are read since the
+  follow-up (combined with check runs; any failure fails, an unreadable signal is unknown).
 - **REL-02 (P1)**: in-app updates are implemented (`tauri-plugin-updater` driven by host-side commands,
   Settings card and banner, `latest.json` + `.sig` produced by the release workflow). Still needed from the
   owner: the `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` secrets, and a real two-release test on Windows
@@ -325,14 +330,48 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
   CLI detection (`detect_provider_statuses`). Missing: multiple named profiles, runtime arguments, compatible
   endpoints (OpenRouter, OpenCode Zen/Go, local), default/fallback policy, rate-limit/cost metadata. Each
   needs an adapter that provides tool execution, approvals, streaming and sessions; a raw chat endpoint must
-  not be advertised as an autonomous coding runtime.
+  not be advertised as an autonomous coding runtime. Since the follow-up, compatible endpoints are reached
+  through OpenCode, which is such an adapter: whatever providers the user configures in OpenCode
+  (OpenRouter, OpenCode Zen, local models) are listed by detection (`opencode models`), selectable per
+  project or task as `provider/model`, run with Symphony's approvals (AG-04) and report usage.
+  **Decided by the owner (2026-10-25):** no multiple named profiles per provider for now (one profile per
+  provider; the model is chosen per project or task, other endpoints go through OpenCode), and **no automatic
+  fallback**: a task whose provider is missing, signed out or rate limited fails visibly, and the operator
+  picks another provider for the retry. This avoids unexpected cost and work by an agent nobody chose.
+  Revisit both if users ask for them.
 - **HIST-01 (P2)**: events, attempts (thread/turn/session ids) and approvals are persisted, and
   `/events/recent` and `/tasks/{id}/events` take `limit`. Retention is implemented (`event_retention_days`, pruning of
-  finished tasks' events). Missing: cursor pagination,
-  tool-call result persistence beyond raw event payloads, a "continue session" action in the UI.
-- **AG-04 (P2, unverified)**: `claude -p …` and `opencode` are started without a permission mode or an
-  approval bridge; whether a headless run can edit files depends on the user's own Claude/OpenCode settings.
-  Needs a live run and a product decision (`--permission-mode`, allowed tools, or an MCP permission tool).
+  finished tasks' events). Cursor pagination of a task's events (`before=<event id>`) and a
+  *Load older events* control were added in the follow-up, and so was *Continue…* on a run that ended
+  (`POST /api/v1/tasks/{id}/continue`, local only): the next attempt resumes the agent's thread in the same
+  worktree with the operator's instructions as its prompt (stored until delivered, so they survive a
+  restart; a continued task with a pull request gets *Push changes to #N*). Missing: tool-call result persistence beyond
+  raw event payloads.
+- **AG-04 (P2)**: verified against the real `claude` 2.1.310 with a scripted Messages API (no model, no
+  key): a headless `claude -p` without a host **silently denies** every tool use its own rules would ask
+  about (`permission_denied`) and reports success. Fixed for Claude Code in the follow-up: the driver runs
+  it as a host (`--input-format stream-json --permission-prompt-tool stdio`) and answers each
+  `can_use_tool` request through Symphony's approval gate (accept, accept for the session — remembered per
+  exact tool input, and Claude's own rule suggestions passed on only with the `session` destination, so
+  nothing is written to the user's or the repository's settings —, decline, abort = deny + interrupt).
+  With `approval_policy: never` nobody is asked and such a request stays denied (Claude Code has no sandbox,
+  so auto-approving would widen what a run may do). End to end through `symphony-cli`: with `on-request` the
+  Bash command appears as a pending approval and the file is written only after *Approve*; with *Decline*
+  or `never` it is not. Opt-in re-check: `node scripts/claude-permission-probe.mjs`.
+  **OpenCode** (verified against the real `opencode` 1.19.4 the same way): its default permissions let a
+  headless `opencode run` execute `bash` and edit files **without asking**, and with `ask` rules both
+  `opencode run` and `run --attach` reject every request automatically. Fixed in the follow-up: under any
+  policy other than `never` the driver starts its own `opencode serve` for the turn (loopback, a free port
+  chosen by Symphony because `--port 0` means the fixed 4096, a random password, `ask` for bash, edit,
+  webfetch and external directories), creates or resumes the session, sends the prompt
+  (`prompt_async`), answers `permission.asked` through the approval gate (`once`/`always`/`reject`,
+  abort also aborts the session) and ends the turn at `session.idle`; the server's process tree ends with
+  the turn. End to end through `symphony-cli`: the command is a pending approval, the file is written
+  only after *Approve*. Under `never` the driver keeps `opencode run`, so the user's own OpenCode
+  permissions decide, as before (`SECURITY.md`).
+  Found on the way: `opencode run --format json` reports tokens per step (`part.tokens`), which the
+  driver never read, so OpenCode usage and cost were always 0. Both modes now sum every step (cache
+  traffic as input, reasoning as output).
 - **Claude/OpenCode usage is exact only per invocation**; a killed invocation reports nothing: a turn that
   times out or is cancelled after the CLI printed usage but before it finished is not in the settlement, and
   the task is not marked estimated for it. Fixing it needs a live run of both CLIs.
@@ -341,7 +380,10 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
   Codex answers `turn/start` first (real-binary probe), and new tasks always persist a baseline.
 - **Generic `usage` maps** are read as cumulative in `extract_token_usage` (SPEC 13.5 says not to unless
   the event defines it); harmless for Codex today (monotone ledger), worth tightening with a captured trace.
-- **Provider model lists** in `default_capabilities` are static and stale (e.g. `claude-sonnet-4-5`).
+- **Provider model lists**: fixed in the follow-up. Detection reads the installed CLI's catalogue
+  (Codex `model/list`, verified against codex-cli 0.164.0; `opencode models`, verified against
+  opencode 1.19.4); the static lists are only a fallback, and the old default `gpt-5-codex` (no longer
+  offered by Codex 0.164.0) is no longer the settings default nor passed to a CLI that does not list it.
 
 ## 4. Unverified (needs Windows 11 hardware or a signed build)
 

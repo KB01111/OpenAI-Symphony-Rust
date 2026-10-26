@@ -101,7 +101,9 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
 
   const makeGlobal = () => {
     if (!settings || busy) return;
-    const defaultModel = trimmed || savedModel || provider.default_model || models[0] || settings.default_model;
+    // Only a model the user chose for this provider; otherwise "" so the CLI's own default keeps
+    // applying (a detected default is not pinned, and never another provider's model).
+    const defaultModel = trimmed || savedModel || "";
     saveGlobal.mutate(
       (latest) => ({ ...latest, default_provider: kind, default_model: defaultModel }),
       { onSuccess: () => notify("success", m.saved, formatMessage(m.savedGlobal, { provider: provider.display_name })) }

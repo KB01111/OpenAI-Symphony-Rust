@@ -129,7 +129,16 @@ Apps SDK UI is used as a **component library only**; nothing depends on ChatGPT 
 ## 5. Accessibility
 
 - Focus is always visible (`:focus-visible` ring on `--ring`).
-- Icon-only buttons carry labels through Fluent `Tooltip relationship="label"` or `aria-label`.
+- Text tokens (`--foreground`, `--muted-foreground`, `--subtle-foreground` and the status colours) keep
+  4.5:1 against every surface of their theme, including their own `-subtle` tint. The Apps SDK's status
+  text and light code colours are mapped onto them through the SDK's own theme variables (`tokens.css`).
+- Icon-only buttons carry labels through Fluent `Tooltip relationship="label"` (on the button itself,
+  not a wrapper) or `aria-label`. Use `SdkCodeBlock`/`SdkMarkdown` from this package, not the SDK's
+  directly: their copy buttons are named.
+- Scroll containers without their own controls (diffs, logs, `VirtualList`) are focusable.
+- Audited with axe-core (WCAG 2.1 A/AA) on every view, light and dark. Known, accepted reports:
+  Fluent's focus sentinels (`data-tabster-dummy`, `aria-hidden-focus`) and CodeMirror's scroller,
+  whose editable content is the focus target.
 - Dialog focus management comes from Fluent `Dialog`; the palette is keyboard-first (cmdk).
 - Data tables expose `aria-sort`, rows are focusable and activate with Enter/Space.
 - `LiveAnnouncer` provides polite/assertive live regions; toasts announce with matching politeness.

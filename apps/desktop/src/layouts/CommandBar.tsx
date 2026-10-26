@@ -99,12 +99,13 @@ export const CommandBar: React.FC = () => {
             onClick={() => refresh.mutate()}
           />
         </Tooltip>
-        <Tooltip content={pending > 0 ? formatMessage(m.commandBar.approvals, { count: pending }) : m.commandBar.noApprovals} relationship="label">
-          <span className="relative inline-flex">
+        {/* The tooltip labels the button itself (not the wrapper that positions the badge). */}
+        <span className="relative inline-flex">
+          <Tooltip content={pending > 0 ? formatMessage(m.commandBar.approvals, { count: pending }) : m.commandBar.noApprovals} relationship="label">
             <ToolbarButton icon={<Bell className="size-4" />} onClick={() => useUiStore.getState().setDrawerTab("approvals")} />
-            {pending > 0 ? <CounterBadge count={pending} size="extra-small" color="important" className="!absolute end-0.5 top-0.5 pointer-events-none" /> : null}
-          </span>
-        </Tooltip>
+          </Tooltip>
+          {pending > 0 ? <CounterBadge aria-hidden count={pending} size="extra-small" color="important" className="!absolute end-0.5 top-0.5 pointer-events-none" /> : null}
+        </span>
         <Menu checkedValues={{ theme: [themeMode] }} onCheckedValueChange={(_, d) => setThemeMode(d.checkedItems[0] as typeof themeMode)}>
           <MenuTrigger disableButtonEnhancement>
             <Tooltip content={m.commandBar.theme} relationship="label">

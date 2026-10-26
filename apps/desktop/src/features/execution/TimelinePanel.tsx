@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Button, ToggleButton } from "@fluentui/react-components";
-import { ArrowDownToLine } from "lucide-react";
+import { ArrowDownToLine, History } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { formatMessage, isActivePhase, type AgentEvent, type ApprovalDecision, type ApprovalRequest, type Task } from "@symphony/shared-types";
 import {
@@ -16,11 +16,11 @@ import {
   type AgentEventKind
 } from "@symphony/ui";
 import { useMessages, useT } from "../../lib/i18n.js";
-import { useApprovals, useDecideApproval, useTaskEventHistory } from "../../lib/queries.js";
+import { useApprovals, useDecideApproval, useOlderTaskEvents, useTaskEventHistory } from "../../lib/queries.js";
 import { useEventStore } from "../../runtime/eventStore.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { executionMessages } from "./messages.js";
-import { buildTaskTimeline, countByKind, filterByKinds, toggleKind } from "./timeline.js";
+import { buildTaskTimeline, countByKind, filterByKinds, toggleKind, unseenSince, type PauseAnchor } from "./timeline.js";
 
 /** Pending approvals for one task, pinned above the timeline. One decision in flight per approval. */
 const TaskApprovals: React.FC<{ taskId: string }> = ({ taskId }) => {
@@ -65,7 +65,7 @@ const TaskApprovals: React.FC<{ taskId: string }> = ({ taskId }) => {
   }
   if (list.length === 0) return null;
   return (
-    <section aria-label={m.timeline.approvals} className="max-h-[45%] shrink-0 space-y-2 overflow-auto border-b border-border p-2">
+    <section aria-label={m.timeline.approvals} className="max-h-[60%] shrink-0 space-y-2 overflow-auto border-b border-border p-2">
       {list.map((a) => (
         <AiApprovalBanner key={a.id} approval={a} pendingDecision={pending[a.id] ?? null} onDecide={onDecide} />
       ))}
@@ -86,40 +86,45 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
   const logMode = useUiStore((s) => s.logMode);
   const setLogMode = useUiStore((s) => s.setLogMode);
   const history = useTaskEventHistory(task.id);
+  const older = useOlderTaskEvents(task.id, history.data);
   // Shallow-compared selection: batches for other tasks do not re-render this timeline.
   const live = useEventStore(useShallow((s) => s.events.filter((e) => e.task_id === task.id)));
   const [hidden, setHidden] = useState<ReadonlySet<AgentEventKind>>(() => new Set());
   const [following, setFollowing] = useState(true);
-  const [pausedAt, setPausedAt] = useState<number | null>(null);
+  // The newest event when the operator stopped following; everything after it is new. An event, not
+  // a position, so loading older events (prepended) does not count as new activity.
+  const [pausedAfter, setPausedAfter] = useState<PauseAnchor | "" | null>(null);
   const [epoch, setEpoch] = useState(0);
 
-  const all = useMemo(() => buildTaskTimeline(task.id, history.data, live), [task.id, history.data, live]);
+  const persisted = useMemo(
+    () => (older.older.length > 0 ? [...(history.data ?? []), ...older.older] : history.data),
+    [history.data, older.older]
+  );
+  const all = useMemo(() => buildTaskTimeline(task.id, persisted, live), [task.id, persisted, live]);
   const counts = useMemo(() => countByKind(all), [all]);
   const visible = useMemo(() => filterByKinds(all, hidden), [all, hidden]);
-  // The pause baseline is a position in the unfiltered timeline, so changing kind filters while
+  // The pause baseline is taken from the unfiltered timeline, so changing kind filters while
   // paused neither invents nor hides "new" events.
-  const allCount = useRef(all.length);
-  allCount.current = all.length;
+  const newest = useRef<PauseAnchor | null>(null);
+  const last = all[all.length - 1];
+  newest.current = last ? { id: last.id, timestamp: last.timestamp } : null;
 
   const onFollowChange = useCallback((next: boolean) => {
     setFollowing(next);
-    setPausedAt(next ? null : allCount.current);
+    setPausedAfter(next ? null : newest.current ?? "");
   }, []);
   const jumpToLatest = useCallback(() => {
     // Remounting the list restores tail-following and scrolls to the newest event.
     setEpoch((e) => e + 1);
     setFollowing(true);
-    setPausedAt(null);
+    setPausedAfter(null);
   }, []);
 
   const renderItem = useCallback((e: AgentEvent) => <AiEventStreamCard event={e} mode={logMode} />, [logMode]);
   const getKey = useCallback((e: AgentEvent) => e.id, []);
 
   const chips = EVENT_KINDS.filter((k) => counts[k] > 0 || hidden.has(k));
-  const unseen = useMemo(
-    () => (pausedAt === null ? 0 : filterByKinds(all.slice(pausedAt), hidden).length),
-    [all, hidden, pausedAt]
-  );
+  const unseen = useMemo(() => unseenSince(all, pausedAfter, hidden), [all, hidden, pausedAfter]);
   const active = isActivePhase(task.current_phase);
 
   return (
@@ -154,6 +159,25 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
         <div role="status" className="flex shrink-0 items-center gap-2 border-b border-border bg-info-subtle px-3 py-1 text-xs text-info">
           <StreamingText>{formatMessage(m.timeline.streaming, { phase: t.phase[task.current_phase] })}</StreamingText>
           {operation ? <span className="min-w-0 flex-1 truncate text-muted-foreground">{operation}</span> : null}
+        </div>
+      ) : null}
+
+      {older.hasMore && history.data ? (
+        <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1 text-xs text-muted-foreground">
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<History className="size-4" />}
+            disabled={older.loading}
+            onClick={() => void older.loadOlder()}
+          >
+            {older.loading ? m.timeline.loadingOlder : m.timeline.loadOlder}
+          </Button>
+          {older.error ? (
+            <span role="alert" className="text-destructive">
+              {m.timeline.olderFailed}
+            </span>
+          ) : null}
         </div>
       ) : null}
 

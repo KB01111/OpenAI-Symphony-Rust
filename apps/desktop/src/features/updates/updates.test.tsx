@@ -107,7 +107,7 @@ describe("UpdateBanner", () => {
     renderWithProviders(<UpdateBanner />, { runtime: createMockRuntime({}) });
     fireEvent.click(await screen.findByRole("button", { name: u.install }));
     expect(await screen.findByText(u.confirmTitle)).toBeInTheDocument();
-    expect(screen.getByText(/2 agent run\(s\) are in progress/)).toBeInTheDocument();
+    expect(screen.getByText(/2 agent runs are in progress/)).toBeInTheDocument();
     expect(calls(invoke, "install_update")).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: u.confirmInstall }));

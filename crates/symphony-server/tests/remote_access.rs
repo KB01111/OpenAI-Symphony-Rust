@@ -254,6 +254,11 @@ async fn sensitive_endpoints_are_forbidden_to_remote_clients() {
             Some(json!({"status": "done"})),
         ),
         (Method::GET, "/tasks/t1/diff", None),
+        (
+            Method::POST,
+            "/tasks/t1/continue",
+            Some(json!({"instructions": "x"})),
+        ),
         (Method::POST, "/prs/r1/approve-merge", None),
         (Method::GET, "/remote-access", None),
         (Method::POST, "/remote-access/token", None),

@@ -335,11 +335,13 @@ impl ProviderKind {
                 supports_approvals: true,
                 supports_dynamic_tools: true,
                 supports_token_usage: true,
+                // Fallback only: detection replaces it with the installed CLI's own catalogue
+                // (`model/list`). Matches what codex-cli 0.164.0 offered in October 2026.
                 models: vec![
-                    "gpt-5.3-codex".to_string(),
-                    "gpt-5.2-codex".to_string(),
-                    "gpt-5-codex".to_string(),
-                    "o4-mini".to_string(),
+                    "gpt-6.1-sol".to_string(),
+                    "gpt-6-astra".to_string(),
+                    "gpt-6-sol".to_string(),
+                    "gpt-6-luna".to_string(),
                 ],
                 status_message: "OpenAI Codex App Server (JSON-RPC 2.0 over stdio)".to_string(),
             },
@@ -352,12 +354,20 @@ impl ProviderKind {
                 supports_mid_turn_pause: false,
                 supports_cancel: true,
                 supports_streaming_events: true,
-                supports_approvals: false,
+                supports_approvals: true,
                 supports_dynamic_tools: false,
                 supports_token_usage: true,
+                // Claude Code has no model listing. Its aliases always mean the newest model of a
+                // family, so they never go stale; the full ids pin a version.
                 models: vec![
-                    "claude-sonnet-4-5".to_string(),
-                    "claude-opus-4-1".to_string(),
+                    "opus".to_string(),
+                    "sonnet".to_string(),
+                    "haiku".to_string(),
+                    "fable".to_string(),
+                    "claude-opus-5-5".to_string(),
+                    "claude-sonnet-5-5".to_string(),
+                    "claude-haiku-5-5".to_string(),
+                    "claude-fable-5-1".to_string(),
                 ],
                 status_message: "Claude Code CLI (`claude -p --output-format stream-json`)"
                     .to_string(),
@@ -371,12 +381,14 @@ impl ProviderKind {
                 supports_mid_turn_pause: false,
                 supports_cancel: true,
                 supports_streaming_events: true,
-                supports_approvals: false,
+                supports_approvals: true,
                 supports_dynamic_tools: false,
                 supports_token_usage: true,
+                // Fallback only: detection replaces it with `opencode models`, i.e. the models of the
+                // providers the user configured in OpenCode.
                 models: vec![
-                    "openai/gpt-5-codex".to_string(),
-                    "anthropic/claude-sonnet-4-5".to_string(),
+                    "anthropic/claude-opus-5-5".to_string(),
+                    "anthropic/claude-sonnet-5-5".to_string(),
                 ],
                 status_message: "OpenCode CLI (`opencode run --format json`)".to_string(),
             },
@@ -714,10 +726,18 @@ impl TokenUsage {
     }
 
     pub fn estimate_cost_usd(&self, model: Option<&str>) -> f64 {
-        // Approximate per-1M token pricing for estimation
-        let (in_rate, out_rate) = match model.unwrap_or("gpt-5-codex") {
-            m if m.contains("mini") => (0.40, 1.60),
+        // Approximate list prices per 1M tokens, by model family; an estimate, not a bill.
+        let model = model.unwrap_or_default().to_ascii_lowercase();
+        let (in_rate, out_rate) = match model.as_str() {
+            m if m.contains("fable") || m.contains("mythos") => (10.00, 50.00),
+            m if m.contains("opus-5-5") || m == "opus" || m.ends_with("/opus") => (4.00, 20.00),
+            m if m.contains("opus") => (5.00, 25.00),
+            m if m.contains("sonnet-4") => (3.00, 15.00),
+            m if m.contains("sonnet") => (2.00, 10.00),
+            m if m.contains("haiku-5") || m == "haiku" => (0.10, 0.50),
+            m if m.contains("haiku") => (1.00, 5.00),
             m if m.contains("claude") => (3.00, 15.00),
+            m if m.contains("mini") || m.contains("luna") || m.contains("flash") => (0.40, 1.60),
             _ => (1.50, 6.00),
         };
         (self.input_tokens as f64 / 1_000_000.0) * in_rate
@@ -819,6 +839,11 @@ pub struct PullRequestReview {
     /// security evidence describe. A pull request whose head moved beyond it is flagged on refresh.
     #[serde(default)]
     pub reviewed_commit: Option<String>,
+    /// Set on the review of a run that continued a task after its pull request was opened: that
+    /// work is not on the pull request until it is published. Reviews stored before this field
+    /// existed read as `false`, so an older published review is never mistaken for one.
+    #[serde(default)]
+    pub unpushed_changes: bool,
 }
 
 impl PullRequestReview {
@@ -826,6 +851,12 @@ impl PullRequestReview {
     /// `pr_number` for a local review, so a number alone proves nothing: the URL has to be one.
     pub fn has_pull_request(&self) -> bool {
         self.pr_number > 0 && (self.url.starts_with("https://") || self.url.starts_with("http://"))
+    }
+
+    /// A pull request exists, but what this review describes was never pushed to it: the task ran
+    /// again (continued) after the pull request was opened, and only publishing sends the new work.
+    pub fn has_unpushed_changes(&self) -> bool {
+        self.has_pull_request() && self.unpushed_changes
     }
 
     /// Bring a review written before merge facts were measured in line with what is known: it
@@ -1167,7 +1198,9 @@ impl Default for AppSettings {
             minimize_to_tray_on_close: true,
             start_background_runtime_on_login: false,
             default_provider: ProviderKind::Codex,
-            default_model: "gpt-5-codex".to_string(),
+            // Empty: each provider's own default (what its CLI reports), never a hard-coded id
+            // that a CLI release can retire.
+            default_model: String::new(),
             polling_interval_ms: 30_000,
             resource_policy: ResourcePolicy::default(),
             remote_api_enabled: false,
@@ -1273,4 +1306,47 @@ pub struct RuntimeInfo {
     pub auth_required: bool,
     pub started_at: DateTime<Utc>,
     pub event_stream: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cost_estimate_follows_the_model_family() {
+        let million = TokenUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            total_tokens: 2_000_000,
+        };
+        let cost = |model: Option<&str>| (million.estimate_cost_usd(model) * 100.0).round() / 100.0;
+        assert_eq!(cost(Some("claude-opus-5-5")), 24.0);
+        assert_eq!(cost(Some("opus")), 24.0);
+        assert_eq!(cost(Some("claude-opus-4-8")), 30.0);
+        assert_eq!(cost(Some("claude-sonnet-5-5")), 12.0);
+        assert_eq!(cost(Some("sonnet")), 12.0);
+        assert_eq!(cost(Some("claude-sonnet-4-6")), 18.0);
+        assert_eq!(cost(Some("claude-haiku-5-5")), 0.6);
+        assert_eq!(cost(Some("claude-fable-5-1")), 60.0);
+        assert_eq!(cost(Some("anthropic/claude-sonnet-5-5")), 12.0);
+        assert_eq!(cost(Some("gpt-6-luna")), 2.0);
+        assert_eq!(cost(Some("gpt-6.1-sol")), 7.5);
+        assert_eq!(cost(None), 7.5);
+    }
+
+    #[test]
+    fn settings_default_to_each_providers_own_model() {
+        assert_eq!(AppSettings::default().default_model, "");
+        for kind in [
+            ProviderKind::Codex,
+            ProviderKind::ClaudeCode,
+            ProviderKind::OpenCode,
+        ] {
+            let models = kind.default_capabilities().models;
+            assert!(!models.is_empty());
+            assert!(!models
+                .iter()
+                .any(|m| m.contains("gpt-5-codex") || m.contains("4-5")));
+        }
+    }
 }

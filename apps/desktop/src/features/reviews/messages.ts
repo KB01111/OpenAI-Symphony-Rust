@@ -6,7 +6,7 @@ export const reviewMessages = defineMessages({
     title: "Pull request reviews",
     description: "Evidence-backed merge readiness for agent-produced changes. Approval is always an explicit human decision.",
     listLabel: "Pull request reviews",
-    count: "{count} review(s)",
+    count: "{count, plural, one {# review} other {# reviews}}",
     search: "Search reviews",
     searchPlaceholder: "Title, branch, #number, project…",
     filters: {
@@ -26,7 +26,7 @@ export const reviewMessages = defineMessages({
       ciUnknown: "CI: pending",
       ciNone: "No remote CI",
       localReview: "Local review",
-      blockers: "{count} blocker(s)",
+      blockers: "{count, plural, one {# blocker} other {# blockers}}",
       unknownProject: "Unknown project",
       updated: "Updated"
     },
@@ -109,7 +109,7 @@ export const reviewMessages = defineMessages({
       general: "General comment",
       fileDiff: "Diff for {path}",
       fileNotInDiff: "This file has no hunk in the review diff.",
-      moreLines: "{count} more line(s) — see the Diff tab"
+      moreLines: "{count, plural, one {# more line} other {# more lines}} — see the Diff tab"
     },
     security: {
       empty: "No security warnings were raised."
@@ -126,7 +126,13 @@ export const reviewMessages = defineMessages({
       successBody: "Pull request #{number} was opened. Nothing was merged.",
       refresh: "Refresh status",
       refreshing: "Refreshing…",
-      refreshHint: "Reads CI, merge state and comments from GitHub."
+      refreshHint: "Reads CI, merge state and comments from GitHub.",
+      pushButton: "Push changes to #{number}",
+      pushTitle: "Push the new changes to pull request #{number}?",
+      pushBody: "The task ran again after this pull request was opened. This commits the worktree's changes to branch {branch} and pushes it, which updates pull request #{number}.",
+      pushConfirm: "Push changes",
+      pushSuccess: "Pull request updated",
+      pushSuccessBody: "The changes are on pull request #{number}. Nothing was merged."
     },
     approve: {
       title: "Record human approval?",
@@ -142,7 +148,7 @@ export const reviewMessages = defineMessages({
     title: "Granskning av pull requests",
     description: "Evidensbaserad sammanslagningsberedskap för agentproducerade ändringar. Godkännande är alltid ett uttryckligt mänskligt beslut.",
     listLabel: "Granskningar av pull requests",
-    count: "{count} granskning(ar)",
+    count: "{count, plural, one {# granskning} other {# granskningar}}",
     search: "Sök granskningar",
     searchPlaceholder: "Titel, gren, #nummer, projekt…",
     filters: {
@@ -245,7 +251,7 @@ export const reviewMessages = defineMessages({
       general: "Allmän kommentar",
       fileDiff: "Diff för {path}",
       fileNotInDiff: "Filen har ingen del i granskningens diff.",
-      moreLines: "{count} rad(er) till — se fliken Diff"
+      moreLines: "{count, plural, one {# rad} other {# rader}} till — se fliken Diff"
     },
     security: {
       empty: "Inga säkerhetsvarningar rapporterades."
@@ -262,7 +268,13 @@ export const reviewMessages = defineMessages({
       successBody: "Pull request #{number} öppnades. Inget slogs samman.",
       refresh: "Uppdatera status",
       refreshing: "Uppdaterar…",
-      refreshHint: "Läser CI, sammanslagningsstatus och kommentarer från GitHub."
+      refreshHint: "Läser CI, sammanslagningsstatus och kommentarer från GitHub.",
+      pushButton: "Pusha ändringar till #{number}",
+      pushTitle: "Pusha de nya ändringarna till pull request #{number}?",
+      pushBody: "Uppgiften kördes igen efter att pull requesten öppnades. Detta committar arbetsträdets ändringar till grenen {branch} och pushar den, vilket uppdaterar pull request #{number}.",
+      pushConfirm: "Pusha ändringar",
+      pushSuccess: "Pull request uppdaterad",
+      pushSuccessBody: "Ändringarna finns nu i pull request #{number}. Inget slogs samman."
     },
     approve: {
       title: "Registrera mänskligt godkännande?",

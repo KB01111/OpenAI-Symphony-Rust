@@ -186,6 +186,16 @@ export type CodexTotals = {
     estimated_cost_usd: number;
 };
 
+/**
+ * Operator instructions that continue a task's agent thread (`POST /tasks/{id}/continue`).
+ */
+export type ContinueTaskRequest = {
+    /**
+     * What the agent should do next (1–20 000 characters).
+     */
+    instructions: string;
+};
+
 export type CreateProjectRequest = {
     name: string;
     repo_path: string;
@@ -511,6 +521,12 @@ export type PullRequestReview = {
      * security evidence describe. A pull request whose head moved beyond it is flagged on refresh.
      */
     reviewed_commit: string | null;
+    /**
+     * Set on the review of a run that continued a task after its pull request was opened: that
+     * work is not on the pull request until it is published. Reviews stored before this field
+     * existed read as `false`, so an older published review is never mistaken for one.
+     */
+    unpushed_changes: boolean;
 };
 
 /**
@@ -1457,6 +1473,36 @@ export type RetryTaskResponses = {
 
 export type RetryTaskResponse = RetryTaskResponses[keyof RetryTaskResponses];
 
+export type ContinueTaskData = {
+    body: ContinueTaskRequest;
+    path: {
+        /**
+         * Task id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/tasks/{id}/continue';
+};
+
+export type ContinueTaskErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ContinueTaskError = ContinueTaskErrors[keyof ContinueTaskErrors];
+
+export type ContinueTaskResponses = {
+    /**
+     * The task, dispatched with the instructions; 409 while it runs
+     */
+    200: Task;
+};
+
+export type ContinueTaskResponse = ContinueTaskResponses[keyof ContinueTaskResponses];
+
 export type ListTaskEventsData = {
     body?: never;
     path: {
@@ -1466,7 +1512,15 @@ export type ListTaskEventsData = {
         id: string;
     };
     query?: {
+        /**
+         * Maximum number of events (1–500, default 500).
+         */
         limit?: number;
+        /**
+         * Return only events older than this event id of the same task (the oldest event of the
+         * previous page); omit for the newest events.
+         */
+        before?: string;
     };
     url: '/api/v1/tasks/{id}/events';
 };
@@ -1482,7 +1536,7 @@ export type ListTaskEventsError = ListTaskEventsErrors[keyof ListTaskEventsError
 
 export type ListTaskEventsResponses = {
     /**
-     * Newest first
+     * Newest first; 404 when `before` is not an event of this task
      */
     200: Array<AgentEvent>;
 };

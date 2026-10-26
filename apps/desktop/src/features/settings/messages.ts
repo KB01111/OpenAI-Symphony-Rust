@@ -7,7 +7,7 @@ export const settingsMessages = defineMessages({
     sectionsNav: "Settings sections",
     loadError: "Could not load settings",
     unsaved: "Unsaved changes",
-    invalidCount: "{count} field(s) need attention",
+    invalidCount: "{count, plural, one {# field needs} other {# fields need}} attention",
     save: "Save changes",
     reset: "Reset",
     saved: "Settings saved",

@@ -73,9 +73,11 @@ export const ProviderBadge = React.memo(function ProviderBadge({
         {t.provider[provider]}
       </Badge>
       {model ? (
-        <Badge variant="outline" color="secondary" size="sm" className="truncate font-mono">
-          {model}
-        </Badge>
+        <span className="inline-flex min-w-0" title={model}>
+          <Badge variant="outline" color="secondary" size="sm" className="min-w-0 max-w-full font-mono">
+            <span className="min-w-0 truncate">{model}</span>
+          </Badge>
+        </span>
       ) : null}
     </span>
   );

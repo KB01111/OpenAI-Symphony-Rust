@@ -70,9 +70,13 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
      - **`linear_graphql`**: queries (read-only); mutations limited to `commentCreate`, `commentUpdate`,
        `issueUpdate`, `attachmentCreate`, `attachmentLinkGitHubPR`, `attachmentLinkURL`; one operation per
        call; no subscriptions. The document is tokenized (aliases, comments, strings and fragments cannot
-       smuggle another mutation). **Limit**: Linear's key is workspace-wide and the policy checks
-       operations, not objects, so an allowed operation can still address another project's issue.
-       Confining the tool to the configured project is an open item (audit SEC-03).
+       smuggle another mutation). Mutations are also confined to the configured project: every issue or
+       comment a mutation names (`id`/`issueId`, as a string or a variable, also inside input objects)
+       is looked up first and must belong to the project's `slugId`; a mutation whose targets cannot
+       all be read, or that sets `projectId`/`teamId`/`projectMilestoneId`, is refused before it is
+       sent; so is one that uses a variable with a default the call does not pass (Linear would apply
+       the unchecked default). **Limit**: Linear's key is workspace-wide and *reads* are not confined, so an agent can
+       read other projects' issues the key can see (audit SEC-03).
      - Refused calls fail with a structured error and never reach the network; the session continues.
        The agent-facing GitHub client never follows redirects.
    - Widening either list is a security change: add the tests that show what the new operation can do.
@@ -205,6 +209,18 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   and read back; a rejected or unpersisted change is an error, and the settings revert to the actual state.
 
 ## 6. Agent and Subprocess Lifecycle
+
+- **Claude Code approvals**: Claude Code runs as a host-controlled session
+  (`--permission-prompt-tool stdio`). A tool use that Claude Code's own permission rules would ask about is
+  sent to Symphony's approval gate; an approval "for the session" is remembered in memory for the exact
+  tool input and never written to Claude settings files. With `approval_policy: never` nobody is asked and
+  the request is denied, because Claude Code (unlike Codex) has no sandbox.
+- **OpenCode approvals**: under any approval policy other than `never`, Symphony runs its own
+  `opencode serve` per turn (bound to `127.0.0.1`, random password via `OPENCODE_SERVER_PASSWORD`, never
+  on the command line) with `ask` rules for bash, edits, web fetches and external directories, and
+  answers each permission request through the approval gate. Under `never`, `opencode run` is used and
+  the user's own OpenCode permissions decide (OpenCode's defaults allow bash and edits). Symphony never
+  passes `--auto`.
 
 - Every agent (Codex, Claude Code, OpenCode), lifecycle hook and validation command runs as an owned
   **process tree** (`symphony_workspaces::process::ProcessTree`): a Windows Job Object with

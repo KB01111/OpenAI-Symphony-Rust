@@ -69,6 +69,14 @@ export function hasPullRequest(review: { pr_number: number; url: string }): bool
   return review.pr_number > 0 && isWebUrl(review.url);
 }
 
+/**
+ * A pull request exists but this review's work is not on it: the task ran again after it was
+ * opened (the runtime sets `unpushed_changes`). Publishing pushes it to the same branch.
+ */
+export function hasUnpushedChanges(review: { pr_number: number; url: string; unpushed_changes: boolean }): boolean {
+  return hasPullRequest(review) && review.unpushed_changes;
+}
+
 export type CiTone = "success" | "danger" | "pending";
 
 export function ciTone(ciStatus: string): CiTone {

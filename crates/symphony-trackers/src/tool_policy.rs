@@ -8,6 +8,8 @@
 //! issues, update pull requests of the project's own repository) and refuses everything else,
 //! including all merges. Merging stays a human decision.
 
+use serde_json::Value;
+
 /// Check a `github_api` request against the policy of the project's repository (`owner/name`).
 pub fn check_github_request(repo: &str, method: &str, path: &str) -> Result<(), String> {
     let method = method.trim().to_ascii_uppercase();
@@ -115,10 +117,12 @@ enum Token {
     Name(String),
     Punct(char),
     Spread,
+    /// A string value (its decoded text), kept so the targets of a mutation can be checked.
+    Str(String),
 }
 
-/// GraphQL lexer, enough for the policy: comments, strings (block strings included) and numbers are
-/// dropped, so nothing inside them can be mistaken for a keyword or a field.
+/// GraphQL lexer, enough for the policy: comments and numbers are dropped and strings (block strings
+/// included) become one `Str` token, so nothing inside them can be mistaken for a keyword or a field.
 fn tokenize(source: &str) -> Result<Vec<Token>, String> {
     let chars: Vec<char> = source.chars().collect();
     let mut tokens = Vec::new();
@@ -135,34 +139,80 @@ fn tokenize(source: &str) -> Result<Vec<Token>, String> {
             '"' => {
                 if chars[i..].starts_with(&['"', '"', '"']) {
                     i += 3;
+                    let mut text = String::new();
                     loop {
                         if i >= chars.len() {
                             return Err("unterminated block string".into());
                         }
                         if chars[i..].starts_with(&['\\', '"', '"', '"']) {
+                            text.push_str("\"\"\"");
                             i += 4;
                         } else if chars[i..].starts_with(&['"', '"', '"']) {
                             i += 3;
                             break;
                         } else {
+                            text.push(chars[i]);
                             i += 1;
                         }
                     }
+                    tokens.push(Token::Str(text));
                 } else {
                     i += 1;
+                    let mut text = String::new();
                     loop {
                         match chars.get(i) {
                             None | Some('\n') | Some('\r') => {
                                 return Err("unterminated string".into())
                             }
-                            Some('\\') => i += 2,
+                            Some('\\') => {
+                                match chars.get(i + 1) {
+                                    Some('n') => text.push('\n'),
+                                    Some('t') => text.push('\t'),
+                                    Some('u') => {
+                                        let unit = |at: usize| {
+                                            let hex: String =
+                                                chars.iter().skip(at).take(4).collect();
+                                            u32::from_str_radix(&hex, 16).ok()
+                                        };
+                                        let first = unit(i + 2)
+                                            .ok_or("invalid unicode escape in a string")?;
+                                        // A UTF-16 surrogate pair (`\uD83D\uDE00`) is one character.
+                                        let paired = (0xD800..0xDC00).contains(&first)
+                                            && chars.get(i + 6) == Some(&'\\')
+                                            && chars.get(i + 7) == Some(&'u');
+                                        let low = if paired {
+                                            unit(i + 8).filter(|l| (0xDC00..0xE000).contains(l))
+                                        } else {
+                                            None
+                                        };
+                                        let code = match low {
+                                            Some(low) => {
+                                                0x10000 + ((first - 0xD800) << 10) + (low - 0xDC00)
+                                            }
+                                            None => first,
+                                        };
+                                        text.push(
+                                            char::from_u32(code)
+                                                .ok_or("invalid unicode escape in a string")?,
+                                        );
+                                        i += if low.is_some() { 10 } else { 4 };
+                                    }
+                                    Some(other) => text.push(*other),
+                                    None => return Err("unterminated string".into()),
+                                }
+                                i += 2;
+                            }
                             Some('"') => {
                                 i += 1;
                                 break;
                             }
-                            Some(_) => i += 1,
+                            Some(other) => {
+                                text.push(*other);
+                                i += 1;
+                            }
                         }
                     }
+                    tokens.push(Token::Str(text));
                 }
             }
             '.' => {
@@ -199,12 +249,24 @@ fn tokenize(source: &str) -> Result<Vec<Token>, String> {
 /// [`LINEAR_ALLOWED_MUTATIONS`] (every root field, aliases resolved, must be on the list).
 pub fn check_linear_document(query: &str) -> Result<(), String> {
     let tokens = tokenize(query)?;
+    match linear_operations(&tokens)?.as_slice() {
+        [] => Err("linear_graphql needs one query or mutation".into()),
+        [(_, "subscription")] => Err("linear_graphql does not allow subscriptions".into()),
+        [(_, "query")] => Ok(()),
+        [(start, "mutation")] => check_linear_mutation(&tokens[*start..]),
+        _ => Err("linear_graphql accepts a single operation per call".into()),
+    }
+}
+
+/// The operations of a document: where each starts and its kind. Fragment definitions are not
+/// operations, wherever they stand.
+fn linear_operations(tokens: &[Token]) -> Result<Vec<(usize, &'static str)>, String> {
     // Operations are the top-level `query | mutation | subscription` keywords or a bare `{`.
     // Inside `( … )` (variable definitions and arguments) keywords are names and `{` opens an
     // object value, so neither starts an operation.
     let mut depth = 0i32;
     let mut parens = 0i32;
-    let mut operations: Vec<(usize, &str)> = Vec::new();
+    let mut operations: Vec<(usize, &'static str)> = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         match token {
             Token::Punct('(') => parens += 1,
@@ -244,28 +306,40 @@ pub fn check_linear_document(query: &str) -> Result<(), String> {
     if depth != 0 || parens != 0 {
         return Err("the GraphQL document has unbalanced braces".into());
     }
-    match operations.as_slice() {
-        [] => Err("linear_graphql needs one query or mutation".into()),
-        [(_, "subscription")] => Err("linear_graphql does not allow subscriptions".into()),
-        [(_, "query")] => Ok(()),
-        [(start, "mutation")] => check_linear_mutation(&tokens[*start..]),
-        _ => Err("linear_graphql accepts a single operation per call".into()),
+    Ok(operations)
+}
+
+/// Index of the selection set that opens an operation starting at `tokens[0]`: past its header,
+/// whose variable definitions may hold `{ … }` default values inside `( … )`.
+fn selection_set_start(tokens: &[Token]) -> usize {
+    let mut parens = 0;
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            Token::Punct('(') => parens += 1,
+            Token::Punct(')') => parens -= 1,
+            Token::Punct('{') if parens == 0 => return i,
+            _ => {}
+        }
     }
+    tokens.len()
+}
+
+/// Whether an operation header declares a default (`$name: Type = …`) for `$name`.
+fn variable_has_default(header: &[Token], name: &str) -> bool {
+    let Some(at) = header
+        .windows(2)
+        .position(|w| matches!(w, [Token::Punct('$'), Token::Name(n)] if n == name))
+    else {
+        return false;
+    };
+    header[at + 2..]
+        .iter()
+        .take_while(|t| !matches!(t, Token::Punct('$')))
+        .any(|t| matches!(t, Token::Punct('=')))
 }
 
 fn check_linear_mutation(tokens: &[Token]) -> Result<(), String> {
-    // Skip the operation header up to the selection set that opens the operation.
-    let mut i = 0;
-    let mut parens = 0;
-    while i < tokens.len() {
-        match &tokens[i] {
-            Token::Punct('(') => parens += 1,
-            Token::Punct(')') => parens -= 1,
-            Token::Punct('{') if parens == 0 => break,
-            _ => {}
-        }
-        i += 1;
-    }
+    let mut i = selection_set_start(tokens);
     let (mut depth, mut parens) = (0i32, 0i32);
     let mut fields: Vec<&str> = Vec::new();
     let mut previous: Option<&Token> = None;
@@ -308,6 +382,124 @@ fn check_linear_mutation(tokens: &[Token]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Argument keys that name the issue or comment a mutation changes.
+const LINEAR_TARGET_KEYS: &[&str] = &["id", "issueId"];
+/// Keys that would move an issue out of the configured project.
+const LINEAR_MOVE_KEYS: &[&str] = &["projectId", "teamId", "projectMilestoneId"];
+
+fn collect_linear_targets(value: &Value, targets: &mut Vec<String>) -> Result<(), String> {
+    match value {
+        Value::Object(map) => {
+            for (key, inner) in map {
+                if LINEAR_MOVE_KEYS.contains(&key.as_str()) {
+                    return Err(format!(
+                        "linear_graphql does not move issues between projects or teams (`{key}`)"
+                    ));
+                }
+                match inner {
+                    Value::String(id) if LINEAR_TARGET_KEYS.contains(&key.as_str()) => {
+                        targets.push(id.clone())
+                    }
+                    other => collect_linear_targets(other, targets)?,
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_linear_targets(item, targets)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The issues and comments an allowed `linear_graphql` mutation changes, read from its arguments
+/// (string values and variables, also nested in input objects), so the tracker can confirm each one
+/// belongs to the configured project before the mutation is sent. `None` for a query (reads are not
+/// confined). A mutation whose targets cannot all be read, or that would move an issue to another
+/// project or team, is refused. Call [`check_linear_document`] first.
+pub fn linear_mutation_targets(
+    query: &str,
+    variables: &Value,
+) -> Result<Option<Vec<String>>, String> {
+    let all = tokenize(query)?;
+    // The same operation `check_linear_document` found, however the document starts (a fragment
+    // definition may come first): anything else that is not a single mutation is not scoped here.
+    let operation = match linear_operations(&all)?.as_slice() {
+        [(start, "mutation")] => *start,
+        [(_, "query")] => return Ok(None),
+        _ => return Err("linear_graphql accepts a single query or mutation per call".into()),
+    };
+    let tokens = &all[operation..];
+    let mut targets = Vec::new();
+    // Skip the operation header (its variable definitions are not arguments), then read only this
+    // operation's selection set.
+    let header_end = selection_set_start(tokens);
+    let header = &tokens[..header_end];
+    let mut i = header_end;
+    let (mut parens, mut depth) = (0i32, 0i32);
+    while i < tokens.len() {
+        match &tokens[i] {
+            Token::Punct('{') => depth += 1,
+            Token::Punct('}') => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Token::Punct('(') => parens += 1,
+            Token::Punct(')') => parens -= 1,
+            Token::Name(key)
+                if parens > 0 && matches!(tokens.get(i + 1), Some(Token::Punct(':'))) =>
+            {
+                if LINEAR_MOVE_KEYS.contains(&key.as_str()) {
+                    return Err(format!(
+                        "linear_graphql does not move issues between projects or teams (`{key}`)"
+                    ));
+                }
+                let target_key = LINEAR_TARGET_KEYS.contains(&key.as_str());
+                match (tokens.get(i + 2), tokens.get(i + 3)) {
+                    (Some(Token::Str(id)), _) if target_key => targets.push(id.clone()),
+                    (Some(Token::Punct('$')), Some(Token::Name(variable))) => {
+                        let value = match variables.get(variable) {
+                            Some(value) => value.clone(),
+                            // Linear would apply the header's default, which is not checked here.
+                            None if variable_has_default(header, variable) => {
+                                return Err(format!(
+                                    "variable `${variable}` has a default value; pass it in `variables` so it can be checked"
+                                ))
+                            }
+                            None => Value::Null,
+                        };
+                        match value {
+                            Value::String(id) if target_key => targets.push(id),
+                            _ if target_key => {
+                                return Err(format!(
+                                    "`{key}` must be a string id (variable `${variable}`)"
+                                ))
+                            }
+                            other => collect_linear_targets(&other, &mut targets)?,
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if targets.is_empty() {
+        return Err(
+            "linear_graphql mutations must name the issue or comment they change (`id`/`issueId`)"
+                .into(),
+        );
+    }
+    targets.sort();
+    targets.dedup();
+    Ok(Some(targets))
 }
 
 #[cfg(test)]
@@ -436,6 +628,127 @@ mod tests {
             "viewer",
         ] {
             assert!(linear(bad).is_err(), "must be refused: {bad}");
+        }
+    }
+
+    fn targets(query: &str, variables: Value) -> Result<Option<Vec<String>>, String> {
+        linear_mutation_targets(query, &variables)
+    }
+
+    #[test]
+    fn mutation_targets_are_read_from_literals_variables_and_inputs() {
+        use serde_json::json;
+        assert_eq!(targets("query { viewer { id } }", json!({})), Ok(None));
+        assert_eq!(
+            targets(
+                "mutation { issueUpdate(id: \"ENG-1\", input: { stateId: \"s\" }) { success } }",
+                json!({})
+            ),
+            Ok(Some(vec!["ENG-1".to_string()]))
+        );
+        assert_eq!(
+            targets(
+                "mutation C($i: String!, $b: String!) { commentCreate(input: { issueId: $i, body: $b }) { success comment { id } } }",
+                json!({ "i": "issue-1", "b": "text" })
+            ),
+            Ok(Some(vec!["issue-1".to_string()]))
+        );
+        assert_eq!(
+            targets(
+                "mutation C($input: CommentCreateInput!) { commentCreate(input: $input) { success } }",
+                json!({ "input": { "issueId": "issue-2", "body": "x" } })
+            ),
+            Ok(Some(vec!["issue-2".to_string()]))
+        );
+        // Two root fields: both targets are checked; an escaped id is decoded.
+        assert_eq!(
+            targets(
+                "mutation { a: commentUpdate(id: \"c\\u0031\", input: { body: \"b\" }) { success } issueUpdate(id: \"i-9\", input: {}) { success } }",
+                json!({})
+            ),
+            Ok(Some(vec!["c1".to_string(), "i-9".to_string()]))
+        );
+        // Selection-set fields named `id` are output, not targets.
+        assert!(targets(
+            "mutation { commentCreate(input: { body: \"b\" }) { comment { id } } }",
+            json!({})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_leading_fragment_or_a_default_object_does_not_hide_the_mutation() {
+        use serde_json::json;
+        // A fragment definition first: still the document's mutation, so it is scoped.
+        let fragment_first = "fragment F on Issue { id title } mutation { issueUpdate(id: \"ENG-7\", input: { title: \"t\" }) { success } }";
+        assert!(linear(fragment_first).is_ok());
+        assert_eq!(
+            targets(fragment_first, json!({})),
+            Ok(Some(vec!["ENG-7".to_string()]))
+        );
+        // A default object value in the header is not the selection set.
+        let default_object = "mutation U($id: String! = \"ENG-8\", $in: IssueUpdateInput = { title: \"t\" }) { issueUpdate(id: $id, input: $in) { success } }";
+        assert!(linear(default_object).is_ok());
+        assert_eq!(
+            targets(
+                default_object,
+                json!({ "id": "ENG-8", "in": { "title": "t" } })
+            ),
+            Ok(Some(vec!["ENG-8".to_string()]))
+        );
+        // A default the caller does not pass is not checked, so the mutation is refused: it could
+        // move the issue or name a target in another project.
+        for (query, variables) in [
+            ("mutation U($in: IssueUpdateInput = { projectId: \"other\" }) { issueUpdate(id: \"ENG-1\", input: $in) { success } }", json!({})),
+            ("mutation C($in: CommentCreateInput = { issueId: \"FOREIGN-1\", body: \"x\" }) { a: commentCreate(input: { issueId: \"ENG-1\", body: \"y\" }) { success } b: commentCreate(input: $in) { success } }", json!({})),
+        ] {
+            assert!(linear(query).is_ok(), "a valid document: {query}");
+            assert!(targets(query, variables).is_err(), "must be refused: {query}");
+        }
+        // Passed explicitly, the same variable is checked as usual.
+        assert!(targets(
+            "mutation U($in: IssueUpdateInput = { projectId: \"other\" }) { issueUpdate(id: \"ENG-1\", input: $in) { success } }",
+            json!({ "in": { "projectId": "other" } })
+        )
+        .is_err());
+        // A query after a fragment stays an unscoped read.
+        assert_eq!(
+            targets(
+                "fragment F on Issue { id } query { issue(id: \"x\") { ...F } }",
+                json!({})
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn escaped_non_bmp_characters_are_decoded() {
+        use serde_json::json;
+        assert_eq!(
+            targets(
+                "mutation { commentCreate(input: { issueId: \"i-\\uD83D\\uDE00\", body: \"\\uD83D\\uDE00 done\" }) { success } }",
+                json!({})
+            ),
+            Ok(Some(vec!["i-\u{1F600}".to_string()]))
+        );
+        assert!(linear(
+            "mutation { commentCreate(input: { issueId: \"i\", body: \"\\uD83D\" }) { success } }"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn mutations_that_move_issues_or_hide_their_target_are_refused() {
+        use serde_json::json;
+        for (query, variables) in [
+            ("mutation { issueUpdate(id: \"i\", input: { projectId: \"other\" }) { success } }", json!({})),
+            ("mutation { issueUpdate(id: \"i\", input: { teamId: \"t\" }) { success } }", json!({})),
+            ("mutation U($in: IssueUpdateInput!) { issueUpdate(id: \"i\", input: $in) { success } }", json!({ "in": { "projectId": "p" } })),
+            ("mutation U($id: String!) { issueUpdate(id: $id, input: {}) { success } }", json!({ "id": 5 })),
+            ("mutation U($id: String!) { issueUpdate(id: $id, input: {}) { success } }", json!({})),
+            ("mutation { attachmentLinkURL(url: \"https://x\") { success } }", json!({})),
+        ] {
+            assert!(targets(query, variables.clone()).is_err(), "must be refused: {query} {variables}");
         }
     }
 }

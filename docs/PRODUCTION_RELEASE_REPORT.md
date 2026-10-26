@@ -44,9 +44,9 @@ DOC-02 (see the audit for each: location, evidence, expected behaviour, fix, tes
 | --- | --- |
 | Tauri updater (`REL-02`) | Needs an update-signing key pair and a hosted HTTPS manifest, and a Windows build to verify; no unverified updater code was merged. Plan: [`RELEASING.md`](./RELEASING.md). |
 | Authenticode signing (`REL-03`) | Certificate and password are repository secrets only the owner can add. The workflow signs when present and otherwise labels assets `UNSIGNED`. |
-| Provider profiles / compatible endpoints (`PROV-01`) | Needs adapters with tool execution, approvals, streaming and sessions per endpoint; not started. |
-| Durable-history pagination and retention (`HIST-01`) | Events/attempts are persisted; cursor pagination and retention not built. |
-| Claude/OpenCode approval path (`AG-04`) | Needs a live run and a product decision. |
+| Provider profiles / compatible endpoints (`PROV-01`) | Compatible endpoints are reached through OpenCode (follow-up). Named profiles and automatic fallback were decided against for now (owner decision 2026-10-25, see the audit). |
+| Durable-history pagination and retention (`HIST-01`) | Done in the follow-up: retention, cursor pagination (`before=<event id>`) and *Load older events*. |
+| Claude/OpenCode approval path (`AG-04`) | Done in the follow-up, checked against the real `claude` and `opencode` CLIs (no model call). |
 | All native Windows behaviour, installer, WebView2, tray, DPAPI on a real profile, autostart, multi-monitor, DPI | No Windows machine in the environment. |
 | Performance on the reference laptop | Same. No idle CPU/RAM/startup numbers exist for it. |
 | A full UI/accessibility audit pass | Only the screens touched here were reviewed; the 30 Playwright flows pass. |
@@ -145,8 +145,8 @@ Idle CPU/RAM/startup on the reference laptop and GPU-wake behaviour are unmeasur
 4. Date the `2.0.0` changelog section, tag, review the draft release, confirm `SHA256SUMS.txt`, SBOMs and
    `BUILD-INFO.txt`, publish.
 5. Enable branch protection for the five workflows; consider GitHub Enterprise `api_url` support if needed.
-6. Decide the product questions in the audit: Claude/OpenCode permissions (`AG-04`), provider profiles
-   (`PROV-01`), history retention (`HIST-01`), and whether the repository name should keep "OpenAI".
+6. Decide whether the repository name should keep "OpenAI". (`AG-04`, `HIST-01` and `PROV-01` are decided;
+   see the audit.)
 
 ## 10. Final release readiness assessment
 
@@ -160,6 +160,7 @@ Idle CPU/RAM/startup on the reference laptop and GPU-wake behaviour are unmeasur
 | Release artifact integrity (checksums, SBOM, commit trace) | Implemented, **unexercised** until a release run |
 | Update signatures | **Blocked** (no updater, no key) |
 | Windows code signing | **Blocked** (no certificate) |
+| UI review | Approved by the owner on 2026-10-25 from the real-runtime screenshots (`docs/screenshots/`), after the axe-core WCAG 2.1 AA and keyboard audit |
 | Manual Windows checks | **Open** |
 | Remaining limitations documented | Yes: audit §3–§4 |
 

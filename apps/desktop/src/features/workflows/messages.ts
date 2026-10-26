@@ -30,7 +30,7 @@ export const workflowMessages = defineMessages({
       dirty: "Unsaved changes",
       clean: "Saved",
       valid: "Valid",
-      invalid: "{count} error(s)",
+      invalid: "{count, plural, one {# error} other {# errors}}",
       validating: "Validating…",
       previewFailed: "Validation unavailable"
     },

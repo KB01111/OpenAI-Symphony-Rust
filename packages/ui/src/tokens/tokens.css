@@ -9,6 +9,9 @@
  *
  * Theme is selected by `<html data-theme="dark|light">`; density by `<html data-density>`.
  * Feature components must use these tokens instead of raw colours.
+ *
+ * Text tokens (foreground, muted, subtle and the status colours) keep at least 4.5:1 (WCAG 2.1 AA)
+ * against every surface of their theme, including their own `-subtle` tint.
  */
 @import "tw-animate-css";
 
@@ -27,18 +30,18 @@
   --border-strong: #c9ced6;
   --muted: #eef0f3;
   --muted-foreground: #5a6170;
-  --subtle-foreground: #7b8291;
-  --accent: #2563eb;
-  --accent-hover: #1d4fd7;
+  --subtle-foreground: #626977;
+  --accent: #1d58d8;
+  --accent-hover: #1a4cbd;
   --accent-foreground: #ffffff;
   --accent-subtle: rgb(37 99 235 / 0.1);
-  --destructive: #c62a32;
+  --destructive: #b3232b;
   --destructive-subtle: rgb(198 42 50 / 0.1);
-  --warning: #a35f00;
+  --warning: #8a5000;
   --warning-subtle: rgb(214 129 0 / 0.14);
-  --success: #18794e;
+  --success: #146b44;
   --success-subtle: rgb(24 121 78 / 0.12);
-  --info: #0b69c7;
+  --info: #0a5cb0;
   --info-subtle: rgb(11 105 199 / 0.1);
   --ring: #2563eb;
   --overlay: rgb(15 17 21 / 0.4);
@@ -61,12 +64,12 @@
   --border-strong: #363a42;
   --muted: #1e2024;
   --muted-foreground: #9ca1ab;
-  --subtle-foreground: #737985;
-  --accent: #5b8def;
-  --accent-hover: #74a0f5;
+  --subtle-foreground: #8b919b;
+  --accent: #7aa5f4;
+  --accent-hover: #8fb4f6;
   --accent-foreground: #0b1020;
   --accent-subtle: rgb(91 141 239 / 0.16);
-  --destructive: #f0626a;
+  --destructive: #f47a80;
   --destructive-subtle: rgb(240 98 106 / 0.14);
   --warning: #e3a43c;
   --warning-subtle: rgb(227 164 60 / 0.14);
@@ -81,6 +84,45 @@
   --diff-add: rgb(76 195 138 / 0.13);
   --diff-remove: rgb(240 98 106 / 0.13);
   color-scheme: dark;
+}
+
+/*
+ * OpenAI Apps SDK UI status text, through its own theming variables (declared in its `theme` layer
+ * with zero specificity, so these win): badges, alerts and ghost/outline buttons use the Symphony
+ * status colours, which meet AA on Symphony's surfaces. The SDK's components are unchanged.
+ */
+:root {
+  --color-text-success-outline: var(--success);
+  --color-text-success-outline-hover: var(--success);
+  --color-text-warning-outline: var(--warning);
+  --color-text-warning-outline-hover: var(--warning);
+  --color-text-warning-soft: var(--warning);
+  --color-text-warning-surface: var(--warning);
+  --color-text-success-soft: var(--success);
+  --color-text-success-surface: var(--success);
+  --color-text-info-soft: var(--info);
+  --color-text-info-surface: var(--info);
+  --color-text-danger: var(--destructive);
+  --color-text-danger-soft: var(--destructive);
+  --color-text-danger-surface: var(--destructive);
+  --color-text-danger-outline: var(--destructive);
+  --color-text-danger-outline-hover: var(--destructive);
+  --color-text-danger-ghost: var(--destructive);
+  --color-text-danger-ghost-hover: var(--destructive);
+  --color-text-info-outline: var(--info);
+  --color-text-info-outline-hover: var(--info);
+}
+
+/* The SDK's light code theme has two token colours under 4.5:1 on its code background. */
+:root,
+:root[data-theme="light"] {
+  --codeblock-syntax-1: #99500a;
+  --codeblock-syntax-4: #b8306f;
+}
+
+:root[data-theme="dark"] {
+  --codeblock-syntax-1: var(--yellow-100);
+  --codeblock-syntax-4: var(--pink-500);
 }
 
 :root {

@@ -952,6 +952,63 @@
         "x-symphony-remote": true
       }
     },
+    "/api/v1/tasks/{id}/continue": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "operationId": "continueTask",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Task id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContinueTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The task, dispatched with the instructions; 409 while it runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
     "/api/v1/tasks/{id}/events": {
       "get": {
         "tags": [
@@ -971,17 +1028,27 @@
           {
             "name": "limit",
             "in": "query",
+            "description": "Maximum number of events (1–500, default 500).",
             "required": false,
             "schema": {
               "type": "integer",
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return only events older than this event id of the same task (the oldest event of the\nprevious page); omit for the newest events.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Newest first",
+            "description": "Newest first; 404 when `before` is not an event of this task",
             "content": {
               "application/json": {
                 "schema": {
@@ -2363,7 +2430,7 @@
           },
           "default_model": {
             "type": "string",
-            "default": "gpt-5-codex"
+            "default": ""
           },
           "polling_interval_ms": {
             "type": "integer",
@@ -2758,6 +2825,19 @@
           "estimated_cost_usd": {
             "type": "number",
             "format": "double"
+          }
+        }
+      },
+      "ContinueTaskRequest": {
+        "type": "object",
+        "description": "Operator instructions that continue a task's agent thread (`POST /tasks/{id}/continue`).",
+        "required": [
+          "instructions"
+        ],
+        "properties": {
+          "instructions": {
+            "type": "string",
+            "description": "What the agent should do next (1–20 000 characters)."
           }
         }
       },
@@ -3973,7 +4053,8 @@
           "merge_readiness",
           "human_approved",
           "updated_at",
-          "reviewed_commit"
+          "reviewed_commit",
+          "unpushed_changes"
         ],
         "properties": {
           "id": {
@@ -4060,6 +4141,10 @@
               "null"
             ],
             "description": "The commit Symphony pushed when it opened the pull request: what the local validation and\nsecurity evidence describe. A pull request whose head moved beyond it is flagged on refresh."
+          },
+          "unpushed_changes": {
+            "type": "boolean",
+            "description": "Set on the review of a run that continued a task after its pull request was opened: that\nwork is not on the pull request until it is published. Reviews stored before this field\nexisted read as `false`, so an older published review is never mistaken for one."
           }
         }
       },

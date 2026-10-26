@@ -43,10 +43,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "usage_accounting",
         sql: include_str!("../migrations/0002_usage_accounting.sql"),
     },
+    Migration {
+        version: 3,
+        name: "task_follow_ups",
+        sql: include_str!("../migrations/0003_task_follow_ups.sql"),
+    },
 ];
 
 /// The schema version this build reads and writes.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticBundle {
@@ -479,6 +484,46 @@ impl Storage {
         Ok(())
     }
 
+    /// Store the operator's follow-up instructions for the next attempt of a task, replacing any
+    /// that were still waiting.
+    pub async fn set_task_follow_up(
+        &self,
+        task_id: &str,
+        instructions: &str,
+    ) -> SymphonyResult<()> {
+        sqlx::query(
+            "INSERT INTO task_follow_ups (task_id, instructions, created_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(task_id) DO UPDATE SET instructions = excluded.instructions,
+                                                created_at = excluded.created_at",
+        )
+        .bind(task_id)
+        .bind(instructions)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Follow-up instructions waiting for the next attempt of a task, if any.
+    pub async fn task_follow_up(&self, task_id: &str) -> SymphonyResult<Option<String>> {
+        sqlx::query_scalar("SELECT instructions FROM task_follow_ups WHERE task_id = ?1")
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))
+    }
+
+    /// Drop the waiting follow-up of a task; returns whether there was one.
+    pub async fn clear_task_follow_up(&self, task_id: &str) -> SymphonyResult<bool> {
+        let done = sqlx::query("DELETE FROM task_follow_ups WHERE task_id = ?1")
+            .bind(task_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(done.rows_affected() > 0)
+    }
+
     /// Crash recovery helper (Section 5):
     /// Finds tasks left in `Running` status from a previous interrupted process run,
     /// marks their stale attempts as interrupted, and moves them to `Queued` with a retry schedule
@@ -670,14 +715,14 @@ impl Storage {
         let capped = limit.clamp(1, 500) as i64;
         let rows = if let Some(tid) = task_id {
             sqlx::query(
-                "SELECT * FROM agent_events WHERE task_id = ?1 ORDER BY timestamp DESC LIMIT ?2",
+                "SELECT * FROM agent_events WHERE task_id = ?1 ORDER BY timestamp DESC, rowid DESC LIMIT ?2",
             )
             .bind(tid)
             .bind(capped)
             .fetch_all(&self.pool)
             .await
         } else {
-            sqlx::query("SELECT * FROM agent_events ORDER BY timestamp DESC LIMIT ?1")
+            sqlx::query("SELECT * FROM agent_events ORDER BY timestamp DESC, rowid DESC LIMIT ?1")
                 .bind(capped)
                 .fetch_all(&self.pool)
                 .await
@@ -685,6 +730,47 @@ impl Storage {
         .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
 
         rows.into_iter().map(row_to_event).collect()
+    }
+
+    /// A task's events older than `before` (an event id of the same task), newest first: the next
+    /// page of a timeline whose newest events were already read. The order is the one
+    /// `list_events` uses, so consecutive pages neither skip nor repeat an event, also when several
+    /// events share a timestamp. `None` when `before` is not an event of this task.
+    pub async fn list_task_events_before(
+        &self,
+        task_id: &str,
+        before: &str,
+        limit: u32,
+    ) -> SymphonyResult<Option<Vec<AgentEvent>>> {
+        let anchor = sqlx::query(
+            "SELECT timestamp, rowid AS rid FROM agent_events WHERE id = ?1 AND task_id = ?2",
+        )
+        .bind(before)
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let Some(anchor) = anchor else {
+            return Ok(None);
+        };
+        let timestamp: String = anchor.get("timestamp");
+        let rowid: i64 = anchor.get("rid");
+        let rows = sqlx::query(
+            "SELECT * FROM agent_events WHERE task_id = ?1 \
+             AND (timestamp < ?2 OR (timestamp = ?2 AND rowid < ?3)) \
+             ORDER BY timestamp DESC, rowid DESC LIMIT ?4",
+        )
+        .bind(task_id)
+        .bind(timestamp)
+        .bind(rowid)
+        .bind(limit.clamp(1, 500) as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        rows.into_iter()
+            .map(row_to_event)
+            .collect::<SymphonyResult<Vec<_>>>()
+            .map(Some)
     }
 
     // =========================================================================

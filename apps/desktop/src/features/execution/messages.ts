@@ -39,7 +39,18 @@ export const executionMessages = defineMessages({
       retry: "Retry",
       cancel: "Cancel run",
       openWorkspace: "Open workspace",
-      back: "Back to agent runs"
+      back: "Back to agent runs",
+      continue: "Continue…"
+    },
+    continueDialog: {
+      title: "Continue {identifier}",
+      description:
+        "The agent picks up its conversation in the same worktree and gets your instructions as its next prompt. The result is reviewed again.",
+      label: "Instructions for the agent",
+      placeholder: "For example: also handle an empty input and add a test for it.",
+      tooLong: "At most {max} characters.",
+      cancel: "Cancel",
+      confirm: "Continue run"
     },
     cancelDialog: {
       title: "Cancel {identifier}?",
@@ -80,7 +91,7 @@ export const executionMessages = defineMessages({
       startedAt: "Started",
       finishedAt: "Finished",
       inProgress: "In progress",
-      turns: "{count} turn(s)",
+      turns: "{count, plural, one {# turn} other {# turns}}",
       tokens: "{count} tokens",
       lastError: "Last error",
       nextRetry: "Next retry",
@@ -114,6 +125,9 @@ export const executionMessages = defineMessages({
       notInstalled: "Not installed"
     },
     timeline: {
+      loadOlder: "Load older events",
+      loadingOlder: "Loading older events…",
+      olderFailed: "Older events could not be loaded",
       filters: "Event kinds",
       approvalsFailed: "Pending approvals could not be loaded",
       kinds: enKinds,
@@ -126,7 +140,7 @@ export const executionMessages = defineMessages({
       jumpNew: "Jump to latest ({count} new)",
       streaming: "Agent is working · {phase}",
       approvals: "Pending approvals for this task",
-      events: "{count} events"
+      events: "{count, plural, one {# event} other {# events}}"
     },
     changes: {
       tabs: "Changes and validation",
@@ -134,6 +148,7 @@ export const executionMessages = defineMessages({
       validation: "Validation",
       usage: "Usage",
       pullRequest: "Pull request",
+      pullRequestShort: "PR",
       files: "Changed files",
       noChanges: "No changes in the worktree yet.",
       noWorktree: "The worktree does not exist on disk yet.",
@@ -163,7 +178,7 @@ export const executionMessages = defineMessages({
       ci: "CI",
       noRemoteCi: "No remote CI",
       state: "State",
-      blockers: "{count} blocker(s)",
+      blockers: "{count, plural, one {# blocker} other {# blockers}}",
       blockersLabel: "Blockers",
       humanApproved: "Human approved",
       openReview: "Open review"
@@ -179,7 +194,18 @@ export const executionMessages = defineMessages({
       retry: "Försök igen",
       cancel: "Avbryt körning",
       openWorkspace: "Öppna arbetsyta",
-      back: "Tillbaka till agentkörningar"
+      back: "Tillbaka till agentkörningar",
+      continue: "Fortsätt…"
+    },
+    continueDialog: {
+      title: "Fortsätt {identifier}",
+      description:
+        "Agenten fortsätter sin konversation i samma arbetsträd och får dina instruktioner som nästa prompt. Resultatet granskas igen.",
+      label: "Instruktioner till agenten",
+      placeholder: "Till exempel: hantera även tom indata och lägg till ett test för det.",
+      tooLong: "Högst {max} tecken.",
+      cancel: "Avbryt",
+      confirm: "Fortsätt körningen"
     },
     cancelDialog: {
       title: "Avbryta {identifier}?",
@@ -220,7 +246,7 @@ export const executionMessages = defineMessages({
       startedAt: "Startad",
       finishedAt: "Avslutad",
       inProgress: "Pågår",
-      turns: "{count} tur(er)",
+      turns: "{count, plural, one {# tur} other {# turer}}",
       tokens: "{count} tokens",
       lastError: "Senaste fel",
       nextRetry: "Nästa försök",
@@ -254,6 +280,9 @@ export const executionMessages = defineMessages({
       notInstalled: "Inte installerad"
     },
     timeline: {
+      loadOlder: "Läs in äldre händelser",
+      loadingOlder: "Läser in äldre händelser…",
+      olderFailed: "Äldre händelser kunde inte läsas in",
       filters: "Händelsetyper",
       approvalsFailed: "Väntande godkännanden kunde inte läsas in",
       kinds: svKinds,
@@ -266,7 +295,7 @@ export const executionMessages = defineMessages({
       jumpNew: "Hoppa till senaste ({count} nya)",
       streaming: "Agenten arbetar · {phase}",
       approvals: "Väntande godkännanden för uppgiften",
-      events: "{count} händelser"
+      events: "{count, plural, one {# händelse} other {# händelser}}"
     },
     changes: {
       tabs: "Ändringar och validering",
@@ -274,6 +303,7 @@ export const executionMessages = defineMessages({
       validation: "Validering",
       usage: "Användning",
       pullRequest: "Pull request",
+      pullRequestShort: "PR",
       files: "Ändrade filer",
       noChanges: "Inga ändringar i arbetsträdet ännu.",
       noWorktree: "Arbetsträdet finns inte på disken ännu.",

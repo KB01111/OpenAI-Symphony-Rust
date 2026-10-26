@@ -75,7 +75,12 @@ struct Scenario<'a> {
     baseline: Option<TokenUsage>,
 }
 
+/// One scripted app-server at a time: ten cold `node` starts at once on a loaded Windows runner
+/// have taken longer than the 30 s read timeout, failing the session start (not the accounting).
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn run(scenario: Scenario<'_>) -> Run {
+    let _serial = SERIAL.lock().await;
     let script = scenario.dir.join("mock_codex.js");
     std::fs::write(&script, MOCK_CODEX).unwrap();
     let config = AgentLaunchConfig {

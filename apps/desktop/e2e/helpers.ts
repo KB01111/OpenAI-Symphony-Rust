@@ -30,7 +30,11 @@ export async function prepareRuntime(overrides: Record<string, unknown> = {}) {
   await api("PUT", "/settings", { ...settings, onboarding_completed: true, theme: "dark", locale: "en", ...overrides });
 }
 
-export async function openApp(page: Page, route = "/overview", opts: { theme?: "dark" | "light"; locale?: "en" | "sv" } = {}) {
+export async function openApp(
+  page: Page,
+  route = "/overview",
+  opts: { theme?: "dark" | "light"; locale?: "en" | "sv"; /** `null`: first launch, the app picks the layout. */ inspectorOpen?: boolean | null } = {}
+) {
   // Runtime settings are the persisted source of truth for theme/locale (the UI adopts them on
   // load), so set both the runtime and the local store.
   const settings = await api<Record<string, unknown>>("GET", "/settings");
@@ -40,17 +44,18 @@ export async function openApp(page: Page, route = "/overview", opts: { theme?: "
     await api("PUT", "/settings", { ...settings, theme, locale });
   }
   await page.addInitScript(
-    ([theme, locale]) => {
+    ([theme, locale, inspectorOpen]) => {
       try {
+        const layout = inspectorOpen === null ? {} : { inspectorOpen };
         window.localStorage.setItem(
           "symphony.ui.v2",
-          JSON.stringify({ state: { themeMode: theme, locale, sidebarCollapsed: false, inspectorOpen: true, drawerOpen: true, lastRoute: "/overview" }, version: 1 })
+          JSON.stringify({ state: { themeMode: theme, locale, sidebarCollapsed: false, ...layout, drawerOpen: true, lastRoute: "/overview" }, version: 1 })
         );
       } catch {
         /* ignore */
       }
     },
-    [opts.theme ?? "dark", opts.locale ?? "en"] as const
+    [opts.theme ?? "dark", opts.locale ?? "en", opts.inspectorOpen === undefined ? true : opts.inspectorOpen] as const
   );
   await page.goto(`/#${route}`);
   await expect(page.getByRole("navigation", { name: opts.locale === "sv" ? "Huvudnavigering" : "Primary navigation" })).toBeVisible();

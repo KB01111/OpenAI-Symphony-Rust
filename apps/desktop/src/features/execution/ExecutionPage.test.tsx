@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AgentEvent, Task, TaskDiff } from "@symphony/shared-types";
+import { Link } from "react-router-dom";
 import ExecutionPage from "./ExecutionPage.js";
 import { createMockRuntime, renderWithProviders, type MockHandler } from "../../test/renderWithProviders.js";
 import { approval, project, providerStatus, snapshot, task } from "../../test/fixtures.js";
@@ -43,6 +44,18 @@ function runtime(current: Task, overrides: Record<string, MockHandler> = {}) {
   });
 }
 
+/**
+ * The open continue dialog, once it is in the accessibility tree: Fluent hides a dialog from it
+ * for a moment while it opens, so a role query right after the click can miss its controls.
+ */
+async function continueDialog() {
+  return waitFor(() => {
+    const dialog = screen.getByRole("dialog");
+    within(dialog).getByRole("textbox");
+    return dialog;
+  });
+}
+
 function renderPage(rt: ReturnType<typeof runtime>) {
   return renderWithProviders(<ExecutionPage />, { runtime: rt, route: "/runs/t1", path: "/runs/:taskId" });
 }
@@ -68,6 +81,98 @@ afterEach(() => {
 });
 
 describe("ExecutionPage", () => {
+  it("continues a reviewed task with the operator's instructions", async () => {
+    const reviewed = task({ status: "human_review", current_thread_id: "thread-1" });
+    const rt = runtime(reviewed, {
+      "POST /tasks/:id/continue": () => ({ ...reviewed, status: "running", attempt_count: reviewed.attempt_count + 1 })
+    });
+    renderPage(rt);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue…" }));
+    const dialog = await continueDialog();
+    const submit = within(dialog).getByRole("button", { name: "Continue run" });
+    expect(submit).toBeDisabled();
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "  Also handle empty input.  " } });
+    fireEvent.click(submit);
+    await waitFor(() => expect(rt.calls.some((c) => c.method === "POST" && c.path === "/tasks/t1/continue")).toBe(true));
+    expect(rt.calls.find((c) => c.path === "/tasks/t1/continue")!.body).toEqual({ instructions: "Also handle empty input." });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("closes the continue dialog when another run is opened, so its text cannot reach that run", async () => {
+    const first = task({ id: "t1", status: "human_review" });
+    const second = task({ id: "t2", status: "failed", issue: { ...first.issue, identifier: "SYM-2", title: "Second run title" } });
+    const rt = runtime(first, { "GET /tasks/:id": ({ path }) => (path.endsWith("/t2") ? second : first) });
+    renderWithProviders(
+      <>
+        <ExecutionPage />
+        <Link to="/runs/t1">first run</Link>
+        <Link to="/runs/t2">next run</Link>
+      </>,
+      { runtime: rt, route: "/runs/t1", path: "/runs/:taskId" }
+    );
+    // Visit both once, so switching between them is instant (cached) and keeps the page mounted.
+    await screen.findByRole("button", { name: "Continue…" });
+    fireEvent.click(screen.getByText("next run"));
+    expect((await screen.findAllByText(/Second run title/)).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText("first run"));
+    await waitFor(() => expect(screen.queryAllByText(/Second run title/)).toHaveLength(0));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue…" }));
+    // Not by role: Fluent hides the dialog from the accessibility tree for a moment while it opens.
+    fireEvent.change(await screen.findByPlaceholderText(/For example/), { target: { value: "for SYM-1 only" } });
+    fireEvent.click(screen.getByText("next run"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // Reopened for the second run, it is that run's dialog and starts empty.
+    fireEvent.click(await screen.findByRole("button", { name: "Continue…" }));
+    expect(await screen.findByText("Continue SYM-2")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/For example/)).toHaveValue("");
+  });
+
+  it("counts instructions in characters as the runtime does, so emoji are not counted twice", async () => {
+    renderPage(runtime(task({ status: "human_review" })));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue…" }));
+    const dialog = await continueDialog();
+    // 10 001 emoji are 20 002 UTF-16 units but 10 001 characters: within the 20 000 limit.
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "😀".repeat(10_001) } });
+    expect(within(dialog).getByRole("button", { name: "Continue run" })).toBeEnabled();
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "x".repeat(20_001) } });
+    expect(within(dialog).getByRole("button", { name: "Continue run" })).toBeDisabled();
+  });
+
+  it("offers no continuation while a task runs", async () => {
+    renderPage(runtime(task({ status: "running", current_phase: "streaming_turn" })));
+    await screen.findByRole("toolbar", { name: "Execution controls" });
+    expect(screen.queryByRole("button", { name: "Continue…" })).not.toBeInTheDocument();
+  });
+
+  it("loads older events on request, continuing from the oldest event shown", async () => {
+    const at = (i: number) => new Date(Date.UTC(2026, 9, 20, 10, 0, 0) + i * 1000).toISOString();
+    const newest = Array.from({ length: 500 }, (_, k) => ev(`n${499 - k}`, 0, { timestamp: at(1000 + 499 - k) }));
+    const olderPage = [ev("o1", 0, { timestamp: at(1) }), ev("o0", 0, { timestamp: at(0) })];
+    const cursors: (string | null)[] = [];
+    const rt = runtime(task(), {
+      "GET /tasks/:id/events": ({ query }) => {
+        cursors.push(query.get("before"));
+        return query.get("before") ? olderPage : newest;
+      }
+    });
+    renderPage(rt);
+    const load = await screen.findByRole("button", { name: "Load older events" });
+    expect(screen.getByText("500 events")).toBeInTheDocument();
+    fireEvent.click(load);
+    await waitFor(() => expect(screen.getByText("502 events")).toBeInTheDocument());
+    // The second request continues from the oldest event of the first page.
+    expect(cursors).toEqual([null, "n0"]);
+    // A short page means the beginning was reached: the control goes away.
+    expect(screen.queryByRole("button", { name: "Load older events" })).not.toBeInTheDocument();
+  });
+
+  it("does not offer older events when the first page was not full", async () => {
+    const rt = runtime(task(), { "GET /tasks/:id/events": () => [ev("e1", 1)] });
+    renderPage(rt);
+    await screen.findByText("1 event");
+    expect(screen.queryByRole("button", { name: "Load older events" })).not.toBeInTheDocument();
+  });
+
   it("focuses the inspector and renders history + live events in order without duplicates", async () => {
     const rt = runtime(task({ status: "running", current_phase: "streaming_turn" }), {
       "GET /tasks/:id/events": () => [ev("e3", 3), ev("e1", 1)]

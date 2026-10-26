@@ -45,7 +45,7 @@ export const taskMessages = defineMessages({
       p4: "Low"
     },
     card: {
-      attempts: "{count} attempt(s)",
+      attempts: "{count, plural, one {# attempt} other {# attempts}}",
       tokens: "{count} tokens",
       tokensEstimated: "About {count} tokens (estimated: part of the usage could not be measured exactly)",
       updated: "Updated",
@@ -57,7 +57,7 @@ export const taskMessages = defineMessages({
       empty: "No tasks"
     },
     column: {
-      count: "{count} task(s) in {status}"
+      count: "{count, plural, one {# task} other {# tasks}} in {status}"
     },
     actions: {
       start: "Start",
@@ -200,7 +200,7 @@ export const taskMessages = defineMessages({
       empty: "Inga uppgifter"
     },
     column: {
-      count: "{count} uppgift(er) i {status}"
+      count: "{count, plural, one {# uppgift} other {# uppgifter}} i {status}"
     },
     actions: {
       start: "Starta",

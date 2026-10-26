@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { Button, Tooltip } from "@fluentui/react-components";
 import { isTauri, nativeHost, errorMessage } from "@symphony/api-client";
 import {
-  AiEmptyView,
   KeyValueList,
   PhaseBadge,
   ProviderBadge,
@@ -14,12 +13,12 @@ import {
   formatTokens,
   useNotify
 } from "@symphony/ui";
-import { getTranslations } from "@symphony/shared-types";
-import { ExternalLink, FolderOpen, PanelRightClose, ScanSearch } from "lucide-react";
+import { formatMessage, getTranslations } from "@symphony/shared-types";
+import { CircleX, ExternalLink, FolderOpen, GitPullRequest, PanelRightClose, ScanSearch, ShieldAlert } from "lucide-react";
 import { shellMessages } from "../app/messages.js";
 import { paths } from "../app/routes.js";
 import { useLocale, useMessages, useT } from "../lib/i18n.js";
-import { useProjects, usePullRequest, useTask, useWorktrees } from "../lib/queries.js";
+import { useApprovals, useProjects, usePullRequest, useRuntimeState, useTask, useTasks, useWorktrees } from "../lib/queries.js";
 import { useRuntime } from "../runtime/RuntimeProvider.js";
 import { useUiStore } from "../store/uiStore.js";
 
@@ -197,6 +196,100 @@ const ReviewInspector: React.FC<{ id: string }> = ({ id }) => {
   );
 };
 
+const GlanceItem: React.FC<{ icon: React.ReactNode; label: string; detail?: React.ReactNode; onSelect: () => void }> = ({ icon, label, detail, onSelect }) => (
+  <li>
+    <button
+      type="button"
+      onClick={onSelect}
+      className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-start text-sm hover:bg-surface-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+    >
+      <span className="mt-0.5 shrink-0" aria-hidden>
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-foreground">{label}</span>
+        {detail ? <span className="block truncate text-xs text-muted-foreground">{detail}</span> : null}
+      </span>
+    </button>
+  </li>
+);
+
+/** Shown while nothing is selected: what is running and what needs a decision, one click from its details. */
+const GlanceInspector: React.FC = () => {
+  const m = useMessages(shellMessages);
+  const inspect = useUiStore((s) => s.inspect);
+  const state = useRuntimeState();
+  const approvals = useApprovals(true);
+  const tasks = useTasks();
+  const running = state.data?.running ?? [];
+  const select = (id: string) => inspect({ kind: "task", id });
+  const waiting = new Set((approvals.data ?? []).map((a) => a.task_id));
+  const attention = [
+    ...(approvals.data ?? []).map((a) => ({
+      key: `a-${a.id}`,
+      taskId: a.task_id,
+      icon: <ShieldAlert className="size-4 text-warning" />,
+      label: formatMessage(m.inspector.glanceApproval, { identifier: a.issue_identifier }),
+      detail: a.title || a.description
+    })),
+    ...(tasks.data ?? [])
+      .filter((t) => (t.status === "human_review" || t.status === "failed") && !waiting.has(t.id))
+      .map((t) => ({
+        key: `t-${t.id}`,
+        taskId: t.id,
+        icon: t.status === "failed" ? <CircleX className="size-4 text-destructive" /> : <GitPullRequest className="size-4 text-info" />,
+        label: formatMessage(t.status === "failed" ? m.inspector.glanceFailed : m.inspector.glanceReview, { identifier: t.issue.identifier }),
+        detail: t.status === "failed" ? (t.last_error ?? t.issue.title) : t.issue.title
+      }))
+  ];
+  // "All clear" only once both sources answered; otherwise say what is unknown.
+  const attentionLoading = (approvals.isLoading && !approvals.data) || (tasks.isLoading && !tasks.data);
+  const attentionFailed = (!approvals.data && approvals.isError) || (!tasks.data && tasks.isError);
+  return (
+    <div className="space-y-1 p-3">
+      <h3 className="text-sm font-semibold text-foreground">{m.inspector.glance}</h3>
+      <p className="text-xs text-muted-foreground">{m.inspector.glanceHint}</p>
+      <section aria-label={m.inspector.glanceRunning} className="pt-3">
+        <h4 className="px-2 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{m.inspector.glanceRunning}</h4>
+        {running.length === 0 ? (
+          <p className="px-2 text-sm text-muted-foreground">{m.inspector.glanceNoRunning}</p>
+        ) : (
+          <ul className="space-y-0.5">
+            {running.map((r) => (
+              <GlanceItem
+                key={r.task_id}
+                icon={<span className="mt-1 block size-2 animate-pulse rounded-full bg-success" />}
+                label={r.issue_identifier}
+                detail={r.last_message || r.last_event || <PhaseBadge phase={r.phase} />}
+                onSelect={() => select(r.task_id)}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+      <section aria-label={m.inspector.glanceAttention} className="pt-3">
+        <h4 className="px-2 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{m.inspector.glanceAttention}</h4>
+        {attentionFailed ? (
+          <p role="alert" className="px-2 text-sm text-warning">
+            {m.inspector.glanceUnavailable}
+          </p>
+        ) : null}
+        {attention.length === 0 && attentionLoading ? (
+          <p className="px-2 text-sm text-muted-foreground">{m.inspector.glanceLoading}</p>
+        ) : attention.length === 0 && !attentionFailed ? (
+          <p className="px-2 text-sm text-muted-foreground">{m.inspector.glanceAllClear}</p>
+        ) : attention.length === 0 ? null : (
+          <ul className="space-y-0.5">
+            {attention.map((a) => (
+              <GlanceItem key={a.key} icon={a.icon} label={a.label} detail={a.detail} onSelect={() => select(a.taskId)} />
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+  );
+};
+
 /** Right-hand context panel for the selected entity. */
 export const ContextInspector: React.FC = () => {
   const m = useMessages(shellMessages);
@@ -214,7 +307,7 @@ export const ContextInspector: React.FC = () => {
       </header>
       <div className="min-h-0 flex-1 overflow-auto">
         {!target ? (
-          <AiEmptyView className="m-3" title={m.inspector.empty} description={m.inspector.emptyDetail} />
+          <GlanceInspector />
         ) : target.kind === "task" ? (
           <TaskInspector id={target.id} />
         ) : target.kind === "project" ? (

@@ -1,8 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Button } from "@openai/apps-sdk-ui/components/Button";
 import { CopyButton } from "@openai/apps-sdk-ui/components/Button";
-import { CodeBlock } from "@openai/apps-sdk-ui/components/CodeBlock";
-import { Markdown } from "@openai/apps-sdk-ui/components/Markdown";
 import { formatMessage, type AgentEvent } from "@symphony/shared-types";
 import {
   AlertTriangle,
@@ -20,6 +18,7 @@ import { cn } from "../lib/utils.js";
 import { useUiStrings } from "../i18n.js";
 import { formatAgentEvent, runtimeEventTemplate, type AgentEventKind, type EventTone } from "./eventFormat.js";
 import { PhaseBadge } from "./badges.js";
+import { CodeBlock, Markdown } from "./codeBlocks.js";
 
 const KIND_ICONS: Record<AgentEventKind, React.ComponentType<{ className?: string }>> = {
   message: Bot,
@@ -96,7 +95,7 @@ export const AiEventStreamCard = React.memo(function AiEventStreamCard({
             {time}
           </time>
           <span className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-            <CopyButton copyValue={formatted.text} color="secondary" variant="ghost" size="2xs" />
+            <CopyButton copyValue={formatted.text} color="secondary" variant="ghost" size="2xs" aria-label={ui.copyEvent} />
           </span>
         </header>
 

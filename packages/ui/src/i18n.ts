@@ -28,7 +28,7 @@ export const uiMessages = defineMessages({
     noneRun: "Not run",
     noRemoteCi: "No remote CI",
     notChecked: "Not checked",
-    warnings: "{count} warning(s)",
+    warnings: "{count, plural, one {# warning} other {# warnings}}",
     verifiedInDiff: "Verified in diff",
     unverified: "Unverified",
     reviewAgent: "Review agent",
@@ -43,12 +43,14 @@ export const uiMessages = defineMessages({
     acPower: "AC power",
     battery: "Battery {percent}%",
     batteryUnknown: "Battery",
-    maxAgents: "max {count} agents",
+    maxAgents: "{count, plural, one {max # agent} other {max # agents}}",
     throttled: "Throttled",
     loading: "Loading…",
     workflowReloaded: "Reloaded WORKFLOW.md from {path}",
     workflowReloadFailed: "WORKFLOW.md could not be reloaded; the last valid version stays active: {error}",
-    workflowSaved: "Saved WORKFLOW.md to {path}"
+    workflowSaved: "Saved WORKFLOW.md to {path}",
+    copyCode: "Copy code",
+    copyEvent: "Copy event text"
   },
   sv: {
     approvalTitle: "Godkännande krävs · {identifier}",
@@ -75,7 +77,7 @@ export const uiMessages = defineMessages({
     noneRun: "Ej körd",
     noRemoteCi: "Ingen fjärr-CI",
     notChecked: "Ej kontrollerad",
-    warnings: "{count} varning(ar)",
+    warnings: "{count, plural, one {# varning} other {# varningar}}",
     verifiedInDiff: "Verifierad i diff",
     unverified: "Ej verifierad",
     reviewAgent: "Granskningsagent",
@@ -90,12 +92,14 @@ export const uiMessages = defineMessages({
     acPower: "Nätström",
     battery: "Batteri {percent} %",
     batteryUnknown: "Batteri",
-    maxAgents: "max {count} agenter",
+    maxAgents: "{count, plural, one {max # agent} other {max # agenter}}",
     throttled: "Strypt",
     loading: "Laddar…",
     workflowReloaded: "WORKFLOW.md lästes in på nytt från {path}",
     workflowReloadFailed: "WORKFLOW.md kunde inte läsas in på nytt; senaste giltiga version används: {error}",
-    workflowSaved: "WORKFLOW.md sparades i {path}"
+    workflowSaved: "WORKFLOW.md sparades i {path}",
+    copyCode: "Kopiera kod",
+    copyEvent: "Kopiera händelsetext"
   }
 });
 

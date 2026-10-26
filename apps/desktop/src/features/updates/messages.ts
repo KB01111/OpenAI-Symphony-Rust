@@ -18,7 +18,7 @@ export const updateMessages = defineMessages({
     retry: "Try again",
     confirmTitle: "Install the update now?",
     confirmDescription:
-      "{count} agent run(s) are in progress. Installing closes Symphony and interrupts them; they are queued again and resume when Symphony starts.",
+      "{count, plural, one {# agent run is} other {# agent runs are}} in progress. Installing closes Symphony and interrupts them; they are queued again and resume when Symphony starts.",
     confirmInstall: "Interrupt and install"
   },
   sv: {
@@ -38,7 +38,7 @@ export const updateMessages = defineMessages({
     retry: "Försök igen",
     confirmTitle: "Installera uppdateringen nu?",
     confirmDescription:
-      "{count} agentkörning(ar) pågår. Installationen stänger Symphony och avbryter dem; de köas igen och fortsätter när Symphony startar.",
+      "{count, plural, one {# agentkörning} other {# agentkörningar}} pågår. Installationen stänger Symphony och avbryter dem; de köas igen och fortsätter när Symphony startar.",
     confirmInstall: "Avbryt och installera"
   }
 });

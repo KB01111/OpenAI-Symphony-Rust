@@ -24,7 +24,7 @@ const NewTaskDialog = lazy(() => import("../features/tasks/NewTaskDialog.js"));
 const AddRepositoryDialog = lazy(() => import("../features/projects/AddRepositoryDialog.js"));
 const OnboardingDialog = lazy(() => import("../features/onboarding/OnboardingDialog.js"));
 
-const DRAWER_COLLAPSED_PX = 33;
+const DRAWER_COLLAPSED_PX = 37;
 
 /** Keeps a collapsible panel in sync with a persisted boolean in the UI store. */
 function useCollapsibleSync(ref: React.RefObject<PanelImperativeHandle | null>, open: boolean) {
@@ -102,7 +102,9 @@ export const DesktopShell: React.FC = () => {
           <ResizablePanel
             id="inspector"
             panelRef={inspectorRef}
-            defaultSize={320}
+            // Start collapsed when the stored state says closed: an imperative collapse() before the
+            // group's first layout is not applied.
+            defaultSize={inspectorOpen ? 320 : 0}
             minSize={260}
             maxSize="45"
             collapsible

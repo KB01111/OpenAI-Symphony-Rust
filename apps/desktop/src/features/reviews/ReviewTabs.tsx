@@ -153,7 +153,7 @@ const ValidationRow: React.FC<{ result: ValidationResult }> = ({ result }) => {
         ).map(([label, output]) => (
           <div key={label}>
             <div className="mb-1 text-xs font-medium text-muted-foreground">{label}</div>
-            <pre className="max-h-64 overflow-auto rounded-md bg-code p-2 font-mono text-xs whitespace-pre-wrap text-foreground">
+            <pre tabIndex={0} className="max-h-64 overflow-auto rounded-md bg-code p-2 font-mono text-xs whitespace-pre-wrap text-foreground">
               {output.trim() ? output : m.validation.noOutput}
             </pre>
           </div>
@@ -202,7 +202,7 @@ const CommentFileDiff: React.FC<{ file: DiffFile }> = ({ file }) => {
         <span className="font-mono text-success">+{file.additions}</span>
         <span className="font-mono text-destructive">−{file.deletions}</span>
       </figcaption>
-      <div className="max-h-72 overflow-auto bg-code font-mono text-xs leading-[18px]">
+      <div tabIndex={0} role="region" aria-label={file.path} className="max-h-72 overflow-auto bg-code font-mono text-xs leading-[18px]">
         {shown.map((line, i) => (
           <div key={i} className={cn("flex whitespace-pre px-2", lineClass(line))}>
             <span className="w-8 shrink-0 select-none pe-2 text-end text-subtle-foreground">{i + 1}</span>

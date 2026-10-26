@@ -97,7 +97,10 @@ for (const [width, height] of [
 
 test("task board at minimum window size (960x640)", async ({ page }) => {
   await page.setViewportSize({ width: 960, height: 640 });
-  await openApp(page, "/tasks", { theme: "light" });
+  // A first launch on a small window leaves the width to the board; the inspector opens on selection.
+  await openApp(page, "/tasks", { theme: "light", inspectorOpen: null });
+  const inspectorWidth = async () => (await page.getByRole("complementary", { name: "Inspector" }).boundingBox())?.width ?? 0;
+  await expect.poll(inspectorWidth).toBeLessThan(8);
   await page.waitForTimeout(600);
   await page.screenshot({ path: join(outDir, "task-board-960x640-light.png") });
 });

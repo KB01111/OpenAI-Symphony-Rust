@@ -20,12 +20,28 @@ export function defineMessages<T>(catalogue: { en: T; sv: NoInfer<T> }): Record<
   return catalogue;
 }
 
-/** Replace `{name}` placeholders. Unknown placeholders are left untouched. */
+const PLURAL = /\{(\w+),\s*plural,((?:\s*(?:=\d+|zero|one|two|few|many|other)\s*\{[^{}]*\})+)\s*\}/g;
+const PLURAL_CASE = /(=\d+|zero|one|two|few|many|other)\s*\{([^{}]*)\}/g;
+
+/**
+ * Fills `{name}` placeholders. Counts can choose a form with the ICU plural subset
+ * `{count, plural, one {# task} other {# tasks}}` (`=N` exact matches, `#` is the number); English
+ * and Swedish only distinguish `one` (exactly 1) from `other`. Unknown placeholders are left untouched.
+ */
 export function formatMessage(
   template: string,
   values: Record<string, string | number | null | undefined>
 ): string {
-  return template.replace(/\{(\w+)\}/g, (match, key: string) => {
+  const plural = template.replace(PLURAL, (match, key: string, cases: string) => {
+    const value = values[key];
+    if (value === undefined || value === null) return match;
+    const n = Number(value);
+    const forms = new Map<string, string>();
+    for (const [, selector, text] of cases.matchAll(PLURAL_CASE)) forms.set(selector!, text!);
+    const chosen = forms.get(`=${n}`) ?? (n === 1 ? forms.get("one") : undefined) ?? forms.get("other") ?? match;
+    return chosen.replace(/#/g, String(value));
+  });
+  return plural.replace(/\{(\w+)\}/g, (match, key: string) => {
     const value = values[key];
     return value === undefined || value === null ? match : String(value);
   });

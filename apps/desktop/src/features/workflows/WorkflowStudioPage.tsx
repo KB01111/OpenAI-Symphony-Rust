@@ -127,7 +127,7 @@ const ValidationTab: React.FC<{
             {d.raw.trim() !== d.message ? (
               <details className="pl-6 text-xs">
                 <summary className="cursor-pointer text-muted-foreground">{m.validation.rawDetails}</summary>
-                <pre className="mt-1 overflow-auto whitespace-pre-wrap rounded bg-code p-2 font-mono text-foreground">{d.raw}</pre>
+                <pre tabIndex={0} className="mt-1 overflow-auto whitespace-pre-wrap rounded bg-code p-2 font-mono text-foreground">{d.raw}</pre>
               </details>
             ) : null}
           </li>

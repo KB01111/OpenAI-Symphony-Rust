@@ -222,8 +222,14 @@ export const ActivityDrawer: React.FC<{ collapsed: boolean; onToggle: () => void
 
   return (
     <section aria-label={m.drawer.label} className="flex h-full min-h-0 flex-col border-t border-border bg-surface">
-      <header className="flex h-8 shrink-0 items-center gap-2 px-1">
-        <TabList size="small" selectedValue={tab} onTabSelect={(_, d) => setTab(d.value as DrawerTab)} aria-label={m.drawer.label}>
+      <header className="flex h-9 shrink-0 items-center gap-2 overflow-hidden border-b border-border px-1">
+        <TabList
+          size="small"
+          selectedValue={tab}
+          onTabSelect={(_, d) => setTab(d.value as DrawerTab)}
+          aria-label={m.drawer.label}
+          className="min-w-0 flex-1 flex-nowrap overflow-x-auto [scrollbar-width:none]"
+        >
           {tabs.map((x) => (
             <Tab key={x.key} value={x.key}>
               <span className="inline-flex items-center gap-1">
@@ -233,14 +239,15 @@ export const ActivityDrawer: React.FC<{ collapsed: boolean; onToggle: () => void
             </Tab>
           ))}
         </TabList>
-        <span className="ms-auto" />
-        {!collapsed && (tab === "events" || tab === "agent" || tab === "terminal") ? <LogModeSwitch value={logMode} onChange={setLogMode} /> : null}
-        <Tooltip content={collapsed ? m.drawer.expand : m.drawer.collapse} relationship="label">
-          <Button size="small" appearance="subtle" icon={collapsed ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />} onClick={onToggle} />
-        </Tooltip>
+        <span className="flex shrink-0 items-center gap-2">
+          {!collapsed && (tab === "events" || tab === "agent" || tab === "terminal") ? <LogModeSwitch value={logMode} onChange={setLogMode} /> : null}
+          <Tooltip content={collapsed ? m.drawer.expand : m.drawer.collapse} relationship="label">
+            <Button size="small" appearance="subtle" icon={collapsed ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />} onClick={onToggle} />
+          </Tooltip>
+        </span>
       </header>
       {collapsed ? null : (
-        <div className="min-h-0 flex-1" role="tabpanel">
+        <div className="min-h-0 flex-1 overflow-hidden" role="tabpanel">
           {tab === "events" ? (
             <EventFeed events={events} showIdentifier emptyTitle={m.drawer.noEvents} emptyDetail={m.drawer.noEventsDetail} />
           ) : tab === "agent" ? (

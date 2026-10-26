@@ -247,10 +247,27 @@ pub struct CancelTaskRequest {
     pub reason: Option<String>,
 }
 
+/// Operator instructions that continue a task's agent thread (`POST /tasks/{id}/continue`).
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct ContinueTaskRequest {
+    /// What the agent should do next (1–20 000 characters).
+    pub instructions: String,
+}
+
 #[derive(Debug, Deserialize, Default, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct LimitQuery {
     pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct TaskEventsQuery {
+    /// Maximum number of events (1–500, default 500).
+    pub limit: Option<u32>,
+    /// Return only events older than this event id of the same task (the oldest event of the
+    /// previous page); omit for the newest events.
+    pub before: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, IntoParams)]
@@ -506,6 +523,7 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(dispatch_task_handler))
         .routes(routes!(cancel_task_handler))
         .routes(routes!(retry_task_handler))
+        .routes(routes!(continue_task_handler))
         .routes(routes!(list_task_events_handler))
         .routes(routes!(list_task_attempts_handler))
         .routes(routes!(list_task_validations_handler))
@@ -1300,20 +1318,50 @@ async fn retry_task_handler(State(state): State<ServerState>, Path(id): Path<Str
 }
 
 #[utoipa::path(
+    post,
+    path = "/tasks/{id}/continue",
+    operation_id = "continueTask",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = ContinueTaskRequest,
+    responses((status = 200, description = "The task, dispatched with the instructions; 409 while it runs", body = Task))
+)]
+async fn continue_task_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    Json(req): Json<ContinueTaskRequest>,
+) -> Response {
+    respond(
+        state
+            .orchestrator
+            .continue_task(&id, &req.instructions)
+            .await,
+    )
+}
+
+#[utoipa::path(
     get,
     path = "/tasks/{id}/events",
     operation_id = "listTaskEvents",
     tag = "tasks",
-    params(("id" = String, Path, description = "Task id"), LimitQuery),
-    responses((status = 200, description = "Newest first", body = Vec<AgentEvent>))
+    params(("id" = String, Path, description = "Task id"), TaskEventsQuery),
+    responses((status = 200, description = "Newest first; 404 when `before` is not an event of this task", body = Vec<AgentEvent>))
 )]
 async fn list_task_events_handler(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-    Query(q): Query<LimitQuery>,
+    Query(q): Query<TaskEventsQuery>,
 ) -> Response {
     let limit = q.limit.unwrap_or(500).clamp(1, 500);
-    respond(state.orchestrator.list_events(Some(&id), limit).await)
+    match q.before.as_deref().filter(|b| !b.is_empty()) {
+        Some(before) => respond(
+            state
+                .orchestrator
+                .list_task_events_before(&id, before, limit)
+                .await,
+        ),
+        None => respond(state.orchestrator.list_events(Some(&id), limit).await),
+    }
 }
 
 #[utoipa::path(
