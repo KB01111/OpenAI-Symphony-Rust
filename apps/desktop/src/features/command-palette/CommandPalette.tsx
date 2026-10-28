@@ -1,6 +1,5 @@
 import React, { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Dialog, DialogSurface, DialogTitle } from "@fluentui/react-components";
 import { FolderGit2, Keyboard, Languages, MoonStar, Pause, Play, Plus, RefreshCw, Rows3, SquareKanban } from "lucide-react";
 import {
   Command,
@@ -10,7 +9,11 @@ import {
   CommandItem,
   CommandList,
   CommandSeparator,
-  CommandShortcut
+  CommandShortcut,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle
 } from "@symphony/ui";
 import { NAV_ITEMS, paths } from "../../app/routes.js";
 import { shellMessages } from "../../app/messages.js";
@@ -20,7 +23,7 @@ import { useUiStore } from "../../store/uiStore.js";
 
 /**
  * Ctrl+K command palette: shadcn `Command` (cmdk) for fuzzy search and keyboard navigation,
- * hosted in the app's single dialog implementation (Fluent `Dialog`) for focus management.
+ * hosted in the app's dialog primitive for focus management.
  */
 export const CommandPalette: React.FC = () => {
   const m = useMessages(shellMessages);
@@ -48,9 +51,10 @@ export const CommandPalette: React.FC = () => {
   );
 
   return (
-    <Dialog open={open} onOpenChange={(_, d) => (d.open ? undefined : close())}>
-      <DialogSurface className="!max-w-[640px] !p-0 overflow-hidden" aria-label={m.palette.title}>
+    <Dialog open={open} onOpenChange={(next) => (next ? undefined : close())}>
+      <DialogContent showClose={false} className="top-[20%] max-w-[640px] translate-y-0 overflow-hidden p-0" aria-label={m.palette.title}>
         <DialogTitle className="sr-only">{m.palette.title}</DialogTitle>
+        <DialogDescription className="sr-only">{m.palette.placeholder}</DialogDescription>
         <Command className="bg-surface-raised" loop>
           <CommandInput placeholder={m.palette.placeholder} autoFocus />
           <CommandList className="max-h-[420px]">
@@ -58,7 +62,7 @@ export const CommandPalette: React.FC = () => {
             {mode === "all" ? (
               <>
                 <CommandGroup heading={m.palette.actions}>
-                  <CommandItem onSelect={run(() => store().setNewTaskOpen(true))}>
+                  <CommandItem onSelect={run(() => navigate(paths.home()))}>
                     <Plus /> {m.commandBar.newTask}
                     <CommandShortcut>{m.shortcuts.newTask}</CommandShortcut>
                   </CommandItem>
@@ -137,7 +141,7 @@ export const CommandPalette: React.FC = () => {
             </CommandGroup>
           </CommandList>
         </Command>
-      </DialogSurface>
+      </DialogContent>
     </Dialog>
   );
 };

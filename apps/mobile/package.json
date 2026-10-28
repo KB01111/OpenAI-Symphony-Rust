@@ -12,12 +12,10 @@
   },
   "dependencies": {
     "@fluentui/react-components": "^9.74.11",
-    "@openai/apps-sdk-ui": "^0.2.2",
     "@symphony/api-client": "workspace:*",
     "@symphony/shared-types": "workspace:*",
     "@symphony/ui": "workspace:*",
     "@tanstack/react-query": "^5.104.5",
-    "katex": "^0.19.0",
     "lucide-react": "^1.61.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

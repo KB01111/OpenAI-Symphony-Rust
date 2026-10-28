@@ -2,7 +2,6 @@ import React, { useMemo } from "react";
 import type { Project, Task } from "@symphony/shared-types";
 import { DataTable, ProviderBadge, TaskStatusBadge, TimeAgo, formatTokens, type ColumnDef } from "@symphony/ui";
 import { useLocale, useMessages } from "../../lib/i18n.js";
-import { useUiStore } from "../../store/uiStore.js";
 import { taskMessages } from "./messages.js";
 import { TaskActionMenu, TaskContextMenu, useTaskActions } from "./taskActions.js";
 import { PriorityChip } from "./TaskCard.js";
@@ -13,8 +12,7 @@ export const TaskTable: React.FC<{ tasks: ReadonlyArray<Task>; projects: Readonl
   const m = useMessages(taskMessages);
   const locale = useLocale();
   const actions = useTaskActions();
-  const inspector = useUiStore((s) => s.inspector);
-  const selectedId = inspector?.kind === "task" ? inspector.id : null;
+  const selectedId: string | null = null;
   const projectNames = useMemo(() => new Map(projects.map((p) => [p.id, p.name])), [projects]);
   const rows = useMemo(() => sortForBoard(tasks), [tasks]);
 

@@ -1,6 +1,4 @@
 import React from "react";
-import { Badge } from "@openai/apps-sdk-ui/components/Badge";
-import { ShimmerText } from "@openai/apps-sdk-ui/components/ShimmerText";
 import {
   isActivePhase,
   type ApprovalStatus,
@@ -9,54 +7,48 @@ import {
   type TaskStatus
 } from "@symphony/shared-types";
 import { useUiStrings } from "../i18n.js";
+import { Badge, type BadgeTone } from "../primitives/badge.js";
 
-type BadgeColor = "secondary" | "success" | "danger" | "warning" | "info" | "discovery";
-
-export const TASK_STATUS_COLORS: Record<TaskStatus, BadgeColor> = {
-  backlog: "secondary",
+export const TASK_STATUS_COLORS: Record<TaskStatus, BadgeTone> = {
+  backlog: "neutral",
   ready: "info",
-  queued: "discovery",
+  queued: "accent",
   running: "info",
   blocked: "warning",
-  human_review: "discovery",
+  human_review: "accent",
   completed: "success",
   failed: "danger",
-  cancelled: "secondary"
+  cancelled: "neutral"
 };
 
-const PROVIDER_COLORS: Record<ProviderKind, BadgeColor> = {
-  codex: "discovery",
+const PROVIDER_COLORS: Record<ProviderKind, BadgeTone> = {
+  codex: "accent",
   claude_code: "warning",
   opencode: "success",
-  simulated: "secondary"
+  simulated: "neutral"
 };
+
+/** Text that gently pulses while work is in progress (static under reduced motion). */
+const Live: React.FC<{ children: React.ReactNode }> = ({ children }) => <span className="animate-pulse">{children}</span>;
 
 export const TaskStatusBadge = React.memo(function TaskStatusBadge({ status }: { status: TaskStatus }) {
   const { t } = useUiStrings();
   const label = t.status[status];
-  return (
-    <Badge variant="soft" color={TASK_STATUS_COLORS[status]} size="sm" pill>
-      {status === "running" ? <ShimmerText as="span">{label}</ShimmerText> : label}
-    </Badge>
-  );
+  return <Badge tone={TASK_STATUS_COLORS[status]}>{status === "running" ? <Live>{label}</Live> : label}</Badge>;
 });
 
 export const PhaseBadge = React.memo(function PhaseBadge({ phase }: { phase: RunAttemptPhase }) {
   const { t } = useUiStrings();
   const active = isActivePhase(phase);
-  const color: BadgeColor =
+  const tone: BadgeTone =
     phase === "succeeded"
       ? "success"
       : phase === "failed" || phase === "timed_out" || phase === "stalled"
         ? "danger"
         : active
           ? "info"
-          : "secondary";
-  return (
-    <Badge variant="outline" color={color} size="sm" pill>
-      {active ? <ShimmerText as="span">{t.phase[phase]}</ShimmerText> : t.phase[phase]}
-    </Badge>
-  );
+          : "neutral";
+  return <Badge tone={tone}>{active ? <Live>{t.phase[phase]}</Live> : t.phase[phase]}</Badge>;
 });
 
 export const ProviderBadge = React.memo(function ProviderBadge({
@@ -69,15 +61,11 @@ export const ProviderBadge = React.memo(function ProviderBadge({
   const { t } = useUiStrings();
   return (
     <span className="inline-flex min-w-0 items-center gap-1">
-      <Badge variant="soft" color={PROVIDER_COLORS[provider]} size="sm" pill>
-        {t.provider[provider]}
-      </Badge>
+      <Badge tone={PROVIDER_COLORS[provider]}>{t.provider[provider]}</Badge>
       {model ? (
-        <span className="inline-flex min-w-0" title={model}>
-          <Badge variant="outline" color="secondary" size="sm" className="min-w-0 max-w-full font-mono">
-            <span className="min-w-0 truncate">{model}</span>
-          </Badge>
-        </span>
+        <Badge tone="outline" className="min-w-0 max-w-full font-mono" title={model}>
+          <span className="min-w-0 truncate">{model}</span>
+        </Badge>
       ) : null}
     </span>
   );
@@ -85,11 +73,6 @@ export const ProviderBadge = React.memo(function ProviderBadge({
 
 export const ApprovalStatusBadge = React.memo(function ApprovalStatusBadge({ status }: { status: ApprovalStatus }) {
   const { t } = useUiStrings();
-  const color: BadgeColor =
-    status === "pending" ? "warning" : status === "approved" ? "success" : status === "denied" ? "danger" : "secondary";
-  return (
-    <Badge variant="soft" color={color} size="sm" pill>
-      {t.approvalStatus[status]}
-    </Badge>
-  );
+  const tone: BadgeTone = status === "pending" ? "warning" : status === "approved" ? "success" : status === "denied" ? "danger" : "neutral";
+  return <Badge tone={tone}>{t.approvalStatus[status]}</Badge>;
 });

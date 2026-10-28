@@ -1,29 +1,32 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  Button,
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
-  Dropdown,
-  Option,
-  Switch,
-  Tooltip
-} from "@fluentui/react-components";
 import { FileDiff, FolderOpen, MonitorPlay, ShieldCheck } from "lucide-react";
 import { formatMessage, type WorktreeInfo } from "@symphony/shared-types";
 import {
   AiEmptyView,
+  Badge,
+  Button,
   DataTable,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   ErrorState,
+  Hint,
+  Label,
   LoadingRows,
   PageHeader,
   ProviderBadge,
-  SdkBadge,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   StatusDot,
+  Switch,
   TaskStatusBadge,
   TimeAgo,
   type ColumnDef
@@ -31,7 +34,6 @@ import {
 import { paths } from "../../app/routes.js";
 import { useMessages, useT } from "../../lib/i18n.js";
 import { useWorktrees } from "../../lib/queries.js";
-import { useUiStore } from "../../store/uiStore.js";
 import { TaskDiffView } from "../execution/ChangesPanel.js";
 import { useWorkspaceOpener } from "../execution/useWorkspaceOpener.js";
 import { worktreesMessages } from "./messages.js";
@@ -44,17 +46,17 @@ const WorktreeState: React.FC<{ worktree: WorktreeInfo }> = ({ worktree: w }) =>
   return (
     <span className="inline-flex items-center gap-1.5">
       {!w.exists ? (
-        <SdkBadge variant="soft" color="danger" size="sm" pill>
+        <Badge tone="danger">
           {m.state.missing}
-        </SdkBadge>
+        </Badge>
       ) : w.dirty ? (
-        <SdkBadge variant="soft" color="warning" size="sm" pill>
+        <Badge tone="warning">
           {m.state.dirty}
-        </SdkBadge>
+        </Badge>
       ) : (
-        <SdkBadge variant="outline" color="secondary" size="sm" pill>
+        <Badge tone="outline">
           {m.state.clean}
-        </SdkBadge>
+        </Badge>
       )}
       {w.active_session_id ? <StatusDot tone="accent" pulse label={m.state.activeSession} /> : null}
     </span>
@@ -70,9 +72,9 @@ const WorktreeActions: React.FC<{
 }> = ({ worktree: w, explorer, onDiff, onOpenExplorer, onOpenExecution }) => {
   const m = useMessages(worktreesMessages);
   const button = (label: string, icon: React.ReactElement, onClick: () => void, disabled = false) => (
-    <Tooltip content={label} relationship="label">
-      <Button size="small" appearance="subtle" icon={icon} disabled={disabled} onClick={onClick} />
-    </Tooltip>
+    <Hint label={label} asLabel>
+      <Button size="sm" variant="subtle" disabled={disabled} onClick={onClick}>{icon}</Button>
+    </Hint>
   );
   return (
     // Keep clicks/keys on the buttons from also activating (selecting) the table row.
@@ -99,30 +101,33 @@ const WorktreeDiffDialog: React.FC<{ worktree: WorktreeInfo | null; onClose: () 
   const m = useMessages(worktreesMessages);
   const t = useT();
   return (
-    <Dialog open={worktree !== null} onOpenChange={(_, d) => !d.open && onClose()}>
-      <DialogSurface className="!w-[min(960px,calc(100vw-48px))] !max-w-none">
+    <Dialog open={worktree !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="w-[min(60rem,calc(100vw-3rem))] max-w-none" closeLabel={t.common.close}>
         {worktree ? (
-          <DialogBody>
-            <DialogTitle>{formatMessage(m.diffDialog.title, { identifier: worktree.issue_identifier })}</DialogTitle>
-            <DialogContent>
-              <p className="mb-2 truncate font-mono text-xs text-muted-foreground" title={worktree.workspace_path}>
+          <>
+            <DialogHeader>
+              <DialogTitle>{formatMessage(m.diffDialog.title, { identifier: worktree.issue_identifier })}</DialogTitle>
+              <DialogDescription className="truncate font-mono text-xs" title={worktree.workspace_path}>
                 {formatMessage(m.diffDialog.description, { branch: worktree.branch_name ?? m.noBranch, path: worktree.workspace_path })}
-              </p>
+              </DialogDescription>
+            </DialogHeader>
+            <DialogBody>
               <div className="max-h-[60vh] overflow-auto">
                 <TaskDiffView taskId={worktree.task_id} />
               </div>
-            </DialogContent>
-            <DialogActions>
-              <Button appearance="secondary" icon={<MonitorPlay className="size-4" />} onClick={() => onOpenExecution(worktree)}>
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="secondary" onClick={() => onOpenExecution(worktree)}>
+                <MonitorPlay />
                 {m.actions.openExecution}
               </Button>
-              <Button appearance="primary" onClick={onClose}>
+              <Button variant="default" onClick={onClose}>
                 {t.common.close}
               </Button>
-            </DialogActions>
-          </DialogBody>
+            </DialogFooter>
+          </>
         ) : null}
-      </DialogSurface>
+      </DialogContent>
     </Dialog>
   );
 };
@@ -134,8 +139,6 @@ export default function WorktreesPage() {
   const navigate = useNavigate();
   const worktrees = useWorktrees();
   const workspace = useWorkspaceOpener();
-  const inspector = useUiStore((s) => s.inspector);
-  const inspect = useUiStore((s) => s.inspect);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [dirtyOnly, setDirtyOnly] = useState(false);
   const [diffTarget, setDiffTarget] = useState<WorktreeInfo | null>(null);
@@ -151,7 +154,7 @@ export default function WorktreesPage() {
     [all, projectId, dirtyOnly]
   );
   const dirtyCount = useMemo(() => all.filter((w) => w.exists && w.dirty).length, [all]);
-  const selectedId = inspector?.kind === "worktree" ? inspector.id : null;
+  const selectedId: string | null = null;
   const filtersActive = projectId !== null || dirtyOnly;
 
   const columns = useMemo<ColumnDef<WorktreeInfo, unknown>[]>(() => {
@@ -191,9 +194,9 @@ export default function WorktreesPage() {
         header: m.columns.path,
         accessorFn: (w) => w.workspace_path,
         cell: ({ row }) => (
-          <Tooltip content={<span className="font-mono text-xs">{row.original.workspace_path}</span>} relationship="description">
+          <Hint label={<span className="font-mono text-xs">{row.original.workspace_path}</span>}>
             <span className="block max-w-[16rem] truncate font-mono text-xs text-muted-foreground">{row.original.workspace_path}</span>
-          </Tooltip>
+          </Hint>
         )
       },
       {
@@ -256,7 +259,7 @@ export default function WorktreesPage() {
           title={m.empty.title}
           description={m.empty.description}
           action={
-            <Button size="small" appearance="primary" onClick={() => navigate(paths.tasks())}>
+            <Button size="sm" variant="default" onClick={() => navigate(paths.tasks())}>
               {m.empty.cta}
             </Button>
           }
@@ -270,7 +273,7 @@ export default function WorktreesPage() {
           title={m.empty.filtered}
           action={
             <Button
-              size="small"
+              size="sm"
               onClick={() => {
                 setProjectId(null);
                 setDirtyOnly(false);
@@ -289,7 +292,7 @@ export default function WorktreesPage() {
         columns={columns}
         getRowId={(w) => w.task_id}
         selectedId={selectedId}
-        onRowActivate={(w) => inspect({ kind: "worktree", id: w.task_id })}
+        onRowActivate={(w) => navigate(paths.run(w.task_id))}
         initialSorting={[{ id: "lastModified", desc: true }]}
         ariaLabel={m.tableLabel}
         className="h-full"
@@ -303,22 +306,25 @@ export default function WorktreesPage() {
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader title={m.title} description={formatMessage(m.description, { total: all.length, dirty: dirtyCount })} />
       <div role="search" aria-label={m.filters} className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-surface px-4 py-2">
-        <Dropdown
-          size="small"
-          className="!min-w-0 w-48"
-          aria-label={m.project}
-          value={activeProjectName ?? m.allProjects}
-          selectedOptions={[projectId ?? ALL]}
-          onOptionSelect={(_, d) => setProjectId(d.optionValue && d.optionValue !== ALL ? d.optionValue : null)}
-        >
-          <Option value={ALL}>{m.allProjects}</Option>
-          {projects.map((p) => (
-            <Option key={p.id} value={p.id} text={p.name}>
-              {p.name}
-            </Option>
-          ))}
-        </Dropdown>
-        <Switch checked={dirtyOnly} onChange={(_, d) => setDirtyOnly(d.checked)} label={m.dirtyOnly} />
+        <Select value={projectId ?? ALL} onValueChange={(v) => setProjectId(v === ALL ? null : v)}>
+          <SelectTrigger className="w-48" aria-label={m.project}>
+            <SelectValue>{activeProjectName ?? m.allProjects}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>{m.allProjects}</SelectItem>
+            {projects.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <span className="inline-flex items-center gap-2">
+          <Switch id="worktrees-dirty-only" checked={dirtyOnly} onCheckedChange={setDirtyOnly} />
+          <Label htmlFor="worktrees-dirty-only" className="text-sm font-normal">
+            {m.dirtyOnly}
+          </Label>
+        </span>
         {filtersActive ? (
           <span className="text-xs tabular-nums text-muted-foreground">{formatMessage(m.shown, { shown: visible.length, total: all.length })}</span>
         ) : null}

@@ -1,22 +1,10 @@
 /**
- * Task action controller shared by the board, table, Fluent action menus and shadcn context
+ * Task action controller shared by the board, table, action menus and context
  * menus. One provider owns the mutations and the cancel confirmation so every surface offers the
  * same state-machine-gated actions.
  */
 import React, { createContext, useCallback, useContext, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  Button,
-  Menu,
-  MenuDivider,
-  MenuGroup,
-  MenuGroupHeader,
-  MenuItem,
-  MenuList,
-  MenuPopover,
-  MenuTrigger,
-  Tooltip
-} from "@fluentui/react-components";
 import {
   canCancel,
   canDispatch,
@@ -29,6 +17,7 @@ import {
   type TaskStatus
 } from "@symphony/shared-types";
 import {
+  Button,
   ConfirmDialog,
   ContextMenu,
   ContextMenuContent,
@@ -38,6 +27,14 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  Hint,
   useNotify
 } from "@symphony/ui";
 import { ArrowRightLeft, History, Info, MoreHorizontal, Play, RotateCcw, ScanSearch, XCircle } from "lucide-react";
@@ -51,7 +48,6 @@ import {
   useRetryTask,
   useRuntimeState
 } from "../../lib/queries.js";
-import { useUiStore } from "../../store/uiStore.js";
 import { taskMessages } from "./messages.js";
 import { activeTaskIds, allowedMoveTargets, applyDrop } from "./taskLogic.js";
 
@@ -84,7 +80,6 @@ export const TaskActionsProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const t = useT();
   const notify = useNotify();
   const navigate = useNavigate();
-  const inspect = useUiStore((s) => s.inspect);
   const state = useRuntimeState();
   const providers = useProviders();
   const dispatchTask = useDispatchTask();
@@ -132,12 +127,12 @@ export const TaskActionsProvider: React.FC<{ children: React.ReactNode }> = ({ c
           move: (_id, to) => move(task, to),
           warn: (title, body) => notify("warning", title, body)
         }),
-      inspect: (task) => inspect({ kind: "task", id: task.id }),
+      inspect: (task) => navigate(paths.run(task.id)),
       openRun: (task) => navigate(paths.run(task.id)),
       openHistory: (task) => navigate(`${paths.run(task.id)}?tab=history`),
       capabilities: (provider) => capsByProvider.get(provider)
     };
-  }, [activeIds, busy, capsByProvider, dispatchTask, inspect, m, moveTask, navigate, notify, retryTask, t]);
+  }, [activeIds, busy, capsByProvider, dispatchTask, m, moveTask, navigate, notify, retryTask, t]);
 
   const confirmCancel = () => {
     if (!cancelTarget) return;
@@ -250,7 +245,7 @@ function useTaskMenuModel(task: Task): TaskMenuModel {
   };
 }
 
-/** Fluent "…" menu: actions + "Move to…" group listing only allowed targets (keyboard alternative to DnD). */
+/** "…" menu: actions + "Move to…" group listing only allowed targets (keyboard alternative to DnD). */
 export const TaskActionMenu: React.FC<{ task: Task; className?: string }> = ({ task, className }) => {
   const m = useMessages(taskMessages);
   const t = useT();
@@ -258,52 +253,46 @@ export const TaskActionMenu: React.FC<{ task: Task; className?: string }> = ({ t
   const model = useTaskMenuModel(task);
   const label = formatMessage(m.card.actions, { identifier: task.issue.identifier });
   return (
-    <Menu positioning="below-end">
-      <MenuTrigger disableButtonEnhancement>
-        <Tooltip content={label} relationship="label">
-          <Button
-            size="small"
-            appearance="subtle"
-            icon={<MoreHorizontal className="size-4" aria-hidden />}
-            className={className}
-            data-card-control=""
-          />
-        </Tooltip>
-      </MenuTrigger>
-      <MenuPopover>
-        <MenuList>
-          {model.primary.map((item) => (
-            <MenuItem key={item.key} icon={item.icon as React.ReactElement} disabled={item.disabled} onClick={item.onSelect} title={item.hint}>
-              {item.label}
-            </MenuItem>
-          ))}
-          <MenuDivider />
-          <MenuGroup>
-            <MenuGroupHeader>
-              <span className="inline-flex items-center gap-1.5">
-                <ArrowRightLeft className="size-3.5" aria-hidden />
-                {m.actions.moveTo}
-              </span>
-            </MenuGroupHeader>
-            {model.moveTargets.length === 0 ? (
-              <MenuItem disabled>{m.actions.noMoves}</MenuItem>
-            ) : (
-              model.moveTargets.map((status) => (
-                <MenuItem key={status} onClick={() => actions.move(task, status)}>
-                  {t.status[status]}
-                </MenuItem>
-              ))
-            )}
-          </MenuGroup>
-          <MenuDivider />
-          {model.navigation.map((item) => (
-            <MenuItem key={item.key} icon={item.icon as React.ReactElement} onClick={item.onSelect}>
-              {item.label}
-            </MenuItem>
-          ))}
-        </MenuList>
-      </MenuPopover>
-    </Menu>
+    <DropdownMenu>
+      <Hint label={label} asLabel>
+        <DropdownMenuTrigger asChild>
+          <Button size="icon-sm" variant="subtle" className={className} data-card-control="">
+            <MoreHorizontal />
+          </Button>
+        </DropdownMenuTrigger>
+      </Hint>
+      <DropdownMenuContent className="min-w-52">
+        {model.primary.map((item) => (
+          <DropdownMenuItem key={item.key} disabled={item.disabled} onSelect={item.onSelect} title={item.hint} destructive={item.destructive}>
+            {item.icon}
+            {item.label}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="inline-flex items-center gap-1.5">
+            <ArrowRightLeft className="size-3.5" aria-hidden />
+            {m.actions.moveTo}
+          </DropdownMenuLabel>
+          {model.moveTargets.length === 0 ? (
+            <DropdownMenuItem disabled>{m.actions.noMoves}</DropdownMenuItem>
+          ) : (
+            model.moveTargets.map((status) => (
+              <DropdownMenuItem key={status} onSelect={() => actions.move(task, status)}>
+                {t.status[status]}
+              </DropdownMenuItem>
+            ))
+          )}
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        {model.navigation.map((item) => (
+          <DropdownMenuItem key={item.key} onSelect={item.onSelect}>
+            {item.icon}
+            {item.label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 };
 

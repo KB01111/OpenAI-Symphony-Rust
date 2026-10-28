@@ -6,7 +6,7 @@ import {
   AiEventStreamCard,
   DataTable,
   MergeReadinessCard,
-  SdkCodeBlock,
+  CodeBlock,
   SymphonyDesignProvider,
   TaskStatusBadge,
   formatAgentEvent,
@@ -50,23 +50,6 @@ describe("SymphonyDesignProvider", () => {
     act(() => setMedia("(prefers-color-scheme: dark)", true));
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(document.documentElement.dataset.density).toBe("compact");
-  });
-
-  it("passes every theme token through Fluent's token validation", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    try {
-      for (const themeMode of ["light", "dark"] as const) {
-        render(
-          <SymphonyDesignProvider themeMode={themeMode}>
-            <span>child</span>
-          </SymphonyDesignProvider>
-        );
-      }
-      const rejected = warn.mock.calls.map((args) => String(args[0])).filter((m) => m.includes("theme token"));
-      expect(rejected).toEqual([]);
-    } finally {
-      warn.mockRestore();
-    }
   });
 
   it("localizes shared components", () => {
@@ -140,7 +123,7 @@ describe("AiEventStreamCard", () => {
     render(
       <SymphonyDesignProvider themeMode="dark" locale="sv">
         <AiEventStreamCard event={withCode} mode="technical" />
-        <SdkCodeBlock language="json">{"{}"}</SdkCodeBlock>
+        <CodeBlock language="json">{"{}"}</CodeBlock>
       </SymphonyDesignProvider>
     );
     for (const button of screen.getAllByRole("button")) expect(button).toHaveAccessibleName();

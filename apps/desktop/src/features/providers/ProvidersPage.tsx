@@ -1,9 +1,8 @@
 import { useMemo } from "react";
-import { Button, MessageBar, MessageBarBody, Spinner } from "@fluentui/react-components";
-import { RefreshCw, ShieldCheck } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { errorMessage } from "@symphony/api-client";
 import { ALL_PROVIDERS } from "@symphony/shared-types";
-import { AiEmptyView, ErrorState, LoadingRows, PageHeader } from "@symphony/ui";
+import { AiEmptyView, Alert, Button, ErrorState, LoadingRows, PageHeader, Spinner } from "@symphony/ui";
 import { useMessages } from "../../lib/i18n.js";
 import { useCredentials, useProviders, useRefreshProviders, useSettings } from "../../lib/queries.js";
 import { ProviderCard } from "./ProviderCard.js";
@@ -31,19 +30,18 @@ export default function ProvidersPage() {
         description={m.description}
         actions={
           <Button
-            icon={refresh.isPending ? <Spinner size="tiny" /> : <RefreshCw className="size-4" />}
+           
             disabled={refresh.isPending}
             onClick={() => refresh.mutate()}
           >
+            {refresh.isPending ? <Spinner /> : <RefreshCw className="size-4" />}
             {refresh.isPending ? m.redetecting : m.redetect}
           </Button>
         }
       />
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto flex max-w-6xl flex-col gap-3 p-4">
-          <MessageBar intent="info" layout="multiline" icon={<ShieldCheck className="size-4" />}>
-            <MessageBarBody>{m.credentialsNote}</MessageBarBody>
-          </MessageBar>
+          <Alert intent="info">{m.credentialsNote}</Alert>
           {credentials.isError ? (
             <ErrorState
               intent="warning"

@@ -1,8 +1,7 @@
 import React, { useMemo } from "react";
-import { Button, MessageBar, MessageBarBody, Radio, RadioGroup, Tooltip } from "@fluentui/react-components";
-import { CheckCircle2, FileDiff, ShieldAlert, X, XCircle } from "lucide-react";
+import { CheckCircle2, FileDiff, X, XCircle } from "lucide-react";
 import { formatMessage, type PullRequestReview, type ValidationResult } from "@symphony/shared-types";
-import { AiEmptyView, ErrorState, LoadingRows, SdkBadge, SdkMarkdown, TimeAgo, cn, formatDuration } from "@symphony/ui";
+import { AiEmptyView, Alert, Badge, Button, cn, ErrorState, formatDuration, Hint, LoadingRows, Markdown, RadioGroup, RadioOption, TimeAgo } from "@symphony/ui";
 import { errorMessage } from "@symphony/api-client";
 import { DiffViewer, parseUnifiedDiff, type DiffFile } from "../../components/DiffViewer.js";
 import { useT, useMessages } from "../../lib/i18n.js";
@@ -35,10 +34,10 @@ export const FilesChangedTab: React.FC<{
           >
             <FileDiff className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
             <span className="min-w-0 flex-1 truncate font-mono text-foreground">{file.path}</span>
-            {!inPreview.has(file.path) ? <span className="hidden text-subtle-foreground md:inline">{m.files.noHunk}</span> : null}
-            <SdkBadge size="sm" variant="outline" color="secondary">
+            {!inPreview.has(file.path) ? <span className="text-subtle-foreground">{m.files.noHunk}</span> : null}
+            <Badge tone="outline">
               {file.status}
-            </SdkBadge>
+            </Badge>
             <span className="w-12 text-end font-mono text-success">+{file.additions}</span>
             <span className="w-12 text-end font-mono text-destructive">−{file.deletions}</span>
           </button>
@@ -86,20 +85,21 @@ export const DiffTab: React.FC<{
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-3">
         <RadioGroup
-          layout="horizontal"
+          orientation="horizontal"
+          className="flex-row gap-4"
           aria-label={m.diff.source}
           value={source}
-          onChange={(_, data) => onSourceChange(data.value as DiffSource)}
+          onValueChange={(value) => onSourceChange(value as DiffSource)}
         >
-          <Radio value="snapshot" label={m.diff.snapshot} />
-          <Radio value="worktree" label={m.diff.worktree} />
+          <RadioOption value="snapshot" label={m.diff.snapshot} />
+          <RadioOption value="worktree" label={m.diff.worktree} />
         </RadioGroup>
         {file ? (
           <span className="inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-surface-sunken ps-2 text-xs">
             <span className="truncate font-mono">{formatMessage(m.diff.filteredTo, { path: file })}</span>
-            <Tooltip content={m.diff.clearFile} relationship="label">
-              <Button size="small" appearance="subtle" icon={<X className="size-3.5" />} onClick={onClearFile} />
-            </Tooltip>
+            <Hint label={m.diff.clearFile} asLabel>
+              <Button size="icon-sm" variant="subtle" onClick={onClearFile}><X className="size-3.5" /></Button>
+            </Hint>
           </span>
         ) : null}
       </div>
@@ -236,16 +236,16 @@ export const CommentsTab: React.FC<{ review: PullRequestReview }> = ({ review })
             <div className="min-w-0 space-y-2 rounded-md border border-border bg-surface p-3">
               <header className="flex flex-wrap items-center gap-1.5 text-xs">
                 <span className="font-medium text-foreground">{comment.author}</span>
-                <SdkBadge size="sm" variant="soft" color={comment.is_agent ? "discovery" : "secondary"} pill>
+                <Badge tone={comment.is_agent ? "accent" : "neutral"}>
                   {comment.is_agent ? m.comments.agent : m.comments.human}
-                </SdkBadge>
-                <SdkBadge size="sm" variant="outline" color={comment.verified_against_diff ? "success" : "warning"} pill>
+                </Badge>
+                <Badge tone="outline">
                   {comment.verified_against_diff ? m.comments.verified : m.comments.unverified}
-                </SdkBadge>
+                </Badge>
                 <span className="min-w-0 truncate font-mono text-muted-foreground">{comment.file_path ?? m.comments.general}</span>
               </header>
               <div className="text-sm text-foreground">
-                <SdkMarkdown skipHtml>{comment.body}</SdkMarkdown>
+                <Markdown skipHtml>{comment.body}</Markdown>
               </div>
               {comment.evaluation_summary ? (
                 <div className="rounded-md bg-surface-sunken px-2 py-1.5 text-xs">
@@ -276,9 +276,7 @@ export const SecurityTab: React.FC<{ warnings: ReadonlyArray<string> }> = ({ war
     <ul className="space-y-1.5">
       {warnings.map((warning, i) => (
         <li key={`${i}-${warning}`}>
-          <MessageBar intent="warning" icon={<ShieldAlert className="size-4" aria-hidden />}>
-            <MessageBarBody>{warning}</MessageBarBody>
-          </MessageBar>
+          <Alert intent="warning">{warning}</Alert>
         </li>
       ))}
     </ul>

@@ -1,90 +1,39 @@
 import React from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import {
-  Button,
-  CounterBadge,
-  Menu,
-  MenuDivider,
-  MenuItem,
-  MenuItemRadio,
-  MenuList,
-  MenuPopover,
-  MenuTrigger,
-  Tooltip
-} from "@fluentui/react-components";
-import { ChevronsLeft, ChevronsRight, ChevronsUpDown, FolderGit2, Plus } from "lucide-react";
-import { cn } from "@symphony/ui";
-import { NAV_ITEMS, type NavKey } from "../app/routes.js";
+import { ChevronDown, ChevronsLeft, ChevronsRight, Plus } from "lucide-react";
+import { Button, Hint, cn } from "@symphony/ui";
+import { NAV_ITEMS, paths, type NavKey } from "../app/routes.js";
 import { shellMessages } from "../app/messages.js";
 import { useMessages } from "../lib/i18n.js";
-import { useApprovals, useProjects, useRuntimeState } from "../lib/queries.js";
+import { useApprovals, useRuntimeState } from "../lib/queries.js";
 import { useUiStore } from "../store/uiStore.js";
+import { workbenchMessages } from "./messages.js";
+import { ThreadList } from "./ThreadList.js";
 
-const ProjectSwitcher: React.FC<{ collapsed: boolean }> = ({ collapsed }) => {
-  const m = useMessages(shellMessages);
-  const projects = useProjects();
-  const activeProjectId = useUiStore((s) => s.activeProjectId);
-  const setActiveProject = useUiStore((s) => s.setActiveProject);
-  const setAddProjectOpen = useUiStore((s) => s.setAddProjectOpen);
-  const active = projects.data?.find((p) => p.id === activeProjectId);
-  const label = active?.name ?? m.project.all;
-  const trigger = (
-    <Button
-      appearance="subtle"
-      aria-label={`${m.project.switch}: ${label}`}
-      className="!w-full !justify-start !min-w-0"
-      icon={<FolderGit2 className="size-4" aria-hidden />}
-    >
-      {collapsed ? null : (
-        <span className="flex min-w-0 flex-1 items-center gap-1">
-          <span className="truncate text-start text-sm">{label}</span>
-          <ChevronsUpDown className="ms-auto size-3.5 shrink-0 opacity-60" aria-hidden />
-        </span>
-      )}
-    </Button>
-  );
-  return (
-    <Menu
-      checkedValues={{ project: [activeProjectId ?? "__all"] }}
-      onCheckedValueChange={(_, data) => {
-        const v = data.checkedItems[0];
-        setActiveProject(v && v !== "__all" ? v : null);
-      }}
-    >
-      <MenuTrigger disableButtonEnhancement>
-        {collapsed ? (
-          <Tooltip content={label} relationship="label" positioning="after">
-            {trigger}
-          </Tooltip>
-        ) : (
-          trigger
-        )}
-      </MenuTrigger>
-      <MenuPopover>
-        <MenuList>
-          <MenuItemRadio name="project" value="__all">
-            {m.project.all}
-          </MenuItemRadio>
-          {(projects.data ?? []).map((p) => (
-            <MenuItemRadio key={p.id} name="project" value={p.id}>
-              {p.name}
-            </MenuItemRadio>
-          ))}
-          <MenuDivider />
-          <MenuItem icon={<Plus className="size-4" />} onClick={() => setAddProjectOpen(true)}>
-            {m.project.add}
-          </MenuItem>
-        </MenuList>
-      </MenuPopover>
-    </Menu>
-  );
-};
+const Count: React.FC<{ count: number; important: boolean; floating?: boolean }> = ({ count, important, floating }) => (
+  <span
+    aria-label={String(count)}
+    className={cn(
+      "inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold tabular-nums",
+      important ? "bg-warning text-background" : "bg-accent-subtle text-accent",
+      floating && "absolute -end-0.5 -top-0.5"
+    )}
+  >
+    {count}
+  </span>
+);
 
-/** Collapsible primary navigation. Collapsed state is persisted; tooltips label icons when collapsed. */
+/**
+ * Thread-first sidebar: new task, threads grouped by project, and the secondary views under
+ * "Manage". Collapsed state is persisted; collapsed it is an icon rail with tooltips.
+ */
 export const Sidebar: React.FC = () => {
   const m = useMessages(shellMessages);
+  const w = useMessages(workbenchMessages);
   const collapsed = useUiStore((s) => s.sidebarCollapsed);
   const setCollapsed = useUiStore((s) => s.setSidebarCollapsed);
+  const manageOpen = useUiStore((s) => s.manageOpen);
+  const setManageOpen = useUiStore((s) => s.setManageOpen);
   const state = useRuntimeState();
   const approvals = useApprovals(true);
   const navigate = useNavigate();
@@ -96,70 +45,96 @@ export const Sidebar: React.FC = () => {
     reviews: { count: state.data?.counts.human_review ?? 0, important: false }
   };
 
+  const items = (
+    <ul className="flex flex-col gap-px" role="list">
+      {NAV_ITEMS.map((item) => {
+        const Icon = item.icon;
+        const label = m.nav[item.key];
+        const badge = badges[item.key]?.count ?? 0;
+        const link = (
+          <NavLink
+            to={item.path}
+            end={item.key === "runs"}
+            className={({ isActive }) =>
+              cn(
+                "relative flex h-8 items-center gap-2.5 rounded-lg px-2 text-sm text-muted-foreground outline-none transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60",
+                isActive && "bg-surface-selected font-medium text-foreground"
+              )
+            }
+            aria-label={collapsed ? label : undefined}
+          >
+            <Icon className="size-4 shrink-0" aria-hidden />
+            {collapsed ? null : <span className="flex-1 truncate">{label}</span>}
+            {badge > 0 ? <Count count={badge} important={badges[item.key]?.important ?? false} floating={collapsed} /> : null}
+          </NavLink>
+        );
+        return (
+          <li key={item.key}>
+            {collapsed ? (
+              <Hint label={label} side="right">
+                {link}
+              </Hint>
+            ) : (
+              link
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+
   return (
     <nav
       aria-label={m.nav.label}
       className={cn(
-        "flex h-full shrink-0 flex-col gap-1 border-e border-border bg-surface px-1.5 py-2 transition-[width] duration-150",
-        collapsed ? "w-12" : "w-52"
+        "flex h-full shrink-0 flex-col border-e border-border bg-surface transition-[width] duration-150",
+        collapsed ? "w-14 items-stretch px-2 py-2" : "w-72"
       )}
     >
-      <ProjectSwitcher collapsed={collapsed} />
-      <div className="my-1 h-px bg-border" />
-      <ul className="flex flex-1 flex-col gap-0.5" role="list">
-        {NAV_ITEMS.map((item) => {
-          const Icon = item.icon;
-          const label = m.nav[item.key];
-          const badge = badges[item.key]?.count ?? 0;
-          const link = (
-            <NavLink
-              to={item.path}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") navigate(item.path);
-              }}
-              className={({ isActive }) =>
-                cn(
-                  "relative flex h-8 items-center gap-2.5 rounded-md px-2 text-sm text-muted-foreground outline-none transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
-                  isActive && "bg-surface-selected font-medium text-foreground before:absolute before:inset-y-1.5 before:start-0 before:w-0.5 before:rounded-full before:bg-accent"
-                )
-              }
-              aria-label={collapsed ? label : undefined}
+      <div className={cn("flex shrink-0 items-center gap-2", collapsed ? "mb-2 flex-col" : "px-3 pb-2 pt-3")}>
+        <span aria-hidden className="grid size-7 shrink-0 place-items-center rounded-lg bg-accent font-display text-sm font-bold text-accent-foreground">
+          S
+        </span>
+        {collapsed ? null : <span className="flex-1 font-display text-sm font-semibold text-foreground">Symphony</span>}
+        <Hint label={collapsed ? m.nav.expand : m.nav.collapse} side="right">
+          <Button variant="subtle" size="icon-sm" onClick={() => setCollapsed(!collapsed)} aria-expanded={!collapsed} aria-label={collapsed ? m.nav.expand : m.nav.collapse}>
+            {collapsed ? <ChevronsRight /> : <ChevronsLeft />}
+          </Button>
+        </Hint>
+      </div>
+
+      <div className={cn("shrink-0", collapsed ? "mb-2" : "px-3 pb-2")}>
+        {collapsed ? (
+          <Hint label={w.sidebar.newTask} side="right">
+            <Button variant="default" size="icon" className="w-full" aria-label={w.sidebar.newTask} onClick={() => navigate(paths.home())}>
+              <Plus />
+            </Button>
+          </Hint>
+        ) : (
+          <Button variant="default" className="w-full justify-start rounded-lg" onClick={() => navigate(paths.home())}>
+            <Plus />
+            {w.sidebar.newTask}
+          </Button>
+        )}
+      </div>
+
+      {collapsed ? <div className="flex-1 overflow-y-auto">{items}</div> : (
+        <>
+          <ThreadList />
+          <div className="shrink-0 border-t border-border px-2 pb-2 pt-1">
+            <button
+              type="button"
+              onClick={() => setManageOpen(!manageOpen)}
+              aria-expanded={manageOpen}
+              className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
             >
-              <Icon className="size-4 shrink-0" aria-hidden />
-              {collapsed ? null : <span className="flex-1 truncate">{label}</span>}
-              {badge > 0 ? (
-                <CounterBadge
-                  count={badge}
-                  size="small"
-                  appearance="filled"
-                  color={badges[item.key]?.important ? "important" : "brand"}
-                  className={collapsed ? "!absolute -end-0.5 -top-0.5" : undefined}
-                  aria-label={String(badge)}
-                />
-              ) : null}
-            </NavLink>
-          );
-          return (
-            <li key={item.key}>
-              {collapsed ? (
-                <Tooltip content={label} relationship="description" positioning="after">
-                  {link}
-                </Tooltip>
-              ) : (
-                link
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      <Tooltip content={collapsed ? m.nav.expand : m.nav.collapse} relationship="label" positioning="after">
-        <Button
-          appearance="subtle"
-          icon={collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
-          onClick={() => setCollapsed(!collapsed)}
-          aria-expanded={!collapsed}
-        />
-      </Tooltip>
+              <ChevronDown className={cn("size-3.5 transition-transform", !manageOpen && "-rotate-90")} aria-hidden />
+              {w.sidebar.manage}
+            </button>
+            {manageOpen ? <div className="max-h-[40vh] overflow-y-auto">{items}</div> : null}
+          </div>
+        </>
+      )}
     </nav>
   );
 };

@@ -1,7 +1,6 @@
 import React, { useMemo } from "react";
-import { Combobox, Dropdown, Field, Option } from "@fluentui/react-components";
 import { ALL_PROVIDERS, formatMessage, type ProviderKind } from "@symphony/shared-types";
-import { StatusDot } from "@symphony/ui";
+import { Combobox, Field, FieldGrid, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, StatusDot, cn } from "@symphony/ui";
 import { useMessages, useT } from "../../lib/i18n.js";
 import { useProviders } from "../../lib/queries.js";
 import { projectMessages } from "./messages.js";
@@ -16,12 +15,15 @@ export interface ProviderModelFieldsProps {
   providerLabel?: string;
   modelLabel?: string;
   disabled?: boolean;
+  /** `stacked` always uses one column (popovers); the default follows the container width. */
+  layout?: "responsive" | "stacked";
   className?: string;
 }
 
 /**
- * Provider dropdown (all providers with detected install state from the runtime) + model combobox
- * offering the provider's reported models while still allowing a free-text model id.
+ * Provider select (all providers with detected install state from the runtime) + model combobox
+ * offering the provider's reported models while still allowing a free-text model id. The two
+ * fields share a row only when their container is wide enough; they never overlap.
  */
 export const ProviderModelFields: React.FC<ProviderModelFieldsProps> = ({
   provider,
@@ -32,6 +34,7 @@ export const ProviderModelFields: React.FC<ProviderModelFieldsProps> = ({
   providerLabel,
   modelLabel,
   disabled,
+  layout = "responsive",
   className
 }) => {
   const m = useMessages(projectMessages);
@@ -48,48 +51,42 @@ export const ProviderModelFields: React.FC<ProviderModelFieldsProps> = ({
     return status.installed ? m.form.installed : m.form.notInstalled;
   };
 
-  return (
-    <div className={className ?? "grid grid-cols-1 gap-3 sm:grid-cols-2"}>
+  const fields = (
+    <>
       <Field label={providerLabel ?? m.form.provider} hint={installLabel(provider) ?? undefined}>
-        <Dropdown
-          disabled={disabled}
-          value={t.provider[provider]}
-          selectedOptions={[provider]}
-          onOptionSelect={(_, data) => data.optionValue && onProviderChange(data.optionValue as ProviderKind)}
-        >
-          {ALL_PROVIDERS.map((kind) => {
-            const status = statusByProvider.get(kind);
-            const label = installLabel(kind);
-            return (
-              <Option key={kind} value={kind} text={t.provider[kind]}>
-                <span className="flex w-full items-center gap-2">
-                  {status ? <StatusDot tone={status.installed ? "success" : "neutral"} label={label ?? ""} /> : null}
-                  <span className="flex-1">{t.provider[kind]}</span>
-                  {label ? <span className="text-xs text-muted-foreground">{label}</span> : null}
-                </span>
-              </Option>
-            );
-          })}
-        </Dropdown>
+        <Select value={provider} disabled={disabled} onValueChange={(next) => onProviderChange(next as ProviderKind)}>
+          <SelectTrigger aria-label={providerLabel ?? m.form.provider}>
+            <SelectValue>{t.provider[provider]}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {ALL_PROVIDERS.map((kind) => {
+              const status = statusByProvider.get(kind);
+              const label = installLabel(kind);
+              return (
+                <SelectItem key={kind} value={kind} textValue={t.provider[kind]}>
+                  <span className="flex w-full items-center gap-2">
+                    {status ? <StatusDot tone={status.installed ? "success" : "neutral"} label={label ?? ""} /> : null}
+                    <span className="flex-1">{t.provider[kind]}</span>
+                    {label ? <span className="text-xs text-muted-foreground">{label}</span> : null}
+                  </span>
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
       </Field>
       <Field label={modelLabel ?? m.form.model}>
         <Combobox
-          freeform
-          disabled={disabled}
           value={model}
-          selectedOptions={model && models.includes(model) ? [model] : []}
+          disabled={disabled}
+          options={models}
+          onValueChange={onModelChange}
           placeholder={defaultModel ? formatMessage(m.form.modelDefault, { model: defaultModel }) : m.form.modelPlaceholder}
-          onChange={(e) => onModelChange(e.target.value)}
-          onOptionSelect={(_, data) => onModelChange(data.optionText ?? data.optionValue ?? "")}
-          className="font-mono"
-        >
-          {models.map((id) => (
-            <Option key={id} value={id}>
-              {id}
-            </Option>
-          ))}
-        </Combobox>
+        />
       </Field>
-    </div>
+    </>
   );
+
+  if (layout === "stacked") return <div className={cn("grid grid-cols-1 gap-3", className)}>{fields}</div>;
+  return <FieldGrid className={className}>{fields}</FieldGrid>;
 };

@@ -84,7 +84,6 @@ describe("ShortcutsDialog", () => {
       refresh: [["Ctrl", "R"]],
       sidebar: [["Ctrl", "B"]],
       activity: [["Ctrl", "J"]],
-      inspector: [["Ctrl", "I"]],
       help: [["F1"], ["Ctrl", "/"]]
     };
     for (const [item, combos] of Object.entries(expected)) {

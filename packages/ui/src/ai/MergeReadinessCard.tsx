@@ -1,7 +1,8 @@
 import React from "react";
-import { Alert } from "@openai/apps-sdk-ui/components/Alert";
-import { Badge } from "@openai/apps-sdk-ui/components/Badge";
-import { Button } from "@openai/apps-sdk-ui/components/Button";
+import { Alert } from "../primitives/alert.js";
+import { Badge } from "../primitives/badge.js";
+import { Button } from "../primitives/button.js";
+import { Spinner } from "../primitives/spinner.js";
 import { formatMessage, type PullRequestReview } from "@symphony/shared-types";
 import { CheckCircle2, CircleDashed, GitMerge, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
 import { cn } from "../lib/utils.js";
@@ -82,7 +83,7 @@ export const MergeReadinessCard: React.FC<MergeReadinessCardProps> = ({ review, 
   ];
 
   return (
-    <section aria-label={ui.readiness} className={cn("space-y-3 rounded-lg border border-border bg-surface p-4", className)}>
+    <section aria-label={ui.readiness} className={cn("@container space-y-3 rounded-xl border border-border bg-surface p-4", className)}>
       <div className="flex flex-wrap items-start gap-4">
         <div className="flex items-baseline gap-2">
           <span className={cn("font-display text-4xl font-semibold tabular-nums", SCORE_TONE(report.score))}>
@@ -108,24 +109,20 @@ export const MergeReadinessCard: React.FC<MergeReadinessCardProps> = ({ review, 
         </div>
         <div className="flex flex-col items-end gap-2">
           {review.human_approved ? (
-            <Badge color="success" variant="soft" pill>
-              {ui.humanApproved}
-            </Badge>
+            <Badge tone="success">{ui.humanApproved}</Badge>
           ) : (
-            <Badge color="warning" variant="outline" pill>
-              {ui.awaitingApproval}
-            </Badge>
+            <Badge tone="warning">{ui.awaitingApproval}</Badge>
           )}
           {onApprove && !review.human_approved ? (
-            <Button color="success" size="sm" variant="solid" loading={approving} disabled={approving} onClick={() => onApprove(review)}>
-              <GitMerge className="size-4" aria-hidden />
+            <Button size="sm" variant="default" disabled={approving} onClick={() => onApprove(review)}>
+              {approving ? <Spinner className="size-3.5 text-current" /> : <GitMerge className="size-4" aria-hidden />}
               {ui.approveForMerge}
             </Button>
           ) : null}
         </div>
       </div>
 
-      <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+      <dl className="grid grid-cols-2 gap-2 @xl:grid-cols-5">
         {rows.map((row) => (
           <div key={row.key} className="rounded-md border border-border bg-surface-sunken px-2.5 py-2">
             <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -150,18 +147,13 @@ export const MergeReadinessCard: React.FC<MergeReadinessCardProps> = ({ review, 
       </dl>
 
       {report.blockers.length > 0 ? (
-        <Alert
-          color="warning"
-          variant="soft"
-          title={ui.blockers}
-          description={
-            <ul className="list-disc ps-4">
-              {report.blockers.map((b) => (
-                <li key={b}>{b}</li>
-              ))}
-            </ul>
-          }
-        />
+        <Alert intent="warning" title={ui.blockers}>
+          <ul className="list-disc ps-4">
+            {report.blockers.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+          </ul>
+        </Alert>
       ) : null}
       {report.evidence.length > 0 ? (
         <div>

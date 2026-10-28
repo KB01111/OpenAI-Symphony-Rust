@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo } from "react";
-import { Button, Toolbar, ToolbarRadioButton, ToolbarRadioGroup } from "@fluentui/react-components";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage } from "@symphony/shared-types";
-import { AiEmptyView, ErrorState, LoadingRows, PageHeader } from "@symphony/ui";
+import { AiEmptyView, Button, ErrorState, LoadingRows, PageHeader, ToggleGroup, ToggleGroupItem } from "@symphony/ui";
 import { FilterX, FolderPlus, KanbanSquare, ListTodo, Plus, Table2 } from "lucide-react";
 import { useMessages } from "../../lib/i18n.js";
 import { useProjects, useTasks } from "../../lib/queries.js";
@@ -44,25 +43,21 @@ export default function TasksPage() {
   const activeProject = projectList.find((p) => p.id === activeProjectId);
 
   const viewToggle = (
-    <Toolbar
-      size="small"
+    <ToggleGroup
+      type="single"
       aria-label={m.page.viewLabel}
-      checkedValues={{ view: [taskView] }}
-      onCheckedValueChange={(_, data) => {
-        const next = data.checkedItems[0] as TaskView | undefined;
-        if (data.name === "view" && next) setTaskView(next);
-      }}
-      className="!p-0"
+      value={taskView}
+      onValueChange={(next) => next && setTaskView(next as TaskView)}
     >
-      <ToolbarRadioGroup>
-        <ToolbarRadioButton name="view" value="board" icon={<KanbanSquare className="size-4" aria-hidden />}>
-          {m.page.board}
-        </ToolbarRadioButton>
-        <ToolbarRadioButton name="view" value="table" icon={<Table2 className="size-4" aria-hidden />}>
-          {m.page.table}
-        </ToolbarRadioButton>
-      </ToolbarRadioGroup>
-    </Toolbar>
+      <ToggleGroupItem value="board" className="gap-1.5">
+        <KanbanSquare className="size-3.5" aria-hidden />
+        {m.page.board}
+      </ToggleGroupItem>
+      <ToggleGroupItem value="table" className="gap-1.5">
+        <Table2 className="size-3.5" aria-hidden />
+        {m.page.table}
+      </ToggleGroupItem>
+    </ToggleGroup>
   );
 
   const header = (
@@ -72,7 +67,8 @@ export default function TasksPage() {
       actions={
         <>
           {viewToggle}
-          <Button appearance="primary" size="small" icon={<Plus className="size-4" aria-hidden />} onClick={() => setNewTaskOpen(true)}>
+          <Button variant="default" size="sm" onClick={() => setNewTaskOpen(true)}>
+            <Plus />
             {m.page.newTask}
           </Button>
         </>
@@ -95,7 +91,7 @@ export default function TasksPage() {
         title={m.empty.noProjectsTitle}
         description={m.empty.noProjectsBody}
         action={
-          <Button appearance="primary" onClick={() => setAddProjectOpen(true)}>
+          <Button variant="default" onClick={() => setAddProjectOpen(true)}>
             {m.empty.addRepository}
           </Button>
         }
@@ -109,7 +105,8 @@ export default function TasksPage() {
         title={m.empty.noTasksTitle}
         description={m.empty.noTasksBody}
         action={
-          <Button appearance="primary" icon={<Plus className="size-4" aria-hidden />} onClick={() => setNewTaskOpen(true)}>
+          <Button variant="default" onClick={() => setNewTaskOpen(true)}>
+            <Plus />
             {m.page.newTask}
           </Button>
         }

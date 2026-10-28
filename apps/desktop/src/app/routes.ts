@@ -1,6 +1,7 @@
 import {
   Activity,
   Bot,
+  Home,
   FolderGit2,
   GitBranch,
   GitPullRequest,
@@ -17,6 +18,7 @@ export type NavKey =
   | "projects"
   | "tasks"
   | "runs"
+  | "activity"
   | "worktrees"
   | "reviews"
   | "workflow"
@@ -35,6 +37,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { key: "projects", path: "/projects", icon: FolderGit2 },
   { key: "tasks", path: "/tasks", icon: KanbanSquare },
   { key: "runs", path: "/runs", icon: Bot },
+  { key: "activity", path: "/activity", icon: Activity },
   { key: "worktrees", path: "/worktrees", icon: GitBranch },
   { key: "reviews", path: "/reviews", icon: GitPullRequest },
   { key: "workflow", path: "/workflow", icon: ScrollText },
@@ -43,6 +46,8 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
 ];
 
 export const paths = {
+  home: () => "/",
+  activity: () => "/activity",
   overview: () => "/overview",
   projects: () => "/projects",
   project: (id: string) => `/projects/${encodeURIComponent(id)}`,
@@ -57,4 +62,4 @@ export const paths = {
   settings: () => "/settings"
 };
 
-export const ActivityIcon = Activity;
+export const HomeIcon = Home;

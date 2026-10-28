@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { getTranslations } from "@symphony/shared-types";
-import NewTaskDialog from "./NewTaskDialog.js";
+import NewTaskDialog from "../composer/NewTaskDialog.js";
 import { allowedMoveTargets, applyDrop, parseLabels, resolveDrop } from "./taskLogic.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
 import { project, providerStatus, settings, task } from "../../test/fixtures.js";
@@ -38,8 +38,8 @@ describe("board state machine", () => {
   });
 });
 
-describe("NewTaskDialog", () => {
-  it("creates a task with auto_start (never dispatch_immediately) exactly once", async () => {
+describe("NewTaskDialog (composer)", () => {
+  it("creates a task from one prompt with auto_start (never dispatch_immediately) exactly once", async () => {
     const p = project({ id: "p1", name: "Repo", preferred_provider: "simulated" });
     const runtime = createMockRuntime({
       "GET /projects": () => [p],
@@ -51,15 +51,43 @@ describe("NewTaskDialog", () => {
     useUiStore.setState({ activeProjectId: "p1", newTaskOpen: true });
     renderWithProviders(<NewTaskDialog />, { runtime });
     const dialog = await screen.findByRole("dialog", { name: "New task" });
-    fireEvent.change(within(dialog).getByLabelText(/^Title/), { target: { value: "Fix flaky test" } });
-    fireEvent.change(within(dialog).getByLabelText(/^Description/), { target: { value: "Make it deterministic." } });
-    fireEvent.click(within(dialog).getByRole("switch", { name: /Start immediately/ }));
-    const submit = within(dialog).getByRole("button", { name: /Create and start/ });
+    const prompt = within(dialog).getByRole("textbox", { name: "Task prompt" });
+    fireEvent.change(prompt, { target: { value: "Fix flaky test\n\nMake it deterministic." } });
+    // "Run now" is the default mode.
+    const submit = within(dialog).getByRole("button", { name: "Run" });
     fireEvent.click(submit);
     fireEvent.click(submit);
     await waitFor(() => expect(runtime.calls.filter((c) => c.method === "POST" && c.path === "/tasks")).toHaveLength(1));
     const body = runtime.calls.find((c) => c.method === "POST" && c.path === "/tasks")!.body as Record<string, unknown>;
-    expect(body).toMatchObject({ project_id: "p1", title: "Fix flaky test", description: "Make it deterministic.", auto_start: true });
+    expect(body).toMatchObject({
+      project_id: "p1",
+      title: "Fix flaky test",
+      description: "Fix flaky test\n\nMake it deterministic.",
+      provider: "simulated",
+      auto_start: true
+    });
     expect(body).not.toHaveProperty("dispatch_immediately");
+  });
+
+  it("queues instead of starting when the mode is switched, and requires a prompt", async () => {
+    const runtime = createMockRuntime({
+      "GET /projects": () => [project({ id: "p1", name: "Repo", preferred_provider: "simulated" })],
+      "GET /providers": () => [providerStatus({ provider: "simulated", installed: true })],
+      "GET /settings": () => settings(),
+      "GET /tasks": () => [],
+      "POST /tasks": () => task({ id: "new", project_id: "p1" })
+    });
+    useUiStore.setState({ activeProjectId: "p1", newTaskOpen: true });
+    renderWithProviders(<NewTaskDialog />, { runtime });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Add to queue" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Queue task" }));
+    expect(await within(dialog).findByText("Describe the task first.")).toBeInTheDocument();
+    expect(runtime.calls.some((c) => c.method === "POST" && c.path === "/tasks")).toBe(false);
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Task prompt" }), { target: { value: "Write the docs" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Queue task" }));
+    await waitFor(() => expect(runtime.calls.filter((c) => c.method === "POST" && c.path === "/tasks")).toHaveLength(1));
+    const body = runtime.calls.find((c) => c.method === "POST" && c.path === "/tasks")!.body as Record<string, unknown>;
+    expect(body).toMatchObject({ title: "Write the docs", description: null, auto_start: false });
   });
 });
