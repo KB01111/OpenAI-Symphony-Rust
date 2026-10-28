@@ -32,10 +32,11 @@ const MAX_TITLE = 80;
 /** The first meaningful line of the prompt, without markdown markers, as the task title. */
 export function deriveTitle(prompt: string): string {
   // Only Markdown markers are stripped (`#`, `-`, `*`, `+`, `>`, `1.`, `1)`), never a number or letter
-  // that belongs to the sentence ("2026 roadmap", "3D rendering fix").
+  // that belongs to the sentence ("2026 roadmap", "3D rendering fix"). A line that is only a marker or a
+  // horizontal rule (`---`, `***`, `- - -`) has no text and is skipped.
   const line = prompt
     .split(/\r?\n/)
-    .map((l) => l.replace(/^\s*(?:(?:#{1,6}|[>*+-]|\d+[.)])\s+)+/, "").trim())
+    .map((l) => (/^\s*(?:[-*_=]\s*){3,}$/.test(l) ? "" : l.replace(/^\s*(?:(?:#{1,6}|[>*+-]|\d+[.)])(?:\s+|$))+/, "").trim()))
     .find((l) => l.length > 0);
   const base = (line ?? prompt.trim()).replace(/\s+/g, " ");
   if (base.length <= MAX_TITLE) return base;

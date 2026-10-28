@@ -103,6 +103,12 @@ describe("deriveTitle", () => {
     expect(deriveTitle("1Password integration")).toBe("1Password integration");
   });
 
+  it("skips lines that are only a marker or a horizontal rule", () => {
+    expect(deriveTitle("---\nFix the flaky test")).toBe("Fix the flaky test");
+    expect(deriveTitle("***\n\n- \n-\n#\n2. Real instruction")).toBe("Real instruction");
+    expect(deriveTitle("- - -\nDo the thing")).toBe("Do the thing");
+  });
+
   it("shortens long prompts at a word boundary", () => {
     const title = deriveTitle("word ".repeat(40));
     expect(title.length).toBeLessThanOrEqual(81);
