@@ -1104,7 +1104,8 @@
             "schema": {
               "type": "integer",
               "format": "int32",
-              "minimum": 0
+              "maximum": 500,
+              "minimum": 1
             }
           },
           {
