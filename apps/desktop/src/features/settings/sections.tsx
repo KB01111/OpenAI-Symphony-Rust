@@ -1,33 +1,32 @@
 import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  Button,
-  Combobox,
-  Dropdown,
-  Field,
-  Input,
-  MessageBar,
-  MessageBarBody,
-  MessageBarTitle,
-  Option,
-  Radio,
-  RadioGroup,
-  SpinButton,
-  Spinner,
-  Switch,
-  Textarea
-} from "@fluentui/react-components";
 import { DatabaseBackup, Download, FileJson, FolderOpen, Keyboard, KeyRound, LogOut, RefreshCw, ShieldOff } from "lucide-react";
 import { SymphonyApiError, errorMessage, isTauri, nativeHost } from "@symphony/api-client";
 import { ALL_PROVIDERS, formatMessage, type AppSettings, type Locale, type ProviderKind } from "@symphony/shared-types";
 import {
+  Alert,
+  Badge,
+  Button,
+  Combobox,
   ConfirmDialog,
+  CopyButton,
   ErrorState,
+  Field,
+  Input,
   KeyValueList,
+  Label,
   LoadingRows,
-  SdkBadge,
-  SdkCopyButton,
+  RadioGroup,
+  RadioOption,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Skeleton,
+  Spinner,
+  Switch,
+  Textarea,
   TimeAgo,
   useNotify,
   type Density,
@@ -76,7 +75,7 @@ export const SettingsSection: React.FC<{ id: SectionId; intro?: string; children
   const m = useMessages(settingsMessages);
   const titleId = `${sectionDomId(id)}-title`;
   return (
-    <section id={sectionDomId(id)} aria-labelledby={titleId} className="scroll-mt-4 rounded-md border border-border bg-surface">
+    <section id={sectionDomId(id)} aria-labelledby={titleId} className="@container scroll-mt-4 rounded-xl border border-border bg-surface">
       <header className="border-b border-border px-4 py-2.5">
         <h2 id={titleId} className="text-sm font-semibold text-foreground">
           {m.sections[id]}
@@ -88,7 +87,7 @@ export const SettingsSection: React.FC<{ id: SectionId; intro?: string; children
   );
 };
 
-/** Fluent SpinButton bound to a number; typed text that is not a number is surfaced as NaN for validation. */
+/** Number input bound to a number; typed text that is not a number is surfaced as NaN for validation. */
 const NumberField: React.FC<{
   label: string;
   hint?: string;
@@ -99,22 +98,43 @@ const NumberField: React.FC<{
   error?: string;
   onChange: (value: number) => void;
 }> = ({ label, hint, value, min, max, step = 1, error, onChange }) => (
-  <Field label={label} hint={hint} validationMessage={error} validationState={error ? "error" : "none"}>
-    <SpinButton
-      value={Number.isFinite(value) ? value : null}
+  <Field label={label} hint={hint} error={error}>
+    <Input
+      type="number"
+      inputMode="numeric"
+      value={Number.isFinite(value) ? String(value) : ""}
       min={min}
       max={max}
       step={step}
-      onChange={(_, data) => {
-        if (data.value !== undefined && data.value !== null) onChange(data.value);
-        else if (data.displayValue !== undefined) {
-          const text = data.displayValue.trim();
-          onChange(text === "" ? Number.NaN : Number(text));
-        }
+      onChange={(e) => {
+        const text = e.target.value.trim();
+        onChange(text === "" ? Number.NaN : Number(text));
       }}
     />
   </Field>
 );
+
+/** Switch with its label (and optional hint) on one row. */
+const SwitchRow: React.FC<{
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+}> = ({ label, hint, checked, onCheckedChange, disabled }) => {
+  const id = React.useId();
+  return (
+    <div className="flex items-start gap-2.5">
+      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} className="mt-0.5" />
+      <div className="min-w-0">
+        <Label htmlFor={id} className="text-sm font-normal">
+          {label}
+        </Label>
+        {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
+      </div>
+    </div>
+  );
+};
 
 export interface FormSectionProps {
   draft: AppSettings;
@@ -137,23 +157,23 @@ export const AppearanceSection: React.FC<{
   const m = useMessages(settingsMessages);
   return (
     <SettingsSection id="appearance" intro={m.appearance.intro}>
-      <Field label={m.appearance.theme}>
-        <RadioGroup layout="horizontal" value={themeMode} onChange={(_, d) => onTheme(d.value as ThemeMode)}>
-          <Radio value="system" label={m.appearance.themeSystem} />
-          <Radio value="dark" label={m.appearance.themeDark} />
-          <Radio value="light" label={m.appearance.themeLight} />
+      <Field group label={m.appearance.theme}>
+        <RadioGroup className="flex-row flex-wrap gap-x-5 gap-y-2" value={themeMode} onValueChange={(v) => onTheme(v as ThemeMode)}>
+          <RadioOption value="system" label={m.appearance.themeSystem} />
+          <RadioOption value="dark" label={m.appearance.themeDark} />
+          <RadioOption value="light" label={m.appearance.themeLight} />
         </RadioGroup>
       </Field>
-      <Field label={m.appearance.language}>
-        <RadioGroup layout="horizontal" value={locale} onChange={(_, d) => onLocale(d.value as Locale)}>
-          <Radio value="en" label={m.appearance.english} />
-          <Radio value="sv" label={m.appearance.swedish} />
+      <Field group label={m.appearance.language}>
+        <RadioGroup className="flex-row flex-wrap gap-x-5 gap-y-2" value={locale} onValueChange={(v) => onLocale(v as Locale)}>
+          <RadioOption value="en" label={m.appearance.english} />
+          <RadioOption value="sv" label={m.appearance.swedish} />
         </RadioGroup>
       </Field>
-      <Field label={m.appearance.density} hint={m.appearance.densityHint}>
-        <RadioGroup layout="horizontal" value={density} onChange={(_, d) => onDensity(d.value as Density)}>
-          <Radio value="compact" label={m.appearance.compact} />
-          <Radio value="comfortable" label={m.appearance.comfortable} />
+      <Field group label={m.appearance.density} hint={m.appearance.densityHint}>
+        <RadioGroup className="flex-row flex-wrap gap-x-5 gap-y-2" value={density} onValueChange={(v) => onDensity(v as Density)}>
+          <RadioOption value="compact" label={m.appearance.compact} />
+          <RadioOption value="comfortable" label={m.appearance.comfortable} />
         </RadioGroup>
       </Field>
     </SettingsSection>
@@ -170,24 +190,10 @@ export const DesktopSection: React.FC<FormSectionProps> = ({ draft, update }) =>
   return (
     <SettingsSection id="desktop" intro={m.desktop.intro}>
       {!desktop ? (
-        <MessageBar intent="info" layout="multiline">
-          <MessageBarBody>{m.desktop.notDesktop}</MessageBarBody>
-        </MessageBar>
+        <Alert intent="info">{m.desktop.notDesktop}</Alert>
       ) : null}
-      <Field hint={m.desktop.trayHint}>
-        <Switch
-          label={m.desktop.tray}
-          checked={draft.minimize_to_tray_on_close}
-          onChange={(_, d) => update((s) => ({ ...s, minimize_to_tray_on_close: d.checked }))}
-        />
-      </Field>
-      <Field hint={m.desktop.autostartHint}>
-        <Switch
-          label={m.desktop.autostart}
-          checked={draft.start_background_runtime_on_login}
-          onChange={(_, d) => update((s) => ({ ...s, start_background_runtime_on_login: d.checked }))}
-        />
-      </Field>
+      <SwitchRow label={m.desktop.tray} hint={m.desktop.trayHint} checked={draft.minimize_to_tray_on_close} onCheckedChange={(checked) => update((s) => ({ ...s, minimize_to_tray_on_close: checked }))} />
+      <SwitchRow label={m.desktop.autostart} hint={m.desktop.autostartHint} checked={draft.start_background_runtime_on_login} onCheckedChange={(checked) => update((s) => ({ ...s, start_background_runtime_on_login: checked }))} />
     </SettingsSection>
   );
 };
@@ -242,8 +248,8 @@ export const SchedulingSection: React.FC<FormSectionProps> = ({ draft, errors, u
     update((s) => ({ ...s, resource_policy: { ...s.resource_policy, ...patch } }));
   return (
     <SettingsSection id="scheduling" intro={m.scheduling.intro}>
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-        <div className="grid content-start gap-3 sm:grid-cols-2">
+      <div className="grid gap-4 @3xl:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="grid content-start gap-3 @md:grid-cols-2">
           <NumberField
             label={m.scheduling.polling}
             hint={m.scheduling.pollingHint}
@@ -253,7 +259,7 @@ export const SchedulingSection: React.FC<FormSectionProps> = ({ draft, errors, u
             error={errors.polling_interval_ms}
             onChange={(v) => update((s) => ({ ...s, polling_interval_ms: v }))}
           />
-          <span className="hidden sm:block" aria-hidden />
+          <span className="hidden @md:block" aria-hidden />
           <NumberField
             label={m.scheduling.maxAc}
             hint={m.scheduling.maxAcHint}
@@ -308,12 +314,8 @@ export const SchedulingSection: React.FC<FormSectionProps> = ({ draft, errors, u
             error={errors.pr_refresh_interval_minutes}
             onChange={(v) => update((s) => ({ ...s, pr_refresh_interval_minutes: v }))}
           />
-          <div className="sm:col-span-2">
-            <Switch
-              label={m.scheduling.thermal}
-              checked={draft.resource_policy.reduce_on_thermal_throttle}
-              onChange={(_, d) => policy({ reduce_on_thermal_throttle: d.checked })}
-            />
+          <div className="@md:col-span-2">
+            <SwitchRow label={m.scheduling.thermal} checked={draft.resource_policy.reduce_on_thermal_throttle} onCheckedChange={(checked) => policy({ reduce_on_thermal_throttle: checked })} />
           </div>
         </div>
         <HardwareContext />
@@ -338,42 +340,34 @@ export const DefaultsSection: React.FC<FormSectionProps> = ({ draft, update }) =
   };
   return (
     <SettingsSection id="defaults" intro={m.defaults.intro}>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 @md:grid-cols-2">
         <Field label={m.defaults.provider}>
-          <Dropdown
-            value={label(draft.default_provider)}
-            selectedOptions={[draft.default_provider]}
-            onOptionSelect={(_, d) => {
-              const kind = d.optionValue as ProviderKind | undefined;
-              if (!kind) return;
+          <Select
+            value={draft.default_provider}
+            onValueChange={(value) => {
+              const kind = value as ProviderKind;
               update((s) => ({ ...s, default_provider: kind, default_model: s.provider_default_models[kind] ?? "" }));
             }}
           >
-            {ALL_PROVIDERS.map((kind) => (
-              <Option key={kind} value={kind} text={label(kind)}>
-                {label(kind)}
-              </Option>
-            ))}
-          </Dropdown>
+            <SelectTrigger>
+              <SelectValue>{label(draft.default_provider)}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {ALL_PROVIDERS.map((kind) => (
+                <SelectItem key={kind} value={kind}>
+                  {label(kind)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Field>
         <Field label={m.defaults.model} hint={m.defaults.modelHint}>
           <Combobox
-            freeform
             value={draft.default_model}
-            selectedOptions={models.includes(draft.default_model) ? [draft.default_model] : []}
+            options={models}
             placeholder={status?.default_model ?? undefined}
-            onChange={(e) => {
-              const value = e.target.value;
-              update((s) => ({ ...s, default_model: value }));
-            }}
-            onOptionSelect={(_, d) => update((s) => ({ ...s, default_model: d.optionValue ?? d.optionText ?? "" }))}
-          >
-            {models.map((name) => (
-              <Option key={name} value={name}>
-                {name}
-              </Option>
-            ))}
-          </Combobox>
+            onValueChange={(value) => update((s) => ({ ...s, default_model: value }))}
+          />
         </Field>
       </div>
       <Link to={paths.providers()} className="text-sm text-accent hover:underline">
@@ -433,33 +427,29 @@ const RemoteTokenControls: React.FC = () => {
       <p className="text-xs text-muted-foreground">{configured ? m.remote.tokenConfigured : m.remote.tokenMissing}</p>
       <div className="flex flex-wrap gap-2">
         <Button
-          appearance={configured ? "secondary" : "primary"}
-          icon={rotate.isPending ? <Spinner size="tiny" /> : <KeyRound className="size-4" />}
+          variant={configured ? "secondary" : "default"}
           disabled={rotate.isPending || status.isPending || status.isError}
           onClick={() => (configured ? setConfirm("rotate") : runRotate())}
         >
+          {rotate.isPending ? <Spinner /> : <KeyRound className="size-4" />}
           {configured ? m.remote.rotate : m.remote.generate}
         </Button>
         {configured ? (
-          <Button icon={<ShieldOff className="size-4" />} disabled={revoke.isPending || status.isError} onClick={() => setConfirm("revoke")}>
+          <Button disabled={revoke.isPending || status.isError} onClick={() => setConfirm("revoke")}>
+            <ShieldOff />
             {m.remote.revoke}
           </Button>
         ) : null}
       </div>
       {issued ? (
-        <MessageBar intent="success" layout="multiline">
-          <MessageBarBody>
-            <MessageBarTitle>{m.remote.issuedTitle}</MessageBarTitle>
-            <span className="block">{m.remote.issuedBody}</span>
+        <Alert intent="success" title={m.remote.issuedTitle}><span className="block">{m.remote.issuedBody}</span>
             <span className="mt-2 flex items-center gap-2">
               <Input readOnly value={issued} aria-label={m.remote.token} className="w-full font-mono" spellCheck={false} />
-              <SdkCopyButton copyValue={issued} aria-label={m.remote.copy} size="sm" variant="ghost" color="secondary" />
+              <CopyButton value={issued} label={m.remote.copy} />
             </span>
-            <Button className="mt-2" size="small" onClick={() => setIssued(null)}>
+            <Button className="mt-2" size="sm" onClick={() => setIssued(null)}>
               {m.remote.done}
-            </Button>
-          </MessageBarBody>
-        </MessageBar>
+            </Button></Alert>
       ) : null}
       <ConfirmDialog
         open={confirm === "rotate"}
@@ -503,31 +493,23 @@ export const RemoteSection: React.FC<FormSectionProps> = ({ draft, errors, updat
   }
   return (
     <SettingsSection id="remote" intro={m.remote.intro}>
-      <MessageBar intent={draft.remote_api_enabled ? "warning" : "info"} layout="multiline">
-        <MessageBarBody>
-          <MessageBarTitle>{m.remote.warningTitle}</MessageBarTitle>
-          {m.remote.warning}
-        </MessageBarBody>
-      </MessageBar>
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+      <Alert intent={draft.remote_api_enabled ? "warning" : "info"} title={m.remote.warningTitle}>
+        {m.remote.warning}
+      </Alert>
+      <div className="grid gap-4 @3xl:grid-cols-[minmax(0,1fr)_280px]">
         <div className="space-y-3">
-          <Switch
-            label={m.remote.enabled}
-            checked={draft.remote_api_enabled}
-            onChange={(_, d) => update((s) => ({ ...s, remote_api_enabled: d.checked }))}
-          />
-          <div className="grid gap-3 sm:grid-cols-2">
+          <SwitchRow label={m.remote.enabled} checked={draft.remote_api_enabled} onCheckedChange={(checked) => update((s) => ({ ...s, remote_api_enabled: checked }))} />
+          <div className="grid gap-3 @md:grid-cols-2">
             <Field
               label={m.remote.bind}
               hint={m.remote.bindHint}
-              validationMessage={errors.remote_bind_address}
-              validationState={errors.remote_bind_address ? "error" : "none"}
+              error={errors.remote_bind_address}
             >
               <Input
                 value={draft.remote_bind_address}
                 spellCheck={false}
                 className="font-mono"
-                onChange={(_, d) => update((s) => ({ ...s, remote_bind_address: d.value }))}
+                onChange={(e) => update((s) => ({ ...s, remote_bind_address: e.target.value }))}
               />
             </Field>
             <NumberField
@@ -542,17 +524,15 @@ export const RemoteSection: React.FC<FormSectionProps> = ({ draft, errors, updat
           <Field
             label={m.remote.origins}
             hint={m.remote.originsHint}
-            validationMessage={errors.remote_allowed_origins}
-            validationState={errors.remote_allowed_origins ? "error" : "none"}
+            error={errors.remote_allowed_origins}
           >
             <Textarea
               value={originsText}
               spellCheck={false}
               className="font-mono"
-              resize="vertical"
-              onChange={(_, d) => {
-                setOriginsText(d.value);
-                update((s) => ({ ...s, remote_allowed_origins: parseOrigins(d.value) }));
+              onChange={(e) => {
+                setOriginsText(e.target.value);
+                update((s) => ({ ...s, remote_allowed_origins: parseOrigins(e.target.value) }));
               }}
             />
           </Field>
@@ -631,17 +611,18 @@ export const BackupsSection: React.FC<FormSectionProps> = ({ draft, errors, upda
         <>
           <div className="flex flex-wrap items-center gap-2">
             <Button
-              icon={create.isPending ? <Spinner size="tiny" /> : <DatabaseBackup className="size-4" />}
+             
               disabled={create.isPending}
               onClick={onCreate}
             >
+              {create.isPending ? <Spinner /> : <DatabaseBackup className="size-4" />}
               {create.isPending ? m.backups.creating : m.backups.create}
             </Button>
             {backups.data ? (
               <span className="text-xs text-muted-foreground">{formatMessage(m.backups.directory, { path: backups.data.directory })}</span>
             ) : null}
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 @md:grid-cols-2">
             <NumberField
               label={m.backups.interval}
               hint={m.backups.intervalHint}
@@ -672,9 +653,9 @@ export const BackupsSection: React.FC<FormSectionProps> = ({ draft, errors, upda
                 <li key={b.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
                   <TimeAgo iso={b.created_at} />
                   {b.scheduled ? (
-                    <SdkBadge variant="soft" color="secondary" size="sm" pill>
+                    <Badge tone="neutral">
                       {m.backups.scheduled}
-                    </SdkBadge>
+                    </Badge>
                   ) : null}
                   <span className="text-muted-foreground tabular-nums">{formatBytes(b.size_bytes, locale)}</span>
                   <span className="text-muted-foreground">
@@ -708,10 +689,11 @@ export const DiagnosticsSection: React.FC = () => {
     <SettingsSection id="diagnostics" intro={m.diagnostics.intro}>
       <div className="flex flex-wrap items-center gap-2">
         <Button
-          icon={exporter.isPending ? <Spinner size="tiny" /> : <FileJson className="size-4" />}
+         
           disabled={exporter.isPending}
           onClick={() => exporter.mutate()}
         >
+          {exporter.isPending ? <Spinner /> : <FileJson className="size-4" />}
           {exporter.isPending ? m.diagnostics.exporting : m.diagnostics.export}
         </Button>
         {bundle ? (
@@ -720,8 +702,11 @@ export const DiagnosticsSection: React.FC = () => {
               {formatMessage(m.diagnostics.ready, { size: formatBytes(bundle.bytes, locale) })}
             </span>
             {bundle.url ? (
-              <Button as="a" href={bundle.url} download="symphony-diagnostics.json" appearance="primary" icon={<Download className="size-4" />}>
-                {m.diagnostics.download}
+              <Button asChild variant="default">
+                <a href={bundle.url} download="symphony-diagnostics.json">
+                  <Download />
+                  {m.diagnostics.download}
+                </a>
               </Button>
             ) : null}
           </>
@@ -749,10 +734,12 @@ const FolderActions: React.FC = () => {
       <h3 className="text-sm font-medium text-foreground">{m.application.folders}</h3>
       <p className="text-xs text-muted-foreground">{m.application.foldersHint}</p>
       <div className="flex flex-wrap gap-2">
-        <Button icon={<FolderOpen className="size-4" />} disabled={open.isPending} onClick={() => open.mutate("data")}>
+        <Button disabled={open.isPending} onClick={() => open.mutate("data")}>
+          <FolderOpen />
           {m.application.openData}
         </Button>
-        <Button icon={<FolderOpen className="size-4" />} disabled={open.isPending} onClick={() => open.mutate("logs")}>
+        <Button disabled={open.isPending} onClick={() => open.mutate("logs")}>
+          <FolderOpen />
           {m.application.openLogs}
         </Button>
       </div>
@@ -774,45 +761,35 @@ const UpdateCheck: React.FC = () => {
     <div className="space-y-2 border-t border-border pt-3">
       <h3 className="text-sm font-medium text-foreground">{m.application.updates}</h3>
       <p className="text-xs text-muted-foreground">{m.application.updatesHint}</p>
-      <Switch
-        checked={autoCheck}
-        onChange={(_, d) => setAutoCheck(d.checked)}
-        label={m.application.autoCheckUpdates}
-      />
+      <SwitchRow label={m.application.autoCheckUpdates} checked={autoCheck} onCheckedChange={setAutoCheck} />
       <p className="text-xs text-muted-foreground">{m.application.autoCheckUpdatesHint}</p>
       <div className="flex flex-wrap gap-2">
         <Button
-          icon={checking ? <Spinner size="tiny" /> : <RefreshCw className="size-4" />}
+         
           disabled={checking}
           onClick={() => {
             setAsked(true);
             void query.refetch();
           }}
         >
+          {checking ? <Spinner /> : <RefreshCw className="size-4" />}
           {checking ? m.application.checking : m.application.checkUpdates}
         </Button>
       </div>
       <div aria-live="polite">
         {asked && query.isError ? (
-          <MessageBar intent="error" layout="multiline">
-            <MessageBarBody>
-              <MessageBarTitle>{m.application.checkFailed}</MessageBarTitle>
-              {errorMessage(query.error)}
-            </MessageBarBody>
-          </MessageBar>
+          <Alert intent="error" title={m.application.checkFailed}>{errorMessage(query.error)}</Alert>
         ) : result ? (
-          <MessageBar intent={result.update_available ? "info" : "success"} layout="multiline">
-            <MessageBarBody>
-              {result.latest === null
-                ? m.application.noReleases
-                : result.update_available
-                  ? formatMessage(result.prerelease ? m.application.updateAvailablePre : m.application.updateAvailable, {
-                      version: result.latest,
-                      current: result.current
-                    })
-                  : formatMessage(m.application.upToDate, { version: result.current })}
-            </MessageBarBody>
-          </MessageBar>
+          <Alert intent={result.update_available ? "info" : "success"}>
+            {result.latest === null
+              ? m.application.noReleases
+              : result.update_available
+                ? formatMessage(result.prerelease ? m.application.updateAvailablePre : m.application.updateAvailable, {
+                    version: result.latest,
+                    current: result.current
+                  })
+                : formatMessage(m.application.upToDate, { version: result.current })}
+          </Alert>
         ) : null}
       </div>
       {result?.update_available ? (
@@ -849,12 +826,7 @@ export const ApplicationSection: React.FC = () => {
   return (
     <SettingsSection id="application" intro={m.application.intro}>
       {discoveryError ? (
-        <MessageBar intent="warning" layout="multiline">
-          <MessageBarBody>
-            <MessageBarTitle>{m.application.discoveryErrorTitle}</MessageBarTitle>
-            {formatMessage(m.application.discoveryError, { error: discoveryError })}
-          </MessageBarBody>
-        </MessageBar>
+        <Alert intent="warning" title={m.application.discoveryErrorTitle}>{formatMessage(m.application.discoveryError, { error: discoveryError })}</Alert>
       ) : null}
       {info.isPending ? (
         <LoadingRows rows={4} />
@@ -875,7 +847,8 @@ export const ApplicationSection: React.FC = () => {
       )}
       <div className="border-t border-border pt-3">
         <h3 className="mb-2 text-sm font-medium text-foreground">{m.application.shortcuts}</h3>
-        <Button icon={<Keyboard className="size-4" />} onClick={() => setShortcutsOpen(true)}>
+        <Button onClick={() => setShortcutsOpen(true)}>
+          <Keyboard />
           {m.application.showShortcuts}
         </Button>
       </div>
@@ -883,7 +856,8 @@ export const ApplicationSection: React.FC = () => {
       {desktop ? <UpdateCheck /> : null}
       {desktop ? (
         <div className="border-t border-border pt-3">
-          <Button icon={<LogOut className="size-4" />} onClick={() => setConfirmExit(true)} disabled={exit.isPending}>
+          <Button onClick={() => setConfirmExit(true)} disabled={exit.isPending}>
+            <LogOut />
             {m.application.exit}
           </Button>
           <ConfirmDialog

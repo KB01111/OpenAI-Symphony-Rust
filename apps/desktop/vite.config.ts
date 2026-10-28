@@ -71,8 +71,7 @@ export default defineConfig({
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
           if (id.includes("@codemirror") || id.includes("/codemirror/") || id.includes("@lezer")) return "editor";
-          if (id.includes("@fluentui") || id.includes("@griffel") || id.includes("tabster") || id.includes("keyborg")) return "fluent";
-          if (id.includes("@openai/apps-sdk-ui") || id.includes("react-markdown") || id.includes("shiki") || id.includes("micromark") || id.includes("mdast") || id.includes("hast")) return "apps-sdk";
+          if (id.includes("react-markdown") || id.includes("remark") || id.includes("micromark") || id.includes("mdast") || id.includes("hast") || id.includes("unified")) return "markdown";
           return undefined;
         }
       }
@@ -86,7 +85,6 @@ export default defineConfig({
     // Testing Library's message rather than a bare test timeout.
     testTimeout: 15_000,
     css: false,
-    include: ["src/**/*.test.{ts,tsx}"],
-    server: { deps: { inline: ["@openai/apps-sdk-ui"] } }
+    include: ["src/**/*.test.{ts,tsx}"]
   }
 });

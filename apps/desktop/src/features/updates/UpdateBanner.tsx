@@ -1,6 +1,6 @@
 import React from "react";
-import { Button, MessageBar, MessageBarActions, MessageBarBody } from "@fluentui/react-components";
-import { X } from "lucide-react";
+import { Button } from "@symphony/ui";
+import { Info, X } from "lucide-react";
 import { formatMessage } from "@symphony/shared-types";
 import { useMessages } from "../../lib/i18n.js";
 import { useUiStore } from "../../store/uiStore.js";
@@ -28,30 +28,32 @@ export const UpdateBanner: React.FC = () => {
       <UpdateConfirmDialog />
       {show ? (
         <section aria-label={m.bannerLabel}>
-          <MessageBar intent="info" layout="multiline" shape="square">
-            <MessageBarBody>
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                <span>
-                  {formatMessage(available.prerelease ? m.availablePre : m.available, {
-                    version: available.latest ?? "",
-                    current: available.current
-                  })}
-                </span>
-                <UpdateActions update={available} />
-              </div>
-            </MessageBarBody>
+          <div className="flex items-start gap-3 border-b border-border bg-info-subtle px-4 py-2 text-sm text-foreground">
+            <Info className="mt-0.5 size-4 shrink-0 text-info" aria-hidden />
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-2">
+              <span>
+                {formatMessage(available.prerelease ? m.availablePre : m.available, {
+                  version: available.latest ?? "",
+                  current: available.current
+                })}
+              </span>
+              <UpdateActions update={available} />
+            </div>
             {phase === "idle" || phase === "error" ? (
-              <MessageBarActions
-                containerAction={
-                  <Button appearance="transparent" size="small" icon={<X className="size-4" />} aria-label={m.later} title={m.later} onClick={() => {
-                      dismiss(available.latest);
-                      setUpdateInstall({ phase: "idle" });
-                    }}
-                  />
-                }
-              />
+              <Button
+                variant="subtle"
+                size="icon-sm"
+                aria-label={m.later}
+                title={m.later}
+                onClick={() => {
+                  dismiss(available.latest);
+                  setUpdateInstall({ phase: "idle" });
+                }}
+              >
+                <X />
+              </Button>
             ) : null}
-          </MessageBar>
+          </div>
         </section>
       ) : null}
     </>

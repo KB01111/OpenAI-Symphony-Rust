@@ -17,7 +17,6 @@ import {
   type KeyboardCoordinateGetter,
   type UniqueIdentifier
 } from "@dnd-kit/core";
-import { Button, CounterBadge } from "@fluentui/react-components";
 import {
   ALL_TASK_STATUSES,
   explainManualTransition,
@@ -25,9 +24,8 @@ import {
   type Task,
   type TaskStatus
 } from "@symphony/shared-types";
-import { cn } from "@symphony/ui";
+import { Button, cn } from "@symphony/ui";
 import { useMessages, useT } from "../../lib/i18n.js";
-import { useUiStore } from "../../store/uiStore.js";
 import { taskMessages } from "./messages.js";
 import { TaskActionMenu, TaskContextMenu, useTaskActions } from "./taskActions.js";
 import { TaskCardBody } from "./TaskCard.js";
@@ -159,14 +157,12 @@ const BoardColumn = React.memo(function BoardColumn({
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2.5">
         <h2 className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</h2>
         {tone === "invalid" && isOver ? <span className="text-xs text-destructive">{m.card.cannotDrop}</span> : null}
-        <CounterBadge
-          count={tasks.length}
-          showZero
-          size="small"
-          appearance="ghost"
-          color="informative"
+        <span
+          className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-semibold tabular-nums text-muted-foreground"
           aria-label={formatMessage(m.column.count, { count: tasks.length, status: label })}
-        />
+        >
+          {tasks.length}
+        </span>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
         {tasks.length === 0 ? (
@@ -181,7 +177,7 @@ const BoardColumn = React.memo(function BoardColumn({
           </ul>
         )}
         {tasks.length > limit ? (
-          <Button size="small" appearance="subtle" className="mt-1.5 w-full" onClick={() => setLimit((l) => l + PAGE_SIZE)}>
+          <Button size="sm" variant="subtle" className="mt-1.5 w-full" onClick={() => setLimit((l) => l + PAGE_SIZE)}>
             {formatMessage(m.card.showMore, { count: Math.min(PAGE_SIZE, tasks.length - limit) })}
           </Button>
         ) : null}
@@ -195,8 +191,7 @@ export const TaskBoard: React.FC<{ tasks: ReadonlyArray<Task> }> = ({ tasks }) =
   const m = useMessages(taskMessages);
   const t = useT();
   const actions = useTaskActions();
-  const inspector = useUiStore((s) => s.inspector);
-  const selectedId = inspector?.kind === "task" ? inspector.id : null;
+  const selectedId: string | null = null;
   const [activeId, setActiveId] = useState<UniqueIdentifier | null>(null);
   const grouped = useMemo(() => groupByStatus(tasks), [tasks]);
   const byId = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);

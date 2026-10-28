@@ -1,7 +1,8 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { getTranslations } from "@symphony/shared-types";
-import NewTaskDialog from "./NewTaskDialog.js";
+import NewTaskDialog from "../composer/NewTaskDialog.js";
+import { deriveTitle } from "../composer/TaskComposer.js";
 import { allowedMoveTargets, applyDrop, parseLabels, resolveDrop } from "./taskLogic.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
 import { project, providerStatus, settings, task } from "../../test/fixtures.js";
@@ -38,8 +39,8 @@ describe("board state machine", () => {
   });
 });
 
-describe("NewTaskDialog", () => {
-  it("creates a task with auto_start (never dispatch_immediately) exactly once", async () => {
+describe("NewTaskDialog (composer)", () => {
+  it("creates a task from one prompt with auto_start (never dispatch_immediately) exactly once", async () => {
     const p = project({ id: "p1", name: "Repo", preferred_provider: "simulated" });
     const runtime = createMockRuntime({
       "GET /projects": () => [p],
@@ -51,15 +52,77 @@ describe("NewTaskDialog", () => {
     useUiStore.setState({ activeProjectId: "p1", newTaskOpen: true });
     renderWithProviders(<NewTaskDialog />, { runtime });
     const dialog = await screen.findByRole("dialog", { name: "New task" });
-    fireEvent.change(within(dialog).getByLabelText(/^Title/), { target: { value: "Fix flaky test" } });
-    fireEvent.change(within(dialog).getByLabelText(/^Description/), { target: { value: "Make it deterministic." } });
-    fireEvent.click(within(dialog).getByRole("switch", { name: /Start immediately/ }));
-    const submit = within(dialog).getByRole("button", { name: /Create and start/ });
+    const prompt = within(dialog).getByRole("textbox", { name: "Task prompt" });
+    fireEvent.change(prompt, { target: { value: "Fix flaky test\n\nMake it deterministic." } });
+    // "Run now" is the default mode.
+    const submit = within(dialog).getByRole("button", { name: "Run" });
     fireEvent.click(submit);
     fireEvent.click(submit);
     await waitFor(() => expect(runtime.calls.filter((c) => c.method === "POST" && c.path === "/tasks")).toHaveLength(1));
     const body = runtime.calls.find((c) => c.method === "POST" && c.path === "/tasks")!.body as Record<string, unknown>;
-    expect(body).toMatchObject({ project_id: "p1", title: "Fix flaky test", description: "Make it deterministic.", auto_start: true });
+    expect(body).toMatchObject({
+      project_id: "p1",
+      title: "Fix flaky test",
+      description: "Fix flaky test\n\nMake it deterministic.",
+      provider: "simulated",
+      auto_start: true
+    });
     expect(body).not.toHaveProperty("dispatch_immediately");
+  });
+
+  it("queues instead of starting when the mode is switched, and requires a prompt", async () => {
+    const runtime = createMockRuntime({
+      "GET /projects": () => [project({ id: "p1", name: "Repo", preferred_provider: "simulated" })],
+      "GET /providers": () => [providerStatus({ provider: "simulated", installed: true })],
+      "GET /settings": () => settings(),
+      "GET /tasks": () => [],
+      "POST /tasks": () => task({ id: "new", project_id: "p1" })
+    });
+    useUiStore.setState({ activeProjectId: "p1", newTaskOpen: true });
+    renderWithProviders(<NewTaskDialog />, { runtime });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Add to queue" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Queue task" }));
+    expect(await within(dialog).findByText("Describe the task first.")).toBeInTheDocument();
+    expect(runtime.calls.some((c) => c.method === "POST" && c.path === "/tasks")).toBe(false);
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Task prompt" }), { target: { value: "Write the docs" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Queue task" }));
+    await waitFor(() => expect(runtime.calls.filter((c) => c.method === "POST" && c.path === "/tasks")).toHaveLength(1));
+    const body = runtime.calls.find((c) => c.method === "POST" && c.path === "/tasks")!.body as Record<string, unknown>;
+    expect(body).toMatchObject({ title: "Write the docs", description: null, auto_start: false });
+  });
+});
+
+describe("deriveTitle", () => {
+  it("strips Markdown markers but keeps numbers and letters that belong to the sentence", () => {
+    expect(deriveTitle("# Fix the build\n\nMore detail")).toBe("Fix the build");
+    expect(deriveTitle("- add retry")).toBe("add retry");
+    expect(deriveTitle("1. First step")).toBe("First step");
+    expect(deriveTitle("2026 roadmap")).toBe("2026 roadmap");
+    expect(deriveTitle("3D rendering fix")).toBe("3D rendering fix");
+    expect(deriveTitle("1Password integration")).toBe("1Password integration");
+  });
+
+  it("skips lines that are only a marker or a horizontal rule", () => {
+    expect(deriveTitle("---\nFix the flaky test")).toBe("Fix the flaky test");
+    expect(deriveTitle("***\n\n- \n-\n#\n2. Real instruction")).toBe("Real instruction");
+    expect(deriveTitle("- - -\nDo the thing")).toBe("Do the thing");
+    expect(deriveTitle("___\nDo the thing")).toBe("Do the thing");
+  });
+
+  it("keeps a line that only looks like a rule but mixes characters", () => {
+    expect(deriveTitle("-*-\nDo the thing")).toBe("-*-");
+    expect(deriveTitle("===\nDo the thing")).toBe("===");
+  });
+
+  it("shortens long prompts at a word boundary", () => {
+    // 79 characters of text, then a word that crosses the 80-character cutoff.
+    const head = `${"a".repeat(30)} ${"b".repeat(30)} ${"c".repeat(17)}`;
+    expect(head).toHaveLength(79);
+    expect(deriveTitle(`${head} partialword and more`)).toBe(`${head}…`);
+    // A cutoff inside a word drops the partial word.
+    const early = `${"a".repeat(30)} ${"b".repeat(30)} ${"c".repeat(10)} ${"d".repeat(40)}`;
+    expect(deriveTitle(early)).toBe(`${"a".repeat(30)} ${"b".repeat(30)} ${"c".repeat(10)}…`);
+    expect(deriveTitle("#\nFix the build")).toBe("Fix the build");
   });
 });

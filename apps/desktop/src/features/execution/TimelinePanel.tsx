@@ -1,5 +1,4 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import { Button, ToggleButton } from "@fluentui/react-components";
 import { ArrowDownToLine, History } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { formatMessage, isActivePhase, type AgentEvent, type ApprovalDecision, type ApprovalRequest, type Task } from "@symphony/shared-types";
@@ -7,6 +6,7 @@ import {
   AiApprovalBanner,
   AiEmptyView,
   AiEventStreamCard,
+  Button,
   ErrorState,
   EVENT_KINDS,
   LoadingRows,
@@ -134,19 +134,19 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
         <span className="text-xs tabular-nums text-muted-foreground">{formatMessage(m.timeline.events, { count: all.length })}</span>
         <div role="group" aria-label={m.timeline.filters} className="ms-auto flex flex-wrap items-center gap-1">
           {chips.map((kind) => (
-            <ToggleButton
+            <Button
               key={kind}
-              size="small"
-              shape="circular"
-              appearance={hidden.has(kind) ? "outline" : "secondary"}
-              checked={!hidden.has(kind)}
+              size="sm"
+              variant={hidden.has(kind) ? "outline" : "secondary"}
+              className="h-6 rounded-full px-2"
+              aria-pressed={!hidden.has(kind)}
               onClick={() => setHidden((h) => toggleKind(h, kind))}
             >
               {formatMessage(m.timeline.kindCount, { label: m.timeline.kinds[kind], count: counts[kind] })}
-            </ToggleButton>
+            </Button>
           ))}
           {hidden.size > 0 ? (
-            <Button size="small" appearance="subtle" onClick={() => setHidden(new Set())}>
+            <Button size="sm" variant="subtle" onClick={() => setHidden(new Set())}>
               {m.timeline.showAll}
             </Button>
           ) : null}
@@ -165,12 +165,12 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
       {older.hasMore && history.data ? (
         <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1 text-xs text-muted-foreground">
           <Button
-            size="small"
-            appearance="subtle"
-            icon={<History className="size-4" />}
+            size="sm"
+            variant="subtle"
             disabled={older.loading}
             onClick={() => void older.loadOlder()}
           >
+            <History />
             {older.loading ? m.timeline.loadingOlder : m.timeline.loadOlder}
           </Button>
           {older.error ? (
@@ -207,12 +207,12 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
           <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
             <Button
               className="pointer-events-auto shadow-md"
-              size="small"
-              appearance="primary"
-              shape="circular"
-              icon={<ArrowDownToLine className="size-4" />}
+              size="sm"
+              variant="default"
+             
               onClick={jumpToLatest}
             >
+              <ArrowDownToLine />
               {unseen > 0 ? formatMessage(m.timeline.jumpNew, { count: unseen }) : m.timeline.jump}
             </Button>
           </div>

@@ -1,8 +1,21 @@
 import React from "react";
-import { Button, Checkbox, Dropdown, Field, Input, Option } from "@fluentui/react-components";
 import { AlertTriangle, CheckCircle2, CircleDashed, GitBranch, Search, XCircle } from "lucide-react";
 import { formatMessage, type Project, type PullRequestReview } from "@symphony/shared-types";
-import { ApprovalStatusBadge, TimeAgo, cn } from "@symphony/ui";
+import {
+  ApprovalStatusBadge,
+  Button,
+  Checkbox,
+  Field,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  TimeAgo,
+  cn
+} from "@symphony/ui";
 import { useMessages } from "../../lib/i18n.js";
 import { reviewMessages } from "./messages.js";
 import {
@@ -28,57 +41,64 @@ export const ReviewFiltersBar: React.FC<{ filters: ReviewFilters; onChange: (nex
   const scoreLabel = filters.minScore === null ? m.filters.anyScore : formatMessage(m.filters.scoreAtLeast, { score: filters.minScore });
   return (
     <div className="space-y-2 border-b border-border p-2">
-      <Field label={m.search} size="small">
+      <Field label={m.search}>
         <Input
-          size="small"
           type="search"
+          icon={<Search />}
           value={filters.search}
           placeholder={m.searchPlaceholder}
-          contentBefore={<Search className="size-3.5" aria-hidden />}
-          onChange={(_, data) => onChange({ ...filters, search: data.value })}
+          onChange={(e) => onChange({ ...filters, search: e.target.value })}
         />
       </Field>
-      <div className="grid grid-cols-2 gap-2">
-        <Field label={m.filters.approval} size="small">
-          <Dropdown
-            size="small"
-            value={approvalLabels[filters.approval]}
-            selectedOptions={[filters.approval]}
-            onOptionSelect={(_, data) => onChange({ ...filters, approval: (data.optionValue as ApprovalFilter | undefined) ?? "all" })}
-          >
-            {(Object.keys(approvalLabels) as ApprovalFilter[]).map((key) => (
-              <Option key={key} value={key}>
-                {approvalLabels[key]}
-              </Option>
-            ))}
-          </Dropdown>
-        </Field>
-        <Field label={m.filters.minScore} size="small">
-          <Dropdown
-            size="small"
-            value={scoreLabel}
-            selectedOptions={[filters.minScore === null ? "any" : String(filters.minScore)]}
-            onOptionSelect={(_, data) =>
-              onChange({ ...filters, minScore: !data.optionValue || data.optionValue === "any" ? null : Number(data.optionValue) })
-            }
-          >
-            <Option value="any">{m.filters.anyScore}</Option>
-            {SCORE_OPTIONS.map((score) => (
-              <Option key={score} value={String(score)}>
-                {formatMessage(m.filters.scoreAtLeast, { score })}
-              </Option>
-            ))}
-          </Dropdown>
-        </Field>
+      <div className="@container">
+        <div className="grid grid-cols-1 gap-2 @xs:grid-cols-2">
+          <Field label={m.filters.approval}>
+            <Select value={filters.approval} onValueChange={(value) => onChange({ ...filters, approval: (value as ApprovalFilter) ?? "all" })}>
+              <SelectTrigger>
+                <SelectValue>{approvalLabels[filters.approval]}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(approvalLabels) as ApprovalFilter[]).map((key) => (
+                  <SelectItem key={key} value={key}>
+                    {approvalLabels[key]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label={m.filters.minScore}>
+            <Select
+              value={filters.minScore === null ? "any" : String(filters.minScore)}
+              onValueChange={(value) => onChange({ ...filters, minScore: value === "any" ? null : Number(value) })}
+            >
+              <SelectTrigger>
+                <SelectValue>{scoreLabel}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="any">{m.filters.anyScore}</SelectItem>
+                {SCORE_OPTIONS.map((score) => (
+                  <SelectItem key={score} value={String(score)}>
+                    {formatMessage(m.filters.scoreAtLeast, { score })}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
       </div>
       <div className="flex items-center justify-between gap-2">
-        <Checkbox
-          checked={filters.hasBlockers}
-          label={m.filters.hasBlockers}
-          onChange={(_, data) => onChange({ ...filters, hasBlockers: data.checked === true })}
-        />
+        <span className="inline-flex items-center gap-2">
+          <Checkbox
+            id="review-has-blockers"
+            checked={filters.hasBlockers}
+            onCheckedChange={(checked) => onChange({ ...filters, hasBlockers: checked === true })}
+          />
+          <Label htmlFor="review-has-blockers" className="text-sm font-normal">
+            {m.filters.hasBlockers}
+          </Label>
+        </span>
         {hasActiveReviewFilters(filters) ? (
-          <Button size="small" appearance="subtle" onClick={() => onChange(DEFAULT_REVIEW_FILTERS)}>
+          <Button size="sm" variant="subtle" onClick={() => onChange(DEFAULT_REVIEW_FILTERS)}>
             {m.filters.clear}
           </Button>
         ) : null}

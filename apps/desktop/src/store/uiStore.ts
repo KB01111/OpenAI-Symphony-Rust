@@ -4,15 +4,7 @@ import type { Locale, TaskStatus } from "@symphony/shared-types";
 import type { Density, ThemeMode } from "@symphony/ui";
 import { safeJSONStorage } from "./safeStorage.js";
 
-/** Window width below which the inspector starts closed on a first launch. */
-export const INSPECTOR_DEFAULT_MIN_WIDTH = 1200;
-
-export type InspectorTarget =
-  | { kind: "task"; id: string }
-  | { kind: "project"; id: string }
-  | { kind: "worktree"; id: string }
-  | { kind: "review"; id: string };
-
+/** Tabs of the run details panel next to a thread, and of the Activity view. */
 export type DrawerTab = "events" | "agent" | "terminal" | "validations" | "approvals" | "problems";
 export type TaskView = "board" | "table";
 export type LogMode = "concise" | "technical";
@@ -46,11 +38,15 @@ export interface UiState {
   /** Applied immediately; mirrored to runtime settings when saved. */
   themeMode: ThemeMode;
   locale: Locale;
-  inspectorOpen: boolean;
-  drawerOpen: boolean;
+  /** Selected tab of the Activity view. */
   drawerTab: DrawerTab;
+  /** Run details panel next to an open thread. */
+  threadPanelOpen: boolean;
+  /** The "Manage" group (secondary views) in the sidebar. */
+  manageOpen: boolean;
+  /** Project ids whose thread group is collapsed in the sidebar. */
+  collapsedProjects: string[];
   logMode: LogMode;
-  lastRoute: string;
   taskFilters: TaskFilters;
   /** Look for updates at startup and every few hours (desktop only). Off = only on request. */
   autoCheckUpdates: boolean;
@@ -59,7 +55,6 @@ export interface UiState {
 
   // session-only
   updateInstall: UpdateInstallState;
-  inspector: InspectorTarget | null;
   paletteOpen: boolean;
   paletteMode: "all" | "projects";
   newTaskOpen: boolean;
@@ -72,12 +67,11 @@ export interface UiState {
   setDensity(density: Density): void;
   setThemeMode(mode: ThemeMode): void;
   setLocale(locale: Locale): void;
-  setInspectorOpen(open: boolean): void;
-  inspect(target: InspectorTarget | null): void;
-  setDrawerOpen(open: boolean): void;
   setDrawerTab(tab: DrawerTab): void;
+  setThreadPanelOpen(open: boolean): void;
+  setManageOpen(open: boolean): void;
+  toggleProjectCollapsed(id: string): void;
   setLogMode(mode: LogMode): void;
-  setLastRoute(route: string): void;
   setTaskFilters(filters: Partial<TaskFilters>): void;
   resetTaskFilters(): void;
   setAutoCheckUpdates(enabled: boolean): void;
@@ -101,19 +95,16 @@ export const useUiStore = create<UiState>()(
       density: "compact",
       themeMode: "system",
       locale: "en",
-      // First start on a narrow window: the content gets the width; selecting something opens the
-      // inspector anyway, and the user's choice is remembered from then on.
-      inspectorOpen: typeof window === "undefined" || window.innerWidth >= INSPECTOR_DEFAULT_MIN_WIDTH,
-      drawerOpen: true,
       drawerTab: "events",
+      threadPanelOpen: true,
+      manageOpen: true,
+      collapsedProjects: [],
       logMode: "concise",
-      lastRoute: "/overview",
       taskFilters: DEFAULT_TASK_FILTERS,
       autoCheckUpdates: true,
       dismissedUpdate: null,
 
       updateInstall: { phase: "idle" },
-      inspector: null,
       paletteOpen: false,
       paletteMode: "all",
       newTaskOpen: false,
@@ -126,12 +117,14 @@ export const useUiStore = create<UiState>()(
       setDensity: (density) => set({ density }),
       setThemeMode: (themeMode) => set({ themeMode }),
       setLocale: (locale) => set({ locale }),
-      setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
-      inspect: (inspector) => set(inspector ? { inspector, inspectorOpen: true } : { inspector: null }),
-      setDrawerOpen: (drawerOpen) => set({ drawerOpen }),
-      setDrawerTab: (drawerTab) => set({ drawerTab, drawerOpen: true }),
+      setDrawerTab: (drawerTab) => set({ drawerTab }),
+      setThreadPanelOpen: (threadPanelOpen) => set({ threadPanelOpen }),
+      setManageOpen: (manageOpen) => set({ manageOpen }),
+      toggleProjectCollapsed: (id) =>
+        set((s) => ({
+          collapsedProjects: s.collapsedProjects.includes(id) ? s.collapsedProjects.filter((x) => x !== id) : [...s.collapsedProjects, id]
+        })),
       setLogMode: (logMode) => set({ logMode }),
-      setLastRoute: (lastRoute) => set({ lastRoute }),
       setTaskFilters: (filters) => set((s) => ({ taskFilters: { ...s.taskFilters, ...filters } })),
       resetTaskFilters: () => set({ taskFilters: DEFAULT_TASK_FILTERS }),
       setAutoCheckUpdates: (autoCheckUpdates) => set({ autoCheckUpdates }),
@@ -154,11 +147,11 @@ export const useUiStore = create<UiState>()(
         density: s.density,
         themeMode: s.themeMode,
         locale: s.locale,
-        inspectorOpen: s.inspectorOpen,
-        drawerOpen: s.drawerOpen,
         drawerTab: s.drawerTab,
+        threadPanelOpen: s.threadPanelOpen,
+        manageOpen: s.manageOpen,
+        collapsedProjects: s.collapsedProjects,
         logMode: s.logMode,
-        lastRoute: s.lastRoute,
         taskFilters: s.taskFilters,
         autoCheckUpdates: s.autoCheckUpdates,
         dismissedUpdate: s.dismissedUpdate

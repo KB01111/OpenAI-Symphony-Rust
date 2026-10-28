@@ -21,9 +21,9 @@ Symphony Desktop is a local-first autonomous coding orchestration platform inspi
   - Canonical path containment and symlink escape prevention.
   - Per-task Git worktree creation (`git worktree add -B`), dirty-worktree guards, lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`), and automated validation command execution.
 - **Symphony Desktop 2.0 UI (`apps/desktop`, `packages/ui`)** — see [docs/UI_ARCHITECTURE.md](./docs/UI_ARCHITECTURE.md) and [docs/DESIGN_SYSTEM.md](./docs/DESIGN_SYSTEM.md):
-  - Modular desktop shell: command bar, collapsible sidebar with project switcher, Ctrl+K command palette, resizable context inspector, bottom activity drawer (events, agent/terminal output, validations, approvals, problems) and a status bar with live hardware telemetry.
+  - Thread-first desktop shell, modelled on the ChatGPT Codex app: a prompt composer on the home screen (repository and base branch, provider/model, priority, labels, run now or queue), tasks listed as threads grouped by project, each thread with the prompt, live timeline, inline approvals, follow-up box and a run-details panel (changes, validation, tool calls, usage, pull request, context). Ctrl+K command palette, an Activity view (events, agent/terminal output, validations, approvals, problems) and a status bar with live hardware telemetry.
   - Views: Overview, Projects (guided Add Repository with native folder picker), Tasks (9-state Kanban with state-machine-validated drag and drop + data table), Agent Runs (control center), Live Execution workspace, Worktrees, Pull Request Review Center (1–5 merge readiness), Workflow Studio (CodeMirror + runtime validation/preview), Providers, Settings.
-  - One token source shared by **Fluent UI React v9** (Windows-native controls, dialogs, menus, forms), **shadcn/ui** (resizable panels, command palette, data tables, context menus) and **OpenAI Apps SDK UI** (AI-native approval, event, markdown, code and readiness surfaces); dark/light/system themes, compact/comfortable density, reduced motion, English and Swedish.
+  - One component system, **shadcn/ui on Radix UI with Tailwind v4**, driven by one token source (controls, dialogs, sheets, menus, data tables, command palette, AI-native approval, event, markdown, code and readiness surfaces); dark/light/system themes, compact/comfortable density, reduced motion, English and Swedish.
   - OpenAPI 3.1 document generated from the Axum routes (`utoipa-axum`), TypeScript types and SDK generated from it with Hey API; CI checks freshness and breaking changes. Authenticated SSE streaming with resume, dedupe and reconnection.
 - **Hardware-Aware Windows 11 Execution (`symphony-platform`)**:
   - Optimized for hybrid laptops (e.g., ASUS ROG Zephyrus G16 with AMD Ryzen AI 9 HX 370 + Radeon 890M + RTX 4070).
@@ -58,7 +58,7 @@ OpenAI-Symphony-Rust/
 ├── packages/
 │   ├── shared-types/       # Rust-generated API contracts, state machine table, EN/SV i18n
 │   ├── api-client/         # Typed HTTP client, authenticated SSE, Tauri IPC bridge (`SymphonyClient`)
-│   └── ui/                 # Symphony design system: tokens, Fluent v9 + shadcn/ui + Apps SDK UI
+│   └── ui/                 # Symphony design system: tokens, shadcn/ui (Radix) components, AI surfaces
 ├── tools/
 │   └── api-generator/      # Hey API generator for packages/shared-types (pinned to TypeScript 6)
 ├── WORKFLOW.md             # Repository Symphony workflow configuration

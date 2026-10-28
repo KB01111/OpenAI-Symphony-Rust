@@ -1,9 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
-import { Button, MessageBar, MessageBarBody, MessageBarTitle, Spinner } from "@fluentui/react-components";
 import { RotateCcw, Save } from "lucide-react";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage, type AppSettings, type Locale } from "@symphony/shared-types";
-import { ErrorState, LoadingRows, PageHeader, SdkBadge, cn, useDesign, useNotify, type ThemeMode } from "@symphony/ui";
+import { Alert, Badge, Button, cn, ErrorState, LoadingRows, PageHeader, Spinner, useDesign, useNotify, type ThemeMode } from "@symphony/ui";
 import { useMessages } from "../../lib/i18n.js";
 import { useSaveSettings, useSettings } from "../../lib/queries.js";
 import { useUiStore } from "../../store/uiStore.js";
@@ -164,9 +163,9 @@ export default function SettingsPage() {
         description={m.description}
         meta={
           dirty ? (
-            <SdkBadge size="sm" pill variant="soft" color="warning">
+            <Badge tone="warning">
               {m.unsaved}
-            </SdkBadge>
+            </Badge>
           ) : null
         }
         actions={
@@ -176,15 +175,16 @@ export default function SettingsPage() {
                 {formatMessage(m.invalidCount, { count: errorCount })}
               </span>
             ) : null}
-            <Button icon={<RotateCcw className="size-4" />} disabled={!dirty || save.isPending} onClick={onReset}>
+            <Button disabled={!dirty || save.isPending} onClick={onReset}>
+              <RotateCcw />
               {m.reset}
             </Button>
             <Button
-              appearance="primary"
-              icon={save.isPending ? <Spinner size="tiny" /> : <Save className="size-4" />}
+              variant="default"
               disabled={!dirty || errorCount > 0 || save.isPending}
               onClick={onSave}
             >
+              {save.isPending ? <Spinner /> : <Save className="size-4" />}
               {m.save}
             </Button>
           </>
@@ -221,12 +221,7 @@ export default function SettingsPage() {
             ) : (
               <>
                 {serverMessage ? (
-                  <MessageBar intent="error" layout="multiline">
-                    <MessageBarBody>
-                      <MessageBarTitle>{m.saveFailed}</MessageBarTitle>
-                      {serverMessage}
-                    </MessageBarBody>
-                  </MessageBar>
+                  <Alert intent="error" title={m.saveFailed}>{serverMessage}</Alert>
                 ) : null}
                 <AppearanceSection
                   themeMode={themeMode}

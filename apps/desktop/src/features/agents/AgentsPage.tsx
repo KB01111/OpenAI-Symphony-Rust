@@ -1,19 +1,28 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button, Dropdown, Option, Tab, TabList, Tooltip } from "@fluentui/react-components";
 import { MonitorPlay, Play, RotateCcw, Square } from "lucide-react";
 import { ALL_PROVIDERS, formatMessage, isActivePhase, type ProviderCapabilities, type ProviderKind } from "@symphony/shared-types";
 import {
   AiEmptyView,
+  Badge,
+  Button,
   ConfirmDialog,
   Duration,
   ErrorState,
+  Hint,
   LoadingRows,
   PageHeader,
   PhaseBadge,
   ProviderBadge,
-  SdkBadge,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   StreamingText,
+  Tabs,
+  TabsList,
+  TabsTrigger,
   TaskStatusBadge,
   TimeAgo,
   VirtualList,
@@ -34,7 +43,6 @@ import {
   useRuntimeState,
   useTasks
 } from "../../lib/queries.js";
-import { useUiStore } from "../../store/uiStore.js";
 import {
   AGENT_GROUP_BY,
   AGENT_SEGMENTS,
@@ -83,18 +91,16 @@ const AgentRunRow = React.memo(function AgentRunRow({
   const allowed = rowActions(row, capabilities);
   const finished = FINISHED_SEGMENTS.includes(row.segment);
   const iconButton = (label: string, icon: React.ReactElement, onClick: () => void, primary = false) => (
-    <Tooltip content={label} relationship="label">
+    <Hint label={label} asLabel>
       <Button
-        size="small"
-        appearance={primary ? "primary" : "subtle"}
-        icon={icon}
+        size="sm"
+        variant={primary ? "default" : "subtle"}
         disabled={busy}
         onClick={(e) => {
           e.stopPropagation();
           onClick();
-        }}
-      />
-    </Tooltip>
+        }}>{icon}</Button>
+    </Hint>
   );
 
   return (
@@ -130,9 +136,9 @@ const AgentRunRow = React.memo(function AgentRunRow({
           {row.phase && (row.live || !finished) ? <PhaseBadge phase={row.phase} /> : null}
           {row.provider ? <ProviderBadge provider={row.provider} model={row.model} /> : null}
           {row.pendingApprovals > 0 ? (
-            <SdkBadge variant="soft" color="warning" size="sm" pill>
+            <Badge tone="warning">
               {formatMessage(m.row.pendingApprovals, { count: row.pendingApprovals })}
-            </SdkBadge>
+            </Badge>
           ) : null}
         </div>
         <dl className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
@@ -228,8 +234,6 @@ export default function AgentsPage() {
   const approvals = useApprovals(true);
   const projects = useProjects();
   const providers = useProviders();
-  const inspector = useUiStore((s) => s.inspector);
-  const inspect = useUiStore((s) => s.inspect);
   const dispatch = useDispatchTask();
   const retry = useRetryTask();
   const cancel = useCancelTask();
@@ -273,9 +277,9 @@ export default function AgentsPage() {
 
   const pendingTaskId =
     (dispatch.isPending && dispatch.variables) || (retry.isPending && retry.variables) || (cancel.isPending && cancel.variables) || null;
-  const selectedTaskId = inspector?.kind === "task" ? inspector.id : null;
+  const selectedTaskId: string | null = null;
 
-  const onSelect = useCallback((row: AgentRow) => inspect({ kind: "task", id: row.taskId }), [inspect]);
+  const onSelect = useCallback((row: AgentRow) => navigate(paths.run(row.taskId)), [navigate]);
   const onOpen = useCallback((row: AgentRow) => navigate(paths.run(row.taskId)), [navigate]);
   const onDispatch = useCallback((row: AgentRow) => !dispatch.isPending && dispatch.mutate(row.taskId), [dispatch]);
   const onRetry = useCallback((row: AgentRow) => !retry.isPending && retry.mutate(row.taskId), [retry]);
@@ -316,7 +320,7 @@ export default function AgentsPage() {
           title={m.empty.title}
           description={m.empty.description}
           action={
-            <Button size="small" appearance="primary" onClick={() => navigate(paths.tasks())}>
+            <Button size="sm" variant="default" onClick={() => navigate(paths.tasks())}>
               {m.empty.cta}
             </Button>
           }
@@ -376,38 +380,32 @@ export default function AgentsPage() {
         })}
       />
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface px-2 py-1">
-        <TabList
-          size="small"
-          selectedValue={filter}
-          onTabSelect={(_, d) => setFilter(d.value as SegmentFilter)}
-          aria-label={m.segmentTabs}
-          className="min-w-0 flex-1 flex-wrap"
-        >
-          <Tab value="all">
-            {m.all} <span className="tabular-nums text-subtle-foreground">{rows.length}</span>
-          </Tab>
-          {AGENT_SEGMENTS.map((s) => (
-            <Tab key={s} value={s}>
-              {m.segments[s]} <span className="tabular-nums text-subtle-foreground">{counts[s]}</span>
-            </Tab>
-          ))}
-        </TabList>
+        <Tabs value={filter} onValueChange={(v) => setFilter(v as SegmentFilter)} className="min-w-0 flex-1">
+          <TabsList aria-label={m.segmentTabs} className="flex-wrap border-b-0 px-0">
+            <TabsTrigger value="all">
+              {m.all} <span className="tabular-nums text-subtle-foreground">{rows.length}</span>
+            </TabsTrigger>
+            {AGENT_SEGMENTS.map((s) => (
+              <TabsTrigger key={s} value={s}>
+                {m.segments[s]} <span className="tabular-nums text-subtle-foreground">{counts[s]}</span>
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span id="agents-group-by">{m.groupByLabel}</span>
-          <Dropdown
-            size="small"
-            className="!min-w-0 w-32"
-            aria-labelledby="agents-group-by"
-            value={m.groupBy[groupBy]}
-            selectedOptions={[groupBy]}
-            onOptionSelect={(_, d) => d.optionValue && setGroupBy(d.optionValue as AgentGroupBy)}
-          >
-            {AGENT_GROUP_BY.map((g) => (
-              <Option key={g} value={g}>
-                {m.groupBy[g]}
-              </Option>
-            ))}
-          </Dropdown>
+          <Select value={groupBy} onValueChange={(v) => setGroupBy(v as AgentGroupBy)}>
+            <SelectTrigger className="w-36" aria-labelledby="agents-group-by">
+              <SelectValue>{m.groupBy[groupBy]}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {AGENT_GROUP_BY.map((g) => (
+                <SelectItem key={g} value={g}>
+                  {m.groupBy[g]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
       {FINISHED_SEGMENTS.includes(filter as AgentSegment) ? (

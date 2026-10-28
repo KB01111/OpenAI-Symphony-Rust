@@ -8,7 +8,6 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./test/setup.ts"],
     css: false,
-    include: ["test/**/*.test.{ts,tsx}"],
-    server: { deps: { inline: ["@openai/apps-sdk-ui"] } }
+    include: ["test/**/*.test.{ts,tsx}"]
   }
 });

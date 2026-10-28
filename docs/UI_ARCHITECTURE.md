@@ -18,7 +18,7 @@
 │      ├─ Batcher (100 ms) → event ring buffer (zustand) + targeted TanStack Query invalidation   │
 │      └─ fallback polling while the stream is down; throttled while the window is hidden        │
 │ TanStack Query cache = durable server state      zustand uiStore = presentation preferences    │
-│ DesktopShell (layouts/) + feature views (features/*) + design system (@symphony/ui)            │
+│ DesktopShell (layouts/) + feature views (features/*) + design system (@symphony/ui, shadcn)     │
 └───────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -107,19 +107,20 @@ on broadcast lag), avoiding an HTTP connection.
 ```
 apps/desktop/src/
   app/          App, AppProviders, AppRouter (hash routes, lazy views), RuntimeGate, PreferencesBridge, messages
-  layouts/      DesktopShell, Sidebar, CommandBar, ContextInspector, ActivityDrawer, StatusBar
+  layouts/      DesktopShell, Sidebar, ThreadList, TopBar, StatusBar
   runtime/      RuntimeProvider, eventStore (ring buffer), invalidation map
   lib/          queries (TanStack hooks), queryKeys, i18n helpers
   store/        uiStore (persisted presentation state), safeStorage
   hooks/        useGlobalShortcuts, useFocusedTaskId
   components/   ErrorBoundary, DiffViewer
-  features/     overview · projects · tasks · agents · execution · worktrees · reviews · workflows ·
-                providers · settings · onboarding · command-palette
+  features/     composer · activity · overview · projects · tasks · agents · execution · worktrees · reviews ·
+                workflows · providers · settings · onboarding · command-palette
   test/         renderWithProviders (in-memory runtime), fixtures, setup
 ```
 
-Routes: `/overview`, `/projects[/:projectId]`, `/tasks`, `/runs`, `/runs/:taskId`, `/worktrees`,
-`/reviews[/:reviewId]`, `/workflow`, `/providers`, `/settings`. The last route is restored on launch.
+Routes: `/` (prompt composer), `/overview`, `/projects[/:projectId]`, `/tasks`, `/runs`, `/runs/:taskId`
+(a task as a thread), `/activity`, `/worktrees`, `/reviews[/:reviewId]`, `/workflow`, `/providers`, `/settings`.
+The app always opens on the composer.
 
 The app uses a data router (`createHashRouter`; tests use `createMemoryRouter`), which lets a view block
 navigation while it holds unsaved edits (`useBlocker` in Workflow Studio). Every feature view is a lazily
@@ -130,10 +131,12 @@ loaded chunk; the CodeMirror editor is a separate lazy chunk loaded only by Work
 | View | Highlights |
 | --- | --- |
 | Overview | Metrics from the snapshot/tasks, live sessions, pending approvals (decide inline), persisted + live activity. |
-| Projects | Repository list/detail/edit, guided Add repository (native folder picker in Tauri, runtime validation, checkout-root resolution), delete with confirmation (409 while running). |
+| Projects | Full-width repository table (columns drop by container width) with the selected project's settings in a side sheet, guided Add repository (native folder picker in Tauri, runtime validation, checkout-root resolution), delete with confirmation (409 while running). |
 | Tasks | 9-column Kanban (dnd-kit, keyboard + menu moves validated by the shared state machine before any request) and a data table; New task dialog (`auto_start`). |
 | Agent runs | One row per task by precedence (live > approval > retrying > queued > recent finished), grouping by status/provider/project, capability-gated actions. |
-| Live execution | Three resizable panels: context, live timeline (concise/technical), changes/validation/tool calls/usage/PR. The *Tool calls* tab pages the task's tool-call history (`GET /tasks/{id}/tool-calls`), refreshed only by events that can start or finish a tool call. |
+| Home / composer | Large prompt box with chips: repository (shows the base branch), provider + model, priority, labels, *Run now* / *Add to queue* (`auto_start`). The first line of the prompt is the title, the whole prompt the description; the identifier is generated. Recent threads below. The same composer opens in a dialog (Ctrl+N) from other views. |
+| Thread (`/runs/:taskId`) | Prompt, merged persisted + live timeline (concise/technical, kind filters, tail-following), pinned approvals, inline follow-up box (`POST /tasks/{id}/continue`, only after a run ended, 20 000 character limit) and a run-details panel (Changes, Validation, Tool calls, Usage, Pull request, Context). Wide windows dock the panel, narrow ones open it as a sheet. |
+| Activity | Cross-task events, scoped agent/terminal output, validations, approvals and problems (the former bottom dock). |
 | Worktrees | Worktree table with dirty state, diff viewer, "Open in Explorer" only in the embedded desktop host; no delete action. |
 | Pull requests | Evidence-backed readiness (1–5), blockers, diff with review comments; "Record human approval" is a separate confirmed action and never merges. |
 | Workflow Studio | CodeMirror 6 (Markdown + YAML front matter), debounced runtime validation with located diagnostics, effective config, prompt preview, Ctrl+S, revert, external-change detection, unsaved-changes guard. |
@@ -142,19 +145,19 @@ loaded chunk; the CodeMirror editor is a separate lazy chunk loaded only by Work
 
 ## 6. Shell
 
-- **Command bar** (below the native title bar — native decorations are kept for reliable drag, snap,
-  maximize and system controls): project breadcrumb, palette launcher, runtime connection status
-  (derived from the real stream/state), new task, pause/resume dispatching, refresh, approvals, theme,
-  drawer/inspector toggles.
-- **Sidebar**: collapsible (persisted), tooltips when collapsed, active indicator, project switcher, badges.
-- **Context inspector**: right resizable/collapsible panel for the selected task/project/worktree/PR.
-- **Activity drawer**: bottom dock with Events, Agent output, Terminal output (command executions of the
-  focused task — no arbitrary shell), Validations, Approvals and Problems.
+- **Sidebar** (collapsible, persisted): *New task*, a search field, tasks grouped by project as **threads**
+  (status dot, approval mark, relative time, collapsible groups) and a *Manage* group with the other views.
+  Collapsed it is an icon rail with tooltips.
+- **Top bar** (below the native title bar - native decorations are kept for reliable drag, snap, maximize and
+  system controls): current view, palette launcher, runtime connection status (derived from the real
+  stream/state), pause/resume dispatching, refresh, approvals popover, theme.
 - **Status bar**: connection, scheduler, counts, tokens/cost and hardware telemetry from the runtime
   snapshot (refreshed by events and every 15 s while visible; it never probes the GPU).
+- There are no nested resizable panel groups at shell level; each view owns its layout (resizable panes only
+  where a view needs them, e.g. Workflow Studio, Pull requests).
 
-Keyboard: Ctrl+K palette · Ctrl+N new task · Ctrl+P projects · Ctrl+R refresh data · Ctrl+B sidebar ·
-Ctrl+J activity drawer · Ctrl+I inspector.
+Keyboard: Ctrl+K palette - Ctrl+N new task - Ctrl+P projects - Ctrl+R refresh data - Ctrl+B sidebar -
+Ctrl+J run-details panel - F1 shortcut help.
 
 ## 7. State rules
 

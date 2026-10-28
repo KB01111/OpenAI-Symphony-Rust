@@ -1,18 +1,20 @@
 # Symphony Design System
 
 The design system lives in `packages/ui` and is shared by the desktop app and the mobile companion.
-It combines three component libraries under **one token source** and **one owner per component category**.
+It is **one component system**: shadcn/ui primitives (Radix UI + Tailwind CSS v4) driven by **one token source**.
+There is no second control library on the desktop: Fluent UI and the OpenAI Apps SDK UI were removed because
+three libraries with different sizing, breakpoints and CSS layers produced overlapping and clipped controls.
 
 ```
 packages/ui/src/
   tokens/tokens.css        single source of colour, typography, radius, density tokens
-  theme/fluentThemes.ts    Fluent UI v9 themes whose values reference the CSS tokens
-  providers/               SymphonyDesignProvider (theme, density, motion, locale, toaster)
-  primitives/              shadcn/ui components (generated with the shadcn CLI)
-  ai/                      AI-native components built on OpenAI Apps SDK UI
-  feedback/                confirm dialog, error state, loading rows, toasts, live announcer
+  providers/               SymphonyDesignProvider (theme, density, motion, locale, tooltips, toaster)
+  primitives/              shadcn/ui-style components on Radix UI (button, input, select, dialog, tabs, …)
+  ai/                      AI-native components (approval banner, event stream card, readiness card, badges)
+  feedback/                confirm dialog, error state, loading rows, toasts (sonner), live announcer
   data-display/            metric tile, key/value list, time & duration, virtual list, data table, telemetry
   layouts/                 page header, panel, status dot
+  legacy.tsx               Fluent theme bridge used only by the mobile companion
   i18n.ts                  strings owned by shared components (EN/SV)
   index.ts                 public entry point
 ```
@@ -32,27 +34,19 @@ packages/ui/src/
 | `--accent`, `--accent-hover`, `--accent-foreground`, `--accent-subtle` | Restrained blue for active actions |
 | `--destructive`, `--warning`, `--success`, `--info` (+ `-subtle`) | Semantic status only |
 | `--ring` | Focus ring |
+| `--overlay` | Modal and sheet scrim |
 | `--code-background`, `--diff-add`, `--diff-remove` | Code and diff surfaces |
-| `--font-sans` | Segoe UI Variable Text → Segoe UI → system |
-| `--font-display` | Segoe UI Variable Display |
-| `--font-mono` | Cascadia Code → Cascadia Mono → Consolas |
-| `--radius` | 6 px base radius |
+| `--font-sans`, `--font-display`, `--font-mono` | Segoe UI Variable stack, Cascadia mono |
+| `--radius` | 8 px base radius |
 | `--density-*` | Row/control height, gaps and base font size |
 
-The same variables feed every library:
+Tailwind CSS v4 reads them through `@theme inline` (`bg-surface`, `text-muted-foreground`, `border-border`,
+`bg-warning-subtle`, `font-mono`, `h-row`, …). Feature code uses only these classes; hard-coded hex or palette
+colours are not allowed outside `tokens.css`. The shadcn semantic names (`--card`, `--popover`, `--primary`,
+`--input`, `--ring`) are aliases of the Symphony tokens.
 
-- **Tailwind CSS v4** — `@theme inline` maps them to utilities (`bg-surface`, `text-muted-foreground`,
-  `border-border`, `bg-warning-subtle`, `font-mono`, `h-row`, …). Feature code uses only these classes;
-  hard-coded hex or palette colours are not allowed outside `tokens.css`.
-- **shadcn/ui** — the shadcn semantic names (`--card`, `--popover`, `--primary`, `--input`, `--ring`) are
-  aliases of the Symphony tokens.
-- **Fluent UI v9** — `fluentThemes.ts` derives brand ramps with `createDarkTheme/createLightTheme` and then
-  points surface, text, stroke, brand and status tokens at `var(--…)`. Fluent therefore switches theme
-  together with everything else and portals inherit it (`applyStylesToPortals`).
-- **OpenAI Apps SDK UI** — `applyDocumentTheme(theme)` sets the same `data-theme` attribute the tokens use.
-
-The palette is a graphite neutral scale with a single restrained blue accent. Semantic green, amber and
-red are used for status only. No gradients or glass effects are used; elevation is a subtle border plus
+The palette is a graphite neutral scale with a single restrained blue accent. Semantic green, amber and red are
+used for status only. No gradients or glass effects are used; elevation is a subtle border plus
 `--shadow-elevated` on floating surfaces.
 
 ## 2. `SymphonyDesignProvider`
@@ -63,89 +57,95 @@ red are used for status only. No gradients or glass effects are used; elevation 
 </SymphonyDesignProvider>
 ```
 
-- Resolves `system` against `prefers-color-scheme` (Windows light/dark setting) and follows live changes.
+- Resolves `system` against `prefers-color-scheme` and follows live changes.
 - Writes `data-theme`, `data-density`, `data-motion` and `lang` on `<html>`.
-- Provides the matching Fluent theme and wraps children in `AppsSDKUIProvider`.
-- Mounts the single app-wide Fluent `Toaster`; `useNotify()` dispatches toasts.
+- Provides the tooltip context and mounts the single app-wide `sonner` toaster; `useNotify()` dispatches toasts.
 - Exposes `useDesign()` (resolved theme, density, reduced motion, locale) and `useUiStrings()`.
 
-Reduced motion: when the OS requests it (or `motion="reduced"`), CSS animations and transitions are
-neutralised globally by `tokens.css`. Components avoid JavaScript animation loops.
+Reduced motion: when the OS requests it (or `motion="reduced"`), CSS animations and transitions are neutralised
+globally by `tokens.css`.
 
 Density: **compact** (default, IDE-like: 28 px rows, 13 px text) and **comfortable** (36 px rows, 14 px text).
-The density font is applied to `<body>`, not `<html>`: the root font size stays at 16 px so `rem`-based
-spacing (Tailwind, Apps SDK) matches Fluent's px-based controls. Tailwind's `text-sm`/`text-xs` and Fluent's
-`fontSizeBase300`/`fontSizeBase200` all resolve to `--density-font`/`--density-font-xs`, so body and caption
-text are the same size whichever library renders them.
+Tailwind's `text-sm`/`text-xs` resolve to `--density-font`/`--density-font-xs`.
 
 ### Cascade layers
 
-Apps SDK UI ships component CSS in `@layer components`. Each app imports its global stylesheet **first**
-(`main.tsx`) and that stylesheet starts with `@layer theme, base, components, utilities;`, so the layer order
-is fixed before any library CSS is injected. Otherwise `components` can be ordered below Tailwind's preflight
-(`base`) and Apps SDK buttons lose their padding, radius and colours.
+The app's global stylesheet starts with `@layer theme, base, components, utilities;` and imports Tailwind and
+`tokens.css`. There is no third-party component CSS, so the layer order cannot be disturbed.
 
-## 3. Component ownership
+## 3. Layout rules (these prevent the overlap and clipping bugs)
 
-Exactly one library owns each interaction category. Competing implementations are not rendered.
+1. **Container queries, not viewport breakpoints.** A form or table inside a side sheet or a resizable pane is
+   narrower than the window. Use `@container` on the parent and `@md:`/`@3xl:` variants (`FieldGrid`,
+   `DataTable`, settings sections). `sm:`/`md:`/`lg:` are only for shell-level decisions.
+2. **Controls never impose a minimum width.** `Input`, `Select`, `Combobox` and `MultiSelect` are `w-full min-w-0`;
+   the grid cell decides their width.
+3. **One scroller per region.** `DataTable` owns the only scroll container of a table. Low-priority columns hide by
+   the table's own width (`meta: { className: "hidden @3xl:table-cell" }`) instead of scrolling sideways.
+4. **Detail lives in a `Sheet`, not beside a table.** Master/detail views (Projects) open the detail in a side
+   sheet so the list keeps its full width.
+5. **Text wraps or truncates inside its box.** Header meta rows use `flex-wrap`, never `shrink-0`.
 
-| Category | Owner | Components |
-| --- | --- | --- |
-| App chrome & commands | Fluent UI v9 | `Toolbar`, `ToolbarButton`, `Button`, `Menu`/`MenuButton`, `CounterBadge`, `Divider` |
-| Tooltips | Fluent UI v9 | `Tooltip` (Apps SDK `Tooltip` is not used) |
-| Dialogs & confirmations | Fluent UI v9 | `Dialog` everywhere, `ConfirmDialog`; the command palette hosts shadcn `Command` inside a Fluent `Dialog` (shadcn `dialog` was intentionally removed) |
-| Forms | Fluent UI v9 | `Field`, `Input`, `Textarea`, `Dropdown`, `Combobox`, `Switch`, `SpinButton`, `Checkbox`, `RadioGroup` |
-| Status & progress | Fluent UI v9 | `MessageBar`, `Spinner`, `ProgressBar`, toasts |
-| Tabs | Fluent UI v9 | `TabList`/`Tab` |
-| Workspace layout | shadcn/ui | `Resizable*` (react-resizable-panels v4, persisted with `useDefaultLayout`) |
-| Command palette | shadcn/ui | `Command*` (cmdk) |
-| Context menus | shadcn/ui | `ContextMenu*` (right-click on rows and cards) |
-| Data tables | shadcn/ui + TanStack | `Table` primitives + `DataTable` (sorting, keyboard activation, windowing) |
-| Scroll areas, sheets, skeletons | shadcn/ui | `ScrollArea`, `Sheet`, `Skeleton` |
-| AI-native surfaces | OpenAI Apps SDK UI | `AiApprovalBanner`, `AiEventStreamCard`, `MergeReadinessCard`, `TaskStatusBadge`, `PhaseBadge`, `ProviderBadge`, `ApprovalStatusBadge`, `AiEmptyView`, `PromptComposerBox`, `LogModeSwitch`, `StreamingText`; `CodeBlock`, `Markdown`, `CopyButton`, `Badge`, `Alert`, `ShimmerText`, `EmptyMessage`, `SegmentedControl`, `Textarea` used inside them |
+## 4. Components
 
-shadcn components are installed with the shadcn CLI into `packages/ui/src/primitives` using
-`packages/ui/components.json` (style `new-york`, Tailwind v4 CSS variables, lucide icons). To add one:
+| Category | Components |
+| --- | --- |
+| Actions | `Button` (default, secondary, outline, ghost, subtle, destructive, link; sm/default/lg/icon), `ToggleGroup` (segmented control), `DropdownMenu`, `ContextMenu` |
+| Forms | `Field` (label, hint, error, `group` for radio groups), `FieldGrid`, `FormSection`, `Input` (with `icon`), `Textarea`, `Select`, `Combobox`, `MultiSelect`, `Switch`, `Checkbox`, `RadioGroup`/`RadioOption`, `Label` |
+| Overlays | `Dialog`, `ConfirmDialog` (alert dialog), `Sheet`, `Popover`, `Tooltip`/`Hint`, command palette (`Command`, cmdk) |
+| Feedback | `Alert`, `Badge`, `Spinner`, `Progress`, `Skeleton`, toasts |
+| Navigation | `Tabs` |
+| Data | `Table`, `DataTable` (TanStack Table + virtualization), `MetricTile`, `KeyValueList`, `VirtualList` |
+| Workspace | `ResizablePanelGroup` (react-resizable-panels), `ScrollArea`, `PageHeader`, `Panel` |
+| AI surfaces | `AiApprovalBanner`, `AiEventStreamCard`, `MergeReadinessCard`, `TaskStatusBadge`, `PhaseBadge`, `ProviderBadge`, `ApprovalStatusBadge`, `AiEmptyView`, `PromptComposerBox`, `LogModeSwitch`, `StreamingText`, `CodeBlock`, `Markdown` |
+
+`Select` forwards the `id`/`aria-*` that `Field` injects to its trigger (Radix `Select.Root` renders no element),
+so a field label always names the select. `Hint` wraps one child with a tooltip; `asLabel` also uses a string
+label as the child's accessible name (icon-only buttons).
+
+New shadcn components are added with the shadcn CLI into `packages/ui/src/primitives` using
+`packages/ui/components.json` (style `new-york`, Tailwind v4 CSS variables, lucide icons):
 
 ```bash
 cd packages/ui && pnpm dlx shadcn@latest add <component>
 ```
 
-then make sure generated imports use `../lib/utils` and that it does not duplicate a Fluent-owned category.
+Then make sure generated imports use `../lib/utils` and use only Symphony tokens.
 
-Apps SDK UI is used as a **component library only**; nothing depends on ChatGPT host globals.
-
-## 4. AI components
+## 5. AI components
 
 | Component | Purpose |
 | --- | --- |
 | `AiApprovalBanner` | Shows a pending command/file-change approval with the four runtime decisions (approve once, approve for session, decline, abort turn). Locks itself while a decision is in flight to prevent duplicate submissions. |
-| `ConfirmDialog` (feedback) | Fluent alert dialog for destructive actions. Fires `onConfirm` once per opening (a second click in the same frame is ignored) and stays locked while `pending`. |
-| `AiEventStreamCard` | One timeline entry. Uses `formatAgentEvent` to render agent messages (Markdown), command executions (code + exit code + output), file changes (paths + diffs), tool calls, approvals, errors and lifecycle events. Concise vs technical mode (event types, raw JSON-RPC payload). Memoized per event so streaming never re-renders existing entries. |
+| `ConfirmDialog` (feedback) | Alert dialog for destructive actions. Fires `onConfirm` once per opening and stays locked while `pending`. |
+| `AiEventStreamCard` | One timeline entry. Uses `formatAgentEvent` to render agent messages (Markdown), command executions (code + exit code + output), file changes (paths + diffs), tool calls, approvals, errors and lifecycle events. Concise vs technical mode. Memoized per event so streaming never re-renders existing entries. |
 | `MergeReadinessCard` | Evidence-backed 1–5 score with CI / validation / conflicts / security / reviewed comments breakdown, blockers and evidence. Approval is a separate explicit action and never merges. |
-| `TaskStatusBadge`, `PhaseBadge`, `ProviderBadge` | Localized status chips; active phases shimmer (static under reduced motion). |
+| `TaskStatusBadge`, `PhaseBadge`, `ProviderBadge` | Localized status chips; active phases pulse (static under reduced motion). |
 | `AiEmptyView`, `PromptComposerBox`, `LogModeSwitch`, `StreamingText` | Agent empty states, prompt composition (Ctrl+Enter submits), log verbosity, live activity text. |
 
-## 5. Accessibility
+`Markdown` renders GitHub-flavoured Markdown with `react-markdown` (raw HTML is never rendered); `CodeBlock`
+has a named copy button and scrolls inside itself.
+
+## 6. Accessibility
 
 - Focus is always visible (`:focus-visible` ring on `--ring`).
 - Text tokens (`--foreground`, `--muted-foreground`, `--subtle-foreground` and the status colours) keep
-  4.5:1 against every surface of their theme, including their own `-subtle` tint. The Apps SDK's status
-  text and light code colours are mapped onto them through the SDK's own theme variables (`tokens.css`).
-- Icon-only buttons carry labels through Fluent `Tooltip relationship="label"` (on the button itself,
-  not a wrapper) or `aria-label`. Use `SdkCodeBlock`/`SdkMarkdown` from this package, not the SDK's
-  directly: their copy buttons are named.
-- Scroll containers without their own controls (diffs, logs, `VirtualList`) are focusable.
-- Audited with axe-core (WCAG 2.1 A/AA) on every view, light and dark. Known, accepted reports:
-  Fluent's focus sentinels (`data-tabster-dummy`, `aria-hidden-focus`) and CodeMirror's scroller,
-  whose editable content is the focus target.
-- Dialog focus management comes from Fluent `Dialog`; the palette is keyboard-first (cmdk).
+  4.5:1 against every surface of their theme, including their own `-subtle` tint.
+- Icon-only buttons carry an `aria-label` (use `Hint ... asLabel`).
+- Scroll containers without their own controls (diffs, logs, `VirtualList`, code blocks) are focusable.
+- Dialog focus management comes from Radix; the palette is keyboard-first (cmdk).
+- Tabs activate on mouse-down, focus or a plain click (`TabsTrigger` focuses on click).
 - Data tables expose `aria-sort`, rows are focusable and activate with Enter/Space.
 - `LiveAnnouncer` provides polite/assertive live regions; toasts announce with matching politeness.
 - Colour is never the only signal: status chips have text, readiness has a numeric score and `role="meter"`.
 
-## 6. Localization
+## 7. Localization
 
 Shared strings live in `packages/shared-types/src/i18n` (`en`, `sv`). Components in this package use
 `useUiStrings()`. Feature modules declare their own catalogues with `defineMessages({ en, sv })`, where the
 Swedish catalogue must have exactly the English shape (enforced by TypeScript).
+
+## 8. Mobile companion
+
+`apps/mobile` still renders some Fluent UI v9 controls. It wraps its tree in `FluentBridge` from
+`@symphony/ui/legacy`, which maps the same tokens onto a Fluent theme. The desktop app does not import Fluent.

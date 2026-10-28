@@ -207,11 +207,11 @@ describe("BackupsSection", () => {
     renderWithProviders(<Backups onDraft={(d) => (latest = d)} />, { runtime });
     expect(await screen.findByText(m.scheduled)).toBeInTheDocument();
     const interval = screen.getByRole("spinbutton", { name: m.interval });
-    expect(interval).toHaveValue("24");
+    expect(interval).toHaveValue(24);
     fireEvent.change(interval, { target: { value: "6" } });
     fireEvent.blur(interval);
     await waitFor(() => expect(latest?.backup_interval_hours).toBe(6));
-    expect(screen.getByRole("spinbutton", { name: m.keep })).toHaveValue("7");
+    expect(screen.getByRole("spinbutton", { name: m.keep })).toHaveValue(7);
   });
 
   it("creates a backup, lists it and states what is not included", async () => {

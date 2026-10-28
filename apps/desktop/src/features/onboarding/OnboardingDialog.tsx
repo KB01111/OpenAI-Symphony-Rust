@@ -1,9 +1,21 @@
 import { useRef, useState } from "react";
-import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Spinner } from "@fluentui/react-components";
 import { CheckCircle2, CircleDashed, FolderGit2 } from "lucide-react";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage } from "@symphony/shared-types";
-import { ErrorState, LoadingRows, useNotify } from "@symphony/ui";
+import {
+  Button,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  ErrorState,
+  LoadingRows,
+  Spinner,
+  useNotify
+} from "@symphony/ui";
 import { useMessages, useT } from "../../lib/i18n.js";
 import { useProjects, useProviders, useSaveSettings, useSettings } from "../../lib/queries.js";
 import { useUiStore } from "../../store/uiStore.js";
@@ -48,18 +60,27 @@ export default function OnboardingDialog() {
   const installedAgents = detected.filter((p) => p.provider !== "simulated");
 
   return (
-    // The Add repository dialog opens on top of this one (nested Fluent dialogs), so progress
+    // The Add repository dialog opens on top of this one (nested dialogs), so progress
     // through the steps is kept while the user registers a repository.
-    <Dialog open modalType="alert">
-      <DialogSurface aria-describedby={undefined} className="max-w-xl">
-        <DialogBody>
+    <Dialog open>
+      <DialogContent
+        role="alertdialog"
+        showClose={false}
+        className="max-w-xl"
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
+        <DialogHeader className="pr-5">
           <DialogTitle>
             <span className="block text-xs font-normal text-muted-foreground">
               {formatMessage(m.stepOf, { step: index + 1, total: STEPS.length })} · {m.steps[step]}
             </span>
             {m.title}
           </DialogTitle>
-          <DialogContent className="space-y-3 text-sm">
+          <DialogDescription className="sr-only">{m.steps[step]}</DialogDescription>
+        </DialogHeader>
+        <DialogBody>
+          <div className="space-y-3 text-sm">
             <ol className="flex gap-1" aria-hidden>
               {STEPS.map((s, i) => (
                 <li key={s} className={`h-1 flex-1 rounded-full ${i <= index ? "bg-accent" : "bg-muted"}`} />
@@ -116,7 +137,8 @@ export default function OnboardingDialog() {
               <section className="space-y-2">
                 <h2 className="font-display text-base font-semibold text-foreground">{m.repository.heading}</h2>
                 <p className="text-muted-foreground">{m.repository.body}</p>
-                <Button appearance="primary" icon={<FolderGit2 className="size-4" />} onClick={() => setAddProjectOpen(true)}>
+                <Button variant="default" onClick={() => setAddProjectOpen(true)}>
+                  <FolderGit2 />
                   {m.repository.add}
                 </Button>
                 <div>
@@ -147,9 +169,10 @@ export default function OnboardingDialog() {
                 <p className="text-muted-foreground">{m.finish.body}</p>
               </section>
             ) : null}
-          </DialogContent>
-          <DialogActions fluid className="justify-between">
-            <Button appearance="subtle" disabled={save.isPending} onClick={complete}>
+          </div>
+        </DialogBody>
+        <DialogFooter className="justify-between">
+            <Button variant="subtle" disabled={save.isPending} onClick={complete}>
               {m.actions.skip}
             </Button>
             <span className="flex gap-2">
@@ -159,18 +182,17 @@ export default function OnboardingDialog() {
                 </Button>
               ) : null}
               {step === "finish" ? (
-                <Button appearance="primary" disabled={save.isPending || !settings.data} icon={save.isPending ? <Spinner size="tiny" /> : undefined} onClick={complete}>
+                <Button variant="default" disabled={save.isPending || !settings.data} onClick={complete}>{save.isPending ? <Spinner className="text-current" /> : null}
                   {save.isPending ? m.actions.finishing : m.actions.finish}
                 </Button>
               ) : (
-                <Button appearance="primary" onClick={() => setStep(STEPS[index + 1]!)}>
+                <Button variant="default" onClick={() => setStep(STEPS[index + 1]!)}>
                   {m.actions.next}
                 </Button>
               )}
             </span>
-          </DialogActions>
-        </DialogBody>
-      </DialogSurface>
+        </DialogFooter>
+      </DialogContent>
     </Dialog>
   );
 }

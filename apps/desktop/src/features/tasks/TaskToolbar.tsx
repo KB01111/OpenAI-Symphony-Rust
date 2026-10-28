@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { Button, Dropdown, Input, Option } from "@fluentui/react-components";
 import { ALL_PROVIDERS, ALL_TASK_STATUSES, formatMessage, type Project, type ProviderKind, type TaskStatus } from "@symphony/shared-types";
+import { Button, Input, MultiSelect, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@symphony/ui";
 import { FilterX, Search } from "lucide-react";
 import { useMessages, useT } from "../../lib/i18n.js";
 import { useUiStore } from "../../store/uiStore.js";
@@ -34,112 +34,87 @@ export const TaskToolbar: React.FC<{ projects: ReadonlyArray<Project>; shown: nu
       ? m.priority.none
       : `${formatMessage(m.priority.label, { value })} · ${m.priority[`p${value}` as "p1" | "p2" | "p3" | "p4"]}`;
 
-  const statusValue =
-    filters.statuses.length === 0
-      ? ""
-      : filters.statuses.length === 1
-        ? t.status[filters.statuses[0]!]
-        : formatMessage(m.toolbar.statusCount, { count: filters.statuses.length });
-  const providerValue =
-    filters.providers.length === 0
-      ? ""
-      : filters.providers.length === 1
-        ? (t.provider[filters.providers[0] as ProviderKind] ?? filters.providers[0])
-        : formatMessage(m.toolbar.providerCount, { count: filters.providers.length });
-
-  const dropdownClass = "!min-w-0 w-40";
+  const statusSummary = filters.statuses.length > 1 ? formatMessage(m.toolbar.statusCount, { count: filters.statuses.length }) : undefined;
+  const providerSummary = filters.providers.length > 1 ? formatMessage(m.toolbar.providerCount, { count: filters.providers.length }) : undefined;
+  const control = "w-40";
 
   return (
     <div role="search" aria-label={m.toolbar.label} className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface px-4 py-2">
-      <Input
-        size="small"
-        className="w-64"
-        aria-label={m.toolbar.search}
-        placeholder={m.toolbar.searchPlaceholder}
-        contentBefore={<Search className="size-3.5" aria-hidden />}
-        value={search}
-        onChange={(_, data) => setSearch(data.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape" && search) {
-            e.preventDefault();
-            setSearch("");
-            setTaskFilters({ search: "" });
-          }
-        }}
-      />
-      <Dropdown
-        size="small"
-        className={dropdownClass}
-        aria-label={m.toolbar.project}
-        value={activeProject?.name ?? m.toolbar.allProjects}
-        selectedOptions={[activeProject ? activeProject.id : ALL]}
-        onOptionSelect={(_, data) => setActiveProject(data.optionValue && data.optionValue !== ALL ? data.optionValue : null)}
-      >
-        <Option value={ALL}>{m.toolbar.allProjects}</Option>
-        {projects.map((p) => (
-          <Option key={p.id} value={p.id} text={p.name}>
-            {p.name}
-          </Option>
-        ))}
-      </Dropdown>
-      <Dropdown
-        size="small"
-        multiselect
-        className={dropdownClass}
+      <div className="w-64">
+        <Input
+          type="search"
+          icon={<Search />}
+          aria-label={m.toolbar.search}
+          placeholder={m.toolbar.searchPlaceholder}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && search) {
+              e.preventDefault();
+              setSearch("");
+              setTaskFilters({ search: "" });
+            }
+          }}
+        />
+      </div>
+      <Select value={activeProject ? activeProject.id : ALL} onValueChange={(v) => setActiveProject(v === ALL ? null : v)}>
+        <SelectTrigger className={control} aria-label={m.toolbar.project}>
+          <SelectValue>{activeProject?.name ?? m.toolbar.allProjects}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ALL}>{m.toolbar.allProjects}</SelectItem>
+          {projects.map((p) => (
+            <SelectItem key={p.id} value={p.id}>
+              {p.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <MultiSelect
+        className={control}
         aria-label={m.toolbar.status}
         placeholder={m.toolbar.anyStatus}
-        value={statusValue}
-        selectedOptions={filters.statuses}
-        onOptionSelect={(_, data) => setTaskFilters({ statuses: data.selectedOptions as TaskStatus[] })}
-      >
-        {ALL_TASK_STATUSES.map((status) => (
-          <Option key={status} value={status}>
-            {t.status[status]}
-          </Option>
-        ))}
-      </Dropdown>
-      <Dropdown
-        size="small"
-        multiselect
-        className={dropdownClass}
+        summary={statusSummary}
+        options={ALL_TASK_STATUSES.map((status) => ({ value: status, label: t.status[status] }))}
+        selected={filters.statuses}
+        onChange={(statuses) => setTaskFilters({ statuses: statuses as TaskStatus[] })}
+      />
+      <MultiSelect
+        className={control}
         aria-label={m.toolbar.provider}
         placeholder={m.toolbar.anyProvider}
-        value={providerValue}
-        selectedOptions={filters.providers}
-        onOptionSelect={(_, data) => setTaskFilters({ providers: data.selectedOptions })}
+        summary={providerSummary}
+        options={ALL_PROVIDERS.map((provider) => ({ value: provider, label: t.provider[provider as ProviderKind] }))}
+        selected={filters.providers}
+        onChange={(providers) => setTaskFilters({ providers })}
+      />
+      <Select
+        value={filters.priority == null ? ALL : String(filters.priority)}
+        onValueChange={(v) => setTaskFilters({ priority: v === ALL ? null : Number(v) })}
       >
-        {ALL_PROVIDERS.map((provider) => (
-          <Option key={provider} value={provider}>
-            {t.provider[provider]}
-          </Option>
-        ))}
-      </Dropdown>
-      <Dropdown
-        size="small"
-        className={dropdownClass}
-        aria-label={m.toolbar.priority}
-        value={filters.priority == null ? m.toolbar.anyPriority : priorityLabel(filters.priority)}
-        selectedOptions={[filters.priority == null ? ALL : String(filters.priority)]}
-        onOptionSelect={(_, data) => setTaskFilters({ priority: data.optionValue && data.optionValue !== ALL ? Number(data.optionValue) : null })}
-      >
-        <Option value={ALL}>{m.toolbar.anyPriority}</Option>
-        {PRIORITY_VALUES.map((value) => (
-          <Option key={value} value={String(value)} text={priorityLabel(value)}>
-            {priorityLabel(value)}
-          </Option>
-        ))}
-        <Option value={String(NO_PRIORITY)}>{m.priority.none}</Option>
-      </Dropdown>
+        <SelectTrigger className={control} aria-label={m.toolbar.priority}>
+          <SelectValue>{filters.priority == null ? m.toolbar.anyPriority : priorityLabel(filters.priority)}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ALL}>{m.toolbar.anyPriority}</SelectItem>
+          {PRIORITY_VALUES.map((value) => (
+            <SelectItem key={value} value={String(value)}>
+              {priorityLabel(value)}
+            </SelectItem>
+          ))}
+          <SelectItem value={String(NO_PRIORITY)}>{m.priority.none}</SelectItem>
+        </SelectContent>
+      </Select>
       <Button
-        size="small"
-        appearance="subtle"
-        icon={<FilterX className="size-4" aria-hidden />}
+        size="sm"
+        variant="subtle"
         disabled={!hasActiveFilters(filters)}
         onClick={() => {
           setSearch("");
           resetTaskFilters();
         }}
       >
+        <FilterX />
         {m.toolbar.clear}
       </Button>
       <span className="ms-auto text-xs text-muted-foreground tabular-nums" aria-live="polite">

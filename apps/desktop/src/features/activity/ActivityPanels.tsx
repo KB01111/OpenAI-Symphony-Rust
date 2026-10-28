@@ -1,7 +1,5 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button, CounterBadge, Tab, TabList, Tooltip } from "@fluentui/react-components";
-import { ChevronDown, ChevronUp } from "lucide-react";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage, type AgentEvent, type ApprovalDecision, type ApprovalRequest } from "@symphony/shared-types";
 import {
@@ -10,22 +8,22 @@ import {
   AiEventStreamCard,
   ErrorState,
   LoadingRows,
-  LogModeSwitch,
-  SdkCodeBlock,
+  Button,
+  CodeBlock,
   VirtualList,
   formatAgentEvent,
   type AgentEventKind
 } from "@symphony/ui";
-import { shellMessages } from "../app/messages.js";
-import { paths } from "../app/routes.js";
-import { useMessages, useT } from "../lib/i18n.js";
-import { useApprovals, useDecideApproval, useProviders, useRecentEvents, useRuntimeState, useTaskEventHistory, useTaskValidations, useTasks } from "../lib/queries.js";
-import { mergeEventHistory, useEventStore } from "../runtime/eventStore.js";
-import { useRuntime } from "../runtime/RuntimeProvider.js";
-import { useFocusedTaskId } from "../hooks/useFocusedTaskId.js";
-import { useUiStore, type DrawerTab } from "../store/uiStore.js";
+import { shellMessages } from "../../app/messages.js";
+import { paths } from "../../app/routes.js";
+import { useMessages, useT } from "../../lib/i18n.js";
+import { useApprovals, useDecideApproval, useProviders, useRuntimeState, useTaskEventHistory, useTaskValidations, useTasks } from "../../lib/queries.js";
+import { mergeEventHistory, useEventStore } from "../../runtime/eventStore.js";
+import { useRuntime } from "../../runtime/RuntimeProvider.js";
+import { useFocusedTaskId } from "../../hooks/useFocusedTaskId.js";
+import { useUiStore } from "../../store/uiStore.js";
 
-const EventFeed: React.FC<{ events: AgentEvent[]; showIdentifier?: boolean; emptyTitle: string; emptyDetail?: string }> = ({
+export const EventFeed: React.FC<{ events: AgentEvent[]; showIdentifier?: boolean; emptyTitle: string; emptyDetail?: string }> = ({
   events,
   showIdentifier = false,
   emptyTitle,
@@ -46,8 +44,13 @@ const EventFeed: React.FC<{ events: AgentEvent[]; showIdentifier?: boolean; empt
   );
 };
 
-function useFocusedTaskEvents(kinds: ReadonlyArray<AgentEventKind>) {
-  const taskId = useFocusedTaskId();
+function useScopedTaskId(taskId?: string | null): string | null {
+  const focused = useFocusedTaskId();
+  return taskId === undefined ? focused : taskId;
+}
+
+function useFocusedTaskEvents(kinds: ReadonlyArray<AgentEventKind>, scoped?: string | null) {
+  const taskId = useScopedTaskId(scoped);
   const history = useTaskEventHistory(taskId);
   const live = useEventStore((s) => s.events);
   const events = useMemo(() => {
@@ -58,10 +61,10 @@ function useFocusedTaskEvents(kinds: ReadonlyArray<AgentEventKind>) {
   return { events, history };
 }
 
-const AGENT_KINDS: AgentEventKind[] = ["message", "reasoning", "file_change", "tool_call", "error"];
-const TERMINAL_KINDS: AgentEventKind[] = ["command"];
+export const AGENT_KINDS: AgentEventKind[] = ["message", "reasoning", "file_change", "tool_call", "error"];
+export const TERMINAL_KINDS: AgentEventKind[] = ["command"];
 
-const ApprovalsTab: React.FC = () => {
+export const ApprovalsTab: React.FC<{ taskId?: string | null }> = ({ taskId }) => {
   const m = useMessages(shellMessages);
   const t = useT();
   const approvals = useApprovals(true);
@@ -82,7 +85,7 @@ const ApprovalsTab: React.FC = () => {
     // Never show "no approvals" when the list could not be fetched: requests may be waiting.
     return <ErrorState className="m-2" title={m.drawer.loadFailed} message={errorMessage(approvals.error)} onRetry={() => void approvals.refetch()} retryLabel={t.common.retry} />;
   }
-  const list = approvals.data ?? [];
+  const list = (approvals.data ?? []).filter((a) => !taskId || a.task_id === taskId);
   if (list.length === 0) return <AiEmptyView className="m-2" title={m.drawer.noApprovals} />;
   return (
     <div className="h-full space-y-2 overflow-auto p-2">
@@ -93,7 +96,7 @@ const ApprovalsTab: React.FC = () => {
           pendingDecision={pending[a.id] ?? null}
           onDecide={onDecide}
           extra={
-            <Button size="small" appearance="subtle" onClick={() => navigate(paths.run(a.task_id))}>
+            <Button size="sm" variant="subtle" onClick={() => navigate(paths.run(a.task_id))}>
               {m.drawer.openTask}
             </Button>
           }
@@ -103,10 +106,10 @@ const ApprovalsTab: React.FC = () => {
   );
 };
 
-const ValidationsTab: React.FC = () => {
+export const ValidationsTab: React.FC<{ taskId?: string | null }> = ({ taskId: scoped }) => {
   const m = useMessages(shellMessages);
   const t = useT();
-  const taskId = useFocusedTaskId();
+  const taskId = useScopedTaskId(scoped);
   const validations = useTaskValidations(taskId);
   if (!taskId) return <AiEmptyView className="m-2" title={m.drawer.selectTask} />;
   if (validations.isLoading) return <LoadingRows className="p-2" rows={3} />;
@@ -124,14 +127,14 @@ const ValidationsTab: React.FC = () => {
             <code className="flex-1 truncate font-mono text-foreground">{v.command}</code>
             <span className="tabular-nums text-muted-foreground">{formatMessage(m.drawer.validationMeta, { ms: v.duration_ms, code: v.exit_code })}</span>
           </div>
-          {v.stdout || v.stderr ? <SdkCodeBlock language="text">{[v.stdout, v.stderr].filter(Boolean).join("\n")}</SdkCodeBlock> : null}
+          {v.stdout || v.stderr ? <CodeBlock language="text">{[v.stdout, v.stderr].filter(Boolean).join("\n")}</CodeBlock> : null}
         </li>
       ))}
     </ul>
   );
 };
 
-const ProblemsTab: React.FC = () => {
+export const ProblemsTab: React.FC = () => {
   const m = useMessages(shellMessages);
   const t = useT();
   const navigate = useNavigate();
@@ -174,7 +177,7 @@ const ProblemsTab: React.FC = () => {
           <span className="size-1.5 shrink-0 rounded-full bg-warning" aria-hidden />
           <span className="min-w-0 flex-1 break-words">{p.text}</span>
           {p.onOpen ? (
-            <Button size="small" appearance="subtle" onClick={p.onOpen}>
+            <Button size="sm" variant="subtle" onClick={p.onOpen}>
               {t.common.open}
             </Button>
           ) : null}
@@ -184,10 +187,10 @@ const ProblemsTab: React.FC = () => {
   );
 };
 
-const FocusedFeed: React.FC<{ kinds: ReadonlyArray<AgentEventKind>; emptyTitle: string }> = ({ kinds, emptyTitle }) => {
+export const FocusedFeed: React.FC<{ kinds: ReadonlyArray<AgentEventKind>; emptyTitle: string; taskId?: string | null }> = ({ kinds, emptyTitle, taskId }) => {
   const m = useMessages(shellMessages);
   const t = useT();
-  const { events, history } = useFocusedTaskEvents(kinds);
+  const { events, history } = useFocusedTaskEvents(kinds, taskId);
   if (events === null) return <AiEmptyView className="m-2" title={m.drawer.selectTask} />;
   // History not loaded (yet, or failed): never present that as "no events".
   if (!history.data && history.isLoading && events.length === 0) return <LoadingRows className="p-2" rows={3} />;
@@ -197,72 +200,3 @@ const FocusedFeed: React.FC<{ kinds: ReadonlyArray<AgentEventKind>; emptyTitle: 
   return <EventFeed events={events} emptyTitle={emptyTitle} />;
 };
 
-/** Bottom dock: live events, scoped agent/terminal output, validations, approvals, problems. */
-export const ActivityDrawer: React.FC<{ collapsed: boolean; onToggle: () => void }> = ({ collapsed, onToggle }) => {
-  const m = useMessages(shellMessages);
-  const tab = useUiStore((s) => s.drawerTab);
-  const setTab = useUiStore((s) => s.setDrawerTab);
-  const logMode = useUiStore((s) => s.logMode);
-  const setLogMode = useUiStore((s) => s.setLogMode);
-  const live = useEventStore((s) => s.events);
-  // Persisted history (survives reloads) merged with the live stream, deduplicated by id.
-  const history = useRecentEvents(200);
-  const events = useMemo(() => mergeEventHistory(history.data, live), [history.data, live]);
-  const approvals = useApprovals(true);
-  const pending = approvals.data?.length ?? 0;
-
-  const tabs: { key: DrawerTab; label: string; badge?: number }[] = [
-    { key: "events", label: m.drawer.events },
-    { key: "agent", label: m.drawer.agent },
-    { key: "terminal", label: m.drawer.terminal },
-    { key: "validations", label: m.drawer.validations },
-    { key: "approvals", label: m.drawer.approvals, badge: pending },
-    { key: "problems", label: m.drawer.problems }
-  ];
-
-  return (
-    <section aria-label={m.drawer.label} className="flex h-full min-h-0 flex-col border-t border-border bg-surface">
-      <header className="flex h-9 shrink-0 items-center gap-2 overflow-hidden border-b border-border px-1">
-        <TabList
-          size="small"
-          selectedValue={tab}
-          onTabSelect={(_, d) => setTab(d.value as DrawerTab)}
-          aria-label={m.drawer.label}
-          className="min-w-0 flex-1 flex-nowrap overflow-x-auto [scrollbar-width:none]"
-        >
-          {tabs.map((x) => (
-            <Tab key={x.key} value={x.key}>
-              <span className="inline-flex items-center gap-1">
-                {x.label}
-                {x.badge ? <CounterBadge count={x.badge} size="extra-small" color="important" /> : null}
-              </span>
-            </Tab>
-          ))}
-        </TabList>
-        <span className="flex shrink-0 items-center gap-2">
-          {!collapsed && (tab === "events" || tab === "agent" || tab === "terminal") ? <LogModeSwitch value={logMode} onChange={setLogMode} /> : null}
-          <Tooltip content={collapsed ? m.drawer.expand : m.drawer.collapse} relationship="label">
-            <Button size="small" appearance="subtle" icon={collapsed ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />} onClick={onToggle} />
-          </Tooltip>
-        </span>
-      </header>
-      {collapsed ? null : (
-        <div className="min-h-0 flex-1 overflow-hidden" role="tabpanel">
-          {tab === "events" ? (
-            <EventFeed events={events} showIdentifier emptyTitle={m.drawer.noEvents} emptyDetail={m.drawer.noEventsDetail} />
-          ) : tab === "agent" ? (
-            <FocusedFeed kinds={AGENT_KINDS} emptyTitle={m.drawer.noEvents} />
-          ) : tab === "terminal" ? (
-            <FocusedFeed kinds={TERMINAL_KINDS} emptyTitle={m.drawer.noCommands} />
-          ) : tab === "validations" ? (
-            <ValidationsTab />
-          ) : tab === "approvals" ? (
-            <ApprovalsTab />
-          ) : (
-            <ProblemsTab />
-          )}
-        </div>
-      )}
-    </section>
-  );
-};

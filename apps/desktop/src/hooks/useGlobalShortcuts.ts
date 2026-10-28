@@ -17,7 +17,7 @@ function toggleShortcuts(store: ReturnType<typeof useUiStore.getState>): void {
 /**
  * Global keyboard shortcuts:
  * Ctrl+K command palette · Ctrl+N new task · Ctrl+P project switcher · Ctrl+R refresh data
- * (instead of reloading the webview) · Ctrl+B sidebar · Ctrl+J activity panel · Ctrl+I inspector ·
+ * (instead of reloading the webview) · Ctrl+B sidebar · (Ctrl+J run details is handled by the thread view) ·
  * F1 or Ctrl+/ keyboard shortcut help. Plain typing in inputs/editors is never intercepted except
  * for Ctrl+K, F1 and Ctrl+/.
  */
@@ -70,14 +70,6 @@ export function useGlobalShortcuts(): void {
         case "b":
           e.preventDefault();
           store.setSidebarCollapsed(!store.sidebarCollapsed);
-          break;
-        case "j":
-          e.preventDefault();
-          store.setDrawerOpen(!store.drawerOpen);
-          break;
-        case "i":
-          e.preventDefault();
-          store.setInspectorOpen(!store.inspectorOpen);
           break;
       }
     };

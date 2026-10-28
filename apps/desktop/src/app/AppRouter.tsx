@@ -4,11 +4,12 @@ import { LoadingRows } from "@symphony/ui";
 import { DesktopShell } from "../layouts/DesktopShell.js";
 import { ErrorBoundary } from "../components/ErrorBoundary.js";
 import { useMessages } from "../lib/i18n.js";
-import { useUiStore } from "../store/uiStore.js";
 import { shellMessages } from "./messages.js";
 
 // Each feature view is code-split; heavy views (Workflow Studio's editor, execution timeline)
 // load only when opened.
+const HomePage = lazy(() => import("../features/composer/HomePage.js"));
+const ActivityPage = lazy(() => import("../features/activity/ActivityPage.js"));
 const OverviewPage = lazy(() => import("../features/overview/OverviewPage.js"));
 const ProjectsPage = lazy(() => import("../features/projects/ProjectsPage.js"));
 const TasksPage = lazy(() => import("../features/tasks/TasksPage.js"));
@@ -30,18 +31,13 @@ const RouteFrame: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   );
 };
 
-const RestoreLastRoute: React.FC = () => {
-  const lastRoute = useUiStore((s) => s.lastRoute);
-  const safe = lastRoute.startsWith("/") && lastRoute !== "/" ? lastRoute : "/overview";
-  return <Navigate to={safe} replace />;
-};
-
 const frame = (el: React.ReactNode) => <RouteFrame>{el}</RouteFrame>;
 
 export const AppRoutes: React.FC = () => (
   <Routes>
     <Route element={<DesktopShell />}>
-      <Route index element={<RestoreLastRoute />} />
+      <Route index element={frame(<HomePage />)} />
+      <Route path="activity" element={frame(<ActivityPage />)} />
       <Route path="overview" element={frame(<OverviewPage />)} />
       <Route path="projects" element={frame(<ProjectsPage />)} />
       <Route path="projects/:projectId" element={frame(<ProjectsPage />)} />
@@ -54,7 +50,7 @@ export const AppRoutes: React.FC = () => (
       <Route path="workflow" element={frame(<WorkflowStudioPage />)} />
       <Route path="providers" element={frame(<ProvidersPage />)} />
       <Route path="settings" element={frame(<SettingsPage />)} />
-      <Route path="*" element={<Navigate to="/overview" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Route>
   </Routes>
 );

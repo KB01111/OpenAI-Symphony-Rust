@@ -6,8 +6,8 @@ import {
   LoadingRows,
   PhaseBadge,
   ProviderBadge,
-  SdkCopyButton,
-  SdkMarkdown,
+  CopyButton,
+  Markdown,
   TimeAgo,
   cn,
   formatDuration,
@@ -174,7 +174,7 @@ export const ContextPanel: React.FC<ContextPanelProps> = ({ task, project, provi
       <Section title={m.context.task}>
         <div className="text-sm text-foreground">
           {description ? (
-            <SdkMarkdown breakNewLines>{description}</SdkMarkdown>
+            <Markdown breakNewLines>{description}</Markdown>
           ) : (
             <p className="text-muted-foreground">{m.context.noDescription}</p>
           )}
@@ -191,7 +191,7 @@ export const ContextPanel: React.FC<ContextPanelProps> = ({ task, project, provi
               value: task.workspace_path ? (
                 <span className="flex items-start gap-1">
                   <span className="min-w-0 flex-1 break-all">{task.workspace_path}</span>
-                  <SdkCopyButton copyValue={task.workspace_path} color="secondary" variant="ghost" size="2xs" aria-label={m.context.copyWorktree} />
+                  <CopyButton value={task.workspace_path} label={m.context.copyWorktree} />
                 </span>
               ) : (
                 "—"

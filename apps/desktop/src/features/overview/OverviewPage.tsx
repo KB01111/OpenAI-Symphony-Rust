@@ -1,26 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button } from "@fluentui/react-components";
 import { Activity, Bot, CheckCircle2, Coins, FolderGit2, HeartPulse, Hourglass, ShieldQuestion, XCircle, Zap } from "lucide-react";
 import { formatMessage, getTranslations, type ApprovalDecision, type ApprovalRequest } from "@symphony/shared-types";
-import {
-  AiApprovalBanner,
-  AiEmptyView,
-  AiEventStreamCard,
-  Duration,
-  ErrorState,
-  LoadingRows,
-  MetricTile,
-  PageHeader,
-  Panel,
-  PhaseBadge,
-  ProviderBadge,
-  StreamingText,
-  TimeAgo,
-  formatCurrency,
-  formatDuration,
-  formatTokens
-} from "@symphony/ui";
+import { AiApprovalBanner, AiEmptyView, AiEventStreamCard, Button, Duration, ErrorState, formatCurrency, formatDuration, formatTokens, LoadingRows, MetricTile, PageHeader, Panel, PhaseBadge, ProviderBadge, StreamingText, TimeAgo } from "@symphony/ui";
 import { paths } from "../../app/routes.js";
 import { useLocale, useMessages } from "../../lib/i18n.js";
 import { useApprovals, useDecideApproval, useProjects, useRecentEvents, useRuntimeState, useTasks } from "../../lib/queries.js";
@@ -48,7 +30,7 @@ const LiveSessions: React.FC = () => {
         title={m.live.empty}
         description={m.live.emptyDetail}
         action={
-          <Button appearance="primary" size="small" onClick={() => setNewTaskOpen(true)}>
+          <Button variant="default" size="sm" onClick={() => setNewTaskOpen(true)}>
             {m.live.newTask}
           </Button>
         }
@@ -135,7 +117,7 @@ const PendingApprovals: React.FC = () => {
           pendingDecision={pending[a.id] ?? null}
           onDecide={onDecide}
           extra={
-            <Button size="small" appearance="subtle" onClick={() => navigate(paths.run(a.task_id))}>
+            <Button size="sm" variant="subtle" onClick={() => navigate(paths.run(a.task_id))}>
               {m.approvals.openTask}
             </Button>
           }
@@ -192,7 +174,7 @@ export default function OverviewPage() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader title={m.title} description={m.description} />
-      <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
+      <div className="@container min-h-0 flex-1 space-y-3 overflow-auto p-4">
         {state.isError ? <ErrorState title={m.metrics.health} message={state.error.message} onRetry={() => void state.refetch()} /> : null}
         {projects.data && projects.data.length === 0 ? (
           <AiEmptyView
@@ -200,7 +182,7 @@ export default function OverviewPage() {
             title={m.onboarding.title}
             description={m.onboarding.detail}
             action={
-              <Button appearance="primary" size="small" onClick={() => setAddProjectOpen(true)}>
+              <Button variant="default" size="sm" onClick={() => setAddProjectOpen(true)}>
                 {m.onboarding.action}
               </Button>
             }
@@ -210,7 +192,7 @@ export default function OverviewPage() {
         {!metrics ? (
           <LoadingRows rows={2} />
         ) : (
-          <section aria-label={m.title} className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5 xl:[&>*:last-child]:col-span-2 2xl:grid-cols-9 2xl:[&>*:last-child]:col-span-1">
+          <section aria-label={m.title} className="grid grid-cols-2 gap-2 @2xl:grid-cols-3 @5xl:grid-cols-5 @5xl:[&>*:last-child]:col-span-2 @7xl:grid-cols-9 @7xl:[&>*:last-child]:col-span-1">
             <MetricTile
               label={m.metrics.activeAgents}
               icon={<Bot className="size-3.5" aria-hidden />}
@@ -276,7 +258,7 @@ export default function OverviewPage() {
           </section>
         )}
 
-        <div className="grid min-h-0 gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
+        <div className="grid min-h-0 gap-3 @5xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
           <Panel title={m.live.title} className="min-h-56">
             <LiveSessions />
           </Panel>
