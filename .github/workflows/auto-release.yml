@@ -1,0 +1,139 @@
+name: Automatic release
+
+# Every pull request merged into main is released. The next version comes from the manifests and the
+# release tags (scripts/next-version.mjs): a patch bump, or a minor / major one when the pull request
+# carries the label `release:minor` / `release:major`. The version commit goes to main and is tagged,
+# then release.yml builds the installer, runs the tests and smoke tests, and publishes it as the latest
+# GitHub release. Installed apps find it through the in-app updater (latest.json).
+#
+# - Only merged pull requests are released: a direct push to main is not.
+# - A pull request that sets a new version in the manifests on purpose is released as that version.
+# - The version commit and the tag are pushed with GITHUB_TOKEN, which does not start new workflow runs,
+#   so this workflow cannot trigger itself.
+# - Runs are queued, one at a time, in merge order.
+# - Secrets: see docs/RELEASING.md (update key: TAURI_SIGNING_PRIVATE_KEY, Authenticode: WINDOWS_CERTIFICATE).
+
+on:
+  push:
+    branches: [main]
+
+# The version commit and the tag are pushed to main, and the release job reads the repository.
+permissions:
+  contents: write
+
+concurrency:
+  group: automatic-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Choose, commit and tag the next version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # every release tag, for the next version
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Find the merged pull request for this commit
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          merged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[] | select(.merged_at != null)]')
+          if [ "$(jq 'length' <<< "$merged")" = "0" ]; then
+            echo "$GITHUB_SHA is not the merge of a pull request: nothing to release."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "number=$(jq -r '.[0].number' <<< "$merged")" >> "$GITHUB_OUTPUT"
+          echo "labels=$(jq -r '[.[0].labels[].name] | join(",")' <<< "$merged")" >> "$GITHUB_OUTPUT"
+
+      # Fails when the manifests disagree, before anything is released.
+      - name: Read the current version
+        id: current
+        if: steps.pr.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          echo "version=$(node scripts/release-version.mjs)" >> "$GITHUB_OUTPUT"
+
+      - name: Choose the next version
+        id: plan
+        if: steps.pr.outputs.found == 'true'
+        env:
+          CURRENT: ${{ steps.current.outputs.version }}
+          LABELS: ${{ steps.pr.outputs.labels }}
+        run: |
+          set -euo pipefail
+          bump=patch
+          case ",$LABELS," in
+            *,release:major,*) bump=major ;;
+            *,release:minor,*) bump=minor ;;
+          esac
+          tags=$(git tag --list 'v*' | paste -sd, -)
+          version=$(node scripts/next-version.mjs --current "$CURRENT" --tags "$tags" --bump "$bump")
+          if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
+            echo "::error::the tag v$version already exists"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version (bump: $bump, from $CURRENT)"
+
+      # The first release keeps the manifests' version, so there is nothing to commit for it.
+      - name: Commit the version to main
+        if: steps.pr.outputs.found == 'true' && steps.plan.outputs.version != steps.current.outputs.version
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          node scripts/set-version.mjs "$VERSION"
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Release v$VERSION" -m "Version of pull request #$PR_NUMBER."
+          pushed=false
+          for attempt in 1 2 3; do
+            if git push origin HEAD:refs/heads/main; then
+              pushed=true
+              break
+            fi
+            # Someone merged while this run was going: put the version commit on top and try again.
+            git pull --rebase origin main
+          done
+          if [ "$pushed" != true ]; then
+            echo "::error::could not push the version commit to main"
+            exit 1
+          fi
+
+      - name: Tag the release
+        if: steps.pr.outputs.found == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          git tag "v$VERSION"
+          git push origin "refs/tags/v$VERSION"
+
+  release:
+    name: Build, verify and publish the release
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: v${{ needs.version.outputs.version }}
+      publish: true
+      # The installer is not Authenticode-signed until WINDOWS_CERTIFICATE is set: it is published
+      # anyway, with a SmartScreen warning in its notes. In-app updates do not depend on Authenticode.
+      allow_unsigned: true
+      generated_notes: true
+    secrets: inherit
