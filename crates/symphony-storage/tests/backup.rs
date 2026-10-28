@@ -6,8 +6,9 @@ use chrono::Utc;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use symphony_core::{Project, ProviderKind, Task};
 use symphony_storage::backup::{
-    create_backup, list_backups, restore_backup, verify_backup, BackupManifest, DATABASE_FILE,
-    MANIFEST_FILE, WORKFLOW_FILE,
+    create_backup, create_scheduled_backup, list_backups, prune_scheduled_backups, restore_backup,
+    scheduled_backup_due, verify_backup, BackupManifest, DATABASE_FILE, MANIFEST_FILE,
+    WORKFLOW_FILE,
 };
 use symphony_storage::{Storage, SCHEMA_VERSION};
 
@@ -530,4 +531,83 @@ async fn stopping_a_task_from_a_stale_copy_keeps_the_usage_the_worker_settled() 
     assert_eq!(stored.last_error.as_deref(), Some("operator"));
     assert_eq!(stored.total_tokens, 100, "the settled usage survives");
     assert!(stored.usage_estimated);
+}
+
+#[tokio::test]
+async fn retention_deletes_only_old_automatic_backups() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, _) = storage_with_task(&data, "Retention").await;
+
+    let manual = create_backup(&storage, &root, None).await.unwrap();
+    assert!(!manual.scheduled);
+    let mut automatic = Vec::new();
+    for _ in 0..4 {
+        automatic.push(
+            create_scheduled_backup(&storage, &root, None)
+                .await
+                .unwrap(),
+        );
+    }
+    assert!(automatic.iter().all(|b| b.scheduled));
+    // An interrupted backup is never touched.
+    std::fs::create_dir_all(root.join(".symphony-backup-x.partial")).unwrap();
+
+    let removed = prune_scheduled_backups(&root, 2).unwrap();
+    assert_eq!(removed.len(), 2);
+    let left: Vec<String> = list_backups(&root)
+        .unwrap()
+        .into_iter()
+        .map(|b| b.id)
+        .collect();
+    assert!(left.contains(&manual.id), "a backup made by hand is kept");
+    // The two newest automatic backups stay (list order is newest first).
+    let newest: Vec<&String> = automatic.iter().rev().take(2).map(|b| &b.id).collect();
+    for id in newest {
+        assert!(left.contains(id), "{id} kept");
+    }
+    assert_eq!(left.len(), 3);
+    assert!(root.join(".symphony-backup-x.partial").is_dir());
+    // `keep` is at least 1: the newest automatic backup always stays.
+    prune_scheduled_backups(&root, 0).unwrap();
+    assert_eq!(
+        list_backups(&root)
+            .unwrap()
+            .iter()
+            .filter(|b| b.scheduled)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_backup_is_due_when_none_is_younger_than_the_interval() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, _) = storage_with_task(&data, "Due").await;
+    let now = Utc::now();
+    assert!(scheduled_backup_due(&[], now, 24), "never backed up");
+    assert!(!scheduled_backup_due(&[], now, 0), "automatic backups off");
+
+    // A backup made by hand also resets the clock.
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    let backups = list_backups(&root).unwrap();
+    assert!(!scheduled_backup_due(&backups, now, 24));
+    assert!(scheduled_backup_due(
+        &backups,
+        backup.created_at + chrono::Duration::hours(24),
+        24
+    ));
+}
+
+#[test]
+fn a_manifest_written_before_the_schedule_reads_as_made_by_hand() {
+    let manifest: BackupManifest = serde_json::from_value(serde_json::json!({
+        "format": 1, "app_version": "2.0.0", "schema_version": 3,
+        "created_at": "2026-10-01T00:00:00Z", "files": [], "credentials_included": false
+    }))
+    .unwrap();
+    assert!(!manifest.scheduled);
 }

@@ -85,6 +85,24 @@ export type AppSettings = {
      * setting existed do exactly that. Settings that never had a value use 30.
      */
     event_retention_days?: number | null;
+    /**
+     * Hours between automatic backups (`0` = no automatic backups). A backup of any kind newer
+     * than this resets the clock. Omit it (or send `null`) to keep the stored value; settings that
+     * never had a value use 24.
+     */
+    backup_interval_hours?: number | null;
+    /**
+     * How many automatic backups are kept (1–100); older automatic backups are deleted after each
+     * new one. Backups made by hand are never deleted. Omit it to keep the stored value; settings
+     * that never had a value use 7.
+     */
+    backup_keep?: number | null;
+    /**
+     * Minutes between automatic status checks of open pull requests (CI, merge state, review
+     * comments), `0` = only when asked (*Refresh status*). Omit it to keep the stored value;
+     * settings that never had a value use 15.
+     */
+    pr_refresh_interval_minutes?: number | null;
 };
 
 export type ApprovalDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel';
@@ -146,6 +164,11 @@ export type BackupSummary = {
      * Whether the active `WORKFLOW.md` is part of the backup.
      */
     includes_workflow: boolean;
+    /**
+     * Made by the automatic schedule (`backup_interval_hours`); only these are deleted by its
+     * retention (`backup_keep`).
+     */
+    scheduled: boolean;
 };
 
 /**

@@ -34,6 +34,9 @@ type EditableSettings = Pick<
   | "default_model"
   | "polling_interval_ms"
   | "event_retention_days"
+  | "backup_interval_hours"
+  | "backup_keep"
+  | "pr_refresh_interval_minutes"
   | "resource_policy"
   | "remote_api_enabled"
   | "remote_bind_address"
@@ -48,6 +51,9 @@ function editable(s: AppSettings): EditableSettings {
     default_model: s.default_model,
     polling_interval_ms: s.polling_interval_ms,
     event_retention_days: s.event_retention_days ?? 30,
+    backup_interval_hours: s.backup_interval_hours ?? 24,
+    backup_keep: s.backup_keep ?? 7,
+    pr_refresh_interval_minutes: s.pr_refresh_interval_minutes ?? 15,
     resource_policy: { ...s.resource_policy },
     remote_api_enabled: s.remote_api_enabled,
     remote_bind_address: s.remote_bind_address,
@@ -235,7 +241,7 @@ export default function SettingsPage() {
                 <DefaultsSection draft={current} errors={errors} update={update} />
                 <RemoteSection draft={current} errors={errors} update={update} />
                 <IntegrationsSection />
-                <BackupsSection />
+                <BackupsSection draft={current} errors={errors} update={update} />
                 <DiagnosticsSection />
                 <ApplicationSection />
               </>

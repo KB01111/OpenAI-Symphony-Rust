@@ -54,6 +54,7 @@ export function keysToInvalidate(batch: AgentEvent[]): QueryKey[] {
     if (type.startsWith("project/")) add(qk.projects);
     if (type.startsWith("scheduler/")) add(qk.state);
     if (type.startsWith("workflow/")) add(qk.workflow);
+    if (type.startsWith("backup/")) add(qk.backups);
     if (type === "session_started" || type === "turn/completed" || type.startsWith("item/fileChange")) {
       add(qk.state);
       if (taskId) add(qk.taskDiff(taskId));

@@ -53,6 +53,10 @@ pub struct BackupManifest {
     pub files: Vec<BackupFile>,
     /// Always `false`: credentials are never part of a backup (see the module documentation).
     pub credentials_included: bool,
+    /// Made by the automatic schedule; only these are deleted by [`prune_scheduled_backups`].
+    /// Backups written before the schedule existed read as made by hand.
+    #[serde(default)]
+    pub scheduled: bool,
 }
 
 /// A backup directory as listed to users.
@@ -66,6 +70,8 @@ pub struct BackupInfo {
     pub schema_version: i64,
     pub size_bytes: u64,
     pub includes_workflow: bool,
+    /// Made by the automatic schedule (see [`BackupManifest::scheduled`]).
+    pub scheduled: bool,
 }
 
 /// What a restore changed. The previous files are kept, never deleted.
@@ -112,6 +118,60 @@ pub async fn create_backup(
     root: &Path,
     workflow: Option<&Path>,
 ) -> SymphonyResult<BackupInfo> {
+    create(storage, root, workflow, false).await
+}
+
+/// Create a backup like [`create_backup`], marked as made by the automatic schedule so that
+/// [`prune_scheduled_backups`] may delete it later.
+pub async fn create_scheduled_backup(
+    storage: &Storage,
+    root: &Path,
+    workflow: Option<&Path>,
+) -> SymphonyResult<BackupInfo> {
+    create(storage, root, workflow, true).await
+}
+
+/// Whether an automatic backup is due: automatic backups are on (`interval_hours > 0`) and no
+/// backup of any kind under `backups` is younger than the interval.
+pub fn scheduled_backup_due(
+    backups: &[BackupInfo],
+    now: DateTime<Utc>,
+    interval_hours: u32,
+) -> bool {
+    if interval_hours == 0 {
+        return false;
+    }
+    let interval = chrono::Duration::hours(i64::from(interval_hours));
+    backups
+        .iter()
+        .map(|b| b.created_at)
+        .max()
+        .is_none_or(|newest| now - newest >= interval)
+}
+
+/// Delete automatic backups beyond the newest `keep` of them and return the ids removed. Backups
+/// made by hand, incomplete (`.partial`) directories and anything that is not a backup are never
+/// touched; `keep` is at least 1, so the newest automatic backup always stays.
+pub fn prune_scheduled_backups(root: &Path, keep: u32) -> SymphonyResult<Vec<String>> {
+    let keep = keep.max(1) as usize;
+    let mut removed = Vec::new();
+    for backup in list_backups(root)?
+        .into_iter()
+        .filter(|b| b.scheduled)
+        .skip(keep)
+    {
+        std::fs::remove_dir_all(&backup.path)?;
+        removed.push(backup.id);
+    }
+    Ok(removed)
+}
+
+async fn create(
+    storage: &Storage,
+    root: &Path,
+    workflow: Option<&Path>,
+    scheduled: bool,
+) -> SymphonyResult<BackupInfo> {
     std::fs::create_dir_all(root)?;
     let created_at = Utc::now();
     // Unique even for concurrent backups within the same second: the staging directory is
@@ -135,7 +195,7 @@ pub async fn create_backup(
         suffix += 1;
     };
 
-    let built = build_backup(storage, &partial, workflow, created_at).await;
+    let built = build_backup(storage, &partial, workflow, created_at, scheduled).await;
     if let Err(err) = built {
         let _ = std::fs::remove_dir_all(&partial);
         return Err(err);
@@ -150,6 +210,7 @@ async fn build_backup(
     dir: &Path,
     workflow: Option<&Path>,
     created_at: DateTime<Utc>,
+    scheduled: bool,
 ) -> SymphonyResult<()> {
     let db_copy = dir.join(DATABASE_FILE);
     storage.backup_to(&db_copy).await?;
@@ -166,6 +227,7 @@ async fn build_backup(
         created_at,
         files,
         credentials_included: false,
+        scheduled,
     };
     let json = serde_json::to_vec_pretty(&manifest).map_err(|e| storage_err(e.to_string()))?;
     std::fs::write(dir.join(MANIFEST_FILE), json)?;
@@ -190,6 +252,7 @@ fn info_for(dir: &Path) -> Option<BackupInfo> {
         schema_version: manifest.schema_version,
         size_bytes: manifest.files.iter().map(|f| f.size_bytes).sum(),
         includes_workflow: manifest.files.iter().any(|f| f.name == WORKFLOW_FILE),
+        scheduled: manifest.scheduled,
     })
 }
 

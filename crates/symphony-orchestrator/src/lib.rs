@@ -85,6 +85,10 @@ fn unpushed_changes_blocker(pr_number: u64) -> String {
 const EVENT_PRUNE_STARTUP_DELAY: Duration = Duration::from_secs(120);
 /// ... and how often it repeats while the runtime keeps running.
 const EVENT_PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Delay before the first automatic-backup check after startup.
+const BACKUP_STARTUP_DELAY: Duration = Duration::from_secs(180);
+/// How often the automatic-backup schedule is checked (the interval itself is in hours).
+const BACKUP_CHECK_INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// Maximum diff size returned by `task_diff` (the UI renders it lazily).
 const TASK_DIFF_MAX_BYTES: usize = 512 * 1024;
 
@@ -621,6 +625,84 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 let _ = orch_watch.watch_workflow_file(wf_path).await;
             }
         });
+    }
+
+    /// Run automatic backups into `root` (the data directory's `backups` folder) on the schedule of
+    /// the settings (`backup_interval_hours`, `backup_keep`), checked every 15 minutes. Only hosts
+    /// that own the data directory call this (the desktop host and the CLI without `--db-path`),
+    /// exactly like `POST /backups` is only offered there.
+    pub fn start_scheduled_backups(&self, root: PathBuf) {
+        let orch = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(BACKUP_STARTUP_DELAY).await;
+            loop {
+                if let Err(e) = orch.run_scheduled_backup_if_due(&root).await {
+                    warn!(error = %e, "Automatic backup failed");
+                }
+                tokio::time::sleep(BACKUP_CHECK_INTERVAL).await;
+            }
+        });
+    }
+
+    /// Create an automatic backup in `root` when one is due and delete automatic backups beyond
+    /// the configured number. Returns the new backup, or `None` when none was due.
+    pub async fn run_scheduled_backup_if_due(
+        &self,
+        root: &Path,
+    ) -> SymphonyResult<Option<symphony_storage::backup::BackupInfo>> {
+        use symphony_storage::backup;
+        let settings = self.storage.get_settings().await?;
+        let interval = settings.effective_backup_interval_hours();
+        let listing_root = root.to_path_buf();
+        let existing = tokio::task::spawn_blocking(move || backup::list_backups(&listing_root))
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))??;
+        if !backup::scheduled_backup_due(&existing, Utc::now(), interval) {
+            return Ok(None);
+        }
+        let workflow = self.workflow_target_path().await;
+        let created =
+            match backup::create_scheduled_backup(&self.storage, root, workflow.as_deref()).await {
+                Ok(created) => created,
+                Err(e) => {
+                    self.emit_event(
+                        None,
+                        None,
+                        None,
+                        None,
+                        "backup/failed",
+                        None,
+                        format!("Automatic backup failed: {e}"),
+                        None,
+                    )
+                    .await;
+                    return Err(e);
+                }
+            };
+        let keep = settings.effective_backup_keep();
+        let pruning_root = root.to_path_buf();
+        let removed = tokio::task::spawn_blocking(move || {
+            backup::prune_scheduled_backups(&pruning_root, keep)
+        })
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))??;
+        info!(
+            backup = %created.id,
+            removed = removed.len(),
+            "Automatic backup created"
+        );
+        self.emit_event(
+            None,
+            None,
+            None,
+            None,
+            "backup/created",
+            None,
+            format!("Automatic backup {} created", created.id),
+            Some(json!({ "id": created.id, "removed": removed })),
+        )
+        .await;
+        Ok(Some(created))
     }
 
     /// Delete activity-log events older than the configured retention (`event_retention_days`,
@@ -5375,6 +5457,62 @@ rl.on('line', (line) => {
             .list_tool_calls(&task.id, 50, Some("missing"))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn automatic_backups_follow_the_schedule_and_keep_manual_ones() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect(temp.path().join("symphony.sqlite"))
+            .await
+            .unwrap();
+        let (orch, _task) = single_slot_orchestrator_on(&temp, storage.clone()).await;
+        let root = temp.path().join("backups");
+        let mut events = orch.subscribe_events();
+
+        // Off: nothing happens.
+        let mut settings = storage.get_settings().await.unwrap();
+        settings.backup_interval_hours = Some(0);
+        storage.save_settings(&settings).await.unwrap();
+        assert!(orch
+            .run_scheduled_backup_if_due(&root)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Daily, keep 1: the first check backs up, the next one finds it recent.
+        settings.backup_interval_hours = Some(24);
+        settings.backup_keep = Some(1);
+        storage.save_settings(&settings).await.unwrap();
+        let manual = symphony_storage::backup::create_backup(&storage, &root, None)
+            .await
+            .unwrap();
+        assert!(
+            orch.run_scheduled_backup_if_due(&root)
+                .await
+                .unwrap()
+                .is_none(),
+            "a backup made by hand resets the clock"
+        );
+        std::fs::remove_dir_all(&manual.path).unwrap();
+        let first = orch
+            .run_scheduled_backup_if_due(&root)
+            .await
+            .unwrap()
+            .expect("due without any backup");
+        assert!(first.scheduled);
+        assert!(orch
+            .run_scheduled_backup_if_due(&root)
+            .await
+            .unwrap()
+            .is_none());
+
+        let created = loop {
+            let e = events.recv().await.unwrap();
+            if e.event_type == "backup/created" {
+                break e;
+            }
+        };
+        assert_eq!(created.payload.unwrap()["id"], first.id);
     }
 
     #[tokio::test]

@@ -41,6 +41,19 @@ describe("settings validation (mirror of the runtime's validate_settings)", () =
     expect(serverErrorFields("event_retention_days must be 0 (keep everything) or at most 3650")).toEqual(["event_retention_days"]);
   });
 
+  it("bounds the backup schedule and the pull request refresh like the runtime", () => {
+    expect(validateSettings(settings({ backup_interval_hours: undefined, backup_keep: undefined, pr_refresh_interval_minutes: undefined }), v)).toEqual({});
+    for (const hours of [0, 1, 720]) expect(validateSettings(settings({ backup_interval_hours: hours }), v)).toEqual({});
+    expect(validateSettings(settings({ backup_interval_hours: 721 }), v)).toHaveProperty("backup_interval_hours", v.backupInterval);
+    for (const keep of [0, 101]) expect(validateSettings(settings({ backup_keep: keep }), v)).toHaveProperty("backup_keep", v.backupKeep);
+    for (const minutes of [0, 5, 1440]) expect(validateSettings(settings({ pr_refresh_interval_minutes: minutes }), v)).toEqual({});
+    for (const minutes of [1, 4, 1441]) {
+      expect(validateSettings(settings({ pr_refresh_interval_minutes: minutes }), v)).toHaveProperty("pr_refresh_interval_minutes", v.prRefresh);
+    }
+    expect(serverErrorFields("pr_refresh_interval_minutes must be 0 (only when asked) or between 5 and 1440")).toEqual(["pr_refresh_interval_minutes"]);
+    expect(serverErrorFields("backup_keep must be between 1 and 100")).toEqual(["backup_keep"]);
+  });
+
   it("rejects a remote port equal to the local API port", () => {
     expect(validateSettings(settings({ remote_port: 4780 }), v, 4780)).toHaveProperty("remote_port");
     expect(validateSettings(settings({ remote_port: 47821 }), v, 4780)).toEqual({});
@@ -154,14 +167,51 @@ describe("RemoteSection", () => {
 
 describe("BackupsSection", () => {
   const m = settingsMessages.en.backups;
-  const summary = (id: string, createdAt: string) => ({
+  const summary = (id: string, createdAt: string, scheduled = false) => ({
     id,
     path: `C:\\data\\backups\\${id}`,
     created_at: createdAt,
     app_version: "2.0.0",
     schema_version: 2,
     size_bytes: 2048,
-    includes_workflow: true
+    includes_workflow: true,
+    scheduled
+  });
+
+  /** The section with a live draft, as the settings page renders it. */
+  const Backups = ({ onDraft }: { onDraft?: (draft: ReturnType<typeof settings>) => void }) => {
+    const [draft, setDraft] = useState(settings());
+    return (
+      <BackupsSection
+        draft={draft}
+        errors={{}}
+        update={(fn) =>
+          setDraft((current) => {
+            const next = fn(current);
+            onDraft?.(next);
+            return next;
+          })
+        }
+      />
+    );
+  };
+
+  it("edits the automatic backup schedule and marks automatic backups", async () => {
+    const runtime = createMockRuntime({
+      "GET /backups": () => ({
+        directory: "C:\\data\\backups",
+        backups: [summary("symphony-backup-20261022T030000Z", "2026-10-22T03:00:00Z", true)]
+      })
+    });
+    let latest: ReturnType<typeof settings> | null = null;
+    renderWithProviders(<Backups onDraft={(d) => (latest = d)} />, { runtime });
+    expect(await screen.findByText(m.scheduled)).toBeInTheDocument();
+    const interval = screen.getByRole("spinbutton", { name: m.interval });
+    expect(interval).toHaveValue("24");
+    fireEvent.change(interval, { target: { value: "6" } });
+    fireEvent.blur(interval);
+    await waitFor(() => expect(latest?.backup_interval_hours).toBe(6));
+    expect(screen.getByRole("spinbutton", { name: m.keep })).toHaveValue("7");
   });
 
   it("creates a backup, lists it and states what is not included", async () => {
@@ -174,7 +224,7 @@ describe("BackupsSection", () => {
         return { status: 201, body: created };
       }
     });
-    renderWithProviders(<BackupsSection />, { runtime });
+    renderWithProviders(<Backups />, { runtime });
 
     expect(await screen.findByText("symphony-backup-20261020T100000Z")).toBeInTheDocument();
     expect(screen.getByText(/API keys and tokens/)).toBeInTheDocument();
@@ -191,7 +241,7 @@ describe("BackupsSection", () => {
         body: { error: { code: "storage_error", message: "storage_error: database backup failed: disk full" } }
       })
     });
-    renderWithProviders(<BackupsSection />, { runtime });
+    renderWithProviders(<Backups />, { runtime });
     expect(await screen.findByText(m.empty)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: m.create }));
     expect(await screen.findByText(m.createFailed)).toBeInTheDocument();
@@ -206,7 +256,7 @@ describe("BackupsSection", () => {
         body: { error: { code: "backups_unavailable", message: "backups_unavailable: This runtime host does not manage backups" } }
       })
     });
-    renderWithProviders(<BackupsSection />, { runtime });
+    renderWithProviders(<Backups />, { runtime });
     expect(await screen.findByText(m.unavailable)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: m.create })).not.toBeInTheDocument();
   });

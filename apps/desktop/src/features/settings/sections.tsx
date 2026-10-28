@@ -25,6 +25,7 @@ import {
   ErrorState,
   KeyValueList,
   LoadingRows,
+  SdkBadge,
   SdkCopyButton,
   Skeleton,
   TimeAgo,
@@ -297,6 +298,15 @@ export const SchedulingSection: React.FC<FormSectionProps> = ({ draft, errors, u
             max={3650}
             error={errors.event_retention_days}
             onChange={(v) => update((s) => ({ ...s, event_retention_days: v }))}
+          />
+          <NumberField
+            label={m.scheduling.prRefresh}
+            hint={m.scheduling.prRefreshHint}
+            value={draft.pr_refresh_interval_minutes ?? 15}
+            min={0}
+            max={1440}
+            error={errors.pr_refresh_interval_minutes}
+            onChange={(v) => update((s) => ({ ...s, pr_refresh_interval_minutes: v }))}
           />
           <div className="sm:col-span-2">
             <Switch
@@ -601,7 +611,7 @@ export const IntegrationsSection: React.FC = () => {
 // Backups
 // ---------------------------------------------------------------------------------------------
 
-export const BackupsSection: React.FC = () => {
+export const BackupsSection: React.FC<FormSectionProps> = ({ draft, errors, update }) => {
   const m = useMessages(settingsMessages);
   const locale = useLocale();
   const notify = useNotify();
@@ -631,6 +641,26 @@ export const BackupsSection: React.FC = () => {
               <span className="text-xs text-muted-foreground">{formatMessage(m.backups.directory, { path: backups.data.directory })}</span>
             ) : null}
           </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <NumberField
+              label={m.backups.interval}
+              hint={m.backups.intervalHint}
+              value={draft.backup_interval_hours ?? 24}
+              min={0}
+              max={720}
+              error={errors.backup_interval_hours}
+              onChange={(v) => update((s) => ({ ...s, backup_interval_hours: v }))}
+            />
+            <NumberField
+              label={m.backups.keep}
+              hint={m.backups.keepHint}
+              value={draft.backup_keep ?? 7}
+              min={1}
+              max={100}
+              error={errors.backup_keep}
+              onChange={(v) => update((s) => ({ ...s, backup_keep: v }))}
+            />
+          </div>
           {backups.isLoading ? <LoadingRows rows={2} /> : null}
           {backups.isError ? <ErrorState title={m.backups.loadFailed} message={errorMessage(backups.error)} /> : null}
           {backups.data && backups.data.backups.length === 0 ? (
@@ -641,6 +671,11 @@ export const BackupsSection: React.FC = () => {
               {backups.data.backups.map((b) => (
                 <li key={b.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
                   <TimeAgo iso={b.created_at} />
+                  {b.scheduled ? (
+                    <SdkBadge variant="soft" color="secondary" size="sm" pill>
+                      {m.backups.scheduled}
+                    </SdkBadge>
+                  ) : null}
                   <span className="text-muted-foreground tabular-nums">{formatBytes(b.size_bytes, locale)}</span>
                   <span className="text-muted-foreground">
                     {formatMessage(m.backups.version, { version: b.app_version, schema: b.schema_version })}
