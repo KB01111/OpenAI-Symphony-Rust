@@ -24,8 +24,9 @@ import { useLocale, useMessages, useT } from "../../lib/i18n.js";
 import { usePullRequests, useTaskAttempts, useTaskDiff, useTaskValidations } from "../../lib/queries.js";
 import { hasPullRequest } from "../reviews/reviewHelpers.js";
 import { executionMessages } from "./messages.js";
+import { ToolCallsTab } from "./ToolCallsTab.js";
 
-type RightTab = "changes" | "validation" | "usage" | "pr";
+type RightTab = "changes" | "validation" | "tools" | "usage" | "pr";
 
 /** Compact changed-files list with status and +/- counts. */
 export const ChangedFilesList: React.FC<{ files: ReadonlyArray<ChangedFileSummary>; label: string }> = ({ files, label }) => (
@@ -204,6 +205,7 @@ export const ChangesPanel: React.FC<{ task: Task; liveSince?: string | null }> =
       >
         <Tab value="changes">{m.changes.changes}</Tab>
         <Tab value="validation">{m.changes.validation}</Tab>
+        <Tab value="tools">{m.toolCalls.tab}</Tab>
         <Tab value="usage">{m.changes.usage}</Tab>
         <Tab value="pr" aria-label={m.changes.pullRequest}>
           {m.changes.pullRequestShort}
@@ -214,6 +216,8 @@ export const ChangesPanel: React.FC<{ task: Task; liveSince?: string | null }> =
           <TaskDiffView taskId={task.id} />
         ) : tab === "validation" ? (
           <ValidationTab taskId={task.id} />
+        ) : tab === "tools" ? (
+          <ToolCallsTab taskId={task.id} />
         ) : tab === "usage" ? (
           <UsageTab task={task} liveSince={liveSince} />
         ) : (

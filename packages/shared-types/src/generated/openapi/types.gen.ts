@@ -838,7 +838,7 @@ export type ToolCallRecord = {
     arguments: unknown;
     output: string | null;
     /**
-     * The output was longer than [`MAX_TOOL_OUTPUT_BYTES`] and was cut.
+     * The output was longer than 64 KiB and was cut.
      */
     output_truncated: boolean;
     status: ToolCallStatus;

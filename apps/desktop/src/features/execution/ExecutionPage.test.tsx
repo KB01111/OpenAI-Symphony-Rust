@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import type { AgentEvent, Task, TaskDiff } from "@symphony/shared-types";
+import type { AgentEvent, Task, TaskDiff, ToolCallRecord } from "@symphony/shared-types";
 import { Link } from "react-router-dom";
 import ExecutionPage from "./ExecutionPage.js";
 import { createMockRuntime, renderWithProviders, type MockHandler } from "../../test/renderWithProviders.js";
@@ -230,6 +230,48 @@ describe("ExecutionPage", () => {
     expect(decides).toHaveLength(1);
     expect(decides[0]!.body).toEqual({ decision: "accept" });
     await act(async () => release?.());
+  });
+
+  it("lists the task's tool calls newest first and pages to older ones", async () => {
+    const call = (n: number, overrides: Partial<ToolCallRecord> = {}): ToolCallRecord => ({
+      id: `t1:call-${n}`,
+      task_id: "t1",
+      session_id: "s1",
+      provider: "codex",
+      call_id: `call-${n}`,
+      tool_name: `tool_${n}`,
+      kind: "command",
+      arguments: { command: `echo ${n}` },
+      output: `out ${n}`,
+      output_truncated: false,
+      status: "succeeded",
+      started_at: "2026-10-20T10:00:00Z",
+      finished_at: "2026-10-20T10:00:01Z",
+      duration_ms: 1000,
+      ...overrides
+    });
+    const firstPage = Array.from({ length: 100 }, (_, i) => call(200 - i));
+    const rt = runtime(task({ status: "human_review" }), {
+      "GET /tasks/:id/tool-calls": ({ query }) =>
+        query.get("before") === "t1:call-101"
+          ? [call(7, { tool_name: "github_api", kind: "dynamic", status: "failed", output: "refused", output_truncated: true })]
+          : firstPage
+    });
+    renderPage(rt);
+    fireEvent.click(await screen.findByRole("tab", { name: "Tool calls" }));
+    const list = await screen.findByRole("list", { name: "Tool calls of this task" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(100);
+    expect(within(list).getAllByRole("listitem")[0]).toHaveTextContent("tool_200");
+
+    fireEvent.click(screen.getByRole("button", { name: "Load older tool calls" }));
+    const older = await screen.findByText("github_api");
+    const item = older.closest("li")!;
+    // A failed call opens with its output.
+    expect(within(item).getByText("Failed")).toBeInTheDocument();
+    expect(within(item).getByText("Symphony tool")).toBeInTheDocument();
+    expect(within(item).getByText("The output was longer than 64 KiB and was cut.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load older tool calls" })).not.toBeInTheDocument();
+    expect(rt.calls.filter((c) => c.path === "/tasks/t1/tool-calls")).toHaveLength(2);
   });
 
   it("requires confirmation before cancelling and posts to the cancel endpoint", async () => {

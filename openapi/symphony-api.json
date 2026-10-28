@@ -5268,7 +5268,7 @@
           },
           "output_truncated": {
             "type": "boolean",
-            "description": "The output was longer than [`MAX_TOOL_OUTPUT_BYTES`] and was cut."
+            "description": "The output was longer than 64 KiB and was cut."
           },
           "status": {
             "$ref": "#/components/schemas/ToolCallStatus"

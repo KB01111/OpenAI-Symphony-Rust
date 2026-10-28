@@ -7,6 +7,7 @@ export const qk = {
   task: (id: string) => ["task", id] as const,
   taskAny: ["task"] as const,
   taskEvents: (id: string) => ["task-events", id] as const,
+  taskToolCalls: (id: string) => ["task-tool-calls", id] as const,
   taskAttempts: (id: string) => ["task-attempts", id] as const,
   taskValidations: (id: string) => ["task-validations", id] as const,
   taskDiff: (id: string) => ["task-diff", id] as const,

@@ -111,7 +111,7 @@ pub struct ToolCallRecord {
     pub kind: ToolCallKind,
     pub arguments: Option<serde_json::Value>,
     pub output: Option<String>,
-    /// The output was longer than [`MAX_TOOL_OUTPUT_BYTES`] and was cut.
+    /// The output was longer than 64 KiB and was cut.
     pub output_truncated: bool,
     pub status: ToolCallStatus,
     pub started_at: DateTime<Utc>,
