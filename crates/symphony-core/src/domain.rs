@@ -1196,8 +1196,8 @@ pub struct AppSettings {
     #[schema(minimum = 1, maximum = 100)]
     pub backup_keep: Option<u32>,
     /// Minutes between automatic status checks of open pull requests (CI, merge state, review
-    /// comments), `0` = only when asked (*Refresh status*). Omit it to keep the stored value;
-    /// settings that never had a value use 15.
+    /// comments): `0` = only when asked (*Refresh status*), otherwise 5–1440 (1–4 are refused).
+    /// Omit it to keep the stored value; settings that never had a value use 15.
     #[serde(default)]
     #[schema(maximum = 1440)]
     pub pr_refresh_interval_minutes: Option<u32>,
