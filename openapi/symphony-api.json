@@ -2613,7 +2613,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Minutes between automatic status checks of open pull requests (CI, merge state, review\ncomments), `0` = only when asked (*Refresh status*). Omit it to keep the stored value;\nsettings that never had a value use 15.",
+            "description": "Minutes between automatic status checks of open pull requests (CI, merge state, review\ncomments): `0` = only when asked (*Refresh status*), otherwise 5–1440 (1–4 are refused).\nOmit it to keep the stored value; settings that never had a value use 15.",
             "default": 15,
             "maximum": 1440,
             "minimum": 0
