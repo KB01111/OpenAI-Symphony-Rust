@@ -128,8 +128,8 @@ A successful Tauri build alone proves compilation, not runtime behaviour; say wh
 
 - **No Authoritative State in UI**: Keep all task scheduling, retry backoff, and state transitions inside `crates/symphony-orchestrator` and `crates/symphony-core`.
 - **Use Authentic Design System Components**:
-  - Use `@fluentui/react-components` for application shell, navigation, dialogs, and settings forms.
-  - Use `@openai/apps-sdk-ui` (`Alert`, `Badge`, `Button`, `CodeBlock`, `Markdown`, `Textarea`, `Tooltip`, `Popover`, `EmptyMessage`, `SegmentedControl`, `ShimmerText`) for AI-facing surfaces.
+  - Use the components exported by `@symphony/ui` (shadcn/ui on Radix: `Button`, `Field`, `Input`, `Select`, `Dialog`, `Sheet`, `Tabs`, `Alert`, `Badge`, `ToggleGroup`, …) for every desktop surface, including AI-facing ones (`AiApprovalBanner`, `AiEventStreamCard`, `Markdown`, `CodeBlock`).
+  - Size layouts from their container (`@container` + `@md:`), never from the viewport, so forms and tables fit side sheets and resizable panes.
 - **Database changes** are forward-only migrations: add `crates/symphony-storage/migrations/NNNN_name.sql`,
   list it in `MIGRATIONS` and raise `SCHEMA_VERSION`; never edit an applied migration. Add a test that opens a
   database in the previous schema (see `crates/symphony-storage/tests/migrations.rs`) and shows nothing is lost.

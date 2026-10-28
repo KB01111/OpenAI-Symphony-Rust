@@ -17,7 +17,7 @@ When operating inside this repository (whether dispatched by Symphony Desktop it
 - `tools/api-generator`: the Hey API generator behind `pnpm generate:api`; kept on TypeScript 6 because the generator needs the TypeScript 6 compiler API (see `docs/PRODUCTION_READINESS.md` §5).
 - `packages/shared-types`: generated API contracts (never hand-edit `src/generated/`): Hey API types/SDK/fetch client from the OpenAPI document (`@symphony/shared-types/api`) and the Rust task state machine; state-machine helpers, EN/SV translations.
 - `packages/api-client`: `SymphonyClient` (wraps the generated SDK), the central API configuration for desktop/local/remote runtimes (`src/config/apiConfig.ts`), authenticated SSE streaming, Tauri IPC bridge; integration tests run against `symphony-cli`.
-- `packages/ui`: Symphony design system (tokens, `SymphonyDesignProvider`, Fluent v9 + shadcn/ui primitives + Apps SDK UI AI components). See `docs/DESIGN_SYSTEM.md` for component ownership.
+- `packages/ui`: Symphony design system (tokens, `SymphonyDesignProvider`, shadcn/ui + Radix primitives and AI components; Fluent only in `legacy.tsx` for the mobile companion). See `docs/DESIGN_SYSTEM.md` for component ownership.
 - `apps/desktop`: Tauri 2 Windows 11 desktop application (`src/app`, `src/layouts`, `src/features/*`; see `docs/UI_ARCHITECTURE.md`).
 - `apps/mobile`: iOS/Mobile remote companion application.
 
@@ -46,7 +46,7 @@ succeeded (see `CONTRIBUTING.md`, "Native Windows vs. Browser Testing").
 
 - Never weaken `validate_workspace_path` or `workspace_key_for_identifier` in `crates/symphony-workspaces`.
 - Never remove tracker environment variable scrubbing (`SECRET_ENV_VARS_TO_STRIP`) when spawning agent subprocesses.
-- Preserve full compatibility with `@openai/apps-sdk-ui` and `@fluentui/react-components` in `packages/ui` and `apps/desktop`.
+- Build desktop UI only from `packages/ui` (shadcn/ui + Radix + Tailwind tokens); do not add Fluent UI or another component library to `apps/desktop`. Lay out forms and tables with container queries, not viewport breakpoints (see `docs/DESIGN_SYSTEM.md` §3).
 - Never weaken API authentication, the CORS allowlist, the credential key allowlist, or the Tauri capability allow-list; never add an IPC command that runs arbitrary commands or touches arbitrary paths.
 - Never widen `tool_policy.rs` (agent tools run with the host's tokens, outside the approval gate) without tests that show what the new operation can do; there is deliberately no merge operation anywhere.
 - Never weaken the credential vault (no plaintext/XOR fallback, no silent replacement of an unreadable vault) or `secure_fs` (owner-only DACL / `0600`); write secret-bearing files only through it.

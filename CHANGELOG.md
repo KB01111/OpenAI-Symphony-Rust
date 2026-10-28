@@ -10,6 +10,17 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Added
 
+- **Thread-first desktop UI (Codex-style)**: the app opens on a prompt composer. One prompt box plus chips
+  for repository (with its base branch), provider and model (with install state), priority, labels and
+  *Run now* / *Add to queue* creates a task; the first line becomes the title and the whole prompt the
+  description. Tasks appear in the sidebar as threads grouped by project (status dots, approval marks,
+  search). A thread shows the prompt, the live timeline, pending approvals, an inline follow-up box
+  (continue a finished run in the same worktree) and a run-details panel (changes, validation, tool
+  calls, usage, pull request, context). The previous Overview, Projects, Tasks, Agent runs, Worktrees,
+  Pull requests, Workflow Studio, Providers and Settings views are kept under *Manage*, plus a new
+  *Activity* view with the former bottom dock (events, agent/terminal output, validations, approvals,
+  problems).
+
 - **Model discovery**: provider detection asks the installed CLI which models it offers (Codex
   `model/list`, `opencode models`) instead of relying on a built-in list, cached for 30 minutes per
   binary and version (a forced refresh re-reads it). A configured provider default that the CLI no
@@ -61,6 +72,12 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Fixed
 
+- Project settings: the Provider dropdown no longer overlaps the Model field, the form no longer shows a
+  stray horizontal scrollbar, and the project table is no longer clipped next to the detail pane
+  (`min-width: 250px` controls in a viewport-breakpoint grid, nested scrollers, fixed-width detail pane).
+- The Concise / Technical log toggle renders as a proper segmented control instead of two mashed labels.
+- A task's header badges wrap under a long title instead of running under the action buttons.
+
 - The build was broken on `main` after two dependency updates: the access token generator now uses the
   `rand` 0.10 API, and the API client generator is back on TypeScript 6 (`@hey-api/openapi-ts` needs
   its compiler API); `pnpm generate:api` now says so instead of crashing when another major is installed.
@@ -84,6 +101,17 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 - `ctutils` 0.4.3 → 0.4.4 (RUSTSEC-2026-0385, non-constant-time comparisons; pulled in by `digest`).
 
 ### Changed
+
+- **One component system on the desktop**: Fluent UI and the OpenAI Apps SDK UI are removed from the
+  desktop app and the shared UI package in favour of shadcn/ui (Radix) with Tailwind tokens, so controls,
+  dialogs and tabs share one sizing, one set of breakpoints and one CSS layer order. Markdown uses
+  `react-markdown` directly. The mobile companion keeps Fluent through `@symphony/ui/legacy`.
+- **Layouts are container-driven**: forms, tables and cards size from their own container (`@container`)
+  instead of the viewport. The project table hides low-priority columns by its width and project settings
+  open in a side sheet.
+- The right-hand inspector and the permanent bottom dock are gone; their content lives in the thread's
+  run-details panel and in the Activity view. Keyboard shortcut `Ctrl+J` toggles the run-details panel
+  (`Ctrl+I` is no longer used).
 
 - The default model is empty by default, meaning each provider's own default; making a provider the
   global default no longer copies another provider's model. Cost estimates use current per-family prices

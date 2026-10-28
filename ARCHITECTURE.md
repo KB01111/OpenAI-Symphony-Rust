@@ -59,8 +59,8 @@ In short:
   runtime) or authenticated SSE with `Last-Event-ID` resume (attached/remote).
 - **State**: durable data in TanStack Query (invalidated by events, fallback polling when the stream is
   down); presentation preferences in a persisted zustand store.
-- **Design system**: one token source (`packages/ui/src/tokens/tokens.css`) feeding Tailwind v4, shadcn/ui,
-  Fluent UI v9 and OpenAI Apps SDK UI, coordinated by `SymphonyDesignProvider`.
+- **Design system**: one token source (`packages/ui/src/tokens/tokens.css`) feeding Tailwind v4 and the shadcn/ui (Radix)
+  components, coordinated by `SymphonyDesignProvider`.
 
 ## 4. Hardware-Aware Scheduling (Windows 11 Hybrid Laptops)
 
