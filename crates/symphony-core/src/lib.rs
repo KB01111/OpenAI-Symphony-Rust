@@ -1,12 +1,16 @@
 pub mod domain;
 pub mod error;
 pub mod redaction;
+pub mod tool_calls;
 pub mod usage;
 pub mod workflow;
 
 pub use domain::*;
 pub use error::{SymphonyError, SymphonyResult};
-pub use redaction::{detect_secrets_in_added_lines, redact_secrets};
+pub use redaction::{detect_secrets_in_added_lines, redact_json_strings, redact_secrets};
+pub use tool_calls::{
+    ToolCallKind, ToolCallRecord, ToolCallStatus, ToolCallUpdate, MAX_TOOL_OUTPUT_BYTES,
+};
 pub use usage::{ReportOrigin, ThreadUsageLedger};
 pub use workflow::{
     compute_backoff_delay_ms, expand_path_value, render_continuation_prompt,

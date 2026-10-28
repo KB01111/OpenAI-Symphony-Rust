@@ -201,6 +201,25 @@ pub fn redact_secrets(input: &str, extra_secrets: &[String]) -> String {
     out
 }
 
+/// Redacts every string inside a JSON value in place (object keys are left alone), with the same
+/// rules as [`redact_secrets`]. Raw provider payloads (command output, tool results, file diffs)
+/// pass through this before they are stored or streamed, so a token an agent printed never
+/// reaches the database, the event stream or a diagnostics export. Strings shorter than any
+/// secret the patterns or the registry can match are skipped without scanning.
+pub fn redact_json_strings(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) if text.len() >= MIN_SECRET_LEN => {
+            let redacted = redact_secrets(text, &[]);
+            if redacted != *text {
+                *text = redacted;
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(redact_json_strings),
+        serde_json::Value::Object(map) => map.values_mut().for_each(redact_json_strings),
+        _ => {}
+    }
+}
+
 /// Kinds of credential that a change set must not introduce, with the pattern that finds them.
 fn secret_patterns() -> &'static [(&'static str, Regex)] {
     static PATTERNS: OnceLock<Vec<(&'static str, Regex)>> = OnceLock::new();
@@ -253,6 +272,27 @@ pub fn detect_secrets_in_added_lines(diff: &str) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_payloads_are_redacted_at_every_depth_but_keys_and_short_values_stay() {
+        register_secret("test:json-payload", "vault-value-0123456789");
+        let mut payload = serde_json::json!({
+            "method": "item/completed",
+            "params": { "item": {
+                "aggregatedOutput": "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123\nok",
+                "lines": ["plain", "key vault-value-0123456789 used", 42, null],
+                "ghp_abcdefghijklmnopqrstuvwxyz0123": true
+            } }
+        });
+        redact_json_strings(&mut payload);
+        let item = &payload["params"]["item"];
+        assert_eq!(item["aggregatedOutput"], "GITHUB_TOKEN=[REDACTED]\nok");
+        assert_eq!(item["lines"][0], "plain");
+        assert_eq!(item["lines"][1], "key [REDACTED] used");
+        assert_eq!(item["lines"][2], 42);
+        assert_eq!(payload["method"], "item/completed");
+        release_secret("test:json-payload");
+    }
 
     #[test]
     fn secrets_are_detected_only_on_added_lines() {

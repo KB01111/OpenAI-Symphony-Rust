@@ -818,6 +818,37 @@ export type TokenUsage = {
     total_tokens: number;
 };
 
+export type ToolCallKind = 'dynamic' | 'mcp' | 'command' | 'file_change' | 'provider_tool';
+
+/**
+ * One tool call of a task, as stored and served by `GET /api/v1/tasks/{id}/tool-calls`.
+ * Arguments and output are redacted before they are stored.
+ */
+export type ToolCallRecord = {
+    /**
+     * `"{task_id}:{call_id}"`, so the start and the result of a call land on one record.
+     */
+    id: string;
+    task_id: string;
+    session_id: string | null;
+    provider: ProviderKind;
+    call_id: string;
+    tool_name: string;
+    kind: ToolCallKind;
+    arguments: unknown;
+    output: string | null;
+    /**
+     * The output was longer than [`MAX_TOOL_OUTPUT_BYTES`] and was cut.
+     */
+    output_truncated: boolean;
+    status: ToolCallStatus;
+    started_at: string;
+    finished_at: string | null;
+    duration_ms: number | null;
+};
+
+export type ToolCallStatus = 'started' | 'succeeded' | 'failed';
+
 export type UpdateWorkflowRequest = {
     raw_markdown: string;
 };
@@ -1542,6 +1573,46 @@ export type ListTaskEventsResponses = {
 };
 
 export type ListTaskEventsResponse = ListTaskEventsResponses[keyof ListTaskEventsResponses];
+
+export type ListTaskToolCallsData = {
+    body?: never;
+    path: {
+        /**
+         * Task id
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * Maximum number of tool calls (1–500, default 200).
+         */
+        limit?: number;
+        /**
+         * Return only calls older than this tool-call id of the same task (the oldest call of the
+         * previous page); omit for the newest calls.
+         */
+        before?: string;
+    };
+    url: '/api/v1/tasks/{id}/tool-calls';
+};
+
+export type ListTaskToolCallsErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ListTaskToolCallsError = ListTaskToolCallsErrors[keyof ListTaskToolCallsErrors];
+
+export type ListTaskToolCallsResponses = {
+    /**
+     * Newest first; 404 when `before` is not a tool call of this task
+     */
+    200: Array<ToolCallRecord>;
+};
+
+export type ListTaskToolCallsResponse = ListTaskToolCallsResponses[keyof ListTaskToolCallsResponses];
 
 export type ListTaskAttemptsData = {
     body?: never;

@@ -10,7 +10,8 @@ use std::time::Duration;
 use symphony_core::{
     redact_secrets, AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, ApprovalStatus,
     Issue, Project, ProviderKind, ProviderProfile, PullRequestReview, RunAttempt, RunAttemptPhase,
-    SymphonyError, SymphonyResult, Task, TaskStatus, ThreadUsageMark, TokenUsage, ValidationResult,
+    SymphonyError, SymphonyResult, Task, TaskStatus, ThreadUsageMark, TokenUsage, ToolCallKind,
+    ToolCallRecord, ToolCallStatus, ValidationResult,
 };
 
 pub mod backup;
@@ -48,10 +49,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "task_follow_ups",
         sql: include_str!("../migrations/0003_task_follow_ups.sql"),
     },
+    Migration {
+        version: 4,
+        name: "tool_calls",
+        sql: include_str!("../migrations/0004_tool_calls.sql"),
+    },
 ];
 
 /// The schema version this build reads and writes.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticBundle {
@@ -774,6 +780,150 @@ impl Storage {
     }
 
     // =========================================================================
+    // Tool calls
+    // =========================================================================
+
+    pub async fn get_tool_call(&self, id: &str) -> SymphonyResult<Option<ToolCallRecord>> {
+        let row = sqlx::query("SELECT * FROM tool_calls WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        row.map(row_to_tool_call).transpose()
+    }
+
+    /// Store a tool call, replacing the stored row of the same call. Callers merge first
+    /// ([`ToolCallRecord::apply`]); the record's arguments and output are already redacted.
+    pub async fn upsert_tool_call(&self, call: &ToolCallRecord) -> SymphonyResult<()> {
+        let arguments_json = call
+            .arguments
+            .as_ref()
+            .and_then(|v| serde_json::to_string(v).ok());
+        sqlx::query(
+            r#"
+            INSERT INTO tool_calls (
+                id, task_id, session_id, provider, call_id, tool_name, kind, arguments_json,
+                output, output_truncated, status, started_at, finished_at, duration_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            ON CONFLICT(id) DO UPDATE SET
+                session_id = excluded.session_id,
+                tool_name = excluded.tool_name,
+                kind = excluded.kind,
+                arguments_json = excluded.arguments_json,
+                output = excluded.output,
+                output_truncated = excluded.output_truncated,
+                status = excluded.status,
+                finished_at = excluded.finished_at,
+                duration_ms = excluded.duration_ms
+            "#,
+        )
+        .bind(&call.id)
+        .bind(&call.task_id)
+        .bind(&call.session_id)
+        .bind(call.provider.as_str())
+        .bind(&call.call_id)
+        .bind(&call.tool_name)
+        .bind(call.kind.as_str())
+        .bind(arguments_json)
+        .bind(&call.output)
+        .bind(call.output_truncated)
+        .bind(call.status.as_str())
+        .bind(call.started_at.to_rfc3339())
+        .bind(call.finished_at.map(|t| t.to_rfc3339()))
+        .bind(call.duration_ms.map(|d| d.min(i64::MAX as u64) as i64))
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// A task's tool calls, newest first. With `before` (a tool-call id of the same task) the
+    /// page continues after that call, in the same order, so pages neither skip nor repeat a call;
+    /// `None` when `before` is not a tool call of this task.
+    pub async fn list_tool_calls(
+        &self,
+        task_id: &str,
+        limit: u32,
+        before: Option<&str>,
+    ) -> SymphonyResult<Option<Vec<ToolCallRecord>>> {
+        let limit = limit.clamp(1, 500) as i64;
+        let rows = match before {
+            None => sqlx::query(
+                "SELECT * FROM tool_calls WHERE task_id = ?1 \
+                 ORDER BY started_at DESC, rowid DESC LIMIT ?2",
+            )
+            .bind(task_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?,
+            Some(before) => {
+                let anchor = sqlx::query(
+                    "SELECT started_at, rowid AS rid FROM tool_calls WHERE id = ?1 AND task_id = ?2",
+                )
+                .bind(before)
+                .bind(task_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+                let Some(anchor) = anchor else {
+                    return Ok(None);
+                };
+                let started_at: String = anchor.get("started_at");
+                let rowid: i64 = anchor.get("rid");
+                sqlx::query(
+                    "SELECT * FROM tool_calls WHERE task_id = ?1 \
+                     AND (started_at < ?2 OR (started_at = ?2 AND rowid < ?3)) \
+                     ORDER BY started_at DESC, rowid DESC LIMIT ?4",
+                )
+                .bind(task_id)
+                .bind(started_at)
+                .bind(rowid)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| SymphonyError::StorageError(e.to_string()))?
+            }
+        };
+        rows.into_iter()
+            .map(row_to_tool_call)
+            .collect::<SymphonyResult<Vec<_>>>()
+            .map(Some)
+    }
+
+    /// Delete tool calls of finished tasks (completed, failed or cancelled) that started before
+    /// `older_than`, in small batches, with the rule [`Storage::prune_agent_events`] uses for
+    /// events. Returns how many rows were removed.
+    pub async fn prune_tool_calls(&self, older_than: DateTime<Utc>) -> SymphonyResult<u64> {
+        const BATCH: i64 = 2_000;
+        let cutoff = older_than.to_rfc3339();
+        let mut removed = 0u64;
+        loop {
+            let result = sqlx::query(
+                r#"
+                DELETE FROM tool_calls WHERE rowid IN (
+                    SELECT rowid FROM tool_calls
+                    WHERE started_at < ?1
+                      AND task_id NOT IN (
+                            SELECT id FROM tasks
+                            WHERE status NOT IN ('completed', 'failed', 'cancelled'))
+                    LIMIT ?2
+                )
+                "#,
+            )
+            .bind(&cutoff)
+            .bind(BATCH)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+            removed += result.rows_affected();
+            if (result.rows_affected() as i64) < BATCH {
+                return Ok(removed);
+            }
+        }
+    }
+
+    // =========================================================================
     // Approvals
     // =========================================================================
 
@@ -1374,6 +1524,31 @@ fn row_to_event(r: sqlx::sqlite::SqliteRow) -> SymphonyResult<AgentEvent> {
         message: r.get("message"),
         payload: payload_opt.and_then(|s| serde_json::from_str(&s).ok()),
         timestamp: parse_dt(r.get("timestamp")),
+    })
+}
+
+fn row_to_tool_call(r: sqlx::sqlite::SqliteRow) -> SymphonyResult<ToolCallRecord> {
+    let provider: String = r.get("provider");
+    let kind: String = r.get("kind");
+    let status: String = r.get("status");
+    let arguments: Option<String> = r.get("arguments_json");
+    let finished_at: Option<String> = r.get("finished_at");
+    let duration_ms: Option<i64> = r.get("duration_ms");
+    Ok(ToolCallRecord {
+        id: r.get("id"),
+        task_id: r.get("task_id"),
+        session_id: r.get("session_id"),
+        provider: ProviderKind::from_str(&provider).unwrap_or(ProviderKind::Simulated),
+        call_id: r.get("call_id"),
+        tool_name: r.get("tool_name"),
+        kind: ToolCallKind::parse(&kind),
+        arguments: arguments.and_then(|s| serde_json::from_str(&s).ok()),
+        output: r.get("output"),
+        output_truncated: r.get("output_truncated"),
+        status: ToolCallStatus::parse(&status),
+        started_at: parse_dt(r.get("started_at")),
+        finished_at: finished_at.map(parse_dt),
+        duration_ms: duration_ms.and_then(|d| u64::try_from(d).ok()),
     })
 }
 

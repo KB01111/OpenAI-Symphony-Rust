@@ -12,14 +12,14 @@ use symphony_agents::{
     AgentStreamEvent, ApprovalGate, DynamicToolHandler,
 };
 use symphony_core::{
-    compute_backoff_delay_ms, detect_secrets_in_added_lines, redact_secrets,
+    compute_backoff_delay_ms, detect_secrets_in_added_lines, redact_json_strings, redact_secrets,
     render_continuation_prompt, render_workflow_prompt, sort_candidate_issues, AgentEvent,
     ApprovalDecision, ApprovalRequest, ApprovalStatus, CodexTotals, ConflictCheck,
     HardwareSnapshot, Issue, LiveSession, MergeReadinessReport, OrchestratorStateSnapshot, Project,
     ProviderKind, ProviderStatus, PullRequestReview, RepositoryValidation, RetryEntry, RunAttempt,
     RunAttemptPhase, RunningSessionSummary, ServiceConfig, StateCounts, SymphonyError,
-    SymphonyResult, Task, TaskDiff, TaskStatus, ThreadUsageMark, TokenUsage, ValidationResult,
-    WorkflowDefinition, WorktreeInfo,
+    SymphonyResult, Task, TaskDiff, TaskStatus, ThreadUsageMark, TokenUsage, ToolCallRecord,
+    ToolCallUpdate, ValidationResult, WorkflowDefinition, WorktreeInfo,
 };
 use symphony_platform::{HardwareMonitor, SecretStore};
 
@@ -282,6 +282,17 @@ struct OrchestratorRuntimeMemory {
     pub workflow_fallback_path: Option<PathBuf>,
 }
 
+/// Mask secrets in an event's message and in every string of its raw payload. Every event goes
+/// through this before it is stored or broadcast: provider payloads carry command output and tool
+/// results, where an agent may have printed a token.
+fn redact_event(mut event: AgentEvent) -> AgentEvent {
+    event.message = redact_secrets(&event.message, &[]);
+    if let Some(payload) = event.payload.as_mut() {
+        redact_json_strings(payload);
+    }
+    event
+}
+
 struct OrchestratorApprovalGate {
     storage: Storage,
     memory: Arc<RwLock<OrchestratorRuntimeMemory>>,
@@ -306,6 +317,7 @@ impl ApprovalGate for OrchestratorApprovalGate {
             payload: Some(serde_json::to_value(&request).unwrap_or(Value::Null)),
             timestamp: Utc::now(),
         };
+        let evt = redact_event(evt);
         let _ = self.storage.record_event(&evt).await;
         let _ = self.event_tx.send(evt);
 
@@ -624,6 +636,14 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
         let cutoff = Utc::now() - chrono::Duration::days(i64::from(days));
         let removed = self.storage.prune_agent_events(cutoff).await?;
+        let removed_calls = self.storage.prune_tool_calls(cutoff).await?;
+        if removed_calls > 0 {
+            info!(
+                removed_calls,
+                retention_days = days,
+                "Pruned old tool-call history"
+            );
+        }
         if removed > 0 {
             info!(
                 removed,
@@ -1596,6 +1616,25 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .list_task_events_before(task_id, before, limit)
             .await?
             .ok_or_else(|| SymphonyError::NotFound(format!("event {before} of task {task_id}")))
+    }
+
+    /// A task's tool calls, newest first; with `before` (a tool-call id of the task) the next
+    /// older page (see `Storage::list_tool_calls`).
+    pub async fn list_tool_calls(
+        &self,
+        task_id: &str,
+        limit: u32,
+        before: Option<&str>,
+    ) -> SymphonyResult<Vec<ToolCallRecord>> {
+        self.storage
+            .list_tool_calls(task_id, limit, before)
+            .await?
+            .ok_or_else(|| {
+                SymphonyError::NotFound(format!(
+                    "tool call {} of task {task_id}",
+                    before.unwrap_or_default()
+                ))
+            })
     }
 
     pub async fn list_run_attempts(&self, task_id: &str) -> SymphonyResult<Vec<RunAttempt>> {
@@ -3632,7 +3671,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 handle.session.last_event = Some(ev.event_type.clone());
                 handle.session.last_event_at = Some(ev.timestamp);
                 if let Some(ref msg) = ev.message {
-                    handle.session.last_message = Some(msg.clone());
+                    handle.session.last_message = Some(redact_secrets(msg, &[]));
                 }
                 if let Some(ref sid) = ev.session_id {
                     handle.session.session_id = sid.clone();
@@ -3651,6 +3690,21 @@ Please implement the requested changes cleanly in the current Git workspace, run
             }
         }
 
+        for update in ev.tool_calls {
+            if let Err(e) = self
+                .record_tool_call(
+                    task_id,
+                    ev.session_id.as_deref(),
+                    provider,
+                    update,
+                    ev.timestamp,
+                )
+                .await
+            {
+                warn!(task_id, error = %e, "Recording a tool call failed");
+            }
+        }
+
         let agent_evt = AgentEvent {
             id: Uuid::new_v4().to_string(),
             task_id: Some(task_id.to_string()),
@@ -3659,13 +3713,32 @@ Please implement the requested changes cleanly in the current Git workspace, run
             provider: Some(provider),
             event_type: ev.event_type.clone(),
             phase: Some(RunAttemptPhase::StreamingTurn),
-            message: redact_secrets(&ev.message.unwrap_or_else(|| ev.event_type.clone()), &[]),
+            message: ev.message.unwrap_or_else(|| ev.event_type.clone()),
             payload: Some(ev.raw),
             timestamp: ev.timestamp,
         };
+        let agent_evt = redact_event(agent_evt);
 
         let _ = self.storage.record_event(&agent_evt).await;
         let _ = self.event_tx.send(agent_evt);
+    }
+
+    /// Merge a provider's report into the task's tool-call history.
+    async fn record_tool_call(
+        &self,
+        task_id: &str,
+        session_id: Option<&str>,
+        provider: ProviderKind,
+        update: ToolCallUpdate,
+        at: DateTime<Utc>,
+    ) -> SymphonyResult<()> {
+        if update.call_id.is_empty() {
+            return Ok(());
+        }
+        let id = ToolCallRecord::record_id(task_id, &update.call_id);
+        let existing = self.storage.get_tool_call(&id).await?;
+        let record = ToolCallRecord::apply(existing, task_id, session_id, provider, update, at);
+        self.storage.upsert_tool_call(&record).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3688,10 +3761,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
             provider,
             event_type: event_type.to_string(),
             phase,
-            message: redact_secrets(&message, &[]),
+            message,
             payload,
             timestamp: Utc::now(),
         };
+        let evt = redact_event(evt);
         let _ = self.storage.record_event(&evt).await;
         let _ = self.event_tx.send(evt);
     }
@@ -5224,6 +5298,83 @@ rl.on('line', (line) => {
         let waiting = orch.get_task(&task_id).await.unwrap();
         assert_eq!(waiting.status, TaskStatus::Queued);
         assert_eq!(waiting.attempt_count, 0);
+    }
+
+    #[tokio::test]
+    async fn tool_calls_are_recorded_once_and_payload_secrets_never_reach_storage() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect(temp.path().join("tools.db"))
+            .await
+            .unwrap();
+        let (orch, task) = single_slot_orchestrator_on(&temp, storage.clone()).await;
+        let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let event = |event_type: &str, status, output: Option<String>| AgentStreamEvent {
+            event_type: event_type.into(),
+            timestamp: Utc::now(),
+            session_id: Some("thread-turn".into()),
+            thread_id: None,
+            turn_id: None,
+            pid: None,
+            message: Some(format!("printed {token}")),
+            usage: None,
+            rate_limits: None,
+            raw: json!({ "params": { "item": { "aggregatedOutput": format!("TOKEN={token}") } } }),
+            tool_calls: vec![ToolCallUpdate {
+                call_id: "call-1".into(),
+                tool_name: if output.is_some() {
+                    String::new()
+                } else {
+                    "github_api".into()
+                },
+                kind: symphony_core::ToolCallKind::Dynamic,
+                arguments: output.is_none().then(|| json!({ "auth": token })),
+                output,
+                status,
+                duration_ms: None,
+            }],
+        };
+        orch.handle_agent_stream_event(
+            &task.id,
+            &task.issue.identifier,
+            ProviderKind::Codex,
+            event(
+                "item/tool/call",
+                symphony_core::ToolCallStatus::Started,
+                None,
+            ),
+        )
+        .await;
+        orch.handle_agent_stream_event(
+            &task.id,
+            &task.issue.identifier,
+            ProviderKind::Codex,
+            event(
+                "tool/result",
+                symphony_core::ToolCallStatus::Succeeded,
+                Some(format!("ok {token}")),
+            ),
+        )
+        .await;
+
+        let calls = orch.list_tool_calls(&task.id, 50, None).await.unwrap();
+        assert_eq!(calls.len(), 1, "start and result are one record");
+        let call = &calls[0];
+        assert_eq!(call.tool_name, "github_api");
+        assert_eq!(call.status, symphony_core::ToolCallStatus::Succeeded);
+        assert_eq!(call.output.as_deref(), Some("ok [REDACTED]"));
+        assert_eq!(call.arguments, Some(json!({ "auth": "[REDACTED]" })));
+        assert_eq!(call.session_id.as_deref(), Some("thread-turn"));
+
+        let events = storage.list_events(Some(&task.id), 50).await.unwrap();
+        assert!(!events.is_empty());
+        for e in &events {
+            let stored = serde_json::to_string(e).unwrap();
+            assert!(!stored.contains(token), "secret stored in {stored}");
+        }
+        assert!(orch
+            .list_tool_calls(&task.id, 50, Some("missing"))
+            .await
+            .is_err());
     }
 
     #[tokio::test]

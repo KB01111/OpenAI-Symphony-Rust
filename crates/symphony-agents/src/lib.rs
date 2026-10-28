@@ -14,6 +14,7 @@ use symphony_core::domain::{
 use symphony_core::error::{Result, SymphonyError};
 use symphony_core::redaction::redact_secrets;
 use symphony_core::usage::{ReportOrigin, ThreadUsageLedger};
+use symphony_core::{ToolCallKind, ToolCallStatus, ToolCallUpdate};
 use symphony_workspaces::{prepare_tree_command, ProcessTree, SECRET_ENV_VARS_TO_STRIP};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
@@ -22,6 +23,7 @@ use tokio::time::timeout;
 
 pub mod detection;
 mod opencode_server;
+pub mod tool_events;
 pub use detection::{
     clear_model_catalogues, detect_provider_status, detect_provider_statuses, find_on_path,
 };
@@ -64,6 +66,9 @@ pub struct AgentStreamEvent {
     pub usage: Option<TokenUsage>,
     pub rate_limits: Option<Value>,
     pub raw: Value,
+    /// Tool calls this event starts or finishes, normalized for the tool-call history.
+    #[serde(default)]
+    pub tool_calls: Vec<symphony_core::ToolCallUpdate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -500,6 +505,7 @@ impl CodexAppServerSession {
                             usage: None,
                             rate_limits: None,
                             raw: Value::Null,
+                            tool_calls: Vec::new(),
                         })
                         .await;
                     continue;
@@ -562,6 +568,25 @@ impl CodexAppServerSession {
         let usage = self.observe_usage(msg);
         let rate_limits = extract_rate_limits(msg);
         let text_message = extract_display_message(method, &params);
+        // A host-side tool call keeps one id from its request to the result Symphony answers.
+        let dynamic_call_id = (method == "item/tool/call").then(|| {
+            tool_events::codex_dynamic_call_id(&params)
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+        });
+        let tool_calls: Vec<ToolCallUpdate> = match &dynamic_call_id {
+            Some(call_id) => vec![ToolCallUpdate {
+                call_id: call_id.clone(),
+                tool_name: dynamic_tool_name(&params).to_string(),
+                kind: ToolCallKind::Dynamic,
+                arguments: params.get("arguments").cloned(),
+                output: None,
+                status: ToolCallStatus::Started,
+                duration_ms: None,
+            }],
+            None => tool_events::codex_item_tool_call(method, &params)
+                .into_iter()
+                .collect(),
+        };
 
         let _ = event_tx
             .send(AgentStreamEvent {
@@ -579,6 +604,7 @@ impl CodexAppServerSession {
                 usage,
                 rate_limits: rate_limits.clone(),
                 raw: msg.clone(),
+                tool_calls,
             })
             .await;
 
@@ -631,15 +657,12 @@ impl CodexAppServerSession {
                     return Ok(None);
                 }
                 "item/tool/call" => {
-                    let tool_name = params
-                        .get("name")
-                        .or_else(|| params.get("tool"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let tool_name = dynamic_tool_name(&params);
                     let arguments = params
                         .get("arguments")
                         .cloned()
                         .unwrap_or_else(|| json!({}));
+                    let started = std::time::Instant::now();
 
                     let result = if let Some(ref handler) = self.tool_handler {
                         handler.execute_tool(tool_name, &arguments).await
@@ -662,6 +685,31 @@ impl CodexAppServerSession {
                         "result": result
                     }))
                     .await?;
+                    // The answer is not part of the provider's stream: record it for the
+                    // tool-call history.
+                    let update = tool_events::codex_dynamic_tool_result(
+                        dynamic_call_id.unwrap_or_default(),
+                        tool_name,
+                        &arguments,
+                        &result,
+                        started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                    );
+                    let _ = event_tx
+                        .send(AgentStreamEvent {
+                            event_type: "tool/result".into(),
+                            timestamp: Utc::now(),
+                            session_id,
+                            thread_id: (!self.thread_id.is_empty()).then(|| self.thread_id.clone()),
+                            turn_id: self.current_turn_id.clone(),
+                            pid: self.pid,
+                            message: Some(format!("Tool {tool_name} answered")),
+                            usage: None,
+                            rate_limits: None,
+                            raw: json!({ "method": "tool/result", "params": {
+                                "tool": tool_name, "result": result } }),
+                            tool_calls: vec![update],
+                        })
+                        .await;
                     return Ok(None);
                 }
                 _ => {}
@@ -830,6 +878,7 @@ impl AgentSession for CodexAppServerSession {
                 usage: None,
                 rate_limits: None,
                 raw: result,
+                tool_calls: Vec::new(),
             })
             .await;
 
@@ -978,6 +1027,7 @@ fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<
             usage: None,
             rate_limits: None,
             raw: json!({ "stderr": redacted }),
+            tool_calls: Vec::new(),
         });
     };
 
@@ -1502,6 +1552,7 @@ impl AgentSession for ClaudeCodeSession {
                     .send(
                         &event_tx,
                         AgentStreamEvent {
+                            tool_calls: tool_events::claude_tool_calls(&val),
                             event_type: format!("claude/{}", msg_type),
                             timestamp: Utc::now(),
                             session_id: Some(discovered_session.clone()),
@@ -1701,6 +1752,11 @@ impl AgentSession for OpenCodeSession {
                     .send(
                         &event_tx,
                         AgentStreamEvent {
+                            tool_calls: val
+                                .get("part")
+                                .and_then(tool_events::opencode_tool_call)
+                                .into_iter()
+                                .collect(),
                             event_type: "opencode/event".into(),
                             timestamp: Utc::now(),
                             session_id: Some(discovered_session.clone()),
@@ -1821,6 +1877,10 @@ impl SimulatedAgentSession {
             message: Some(message),
             usage,
             rate_limits: None,
+            // The simulated command and file change are finished Codex-shaped items.
+            tool_calls: tool_events::codex_item_tool_call("item/completed", &raw)
+                .into_iter()
+                .collect(),
             raw,
         }
     }
@@ -1987,6 +2047,8 @@ impl AgentSession for SimulatedAgentSession {
                 None,
                 json!({ "item": {
                     "type": "commandExecution",
+                    "id": format!("{turn_id}-command"),
+                    "durationMs": 40,
                     "command": "git status --short",
                     "cwd": self.config.workspace_path.to_string_lossy(),
                     "status": "completed",
@@ -2065,6 +2127,7 @@ impl AgentSession for SimulatedAgentSession {
                 None,
                 json!({ "item": {
                     "type": "fileChange",
+                    "id": format!("{turn_id}-file"),
                     "status": "completed",
                     "changes": [{ "path": "SYMPHONY_TASK_NOTE.md", "kind": "add", "diff": content }]
                 } }),
@@ -2225,6 +2288,15 @@ fn usage_from_map(usage_node: &Value) -> Option<TokenUsage> {
         output_tokens: output,
         total_tokens: total,
     })
+}
+
+/// Name of the host-side tool an `item/tool/call` request asks for.
+fn dynamic_tool_name(params: &Value) -> &str {
+    params
+        .get("name")
+        .or_else(|| params.get("tool"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
 }
 
 pub fn extract_rate_limits(msg: &Value) -> Option<Value> {

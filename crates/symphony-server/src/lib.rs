@@ -55,6 +55,7 @@ use symphony_core::{
         ValidationResult, WorktreeInfo, MAX_EVENT_RETENTION_DAYS,
     },
     error::{Result, SymphonyError},
+    ToolCallRecord,
 };
 use symphony_orchestrator::{
     IssueDetailResponse, ProjectUpdate, RefreshResponse, SymphonyOrchestrator, WorkflowDocument,
@@ -267,6 +268,16 @@ pub struct TaskEventsQuery {
     pub limit: Option<u32>,
     /// Return only events older than this event id of the same task (the oldest event of the
     /// previous page); omit for the newest events.
+    pub before: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ToolCallsQuery {
+    /// Maximum number of tool calls (1–500, default 200).
+    pub limit: Option<u32>,
+    /// Return only calls older than this tool-call id of the same task (the oldest call of the
+    /// previous page); omit for the newest calls.
     pub before: Option<String>,
 }
 
@@ -525,6 +536,7 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(retry_task_handler))
         .routes(routes!(continue_task_handler))
         .routes(routes!(list_task_events_handler))
+        .routes(routes!(list_task_tool_calls_handler))
         .routes(routes!(list_task_attempts_handler))
         .routes(routes!(list_task_validations_handler))
         .routes(routes!(task_diff_handler))
@@ -1362,6 +1374,27 @@ async fn list_task_events_handler(
         ),
         None => respond(state.orchestrator.list_events(Some(&id), limit).await),
     }
+}
+
+/// A task's tool-call history (shell commands, file changes, MCP and host tools), newest first.
+/// Arguments and output are redacted and output is capped at 64 KiB per call. Local only: tool
+/// output can carry workspace content, like the task diff.
+#[utoipa::path(
+    get,
+    path = "/tasks/{id}/tool-calls",
+    operation_id = "listTaskToolCalls",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id"), ToolCallsQuery),
+    responses((status = 200, description = "Newest first; 404 when `before` is not a tool call of this task", body = Vec<ToolCallRecord>))
+)]
+async fn list_task_tool_calls_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    Query(q): Query<ToolCallsQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(200).clamp(1, 500);
+    let before = q.before.as_deref().filter(|b| !b.is_empty());
+    respond(state.orchestrator.list_tool_calls(&id, limit, before).await)
 }
 
 #[utoipa::path(
