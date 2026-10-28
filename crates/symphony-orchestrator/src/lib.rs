@@ -3874,13 +3874,28 @@ Please implement the requested changes cleanly in the current Git workspace, run
         provider: ProviderKind,
         ev: AgentStreamEvent,
     ) {
+        // Redacted once, then used for the live session, the database and the broadcast.
+        let has_message = ev.message.is_some();
+        let agent_evt = redact_event(AgentEvent {
+            id: Uuid::new_v4().to_string(),
+            task_id: Some(task_id.to_string()),
+            issue_identifier: Some(issue_identifier.to_string()),
+            session_id: ev.session_id.clone(),
+            provider: Some(provider),
+            event_type: ev.event_type.clone(),
+            phase: Some(RunAttemptPhase::StreamingTurn),
+            message: ev.message.unwrap_or_else(|| ev.event_type.clone()),
+            payload: Some(ev.raw),
+            timestamp: ev.timestamp,
+        });
+
         {
             let mut mem = self.memory.write().await;
             if let Some(handle) = mem.running.get_mut(task_id) {
-                handle.session.last_event = Some(ev.event_type.clone());
+                handle.session.last_event = Some(ev.event_type);
                 handle.session.last_event_at = Some(ev.timestamp);
-                if let Some(ref msg) = ev.message {
-                    handle.session.last_message = Some(redact_secrets(msg, &[]));
+                if has_message {
+                    handle.session.last_message = Some(agent_evt.message.clone());
                 }
                 if let Some(ref sid) = ev.session_id {
                     handle.session.session_id = sid.clone();
@@ -3894,8 +3909,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     handle.session.total_tokens = usage.total_tokens;
                 }
             }
-            if let Some(ref rl) = ev.rate_limits {
-                mem.latest_rate_limits = Some(rl.clone());
+            if let Some(rl) = ev.rate_limits {
+                mem.latest_rate_limits = Some(rl);
             }
         }
 
@@ -3913,20 +3928,6 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 warn!(task_id, error = %e, "Recording a tool call failed");
             }
         }
-
-        let agent_evt = AgentEvent {
-            id: Uuid::new_v4().to_string(),
-            task_id: Some(task_id.to_string()),
-            issue_identifier: Some(issue_identifier.to_string()),
-            session_id: ev.session_id,
-            provider: Some(provider),
-            event_type: ev.event_type.clone(),
-            phase: Some(RunAttemptPhase::StreamingTurn),
-            message: ev.message.unwrap_or_else(|| ev.event_type.clone()),
-            payload: Some(ev.raw),
-            timestamp: ev.timestamp,
-        };
-        let agent_evt = redact_event(agent_evt);
 
         let _ = self.storage.record_event(&agent_evt).await;
         let _ = self.event_tx.send(agent_evt);
