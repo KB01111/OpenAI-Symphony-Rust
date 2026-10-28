@@ -118,9 +118,11 @@ describe("Desktop shell", () => {
     await within(threads).findByRole("link", { name: /From A/ });
     const groups = within(threads).getAllByRole("button", { name: /^Collapse/ });
     expect(groups).toHaveLength(2);
+    const [first, second] = groups.map((button) => button.closest("section")!);
     fireEvent.click(groups[0]!);
-    // Collapsing one group leaves the other one's tasks visible.
-    expect(within(threads).getAllByRole("link")).toHaveLength(1);
+    // Collapsing a group hides that group's task and leaves the other group's task visible.
+    expect(within(first!).queryByRole("link")).not.toBeInTheDocument();
+    expect(within(second!).getByRole("link")).toBeInTheDocument();
     useUiStore.setState({ collapsedProjects: [] });
   });
 });

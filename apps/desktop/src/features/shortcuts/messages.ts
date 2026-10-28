@@ -15,7 +15,7 @@ export const shortcutsMessages = defineMessages({
       projects: "Switch project",
       refresh: "Refresh data",
       sidebar: "Show or hide the sidebar",
-      activity: "Show or hide the run details panel",
+      activity: "Show or hide the run details panel (in a task thread)",
       help: "This help"
     }
   },
@@ -33,7 +33,7 @@ export const shortcutsMessages = defineMessages({
       projects: "Byt projekt",
       refresh: "Uppdatera data",
       sidebar: "Visa eller dölj sidofältet",
-      activity: "Visa eller dölj körningsdetaljerna",
+      activity: "Visa eller dölj körningsdetaljerna (i en uppgiftstråd)",
       help: "Den här hjälpen"
     }
   }

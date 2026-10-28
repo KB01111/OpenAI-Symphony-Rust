@@ -151,7 +151,8 @@ const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
   // Ctrl+J shows or hides the run details: the docked panel when there is room, else the sheet.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "j") return;
+      // Holding the keys auto-repeats keydown: toggle once, not on every repeat.
+      if (e.repeat || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "j") return;
       const target = e.target as HTMLElement | null;
       if (target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
       e.preventDefault();

@@ -110,8 +110,13 @@ describe("deriveTitle", () => {
   });
 
   it("shortens long prompts at a word boundary", () => {
-    const title = deriveTitle("word ".repeat(40));
-    expect(title.length).toBeLessThanOrEqual(81);
-    expect(title.endsWith("…")).toBe(true);
+    // 79 characters of text, then a word that crosses the 80-character cutoff.
+    const head = `${"a".repeat(30)} ${"b".repeat(30)} ${"c".repeat(17)}`;
+    expect(head).toHaveLength(79);
+    expect(deriveTitle(`${head} partialword and more`)).toBe(`${head}…`);
+    // A cutoff inside a word drops the partial word.
+    const early = `${"a".repeat(30)} ${"b".repeat(30)} ${"c".repeat(10)} ${"d".repeat(40)}`;
+    expect(deriveTitle(early)).toBe(`${"a".repeat(30)} ${"b".repeat(30)} ${"c".repeat(10)}…`);
+    expect(deriveTitle("#\nFix the build")).toBe("Fix the build");
   });
 });
