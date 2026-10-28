@@ -301,6 +301,9 @@ async fn main() -> anyhow::Result<()> {
         backup_root: (!custom_database).then(|| data_dir.join("backups")),
         ..ServerConfig::local(port, Some(token.clone()))
     };
+    if let Some(root) = server_config.backup_root.clone() {
+        orchestrator.start_scheduled_backups(root);
+    }
     let (addr, _handle) = match start_http_server(orchestrator.clone(), server_config.clone()).await
     {
         Ok(res) => res,

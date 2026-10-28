@@ -47,9 +47,27 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   status fails the review even when check runs are green.
 - The inspector shows what is running and what needs attention (approvals, failed runs, reviews) while
   nothing is selected.
+- **Tool-call history**: every tool call of a run (Codex commands, file changes and MCP tools, the
+  `github_api`/`linear_graphql` tools with the answer Symphony gave, Claude Code and OpenCode tools) is
+  stored as one record with its status, duration and redacted arguments and output (capped at 64 KiB),
+  shown in the run view's new *Tool calls* tab and served by `GET /api/v1/tasks/{id}/tool-calls` (local
+  only, cursor pages). Schema migration 4; it follows the activity-history retention.
+- **Automatic backups**: Settings → Backups backs up every 24 hours by default (`backup_interval_hours`,
+  `0` = off) and keeps the newest 7 automatic backups (`backup_keep`). Backups made by hand are never
+  deleted; automatic ones are marked *Automatic*.
+- **Automatic pull request status**: open pull requests' CI, merge state and review comments are re-read
+  every 15 minutes by default (`pr_refresh_interval_minutes`, `0` = only on *Refresh status*), one after
+  another and only with a GitHub token; a change updates the review and is announced as an event.
 
 ### Fixed
 
+- The build was broken on `main` after two dependency updates: the access token generator now uses the
+  `rand` 0.10 API, and the API client generator is back on TypeScript 6 (`@hey-api/openapi-ts` needs
+  its compiler API); `pnpm generate:api` now says so instead of crashing when another major is installed.
+- Token usage follows SPEC 13.5: a generic `usage` map is never read as a cumulative total (Codex usage
+  comes only from absolute thread totals, Claude Code's only from its final `result` line).
+- A desktop test that timed out under the parallel `pnpm -r test` load: asynchronous queries in tests
+  wait up to 5 s.
 - OpenCode token usage and cost were always 0: the per-step token reports are now counted.
 - Accessibility (axe-core WCAG 2.1 A/AA audit of every view in light and dark against the real
   runtime): caption, status and link colours now reach 4.5:1 on every surface (including the Apps SDK
@@ -59,6 +77,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Security
 
+- Raw provider event payloads (command output, tool results, diffs) were stored, streamed and exported
+  without redaction (only the event message was redacted), so a token an agent printed reached the
+  database, the event stream and diagnostics exports. Every string of a payload, and the live
+  session's last message in `/state`, is now redacted first.
 - `ctutils` 0.4.3 → 0.4.4 (RUSTSEC-2026-0385, non-constant-time comparisons; pulled in by `digest`).
 
 ### Changed
@@ -72,6 +94,7 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   messages can use the ICU plural subset (`{count, plural, one {…} other {…}}`).
 - On a first launch in a window narrower than 1200 px the inspector starts closed; selecting
   something opens it. The companion's connect screen shows the Symphony mark.
+- Development dependencies: vitest 5 and `@testing-library/jest-dom` 7 (6.10.0 was deprecated upstream).
 
 ## [2.0.0] - 2026-10-22
 

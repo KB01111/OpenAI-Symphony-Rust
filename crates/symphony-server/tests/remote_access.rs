@@ -254,6 +254,7 @@ async fn sensitive_endpoints_are_forbidden_to_remote_clients() {
             Some(json!({"status": "done"})),
         ),
         (Method::GET, "/tasks/t1/diff", None),
+        (Method::GET, "/tasks/t1/tool-calls", None),
         (
             Method::POST,
             "/tasks/t1/continue",

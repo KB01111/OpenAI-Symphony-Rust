@@ -316,3 +316,76 @@ async fn upgrades_the_previous_schema_without_losing_data() {
             .unwrap();
     assert_eq!(versions, (1..=SCHEMA_VERSION).collect::<Vec<_>>());
 }
+
+/// A database as the release with schema 3 left it: migrations 1–3 recorded, a task with a pending
+/// follow-up. Opening it applies 4 (tool-call history) and keeps everything.
+#[tokio::test]
+async fn upgrades_schema_three_and_keeps_pending_follow_ups() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("symphony.sqlite");
+    write_legacy_database(&db).await;
+    {
+        let pool = open_raw(&db).await;
+        for sql in [
+            include_str!("../migrations/0002_usage_accounting.sql"),
+            include_str!("../migrations/0003_task_follow_ups.sql"),
+        ] {
+            sqlx::raw_sql(sql).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, applied_at TEXT NOT NULL);
+             INSERT INTO schema_migrations (version, name, applied_at) VALUES
+                (1, 'init', '2026-10-22T00:00:00Z'), (2, 'usage_accounting', '2026-10-22T00:00:00Z'),
+                (3, 'task_follow_ups', '2026-10-25T00:00:00Z');
+             INSERT INTO task_follow_ups (task_id, instructions, created_at)
+                VALUES ('t1', 'also handle empty input', '2026-10-25T00:00:00Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+    }
+
+    let storage = Storage::connect(&db).await.unwrap();
+
+    assert!(
+        storage.get_task("t1").await.unwrap().is_some(),
+        "task survives"
+    );
+    assert_eq!(
+        storage.task_follow_up("t1").await.unwrap().as_deref(),
+        Some("also handle empty input"),
+        "a pending follow-up survives the upgrade"
+    );
+    // The new table works on the upgraded database.
+    let call = symphony_core::ToolCallRecord::apply(
+        None,
+        "t1",
+        None,
+        symphony_core::ProviderKind::Codex,
+        symphony_core::ToolCallUpdate {
+            call_id: "c1".into(),
+            tool_name: "shell".into(),
+            kind: symphony_core::ToolCallKind::Command,
+            arguments: None,
+            output: Some("ok".into()),
+            status: symphony_core::ToolCallStatus::Succeeded,
+            duration_ms: Some(3),
+        },
+        chrono::Utc::now(),
+    );
+    storage.upsert_tool_call(&call).await.unwrap();
+    let calls = storage
+        .list_tool_calls("t1", 10, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(calls, vec![call]);
+    let versions: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+    assert_eq!(versions, (1..=SCHEMA_VERSION).collect::<Vec<_>>());
+}

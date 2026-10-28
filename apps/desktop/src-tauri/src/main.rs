@@ -473,6 +473,7 @@ async fn start_embedded_runtime(
         backup_root: Some(data_dir.join("backups")),
         ..ServerConfig::local(DEFAULT_LOCAL_PORT, Some(token.clone()))
     };
+    orchestrator.start_scheduled_backups(data_dir.join("backups"));
     // Preferred port first; an ephemeral fallback is discovered by clients via IPC/runtime.json.
     let (addr, _server) = match start_http_server(orchestrator.clone(), local_config.clone()).await
     {

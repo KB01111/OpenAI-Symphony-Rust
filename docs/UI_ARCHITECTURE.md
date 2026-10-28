@@ -133,7 +133,7 @@ loaded chunk; the CodeMirror editor is a separate lazy chunk loaded only by Work
 | Projects | Repository list/detail/edit, guided Add repository (native folder picker in Tauri, runtime validation, checkout-root resolution), delete with confirmation (409 while running). |
 | Tasks | 9-column Kanban (dnd-kit, keyboard + menu moves validated by the shared state machine before any request) and a data table; New task dialog (`auto_start`). |
 | Agent runs | One row per task by precedence (live > approval > retrying > queued > recent finished), grouping by status/provider/project, capability-gated actions. |
-| Live execution | Three resizable panels: context, live timeline (concise/technical), changes/validation/usage/PR. |
+| Live execution | Three resizable panels: context, live timeline (concise/technical), changes/validation/tool calls/usage/PR. The *Tool calls* tab pages the task's tool-call history (`GET /tasks/{id}/tool-calls`), refreshed only by events that can start or finish a tool call. |
 | Worktrees | Worktree table with dirty state, diff viewer, "Open in Explorer" only in the embedded desktop host; no delete action. |
 | Pull requests | Evidence-backed readiness (1–5), blockers, diff with review comments; "Record human approval" is a separate confirmed action and never merges. |
 | Workflow Studio | CodeMirror 6 (Markdown + YAML front matter), debounced runtime validation with located diagnostics, effective config, prompt preview, Ctrl+S, revert, external-change detection, unsaved-changes guard. |

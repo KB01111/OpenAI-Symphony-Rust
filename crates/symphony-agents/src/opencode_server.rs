@@ -546,6 +546,9 @@ impl OpenCodeSession {
                                 message,
                                 usage: Some(self.completed_usage.plus(&usage)),
                                 rate_limits: None,
+                                tool_calls: crate::tool_events::opencode_tool_call(&part)
+                                    .into_iter()
+                                    .collect(),
                                 raw: json!({ "type": part_type, "part": part }),
                             }),
                         )

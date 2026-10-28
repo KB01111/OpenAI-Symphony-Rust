@@ -1079,6 +1079,78 @@
         "x-symphony-remote": true
       }
     },
+    "/api/v1/tasks/{id}/tool-calls": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "A task's tool-call history (shell commands, file changes, MCP and host tools), newest first.\nArguments and output are redacted and output is capped at 64 KiB per call. Local only: tool\noutput can carry workspace content, like the task diff.",
+        "operationId": "listTaskToolCalls",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Task id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of tool calls (1–500, default 200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 500,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return only calls older than this tool-call id of the same task (the oldest call of the\nprevious page); omit for the newest calls.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Newest first; 404 when `before` is not a tool call of this task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ToolCallRecord"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
     "/api/v1/tasks/{id}/attempts": {
       "get": {
         "tags": [
@@ -2512,6 +2584,39 @@
             "default": 30,
             "maximum": 3650,
             "minimum": 0
+          },
+          "backup_interval_hours": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Hours between automatic backups (`0` = no automatic backups). A backup of any kind newer\nthan this resets the clock. Omit it (or send `null`) to keep the stored value; settings that\nnever had a value use 24.",
+            "default": 24,
+            "maximum": 720,
+            "minimum": 0
+          },
+          "backup_keep": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many automatic backups are kept (1–100); older automatic backups are deleted after each\nnew one. Backups made by hand are never deleted. Omit it to keep the stored value; settings\nthat never had a value use 7.",
+            "default": 7,
+            "maximum": 100,
+            "minimum": 1
+          },
+          "pr_refresh_interval_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Minutes between automatic status checks of open pull requests (CI, merge state, review\ncomments): `0` = only when asked (*Refresh status*), otherwise 5–1440 (1–4 are refused).\nOmit it to keep the stored value; settings that never had a value use 15.",
+            "default": 15,
+            "maximum": 1440,
+            "minimum": 0
           }
         }
       },
@@ -2656,7 +2761,8 @@
           "app_version",
           "schema_version",
           "size_bytes",
-          "includes_workflow"
+          "includes_workflow",
+          "scheduled"
         ],
         "properties": {
           "id": {
@@ -2687,6 +2793,10 @@
           "includes_workflow": {
             "type": "boolean",
             "description": "Whether the active `WORKFLOW.md` is part of the backup."
+          },
+          "scheduled": {
+            "type": "boolean",
+            "description": "Made by the automatic schedule (`backup_interval_hours`); only these are deleted by its\nretention (`backup_keep`)."
           }
         }
       },
@@ -5132,6 +5242,104 @@
             "minimum": 0
           }
         }
+      },
+      "ToolCallKind": {
+        "type": "string",
+        "enum": [
+          "dynamic",
+          "mcp",
+          "command",
+          "file_change",
+          "provider_tool"
+        ]
+      },
+      "ToolCallRecord": {
+        "type": "object",
+        "description": "One tool call of a task, as stored and served by `GET /api/v1/tasks/{id}/tool-calls`.\nArguments and output are redacted before they are stored.",
+        "required": [
+          "id",
+          "task_id",
+          "session_id",
+          "provider",
+          "call_id",
+          "tool_name",
+          "kind",
+          "arguments",
+          "output",
+          "output_truncated",
+          "status",
+          "started_at",
+          "finished_at",
+          "duration_ms"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`\"{task_id}:{call_id}\"`, so the start and the result of a call land on one record."
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "$ref": "#/components/schemas/ProviderKind"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "tool_name": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ToolCallKind"
+          },
+          "arguments": {},
+          "output": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output_truncated": {
+            "type": "boolean",
+            "description": "The output was longer than 64 KiB and was cut."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ToolCallStatus"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ToolCallStatus": {
+        "type": "string",
+        "enum": [
+          "started",
+          "succeeded",
+          "failed"
+        ]
       },
       "UpdateWorkflowRequest": {
         "type": "object",

@@ -14,6 +14,7 @@ use symphony_core::domain::{
 use symphony_core::error::{Result, SymphonyError};
 use symphony_core::redaction::redact_secrets;
 use symphony_core::usage::{ReportOrigin, ThreadUsageLedger};
+use symphony_core::{ToolCallKind, ToolCallStatus, ToolCallUpdate};
 use symphony_workspaces::{prepare_tree_command, ProcessTree, SECRET_ENV_VARS_TO_STRIP};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
@@ -22,6 +23,7 @@ use tokio::time::timeout;
 
 pub mod detection;
 mod opencode_server;
+pub mod tool_events;
 pub use detection::{
     clear_model_catalogues, detect_provider_status, detect_provider_statuses, find_on_path,
 };
@@ -64,6 +66,9 @@ pub struct AgentStreamEvent {
     pub usage: Option<TokenUsage>,
     pub rate_limits: Option<Value>,
     pub raw: Value,
+    /// Tool calls this event starts or finishes, normalized for the tool-call history.
+    #[serde(default)]
+    pub tool_calls: Vec<symphony_core::ToolCallUpdate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -500,6 +505,7 @@ impl CodexAppServerSession {
                             usage: None,
                             rate_limits: None,
                             raw: Value::Null,
+                            tool_calls: Vec::new(),
                         })
                         .await;
                     continue;
@@ -562,6 +568,25 @@ impl CodexAppServerSession {
         let usage = self.observe_usage(msg);
         let rate_limits = extract_rate_limits(msg);
         let text_message = extract_display_message(method, &params);
+        // A host-side tool call keeps one id from its request to the result Symphony answers.
+        let dynamic_call_id = (method == "item/tool/call").then(|| {
+            tool_events::codex_dynamic_call_id(&params)
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+        });
+        let tool_calls: Vec<ToolCallUpdate> = match &dynamic_call_id {
+            Some(call_id) => vec![ToolCallUpdate {
+                call_id: call_id.clone(),
+                tool_name: dynamic_tool_name(&params).to_string(),
+                kind: ToolCallKind::Dynamic,
+                arguments: params.get("arguments").cloned(),
+                output: None,
+                status: ToolCallStatus::Started,
+                duration_ms: None,
+            }],
+            None => tool_events::codex_item_tool_call(method, &params)
+                .into_iter()
+                .collect(),
+        };
 
         let _ = event_tx
             .send(AgentStreamEvent {
@@ -579,6 +604,7 @@ impl CodexAppServerSession {
                 usage,
                 rate_limits: rate_limits.clone(),
                 raw: msg.clone(),
+                tool_calls,
             })
             .await;
 
@@ -631,15 +657,12 @@ impl CodexAppServerSession {
                     return Ok(None);
                 }
                 "item/tool/call" => {
-                    let tool_name = params
-                        .get("name")
-                        .or_else(|| params.get("tool"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let tool_name = dynamic_tool_name(&params);
                     let arguments = params
                         .get("arguments")
                         .cloned()
                         .unwrap_or_else(|| json!({}));
+                    let started = std::time::Instant::now();
 
                     let result = if let Some(ref handler) = self.tool_handler {
                         handler.execute_tool(tool_name, &arguments).await
@@ -662,6 +685,31 @@ impl CodexAppServerSession {
                         "result": result
                     }))
                     .await?;
+                    // The answer is not part of the provider's stream: record it for the
+                    // tool-call history.
+                    let update = tool_events::codex_dynamic_tool_result(
+                        dynamic_call_id.unwrap_or_default(),
+                        tool_name,
+                        &arguments,
+                        &result,
+                        started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                    );
+                    let _ = event_tx
+                        .send(AgentStreamEvent {
+                            event_type: "tool/result".into(),
+                            timestamp: Utc::now(),
+                            session_id,
+                            thread_id: (!self.thread_id.is_empty()).then(|| self.thread_id.clone()),
+                            turn_id: self.current_turn_id.clone(),
+                            pid: self.pid,
+                            message: Some(format!("Tool {tool_name} answered")),
+                            usage: None,
+                            rate_limits: None,
+                            raw: json!({ "method": "tool/result", "params": {
+                                "tool": tool_name, "result": result } }),
+                            tool_calls: vec![update],
+                        })
+                        .await;
                     return Ok(None);
                 }
                 _ => {}
@@ -830,6 +878,7 @@ impl AgentSession for CodexAppServerSession {
                 usage: None,
                 rate_limits: None,
                 raw: result,
+                tool_calls: Vec::new(),
             })
             .await;
 
@@ -978,6 +1027,7 @@ fn forward_stderr(stderr: ChildStderr, pid: Option<u32>, event_tx: mpsc::Sender<
             usage: None,
             rate_limits: None,
             raw: json!({ "stderr": redacted }),
+            tool_calls: Vec::new(),
         });
     };
 
@@ -1483,7 +1533,7 @@ impl AgentSession for ClaudeCodeSession {
                     Some("result") => process.close_stdin(),
                     _ => {}
                 }
-                if let Some(u) = extract_token_usage(&val) {
+                if let Some(u) = extract_claude_result_usage(&val) {
                     usage = u;
                 }
                 let msg_type = val
@@ -1502,6 +1552,7 @@ impl AgentSession for ClaudeCodeSession {
                     .send(
                         &event_tx,
                         AgentStreamEvent {
+                            tool_calls: tool_events::claude_tool_calls(&val),
                             event_type: format!("claude/{}", msg_type),
                             timestamp: Utc::now(),
                             session_id: Some(discovered_session.clone()),
@@ -1680,9 +1731,7 @@ impl AgentSession for OpenCodeSession {
                 {
                     discovered_session = sid.to_string();
                 }
-                if let Some(u) = extract_token_usage(&val) {
-                    usage = u;
-                } else if val.get("type").and_then(Value::as_str) == Some("step_finish") {
+                if val.get("type").and_then(Value::as_str) == Some("step_finish") {
                     // `opencode run --format json` reports each step's tokens on its own.
                     if let Some(step) = val
                         .get("part")
@@ -1703,6 +1752,11 @@ impl AgentSession for OpenCodeSession {
                     .send(
                         &event_tx,
                         AgentStreamEvent {
+                            tool_calls: val
+                                .get("part")
+                                .and_then(tool_events::opencode_tool_call)
+                                .into_iter()
+                                .collect(),
                             event_type: "opencode/event".into(),
                             timestamp: Utc::now(),
                             session_id: Some(discovered_session.clone()),
@@ -1772,6 +1826,9 @@ pub struct SimulatedAgentSession {
     config: AgentLaunchConfig,
     thread_id: String,
     turn_counter: u32,
+    /// Unique per session, so the item ids of a retried attempt (whose turn counter starts
+    /// again) never collide with an earlier attempt's tool calls.
+    item_prefix: String,
     /// Usage of the finished turns, so stream events report session totals.
     completed_usage: TokenUsage,
     cancel_tx: Option<oneshot::Sender<()>>,
@@ -1785,6 +1842,7 @@ impl SimulatedAgentSession {
             thread_id: existing_thread_id
                 .unwrap_or_else(|| format!("thread-sim-{}", uuid::Uuid::new_v4())),
             turn_counter: 0,
+            item_prefix: uuid::Uuid::new_v4().simple().to_string(),
             completed_usage: TokenUsage::default(),
             cancel_tx: None,
             approval_gate: None,
@@ -1823,6 +1881,10 @@ impl SimulatedAgentSession {
             message: Some(message),
             usage,
             rate_limits: None,
+            // The simulated command and file change are finished Codex-shaped items.
+            tool_calls: tool_events::codex_item_tool_call("item/completed", &raw)
+                .into_iter()
+                .collect(),
             raw,
         }
     }
@@ -1989,6 +2051,8 @@ impl AgentSession for SimulatedAgentSession {
                 None,
                 json!({ "item": {
                     "type": "commandExecution",
+                    "id": format!("{}-{turn_id}-command", self.item_prefix),
+                    "durationMs": 40,
                     "command": "git status --short",
                     "cwd": self.config.workspace_path.to_string_lossy(),
                     "status": "completed",
@@ -2067,6 +2131,7 @@ impl AgentSession for SimulatedAgentSession {
                 None,
                 json!({ "item": {
                     "type": "fileChange",
+                    "id": format!("{}-{turn_id}-file", self.item_prefix),
                     "status": "completed",
                     "changes": [{ "path": "SYMPHONY_TASK_NOTE.md", "kind": "add", "diff": content }]
                 } }),
@@ -2164,13 +2229,27 @@ fn build_codex_command(
     cmd
 }
 
+/// Absolute (thread-total) usage of a Codex app-server message: `thread/tokenUsage/updated`'s
+/// `tokenUsage.total` or a `total_token_usage` payload. Generic `usage` maps and per-response
+/// values (`last`, `last_token_usage`) are deliberately not read: SPEC.md §13.5 says to prefer
+/// absolute totals and not to treat a generic `usage` map as cumulative, so a notification that
+/// happens to carry one can never move the usage ledger.
 pub fn extract_token_usage(msg: &Value) -> Option<TokenUsage> {
-    let usage_node = msg
-        .pointer("/params/tokenUsage/total")
-        .or_else(|| msg.pointer("/params/usage"))
+    msg.pointer("/params/tokenUsage/total")
         .or_else(|| msg.pointer("/params/msg/payload/info/total_token_usage"))
-        .or_else(|| msg.get("usage"))?;
+        .and_then(usage_from_map)
+}
 
+/// Usage of a whole Claude Code invocation: the `usage` of its final `result` line. The `usage`
+/// that `assistant` lines carry belongs to a single API response and is not a running total.
+pub fn extract_claude_result_usage(msg: &Value) -> Option<TokenUsage> {
+    if msg.get("type").and_then(Value::as_str) != Some("result") {
+        return None;
+    }
+    msg.get("usage").and_then(usage_from_map)
+}
+
+fn usage_from_map(usage_node: &Value) -> Option<TokenUsage> {
     // Anthropic reports prompt-cache traffic next to `input_tokens`, not inside it
     // (`cache_creation_input_tokens`, `cache_read_input_tokens`); all of it is input the model
     // consumed. Codex's `cachedInputTokens` is a subset of `inputTokens` and is not added.
@@ -2213,6 +2292,15 @@ pub fn extract_token_usage(msg: &Value) -> Option<TokenUsage> {
         output_tokens: output,
         total_tokens: total,
     })
+}
+
+/// Name of the host-side tool an `item/tool/call` request asks for.
+fn dynamic_tool_name(params: &Value) -> &str {
+    params
+        .get("name")
+        .or_else(|| params.get("tool"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
 }
 
 pub fn extract_rate_limits(msg: &Value) -> Option<Value> {
@@ -2280,7 +2368,7 @@ mod tests {
                 "output_tokens": 800
             }
         });
-        let usage = extract_token_usage(&claude).unwrap();
+        let usage = extract_claude_result_usage(&claude).unwrap();
         assert_eq!(usage.input_tokens, 43_012);
         assert_eq!(usage.output_tokens, 800);
         assert_eq!(usage.total_tokens, 43_812);
@@ -2312,5 +2400,32 @@ mod tests {
         assert_eq!(usage.output_tokens, 500);
         assert_eq!(usage.total_tokens, 1500);
         assert!(usage.estimate_cost_usd(None) > 0.0);
+    }
+
+    #[test]
+    fn generic_usage_maps_are_never_read_as_cumulative_totals() {
+        // SPEC.md §13.5: only absolute thread totals count for Codex.
+        for msg in [
+            json!({ "method": "item/completed", "params": { "usage": { "input_tokens": 10, "output_tokens": 5 } } }),
+            json!({ "method": "codex/event", "usage": { "input_tokens": 10, "output_tokens": 5 } }),
+            json!({ "method": "thread/tokenUsage/updated", "params": { "tokenUsage": {
+                "last": { "inputTokens": 10, "outputTokens": 5, "totalTokens": 15 } } } }),
+        ] {
+            assert_eq!(extract_token_usage(&msg), None, "{msg}");
+        }
+        let legacy = json!({ "params": { "msg": { "payload": { "info": { "total_token_usage": {
+            "input_tokens": 70, "output_tokens": 30, "total_tokens": 100 } } } } } });
+        assert_eq!(extract_token_usage(&legacy).unwrap().total_tokens, 100);
+
+        // Claude: an assistant line's usage is one API response; only the result line totals.
+        let assistant = json!({ "type": "assistant", "message": { "usage": { "input_tokens": 5, "output_tokens": 2 } },
+            "usage": { "input_tokens": 5, "output_tokens": 2 } });
+        assert_eq!(extract_claude_result_usage(&assistant), None);
+        let result =
+            json!({ "type": "result", "usage": { "input_tokens": 50, "output_tokens": 20 } });
+        assert_eq!(
+            extract_claude_result_usage(&result).unwrap().total_tokens,
+            70
+        );
     }
 }

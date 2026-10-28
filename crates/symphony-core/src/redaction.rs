@@ -201,6 +201,46 @@ pub fn redact_secrets(input: &str, extra_secrets: &[String]) -> String {
     out
 }
 
+/// Redacts every string inside a JSON value in place, object keys included, with the same rules
+/// as [`redact_secrets`] (model-written tool arguments can use any string as a key). Raw provider payloads (command output, tool results, file diffs)
+/// pass through this before they are stored or streamed, so a token an agent printed never
+/// reaches the database, the event stream or a diagnostics export. Strings shorter than any
+/// secret the patterns or the registry can match are skipped without scanning.
+pub fn redact_json_strings(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) if text.len() >= MIN_SECRET_LEN => {
+            let redacted = redact_secrets(text, &[]);
+            if redacted != *text {
+                *text = redacted;
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(redact_json_strings),
+        serde_json::Value::Object(map) => {
+            map.values_mut().for_each(redact_json_strings);
+            let leaking =
+                |key: &String| key.len() >= MIN_SECRET_LEN && redact_secrets(key, &[]) != *key;
+            if map.keys().any(leaking) {
+                // Rebuild the map only when a key holds a secret (the common case costs no copy).
+                // Two keys can redact to the same text: number the later ones so no value is
+                // dropped.
+                let mut rebuilt = serde_json::Map::with_capacity(map.len());
+                for (key, value) in std::mem::take(map) {
+                    let redacted = redact_secrets(&key, &[]);
+                    let mut unique = redacted.clone();
+                    let mut n = 2;
+                    while rebuilt.contains_key(&unique) {
+                        unique = format!("{redacted}#{n}");
+                        n += 1;
+                    }
+                    rebuilt.insert(unique, value);
+                }
+                *map = rebuilt;
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Kinds of credential that a change set must not introduce, with the pattern that finds them.
 fn secret_patterns() -> &'static [(&'static str, Regex)] {
     static PATTERNS: OnceLock<Vec<(&'static str, Regex)>> = OnceLock::new();
@@ -253,6 +293,45 @@ pub fn detect_secrets_in_added_lines(diff: &str) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_payloads_are_redacted_at_every_depth_keys_included_and_short_values_stay() {
+        register_secret("test:json-payload", "vault-value-0123456789");
+        let mut payload = serde_json::json!({
+            "method": "item/completed",
+            "params": { "item": {
+                "aggregatedOutput": "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123\nok",
+                "lines": ["plain", "key vault-value-0123456789 used", 42, null],
+                "ghp_abcdefghijklmnopqrstuvwxyz0123": true
+            } }
+        });
+        redact_json_strings(&mut payload);
+        let item = &payload["params"]["item"];
+        assert_eq!(item["aggregatedOutput"], "GITHUB_TOKEN=[REDACTED]\nok");
+        assert_eq!(item["lines"][0], "plain");
+        assert_eq!(item["lines"][1], "key [REDACTED] used");
+        assert_eq!(item["lines"][2], 42);
+        assert_eq!(payload["method"], "item/completed");
+        // A secret used as a key is masked too; its value stays, also when keys collide.
+        assert_eq!(item["[REDACTED]"], true);
+        assert!(!payload.to_string().contains("ghp_"), "{payload}");
+        let mut colliding = serde_json::json!({
+            "[REDACTED]": 1,
+            "ghp_abcdefghijklmnopqrstuvwxyz0123": 2,
+            "ghp_zyxwvutsrqponmlkjihgfedcba3210": 3
+        });
+        redact_json_strings(&mut colliding);
+        let mut values: Vec<i64> = colliding
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        values.sort();
+        assert_eq!(values, [1, 2, 3], "{colliding}");
+        assert!(!colliding.to_string().contains("ghp_"), "{colliding}");
+        release_secret("test:json-payload");
+    }
 
     #[test]
     fn secrets_are_detected_only_on_added_lines() {

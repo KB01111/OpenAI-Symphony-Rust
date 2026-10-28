@@ -12,14 +12,14 @@ use symphony_agents::{
     AgentStreamEvent, ApprovalGate, DynamicToolHandler,
 };
 use symphony_core::{
-    compute_backoff_delay_ms, detect_secrets_in_added_lines, redact_secrets,
+    compute_backoff_delay_ms, detect_secrets_in_added_lines, redact_json_strings, redact_secrets,
     render_continuation_prompt, render_workflow_prompt, sort_candidate_issues, AgentEvent,
     ApprovalDecision, ApprovalRequest, ApprovalStatus, CodexTotals, ConflictCheck,
     HardwareSnapshot, Issue, LiveSession, MergeReadinessReport, OrchestratorStateSnapshot, Project,
     ProviderKind, ProviderStatus, PullRequestReview, RepositoryValidation, RetryEntry, RunAttempt,
     RunAttemptPhase, RunningSessionSummary, ServiceConfig, StateCounts, SymphonyError,
-    SymphonyResult, Task, TaskDiff, TaskStatus, ThreadUsageMark, TokenUsage, ValidationResult,
-    WorkflowDefinition, WorktreeInfo,
+    SymphonyResult, Task, TaskDiff, TaskStatus, ThreadUsageMark, TokenUsage, ToolCallRecord,
+    ToolCallUpdate, ValidationResult, WorkflowDefinition, WorktreeInfo,
 };
 use symphony_platform::{HardwareMonitor, SecretStore};
 
@@ -85,6 +85,14 @@ fn unpushed_changes_blocker(pr_number: u64) -> String {
 const EVENT_PRUNE_STARTUP_DELAY: Duration = Duration::from_secs(120);
 /// ... and how often it repeats while the runtime keeps running.
 const EVENT_PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Delay before the first automatic pull request refresh after startup.
+const PR_REFRESH_STARTUP_DELAY: Duration = Duration::from_secs(90);
+/// How often the pull request refresh schedule is checked (the interval itself is in minutes).
+const PR_REFRESH_TICK: Duration = Duration::from_secs(60);
+/// Delay before the first automatic-backup check after startup.
+const BACKUP_STARTUP_DELAY: Duration = Duration::from_secs(180);
+/// How often the automatic-backup schedule is checked (the interval itself is in hours).
+const BACKUP_CHECK_INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// Maximum diff size returned by `task_diff` (the UI renders it lazily).
 const TASK_DIFF_MAX_BYTES: usize = 512 * 1024;
 
@@ -282,6 +290,28 @@ struct OrchestratorRuntimeMemory {
     pub workflow_fallback_path: Option<PathBuf>,
 }
 
+/// What one automatic pull request refresh did ([`SymphonyOrchestrator::refresh_open_pull_requests`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PullRequestSweep {
+    /// Open pull requests that were read from GitHub.
+    pub checked: usize,
+    /// Of those, the ones whose CI, merge state, state, comments or score changed.
+    pub changed: usize,
+    /// Refreshes that failed (unreachable GitHub, missing repository, …).
+    pub failed: usize,
+}
+
+/// Mask secrets in an event's message and in every string of its raw payload. Every event goes
+/// through this before it is stored or broadcast: provider payloads carry command output and tool
+/// results, where an agent may have printed a token.
+fn redact_event(mut event: AgentEvent) -> AgentEvent {
+    event.message = redact_secrets(&event.message, &[]);
+    if let Some(payload) = event.payload.as_mut() {
+        redact_json_strings(payload);
+    }
+    event
+}
+
 struct OrchestratorApprovalGate {
     storage: Storage,
     memory: Arc<RwLock<OrchestratorRuntimeMemory>>,
@@ -306,6 +336,7 @@ impl ApprovalGate for OrchestratorApprovalGate {
             payload: Some(serde_json::to_value(&request).unwrap_or(Value::Null)),
             timestamp: Utc::now(),
         };
+        let evt = redact_event(evt);
         let _ = self.storage.record_event(&evt).await;
         let _ = self.event_tx.send(evt);
 
@@ -598,6 +629,30 @@ Please implement the requested changes cleanly in the current Git workspace, run
             }
         });
 
+        // Status of open pull requests (CI, merge state, comments) on the configured interval.
+        let orch_prs = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(PR_REFRESH_STARTUP_DELAY).await;
+            let mut failing = HashSet::new();
+            let mut last_sweep: Option<tokio::time::Instant> = None;
+            loop {
+                let minutes = orch_prs
+                    .storage
+                    .get_settings()
+                    .await
+                    .map(|s| s.effective_pr_refresh_interval_minutes())
+                    .unwrap_or(0);
+                let interval = Duration::from_secs(u64::from(minutes) * 60);
+                if minutes > 0 && last_sweep.is_none_or(|at| at.elapsed() >= interval) {
+                    last_sweep = Some(tokio::time::Instant::now());
+                    if let Err(e) = orch_prs.refresh_open_pull_requests(&mut failing).await {
+                        warn!(error = %e, "Automatic pull request refresh failed");
+                    }
+                }
+                tokio::time::sleep(PR_REFRESH_TICK).await;
+            }
+        });
+
         // Start dynamic WORKFLOW.md file watcher if a path is configured
         let orch_watch = self.clone();
         tokio::spawn(async move {
@@ -609,6 +664,84 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 let _ = orch_watch.watch_workflow_file(wf_path).await;
             }
         });
+    }
+
+    /// Run automatic backups into `root` (the data directory's `backups` folder) on the schedule of
+    /// the settings (`backup_interval_hours`, `backup_keep`), checked every 15 minutes. Only hosts
+    /// that own the data directory call this (the desktop host and the CLI without `--db-path`),
+    /// exactly like `POST /backups` is only offered there.
+    pub fn start_scheduled_backups(&self, root: PathBuf) {
+        let orch = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(BACKUP_STARTUP_DELAY).await;
+            loop {
+                if let Err(e) = orch.run_scheduled_backup_if_due(&root).await {
+                    warn!(error = %e, "Automatic backup failed");
+                }
+                tokio::time::sleep(BACKUP_CHECK_INTERVAL).await;
+            }
+        });
+    }
+
+    /// Create an automatic backup in `root` when one is due and delete automatic backups beyond
+    /// the configured number. Returns the new backup, or `None` when none was due.
+    pub async fn run_scheduled_backup_if_due(
+        &self,
+        root: &Path,
+    ) -> SymphonyResult<Option<symphony_storage::backup::BackupInfo>> {
+        use symphony_storage::backup;
+        let settings = self.storage.get_settings().await?;
+        let interval = settings.effective_backup_interval_hours();
+        let listing_root = root.to_path_buf();
+        let existing = tokio::task::spawn_blocking(move || backup::list_backups(&listing_root))
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))??;
+        if !backup::scheduled_backup_due(&existing, Utc::now(), interval) {
+            return Ok(None);
+        }
+        let workflow = self.workflow_target_path().await;
+        let created =
+            match backup::create_scheduled_backup(&self.storage, root, workflow.as_deref()).await {
+                Ok(created) => created,
+                Err(e) => {
+                    self.emit_event(
+                        None,
+                        None,
+                        None,
+                        None,
+                        "backup/failed",
+                        None,
+                        format!("Automatic backup failed: {e}"),
+                        None,
+                    )
+                    .await;
+                    return Err(e);
+                }
+            };
+        let keep = settings.effective_backup_keep();
+        let pruning_root = root.to_path_buf();
+        let removed = tokio::task::spawn_blocking(move || {
+            backup::prune_scheduled_backups(&pruning_root, keep)
+        })
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))??;
+        info!(
+            backup = %created.id,
+            removed = removed.len(),
+            "Automatic backup created"
+        );
+        self.emit_event(
+            None,
+            None,
+            None,
+            None,
+            "backup/created",
+            None,
+            format!("Automatic backup {} created", created.id),
+            Some(json!({ "id": created.id, "removed": removed })),
+        )
+        .await;
+        Ok(Some(created))
     }
 
     /// Delete activity-log events older than the configured retention (`event_retention_days`,
@@ -624,6 +757,14 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
         let cutoff = Utc::now() - chrono::Duration::days(i64::from(days));
         let removed = self.storage.prune_agent_events(cutoff).await?;
+        let removed_calls = self.storage.prune_tool_calls(cutoff).await?;
+        if removed_calls > 0 {
+            info!(
+                removed_calls,
+                retention_days = days,
+                "Pruned old tool-call history"
+            );
+        }
         if removed > 0 {
             info!(
                 removed,
@@ -1598,6 +1739,25 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .ok_or_else(|| SymphonyError::NotFound(format!("event {before} of task {task_id}")))
     }
 
+    /// A task's tool calls, newest first; with `before` (a tool-call id of the task) the next
+    /// older page (see `Storage::list_tool_calls`).
+    pub async fn list_tool_calls(
+        &self,
+        task_id: &str,
+        limit: u32,
+        before: Option<&str>,
+    ) -> SymphonyResult<Vec<ToolCallRecord>> {
+        self.storage
+            .list_tool_calls(task_id, limit, before)
+            .await?
+            .ok_or_else(|| {
+                SymphonyError::NotFound(format!(
+                    "tool call {} of task {task_id}",
+                    before.unwrap_or_default()
+                ))
+            })
+    }
+
     pub async fn list_run_attempts(&self, task_id: &str) -> SymphonyResult<Vec<RunAttempt>> {
         self.storage.list_run_attempts(task_id).await
     }
@@ -2119,6 +2279,92 @@ Please implement the requested changes cleanly in the current Git workspace, run
         review.updated_at = Utc::now();
         self.storage.upsert_pr_review(&review).await?;
         Ok(review)
+    }
+
+    /// Refresh every open pull request (one that exists on GitHub and is neither merged nor closed)
+    /// with [`Self::refresh_pull_request`], one after another so GitHub never sees a burst. Nothing
+    /// is read without a GitHub token. A `pr/status_changed` event announces a refresh that changed
+    /// CI, merge state, state, comments or the score; a refresh that fails is announced once
+    /// (`pr/refresh_failed`) until it succeeds again (`failing` carries that across sweeps).
+    pub async fn refresh_open_pull_requests(
+        &self,
+        failing: &mut HashSet<String>,
+    ) -> SymphonyResult<PullRequestSweep> {
+        let mut sweep = PullRequestSweep::default();
+        if self.github_token().is_none() {
+            return Ok(sweep);
+        }
+        let open: Vec<PullRequestReview> = self
+            .storage
+            .list_pr_reviews(None)
+            .await?
+            .into_iter()
+            .filter(|r| r.has_pull_request() && !matches!(r.state.as_str(), "merged" | "closed"))
+            .collect();
+        failing.retain(|id| open.iter().any(|r| &r.id == id));
+        for before in open {
+            sweep.checked += 1;
+            match self.refresh_pull_request(&before.id).await {
+                Ok(after) => {
+                    failing.remove(&before.id);
+                    // Compared by content: an edited comment is a change even when the count
+                    // stays the same.
+                    let unchanged = before.ci_status == after.ci_status
+                        && before.state == after.state
+                        && before.mergeable == after.mergeable
+                        && before.has_conflicts == after.has_conflicts
+                        && before.merge_readiness.score == after.merge_readiness.score
+                        && before.review_comments == after.review_comments;
+                    if unchanged {
+                        continue;
+                    }
+                    sweep.changed += 1;
+                    self.emit_event(
+                        Some(after.task_id.clone()),
+                        None,
+                        None,
+                        None,
+                        "pr/status_changed",
+                        None,
+                        format!(
+                            "Pull request #{}: CI {}, {}, readiness {}/5",
+                            after.pr_number,
+                            after.ci_status,
+                            after.state,
+                            after.merge_readiness.score
+                        ),
+                        Some(json!({
+                            "review_id": after.id,
+                            "pr_number": after.pr_number,
+                            "ci_status": after.ci_status,
+                            "state": after.state,
+                            "mergeable": after.mergeable,
+                            "has_conflicts": after.has_conflicts,
+                            "score": after.merge_readiness.score,
+                        })),
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    sweep.failed += 1;
+                    if failing.insert(before.id.clone()) {
+                        warn!(review = %before.id, error = %e, "Refreshing a pull request failed");
+                        self.emit_event(
+                            Some(before.task_id.clone()),
+                            None,
+                            None,
+                            None,
+                            "pr/refresh_failed",
+                            None,
+                            format!("Could not refresh pull request #{}: {e}", before.pr_number),
+                            Some(json!({ "review_id": before.id })),
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+        Ok(sweep)
     }
 
     /// Explicitly approve a Pull Request review for human merge completion (Section 4.F)
@@ -3626,13 +3872,28 @@ Please implement the requested changes cleanly in the current Git workspace, run
         provider: ProviderKind,
         ev: AgentStreamEvent,
     ) {
+        // Redacted once, then used for the live session, the database and the broadcast.
+        let has_message = ev.message.is_some();
+        let agent_evt = redact_event(AgentEvent {
+            id: Uuid::new_v4().to_string(),
+            task_id: Some(task_id.to_string()),
+            issue_identifier: Some(issue_identifier.to_string()),
+            session_id: ev.session_id.clone(),
+            provider: Some(provider),
+            event_type: ev.event_type.clone(),
+            phase: Some(RunAttemptPhase::StreamingTurn),
+            message: ev.message.unwrap_or_else(|| ev.event_type.clone()),
+            payload: Some(ev.raw),
+            timestamp: ev.timestamp,
+        });
+
         {
             let mut mem = self.memory.write().await;
             if let Some(handle) = mem.running.get_mut(task_id) {
-                handle.session.last_event = Some(ev.event_type.clone());
+                handle.session.last_event = Some(ev.event_type);
                 handle.session.last_event_at = Some(ev.timestamp);
-                if let Some(ref msg) = ev.message {
-                    handle.session.last_message = Some(msg.clone());
+                if has_message {
+                    handle.session.last_message = Some(agent_evt.message.clone());
                 }
                 if let Some(ref sid) = ev.session_id {
                     handle.session.session_id = sid.clone();
@@ -3646,26 +3907,46 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     handle.session.total_tokens = usage.total_tokens;
                 }
             }
-            if let Some(ref rl) = ev.rate_limits {
-                mem.latest_rate_limits = Some(rl.clone());
+            if let Some(rl) = ev.rate_limits {
+                mem.latest_rate_limits = Some(rl);
             }
         }
 
-        let agent_evt = AgentEvent {
-            id: Uuid::new_v4().to_string(),
-            task_id: Some(task_id.to_string()),
-            issue_identifier: Some(issue_identifier.to_string()),
-            session_id: ev.session_id,
-            provider: Some(provider),
-            event_type: ev.event_type.clone(),
-            phase: Some(RunAttemptPhase::StreamingTurn),
-            message: redact_secrets(&ev.message.unwrap_or_else(|| ev.event_type.clone()), &[]),
-            payload: Some(ev.raw),
-            timestamp: ev.timestamp,
-        };
+        for update in ev.tool_calls {
+            if let Err(e) = self
+                .record_tool_call(
+                    task_id,
+                    ev.session_id.as_deref(),
+                    provider,
+                    update,
+                    ev.timestamp,
+                )
+                .await
+            {
+                warn!(task_id, error = %e, "Recording a tool call failed");
+            }
+        }
 
         let _ = self.storage.record_event(&agent_evt).await;
         let _ = self.event_tx.send(agent_evt);
+    }
+
+    /// Merge a provider's report into the task's tool-call history.
+    async fn record_tool_call(
+        &self,
+        task_id: &str,
+        session_id: Option<&str>,
+        provider: ProviderKind,
+        update: ToolCallUpdate,
+        at: DateTime<Utc>,
+    ) -> SymphonyResult<()> {
+        if update.call_id.is_empty() {
+            return Ok(());
+        }
+        let id = ToolCallRecord::record_id(task_id, &update.call_id);
+        let existing = self.storage.get_tool_call(&id).await?;
+        let record = ToolCallRecord::apply(existing, task_id, session_id, provider, update, at);
+        self.storage.upsert_tool_call(&record).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3688,10 +3969,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
             provider,
             event_type: event_type.to_string(),
             phase,
-            message: redact_secrets(&message, &[]),
+            message,
             payload,
             timestamp: Utc::now(),
         };
+        let evt = redact_event(evt);
         let _ = self.storage.record_event(&evt).await;
         let _ = self.event_tx.send(evt);
     }
@@ -4766,6 +5048,111 @@ rl.on('line', (line) => {
     }
 
     #[tokio::test]
+    async fn open_pull_requests_are_refreshed_and_only_changes_are_announced() {
+        let temp = TempDir::new().unwrap();
+        // GitHub: (check runs, pull request state, head commit).
+        let state = Arc::new(std::sync::Mutex::new((
+            json!([]),
+            "open".to_string(),
+            String::new(),
+        )));
+        let served = state.clone();
+        let (api, _requests) = github_mock_with(Arc::new(move |method: &str, target: &str| {
+            let (runs, pr_state, head_sha) = served.lock().unwrap().clone();
+            let path = target.split('?').next().unwrap_or(target);
+            let payload = match (method, path) {
+                ("POST", _) => {
+                    json!({ "number": 7, "html_url": "https://github.com/acme/widgets/pull/7" })
+                }
+                (_, "/repos/acme/widgets/pulls/7") => json!({
+                    "number": 7, "title": "t", "body": "b", "state": pr_state,
+                    "html_url": "https://github.com/acme/widgets/pull/7",
+                    "head": { "ref": "branch", "sha": head_sha }, "base": { "ref": "main" },
+                    "mergeable": true, "mergeable_state": "clean", "merged": false
+                }),
+                (_, p) if p.contains("/check-runs") => json!({ "check_runs": runs }),
+                (_, p) if p.ends_with("/status") => {
+                    json!({ "state": "pending", "statuses": [], "total_count": 0 })
+                }
+                (_, p) if p.ends_with("/files") || p.ends_with("/comments") => json!([]),
+                _ => json!({}),
+            };
+            ("200 OK".to_string(), payload)
+        }))
+        .await;
+        let (orch, _task, review) = finished_run(
+            &temp,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        let mut failing = HashSet::new();
+        // A local review without a pull request is not read from GitHub.
+        assert_eq!(
+            orch.refresh_open_pull_requests(&mut failing).await.unwrap(),
+            PullRequestSweep::default()
+        );
+        let opened = orch.create_pull_request(&review.id).await.unwrap();
+        state.lock().unwrap().2 = opened.reviewed_commit.clone().expect("pushed commit");
+        orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+
+        let mut events = orch.subscribe_events();
+        let announced = |events: &mut broadcast::Receiver<AgentEvent>, kind: &str| {
+            let mut n = 0;
+            while let Ok(e) = events.try_recv() {
+                if e.event_type == kind {
+                    n += 1;
+                }
+            }
+            n
+        };
+        // Nothing changed on GitHub: checked, nothing announced.
+        let quiet = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+        assert_eq!((quiet.checked, quiet.changed), (1, 0));
+        assert_eq!(announced(&mut events, "pr/status_changed"), 0);
+
+        // CI goes red: one announcement with the new status.
+        state.lock().unwrap().0 = json!([{ "status": "completed", "conclusion": "failure" }]);
+        let red = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+        assert_eq!((red.checked, red.changed), (1, 1));
+        assert_eq!(announced(&mut events, "pr/status_changed"), 1);
+        let stored = orch.get_pr_review(&review.id).await.unwrap();
+        assert_eq!(stored.ci_status, "failed");
+
+        // A refresh that cannot run is announced once, not on every sweep.
+        let mut project = orch
+            .storage
+            .get_project(&review.project_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let repo = project.github_repo.take();
+        orch.storage.upsert_project(&project).await.unwrap();
+        for _ in 0..2 {
+            let broken = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+            assert_eq!(broken.failed, 1);
+        }
+        assert_eq!(announced(&mut events, "pr/refresh_failed"), 1);
+        project.github_repo = repo;
+        orch.storage.upsert_project(&project).await.unwrap();
+
+        // Closed on GitHub: read once more (it changed), then no longer refreshed.
+        state.lock().unwrap().1 = "closed".to_string();
+        let closing = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+        assert_eq!(
+            (closing.checked, closing.changed, closing.failed),
+            (1, 1, 0)
+        );
+        assert!(
+            failing.is_empty(),
+            "a recovered refresh is no longer failing"
+        );
+        let after = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+        assert_eq!(after.checked, 0);
+    }
+
+    #[tokio::test]
     async fn test_refreshing_a_pull_request_reports_what_github_says_and_never_guesses() {
         let temp = TempDir::new().unwrap();
         // GitHub: merge not computed yet (`mergeable: null`), no check run at all.
@@ -5227,6 +5614,139 @@ rl.on('line', (line) => {
     }
 
     #[tokio::test]
+    async fn tool_calls_are_recorded_once_and_payload_secrets_never_reach_storage() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect(temp.path().join("tools.db"))
+            .await
+            .unwrap();
+        let (orch, task) = single_slot_orchestrator_on(&temp, storage.clone()).await;
+        let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let event = |event_type: &str, status, output: Option<String>| AgentStreamEvent {
+            event_type: event_type.into(),
+            timestamp: Utc::now(),
+            session_id: Some("thread-turn".into()),
+            thread_id: None,
+            turn_id: None,
+            pid: None,
+            message: Some(format!("printed {token}")),
+            usage: None,
+            rate_limits: None,
+            raw: json!({ "params": { "item": { "aggregatedOutput": format!("TOKEN={token}") } } }),
+            tool_calls: vec![ToolCallUpdate {
+                call_id: "call-1".into(),
+                tool_name: if output.is_some() {
+                    String::new()
+                } else {
+                    "github_api".into()
+                },
+                kind: symphony_core::ToolCallKind::Dynamic,
+                arguments: output.is_none().then(|| json!({ "auth": token })),
+                output,
+                status,
+                duration_ms: None,
+            }],
+        };
+        orch.handle_agent_stream_event(
+            &task.id,
+            &task.issue.identifier,
+            ProviderKind::Codex,
+            event(
+                "item/tool/call",
+                symphony_core::ToolCallStatus::Started,
+                None,
+            ),
+        )
+        .await;
+        orch.handle_agent_stream_event(
+            &task.id,
+            &task.issue.identifier,
+            ProviderKind::Codex,
+            event(
+                "tool/result",
+                symphony_core::ToolCallStatus::Succeeded,
+                Some(format!("ok {token}")),
+            ),
+        )
+        .await;
+
+        let calls = orch.list_tool_calls(&task.id, 50, None).await.unwrap();
+        assert_eq!(calls.len(), 1, "start and result are one record");
+        let call = &calls[0];
+        assert_eq!(call.tool_name, "github_api");
+        assert_eq!(call.status, symphony_core::ToolCallStatus::Succeeded);
+        assert_eq!(call.output.as_deref(), Some("ok [REDACTED]"));
+        assert_eq!(call.arguments, Some(json!({ "auth": "[REDACTED]" })));
+        assert_eq!(call.session_id.as_deref(), Some("thread-turn"));
+
+        let events = storage.list_events(Some(&task.id), 50).await.unwrap();
+        assert!(!events.is_empty());
+        for e in &events {
+            let stored = serde_json::to_string(e).unwrap();
+            assert!(!stored.contains(token), "secret stored in {stored}");
+        }
+        assert!(orch
+            .list_tool_calls(&task.id, 50, Some("missing"))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn automatic_backups_follow_the_schedule_and_keep_manual_ones() {
+        let temp = TempDir::new().unwrap();
+        let storage = Storage::connect(temp.path().join("symphony.sqlite"))
+            .await
+            .unwrap();
+        let (orch, _task) = single_slot_orchestrator_on(&temp, storage.clone()).await;
+        let root = temp.path().join("backups");
+        let mut events = orch.subscribe_events();
+
+        // Off: nothing happens.
+        let mut settings = storage.get_settings().await.unwrap();
+        settings.backup_interval_hours = Some(0);
+        storage.save_settings(&settings).await.unwrap();
+        assert!(orch
+            .run_scheduled_backup_if_due(&root)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Daily, keep 1: the first check backs up, the next one finds it recent.
+        settings.backup_interval_hours = Some(24);
+        settings.backup_keep = Some(1);
+        storage.save_settings(&settings).await.unwrap();
+        let manual = symphony_storage::backup::create_backup(&storage, &root, None)
+            .await
+            .unwrap();
+        assert!(
+            orch.run_scheduled_backup_if_due(&root)
+                .await
+                .unwrap()
+                .is_none(),
+            "a backup made by hand resets the clock"
+        );
+        std::fs::remove_dir_all(&manual.path).unwrap();
+        let first = orch
+            .run_scheduled_backup_if_due(&root)
+            .await
+            .unwrap()
+            .expect("due without any backup");
+        assert!(first.scheduled);
+        assert!(orch
+            .run_scheduled_backup_if_due(&root)
+            .await
+            .unwrap()
+            .is_none());
+
+        let created = loop {
+            let e = events.recv().await.unwrap();
+            if e.event_type == "backup/created" {
+                break e;
+            }
+        };
+        assert_eq!(created.payload.unwrap()["id"], first.id);
+    }
+
+    #[tokio::test]
     async fn prune_old_events_follows_the_retention_setting() {
         let temp = TempDir::new().unwrap();
         let storage = Storage::connect(temp.path().join("retention.db"))
@@ -5567,7 +6087,7 @@ rl.on('line', (line) => {
   } else if (msg.method === 'turn/start') {
     fs.writeFileSync(path.join(process.cwd(), 'CODEX_OUTPUT.txt'), 'created by codex app-server\n');
     process.stdout.write(JSON.stringify({ id: msg.id, result: { turn: { id: 'turn_test_1' } } }) + '\n');
-    process.stdout.write(JSON.stringify({ method: 'thread/tokenUsage/updated', params: { usage: { input_tokens: 320, output_tokens: 180, total_tokens: 500 } } }) + '\n');
+    process.stdout.write(JSON.stringify({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread_test_1', turnId: 'turn_test_1', tokenUsage: { total: { inputTokens: 320, outputTokens: 180, totalTokens: 500 }, last: { inputTokens: 320, outputTokens: 180, totalTokens: 500 } } } }) + '\n');
     process.stdout.write(JSON.stringify({ method: 'item/agentMessage/delta', params: { delta: 'Implemented CODEX_OUTPUT.txt' } }) + '\n');
     process.stdout.write(JSON.stringify({ method: 'turn/completed', params: { turnId: 'turn_test_1' } }) + '\n');
   }

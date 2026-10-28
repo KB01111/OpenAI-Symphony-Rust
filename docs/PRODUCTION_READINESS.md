@@ -56,7 +56,9 @@ These cannot be done from the repository and are deliberately not faked:
   tests for the logic and by CI for the build, but has **not** been exercised end to end on Windows: do it
   with two real releases before relying on it.
 - **Pull requests are opened, never merged**: *Create pull request* commits, pushes and opens one on explicit
-  request; *Refresh status* re-reads its CI and merge state on demand (no background polling).
+  request; open pull requests' CI and merge state are re-read every 15 minutes by default
+  (`pr_refresh_interval_minutes`, `0` = only on *Refresh status*), one request sequence per pull request,
+  only when a GitHub token is configured.
 - **Not yet verified on Windows 11** for this release candidate: everything in
   [`PRODUCTION_RELEASE_REPORT.md`](./PRODUCTION_RELEASE_REPORT.md) §4, including the manual checklist.
 - **Windows only** for the packaged desktop app. The CLI runs on Linux/macOS; there the vault uses an
@@ -76,4 +78,7 @@ These cannot be done from the repository and are deliberately not faked:
   that TypeScript 7 (the native compiler) no longer ships, so this one tool package stays on TypeScript 6.
   It only writes `packages/shared-types/src/generated/openapi`, whose output has no runtime dependency on
   Hey API; every application package, `shared-types` included, compiles with TypeScript 7. Move the tool to
-  TypeScript 7 once `@hey-api/openapi-ts` supports it (`pnpm generate:api` must still leave no diff).
+  TypeScript 7 once `@hey-api/openapi-ts` supports it (`pnpm generate:api` must still leave no diff). A
+  Dependabot pull request that raises it to 7 must be closed: `pnpm generate:api` checks the generator's
+  TypeScript major first and fails with this reason (a TypeScript 7 bump was merged once and broke
+  generation).

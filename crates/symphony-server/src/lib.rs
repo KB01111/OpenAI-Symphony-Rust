@@ -52,9 +52,11 @@ use symphony_core::{
         AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, LocalePreference,
         OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus, PullRequestReview,
         RepositoryValidation, RunAttempt, RuntimeInfo, Task, TaskDiff, TaskStatus, ThemePreference,
-        ValidationResult, WorktreeInfo, MAX_EVENT_RETENTION_DAYS,
+        ValidationResult, WorktreeInfo, MAX_BACKUP_INTERVAL_HOURS, MAX_BACKUP_KEEP,
+        MAX_EVENT_RETENTION_DAYS, MAX_PR_REFRESH_INTERVAL_MINUTES, MIN_PR_REFRESH_INTERVAL_MINUTES,
     },
     error::{Result, SymphonyError},
+    ToolCallRecord,
 };
 use symphony_orchestrator::{
     IssueDetailResponse, ProjectUpdate, RefreshResponse, SymphonyOrchestrator, WorkflowDocument,
@@ -99,9 +101,9 @@ pub fn default_local_origins() -> Vec<String> {
 /// under its owner: [`LOCAL_API_TOKEN_OWNER`] for the local API token, the credential vault for a
 /// remote token.
 pub fn generate_access_token() -> String {
-    use rand::RngCore;
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    // Thread-local ChaCha CSPRNG seeded from the operating system.
+    rand::fill(&mut bytes);
     hex::encode(bytes)
 }
 
@@ -272,6 +274,17 @@ pub struct TaskEventsQuery {
 
 #[derive(Debug, Deserialize, Default, IntoParams)]
 #[into_params(parameter_in = Query)]
+pub struct ToolCallsQuery {
+    /// Maximum number of tool calls (1–500, default 200).
+    #[param(minimum = 1, maximum = 500)]
+    pub limit: Option<u32>,
+    /// Return only calls older than this tool-call id of the same task (the oldest call of the
+    /// previous page); omit for the newest calls.
+    pub before: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ApprovalsQuery {
     pub only_pending: Option<bool>,
 }
@@ -399,6 +412,9 @@ const OPTIONAL_FIELD_SCHEMAS: &[&str] = &[
 const OPTIONAL_PROPERTIES: &[(&str, &str)] = &[
     ("AppSettings", "remote_allowed_origins"),
     ("AppSettings", "event_retention_days"),
+    ("AppSettings", "backup_interval_hours"),
+    ("AppSettings", "backup_keep"),
+    ("AppSettings", "pr_refresh_interval_minutes"),
 ];
 
 /// OpenAPI extension that marks whether an operation is available on the remote listener.
@@ -525,6 +541,7 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(retry_task_handler))
         .routes(routes!(continue_task_handler))
         .routes(routes!(list_task_events_handler))
+        .routes(routes!(list_task_tool_calls_handler))
         .routes(routes!(list_task_attempts_handler))
         .routes(routes!(list_task_validations_handler))
         .routes(routes!(task_diff_handler))
@@ -1364,6 +1381,27 @@ async fn list_task_events_handler(
     }
 }
 
+/// A task's tool-call history (shell commands, file changes, MCP and host tools), newest first.
+/// Arguments and output are redacted and output is capped at 64 KiB per call. Local only: tool
+/// output can carry workspace content, like the task diff.
+#[utoipa::path(
+    get,
+    path = "/tasks/{id}/tool-calls",
+    operation_id = "listTaskToolCalls",
+    tag = "tasks",
+    params(("id" = String, Path, description = "Task id"), ToolCallsQuery),
+    responses((status = 200, description = "Newest first; 404 when `before` is not a tool call of this task", body = Vec<ToolCallRecord>))
+)]
+async fn list_task_tool_calls_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    Query(q): Query<ToolCallsQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(200).clamp(1, 500);
+    let before = q.before.as_deref().filter(|b| !b.is_empty());
+    respond(state.orchestrator.list_tool_calls(&id, limit, before).await)
+}
+
 #[utoipa::path(
     get,
     path = "/tasks/{id}/attempts",
@@ -1654,6 +1692,31 @@ fn validate_settings(settings: &AppSettings) -> std::result::Result<(), String> 
             "event_retention_days must be 0 (keep everything) or between 1 and {MAX_EVENT_RETENTION_DAYS}"
         ));
     }
+    if settings
+        .backup_interval_hours
+        .is_some_and(|hours| hours > MAX_BACKUP_INTERVAL_HOURS)
+    {
+        return Err(format!(
+            "backup_interval_hours must be 0 (no automatic backups) or between 1 and {MAX_BACKUP_INTERVAL_HOURS}"
+        ));
+    }
+    if settings
+        .backup_keep
+        .is_some_and(|keep| keep == 0 || keep > MAX_BACKUP_KEEP)
+    {
+        return Err(format!(
+            "backup_keep must be between 1 and {MAX_BACKUP_KEEP}"
+        ));
+    }
+    if settings.pr_refresh_interval_minutes.is_some_and(|minutes| {
+        minutes != 0
+            && !(MIN_PR_REFRESH_INTERVAL_MINUTES..=MAX_PR_REFRESH_INTERVAL_MINUTES)
+                .contains(&minutes)
+    }) {
+        return Err(format!(
+            "pr_refresh_interval_minutes must be 0 (only when asked) or between {MIN_PR_REFRESH_INTERVAL_MINUTES} and {MAX_PR_REFRESH_INTERVAL_MINUTES}"
+        ));
+    }
     let policy = &settings.resource_policy;
     if policy.max_concurrent_on_ac == 0 || policy.max_concurrent_on_ac > 32 {
         return Err("resource_policy.max_concurrent_on_ac must be between 1 and 32".into());
@@ -1702,11 +1765,25 @@ async fn put_settings_handler(
     let _write = SETTINGS_WRITE.lock().await;
     // A client that predates a field omits it: keep what is stored rather than resetting it
     // (for the retention period a reset to the default would start deleting history).
-    if settings.event_retention_days.is_none() {
-        match state.orchestrator.storage().get_settings().await {
-            Ok(stored) => settings.event_retention_days = stored.event_retention_days,
+    if settings.event_retention_days.is_none()
+        || settings.backup_interval_hours.is_none()
+        || settings.backup_keep.is_none()
+        || settings.pr_refresh_interval_minutes.is_none()
+    {
+        let stored = match state.orchestrator.storage().get_settings().await {
+            Ok(stored) => stored,
             Err(e) => return error_response(e),
-        }
+        };
+        settings.event_retention_days = settings
+            .event_retention_days
+            .or(stored.event_retention_days);
+        settings.backup_interval_hours = settings
+            .backup_interval_hours
+            .or(stored.backup_interval_hours);
+        settings.backup_keep = settings.backup_keep.or(stored.backup_keep);
+        settings.pr_refresh_interval_minutes = settings
+            .pr_refresh_interval_minutes
+            .or(stored.pr_refresh_interval_minutes);
     }
     match state.orchestrator.storage().save_settings(&settings).await {
         Ok(()) => {
@@ -1878,6 +1955,9 @@ pub struct BackupSummary {
     pub size_bytes: u64,
     /// Whether the active `WORKFLOW.md` is part of the backup.
     pub includes_workflow: bool,
+    /// Made by the automatic schedule (`backup_interval_hours`); only these are deleted by its
+    /// retention (`backup_keep`).
+    pub scheduled: bool,
 }
 
 impl From<symphony_storage::backup::BackupInfo> for BackupSummary {
@@ -1890,6 +1970,7 @@ impl From<symphony_storage::backup::BackupInfo> for BackupSummary {
             schema_version: info.schema_version,
             size_bytes: info.size_bytes,
             includes_workflow: info.includes_workflow,
+            scheduled: info.scheduled,
         }
     }
 }
@@ -2062,5 +2143,63 @@ mod tests {
         s.event_retention_days = Some(MAX_EVENT_RETENTION_DAYS + 1);
         let err = validate_settings(&s).unwrap_err();
         assert!(err.contains("event_retention_days"), "{err}");
+    }
+
+    #[test]
+    fn backup_and_pull_request_schedules_are_bounded() {
+        let defaults = AppSettings::default();
+        assert_eq!(defaults.effective_backup_interval_hours(), 24);
+        assert_eq!(defaults.effective_backup_keep(), 7);
+        assert_eq!(defaults.effective_pr_refresh_interval_minutes(), 15);
+
+        let check = |change: &dyn Fn(&mut AppSettings)| {
+            let mut s = AppSettings::default();
+            change(&mut s);
+            validate_settings(&s)
+        };
+        for hours in [0, 1, MAX_BACKUP_INTERVAL_HOURS] {
+            assert!(
+                check(&|s| s.backup_interval_hours = Some(hours)).is_ok(),
+                "{hours} h"
+            );
+        }
+        for keep in [1, MAX_BACKUP_KEEP] {
+            assert!(
+                check(&|s| s.backup_keep = Some(keep)).is_ok(),
+                "keep {keep}"
+            );
+        }
+        for minutes in [
+            0,
+            MIN_PR_REFRESH_INTERVAL_MINUTES,
+            MAX_PR_REFRESH_INTERVAL_MINUTES,
+        ] {
+            assert!(
+                check(&|s| s.pr_refresh_interval_minutes = Some(minutes)).is_ok(),
+                "{minutes} min"
+            );
+        }
+        assert!(check(&|s| {
+            s.backup_interval_hours = None;
+            s.backup_keep = None;
+            s.pr_refresh_interval_minutes = None;
+        })
+        .is_ok());
+
+        let err =
+            check(&|s| s.backup_interval_hours = Some(MAX_BACKUP_INTERVAL_HOURS + 1)).unwrap_err();
+        assert!(err.contains("backup_interval_hours"), "{err}");
+        for keep in [0, MAX_BACKUP_KEEP + 1] {
+            let err = check(&|s| s.backup_keep = Some(keep)).unwrap_err();
+            assert!(err.contains("backup_keep"), "{err}");
+        }
+        for minutes in [
+            1,
+            MIN_PR_REFRESH_INTERVAL_MINUTES - 1,
+            MAX_PR_REFRESH_INTERVAL_MINUTES + 1,
+        ] {
+            let err = check(&|s| s.pr_refresh_interval_minutes = Some(minutes)).unwrap_err();
+            assert!(err.contains("pr_refresh_interval_minutes"), "{err}");
+        }
     }
 }

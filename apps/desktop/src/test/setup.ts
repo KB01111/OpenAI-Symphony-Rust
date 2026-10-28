@@ -1,4 +1,9 @@
 import "@testing-library/jest-dom/vitest";
+import { configure } from "@testing-library/react";
+
+// The default 1 s for `findBy…`/`waitFor` is too short when every workspace suite runs in parallel
+// (`pnpm -r test`): pages that wait for several mocked queries then time out although they render.
+configure({ asyncUtilTimeout: 5000 });
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,

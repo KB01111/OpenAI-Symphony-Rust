@@ -82,6 +82,9 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
+    // Above the 5 s that findBy/waitFor may wait (src/test/setup.ts), so a slow query fails with
+    // Testing Library's message rather than a bare test timeout.
+    testTimeout: 15_000,
     css: false,
     include: ["src/**/*.test.{ts,tsx}"],
     server: { deps: { inline: ["@openai/apps-sdk-ui"] } }

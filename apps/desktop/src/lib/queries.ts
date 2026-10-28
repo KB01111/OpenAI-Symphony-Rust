@@ -3,7 +3,7 @@
  * hooks so caching, invalidation (driven by the event stream) and fallback polling are uniform.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type UseQueryOptions } from "@tanstack/react-query";
 import { errorMessage, isTauri, nativeHost, type SymphonyApiError } from "@symphony/api-client";
 import type {
   AgentEvent,
@@ -135,6 +135,25 @@ export function useOlderTaskEvents(id: string, newest: ReadonlyArray<AgentEvent>
   }, [client, id, loading, newest, own.anchor, own.pages]);
   const older = useMemo(() => [...own.anchor, ...own.pages], [own.anchor, own.pages]);
   return { older, pageCount: own.pages.length, hasMore, loading, error, loadOlder };
+}
+
+export const TOOL_CALL_PAGE = 100;
+
+/** A task's tool-call history, newest first, one page at a time (`fetchNextPage` reads older calls). */
+export function useTaskToolCalls(id: string | null | undefined) {
+  const client = useClient();
+  // Without the event stream (fallback polling) nothing invalidates this query: poll like the
+  // other task queries.
+  const refetchInterval = usePoll();
+  return useInfiniteQuery({
+    queryKey: qk.taskToolCalls(id ?? ""),
+    queryFn: ({ signal, pageParam }) => client.listTaskToolCalls(id!, TOOL_CALL_PAGE, signal, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => (last.length >= TOOL_CALL_PAGE ? last[last.length - 1]!.id : undefined),
+    enabled: Boolean(id),
+    staleTime: 10_000,
+    refetchInterval
+  });
 }
 
 export function useTaskAttempts(id: string | null | undefined) {

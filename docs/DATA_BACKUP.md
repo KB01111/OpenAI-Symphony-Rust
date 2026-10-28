@@ -33,6 +33,23 @@ Backups are offered for the default database `<data dir>\symphony.sqlite` only. 
 - `WORKFLOW.md` (when one exists) and `manifest.json` (format, app and schema version, creation time, size
   and SHA-256 of every file).
 
+### Automatic backups
+
+The runtime (desktop host, or `symphony-cli` without `--db-path`) also backs up on a schedule, set under
+Settings → Backups:
+
+- **Automatic backup every (hours)** (`backup_interval_hours`, default 24, `0` = off, at most 720): checked
+  every 15 minutes (the first check 3 minutes after start); a backup is made when the newest backup **of any
+  kind** is older than the interval, so a backup made by hand also resets the clock.
+- **Automatic backups to keep** (`backup_keep`, default 7, 1–100): after each automatic backup, older
+  automatic backups beyond this number are deleted. Backups made by hand (*Create backup*, the API) and
+  backups written before this version (their manifest has no `scheduled` flag) are **never** deleted, and
+  neither are incomplete `.partial` directories.
+
+Automatic backups are marked *Automatic* in the list (`scheduled: true` in `manifest.json` and in
+`GET /api/v1/backups`). A failed automatic backup is logged and shown as a `backup/failed` event; the next
+check tries again.
+
 A backup is built in a `.partial` directory and renamed when complete, so an interrupted backup is never
 listed or restorable. Backups live on the same disk as the data: **copy them elsewhere** (another drive,
 cloud storage) if they are meant to survive a disk failure.

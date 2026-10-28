@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import type { AgentEvent, Task, TaskDiff } from "@symphony/shared-types";
+import type { AgentEvent, Task, TaskDiff, ToolCallRecord } from "@symphony/shared-types";
 import { Link } from "react-router-dom";
 import ExecutionPage from "./ExecutionPage.js";
 import { createMockRuntime, renderWithProviders, type MockHandler } from "../../test/renderWithProviders.js";
@@ -230,6 +230,100 @@ describe("ExecutionPage", () => {
     expect(decides).toHaveLength(1);
     expect(decides[0]!.body).toEqual({ decision: "accept" });
     await act(async () => release?.());
+  });
+
+  it("lists the task's tool calls newest first and pages to older ones", async () => {
+    const call = (n: number, overrides: Partial<ToolCallRecord> = {}): ToolCallRecord => ({
+      id: `t1:call-${n}`,
+      task_id: "t1",
+      session_id: "s1",
+      provider: "codex",
+      call_id: `call-${n}`,
+      tool_name: `tool_${n}`,
+      kind: "command",
+      arguments: { command: `echo ${n}` },
+      output: `out ${n}`,
+      output_truncated: false,
+      status: "succeeded",
+      started_at: "2026-10-20T10:00:00Z",
+      finished_at: "2026-10-20T10:00:01Z",
+      duration_ms: 1000,
+      ...overrides
+    });
+    const firstPage = Array.from({ length: 100 }, (_, i) => call(200 - i));
+    const rt = runtime(task({ status: "human_review" }), {
+      "GET /tasks/:id/tool-calls": ({ query }) =>
+        query.get("before") === "t1:call-101"
+          ? [call(7, { tool_name: "github_api", kind: "dynamic", status: "failed", output: "refused", output_truncated: true })]
+          : firstPage
+    });
+    renderPage(rt);
+    fireEvent.click(await screen.findByRole("tab", { name: "Tool calls" }));
+    const list = await screen.findByRole("list", { name: "Tool calls of this task" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(100);
+    expect(within(list).getAllByRole("listitem")[0]).toHaveTextContent("tool_200");
+
+    fireEvent.click(screen.getByRole("button", { name: "Load older tool calls" }));
+    const older = await screen.findByText("github_api");
+    const item = older.closest("li")!;
+    // A failed call opens with its output.
+    expect(within(item).getByText("Failed")).toBeInTheDocument();
+    expect(within(item).getByText("Symphony tool")).toBeInTheDocument();
+    expect(within(item).getByText("refused")).toBeInTheDocument();
+    expect(within(item).getByText("The output was longer than 64 KiB and was cut.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load older tool calls" })).not.toBeInTheDocument();
+    expect(rt.calls.filter((c) => c.path === "/tasks/t1/tool-calls")).toHaveLength(2);
+  });
+
+  it("keeps the loaded tool calls when an older page fails", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, i) => ({
+      id: `t1:c${i}`,
+      task_id: "t1",
+      session_id: null,
+      provider: "codex" as const,
+      call_id: `c${i}`,
+      tool_name: `tool_${i}`,
+      kind: "command" as const,
+      arguments: null,
+      output: null,
+      output_truncated: false,
+      status: "succeeded" as const,
+      started_at: "2026-10-20T10:00:00Z",
+      finished_at: null,
+      duration_ms: null
+    }));
+    const rt = runtime(task({ status: "human_review" }), {
+      "GET /tasks/:id/tool-calls": ({ query }) =>
+        query.get("before") ? { status: 500, body: { error: { code: "storage_error", message: "disk busy" } } } : firstPage
+    });
+    renderPage(rt);
+    fireEvent.click(await screen.findByRole("tab", { name: "Tool calls" }));
+    await screen.findByText("tool_0");
+    fireEvent.click(screen.getByRole("button", { name: "Load older tool calls" }));
+    expect(await screen.findByText("Could not load older tool calls")).toBeInTheDocument();
+    expect(screen.getByText("tool_0")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Tool calls of this task" })).getAllByRole("listitem")).toHaveLength(100);
+  });
+
+  it("says so when refreshing the tool calls fails and keeps what was loaded", async () => {
+    let fail = false;
+    const call = {
+      id: "t1:c1", task_id: "t1", session_id: null, provider: "codex" as const, call_id: "c1", tool_name: "tool_one",
+      kind: "command" as const, arguments: null, output: null, output_truncated: false, status: "succeeded" as const,
+      started_at: "2026-10-20T10:00:00Z", finished_at: null, duration_ms: null
+    };
+    const rt = runtime(task({ status: "human_review" }), {
+      "GET /tasks/:id/tool-calls": () => (fail ? { status: 500, body: { error: { code: "storage_error", message: "disk busy" } } } : [call])
+    });
+    const { queryClient } = renderPage(rt);
+    fireEvent.click(await screen.findByRole("tab", { name: "Tool calls" }));
+    await screen.findByText("tool_one");
+    fail = true;
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["task-tool-calls", "t1"] });
+    });
+    expect(await screen.findByText("Could not refresh the tool calls; they may be out of date")).toBeInTheDocument();
+    expect(screen.getByText("tool_one")).toBeInTheDocument();
   });
 
   it("requires confirmation before cancelling and posts to the cancel endpoint", async () => {

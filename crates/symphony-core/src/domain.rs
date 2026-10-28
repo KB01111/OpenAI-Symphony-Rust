@@ -1183,12 +1183,44 @@ pub struct AppSettings {
     #[serde(default)]
     #[schema(maximum = 3650)]
     pub event_retention_days: Option<u32>,
+    /// Hours between automatic backups (`0` = no automatic backups). A backup of any kind newer
+    /// than this resets the clock. Omit it (or send `null`) to keep the stored value; settings that
+    /// never had a value use 24.
+    #[serde(default)]
+    #[schema(maximum = 720)]
+    pub backup_interval_hours: Option<u32>,
+    /// How many automatic backups are kept (1–100); older automatic backups are deleted after each
+    /// new one. Backups made by hand are never deleted. Omit it to keep the stored value; settings
+    /// that never had a value use 7.
+    #[serde(default)]
+    #[schema(minimum = 1, maximum = 100)]
+    pub backup_keep: Option<u32>,
+    /// Minutes between automatic status checks of open pull requests (CI, merge state, review
+    /// comments): `0` = only when asked (*Refresh status*), otherwise 5–1440 (1–4 are refused).
+    /// Omit it to keep the stored value; settings that never had a value use 15.
+    #[serde(default)]
+    #[schema(maximum = 1440)]
+    pub pr_refresh_interval_minutes: Option<u32>,
 }
 
 /// Default for [`AppSettings::event_retention_days`].
 pub const DEFAULT_EVENT_RETENTION_DAYS: u32 = 30;
 /// Upper bound accepted for [`AppSettings::event_retention_days`] (ten years).
 pub const MAX_EVENT_RETENTION_DAYS: u32 = 3650;
+/// Default for [`AppSettings::backup_interval_hours`] (daily).
+pub const DEFAULT_BACKUP_INTERVAL_HOURS: u32 = 24;
+/// Upper bound accepted for [`AppSettings::backup_interval_hours`] (30 days).
+pub const MAX_BACKUP_INTERVAL_HOURS: u32 = 720;
+/// Default for [`AppSettings::backup_keep`].
+pub const DEFAULT_BACKUP_KEEP: u32 = 7;
+/// Upper bound accepted for [`AppSettings::backup_keep`].
+pub const MAX_BACKUP_KEEP: u32 = 100;
+/// Default for [`AppSettings::pr_refresh_interval_minutes`].
+pub const DEFAULT_PR_REFRESH_INTERVAL_MINUTES: u32 = 15;
+/// Shortest automatic pull request refresh interval, to stay far from GitHub's rate limits.
+pub const MIN_PR_REFRESH_INTERVAL_MINUTES: u32 = 5;
+/// Upper bound accepted for [`AppSettings::pr_refresh_interval_minutes`] (one day).
+pub const MAX_PR_REFRESH_INTERVAL_MINUTES: u32 = 1440;
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -1211,6 +1243,9 @@ impl Default for AppSettings {
             extra_env_vars: HashMap::new(),
             provider_default_models: HashMap::new(),
             event_retention_days: Some(DEFAULT_EVENT_RETENTION_DAYS),
+            backup_interval_hours: Some(DEFAULT_BACKUP_INTERVAL_HOURS),
+            backup_keep: Some(DEFAULT_BACKUP_KEEP),
+            pr_refresh_interval_minutes: Some(DEFAULT_PR_REFRESH_INTERVAL_MINUTES),
         }
     }
 }
@@ -1220,6 +1255,24 @@ impl AppSettings {
     pub fn effective_event_retention_days(&self) -> u32 {
         self.event_retention_days
             .unwrap_or(DEFAULT_EVENT_RETENTION_DAYS)
+    }
+
+    /// Hours between automatic backups (`0` = off), with the default for settings without one.
+    pub fn effective_backup_interval_hours(&self) -> u32 {
+        self.backup_interval_hours
+            .unwrap_or(DEFAULT_BACKUP_INTERVAL_HOURS)
+    }
+
+    /// Automatic backups to keep (at least 1), with the default for settings without one.
+    pub fn effective_backup_keep(&self) -> u32 {
+        self.backup_keep.unwrap_or(DEFAULT_BACKUP_KEEP).max(1)
+    }
+
+    /// Minutes between automatic pull request refreshes (`0` = off), with the default for
+    /// settings without one.
+    pub fn effective_pr_refresh_interval_minutes(&self) -> u32 {
+        self.pr_refresh_interval_minutes
+            .unwrap_or(DEFAULT_PR_REFRESH_INTERVAL_MINUTES)
     }
 }
 

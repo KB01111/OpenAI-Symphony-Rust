@@ -130,6 +130,15 @@ test("dispatches a simulated agent and inspects the live execution workspace", a
   await waitForStatus(task.id, ["human_review", "completed"]);
   await expect(page.getByText("SYMPHONY_TASK_NOTE.md").first()).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText("Human review").first()).toBeVisible();
+
+  // The agent's command and file change are in the task's tool-call history, end to end.
+  const calls = await api<{ tool_name: string; status: string }[]>("GET", `/tasks/${task.id}/tool-calls`);
+  expect(calls.map((c) => c.tool_name).sort()).toEqual(["apply_patch", "shell"]);
+  expect(calls.every((c) => c.status === "succeeded")).toBe(true);
+  await page.getByRole("tab", { name: "Tool calls" }).click();
+  const list = page.getByRole("list", { name: "Tool calls of this task" });
+  await expect(list.getByText("shell", { exact: true })).toBeVisible();
+  await expect(list.getByText("apply_patch", { exact: true })).toBeVisible();
 });
 
 test("approves a command from the execution view exactly once", async ({ page }) => {

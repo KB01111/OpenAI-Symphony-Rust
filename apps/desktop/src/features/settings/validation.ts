@@ -4,6 +4,9 @@ import type { SettingsMessages } from "./messages.js";
 export type SettingsField =
   | "polling_interval_ms"
   | "event_retention_days"
+  | "backup_interval_hours"
+  | "backup_keep"
+  | "pr_refresh_interval_minutes"
   | "max_concurrent_on_ac"
   | "max_concurrent_on_battery"
   | "high_memory_threshold_percent"
@@ -32,6 +35,18 @@ export function validateSettings(s: AppSettings, v: SettingsMessages["validation
   const retention = s.event_retention_days ?? 30;
   if (!isInt(retention)) errors.event_retention_days = v.integer;
   else if (retention < 0 || retention > 3650) errors.event_retention_days = v.retention;
+
+  const backupInterval = s.backup_interval_hours ?? 24;
+  if (!isInt(backupInterval)) errors.backup_interval_hours = v.integer;
+  else if (backupInterval < 0 || backupInterval > 720) errors.backup_interval_hours = v.backupInterval;
+
+  const backupKeep = s.backup_keep ?? 7;
+  if (!isInt(backupKeep)) errors.backup_keep = v.integer;
+  else if (backupKeep < 1 || backupKeep > 100) errors.backup_keep = v.backupKeep;
+
+  const prRefresh = s.pr_refresh_interval_minutes ?? 15;
+  if (!isInt(prRefresh)) errors.pr_refresh_interval_minutes = v.integer;
+  else if (prRefresh !== 0 && (prRefresh < 5 || prRefresh > 1440)) errors.pr_refresh_interval_minutes = v.prRefresh;
 
   if (!isInt(p.max_concurrent_on_ac)) errors.max_concurrent_on_ac = v.integer;
   else if (p.max_concurrent_on_ac < 1 || p.max_concurrent_on_ac > 32) errors.max_concurrent_on_ac = v.maxAc;
@@ -66,6 +81,9 @@ export function serverErrorFields(message: string): SettingsField[] {
   if (message.includes("max_concurrent_on_ac")) return ["max_concurrent_on_ac"];
   if (message.includes("polling_interval_ms")) return ["polling_interval_ms"];
   if (message.includes("event_retention_days")) return ["event_retention_days"];
+  if (message.includes("backup_interval_hours")) return ["backup_interval_hours"];
+  if (message.includes("backup_keep")) return ["backup_keep"];
+  if (message.includes("pr_refresh_interval_minutes")) return ["pr_refresh_interval_minutes"];
   if (message.includes("remote_port")) return ["remote_port"];
   if (message.includes("remote_bind_address")) return ["remote_bind_address"];
   if (message.includes("origin")) return ["remote_allowed_origins"];

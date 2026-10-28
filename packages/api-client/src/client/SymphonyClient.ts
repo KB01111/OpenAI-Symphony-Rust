@@ -240,6 +240,10 @@ export class SymphonyClient {
   listTaskEvents(id: string, limit = 500, signal?: AbortSignal, before?: string) {
     return this.call((o) => api.listTaskEvents({ ...o, path: { id }, query: before ? { limit, before } : { limit } }), signal);
   }
+  /** A task's tool calls, newest first. With `before` (a tool-call id of this task), the next older page. */
+  listTaskToolCalls(id: string, limit = 200, signal?: AbortSignal, before?: string) {
+    return this.call((o) => api.listTaskToolCalls({ ...o, path: { id }, query: before ? { limit, before } : { limit } }), signal);
+  }
   listTaskAttempts(id: string, signal?: AbortSignal) {
     return this.call((o) => api.listTaskAttempts({ ...o, path: { id } }), signal);
   }
