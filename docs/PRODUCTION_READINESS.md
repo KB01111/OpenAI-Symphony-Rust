@@ -78,4 +78,7 @@ These cannot be done from the repository and are deliberately not faked:
   that TypeScript 7 (the native compiler) no longer ships, so this one tool package stays on TypeScript 6.
   It only writes `packages/shared-types/src/generated/openapi`, whose output has no runtime dependency on
   Hey API; every application package, `shared-types` included, compiles with TypeScript 7. Move the tool to
-  TypeScript 7 once `@hey-api/openapi-ts` supports it (`pnpm generate:api` must still leave no diff).
+  TypeScript 7 once `@hey-api/openapi-ts` supports it (`pnpm generate:api` must still leave no diff). A
+  Dependabot pull request that raises it to 7 must be closed: `pnpm generate:api` checks the generator's
+  TypeScript major first and fails with this reason (a TypeScript 7 bump was merged once and broke
+  generation).
