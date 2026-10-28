@@ -73,9 +73,16 @@ export const ToolCallsTab: React.FC<{ taskId: string }> = ({ taskId }) => {
     return <ErrorState title={m.toolCalls.loadFailed} message={calls.error.message} onRetry={() => void calls.refetch()} />;
   }
   const list = calls.data?.pages.flat() ?? [];
-  if (list.length === 0) return <AiEmptyView title={m.toolCalls.empty} description={m.toolCalls.emptyDetail} />;
+  // A failed refresh keeps what was loaded but says it may be out of date.
+  const refreshFailed = calls.isRefetchError ? (
+    <ErrorState title={m.toolCalls.refreshFailed} message={calls.error?.message ?? ""} onRetry={() => void calls.refetch()} />
+  ) : null;
+  if (list.length === 0) {
+    return refreshFailed ?? <AiEmptyView title={m.toolCalls.empty} description={m.toolCalls.emptyDetail} />;
+  }
   return (
     <div className="space-y-2">
+      {refreshFailed}
       <p className="text-xs text-muted-foreground">{formatMessage(m.toolCalls.count, { count: list.length })}</p>
       <ul className="space-y-2" aria-label={m.toolCalls.listLabel}>
         {list.map((call) => (

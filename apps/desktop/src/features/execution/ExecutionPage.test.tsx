@@ -305,6 +305,27 @@ describe("ExecutionPage", () => {
     expect(within(screen.getByRole("list", { name: "Tool calls of this task" })).getAllByRole("listitem")).toHaveLength(100);
   });
 
+  it("says so when refreshing the tool calls fails and keeps what was loaded", async () => {
+    let fail = false;
+    const call = {
+      id: "t1:c1", task_id: "t1", session_id: null, provider: "codex" as const, call_id: "c1", tool_name: "tool_one",
+      kind: "command" as const, arguments: null, output: null, output_truncated: false, status: "succeeded" as const,
+      started_at: "2026-10-20T10:00:00Z", finished_at: null, duration_ms: null
+    };
+    const rt = runtime(task({ status: "human_review" }), {
+      "GET /tasks/:id/tool-calls": () => (fail ? { status: 500, body: { error: { code: "storage_error", message: "disk busy" } } } : [call])
+    });
+    const { queryClient } = renderPage(rt);
+    fireEvent.click(await screen.findByRole("tab", { name: "Tool calls" }));
+    await screen.findByText("tool_one");
+    fail = true;
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["task-tool-calls", "t1"] });
+    });
+    expect(await screen.findByText("Could not refresh the tool calls; they may be out of date")).toBeInTheDocument();
+    expect(screen.getByText("tool_one")).toBeInTheDocument();
+  });
+
   it("requires confirmation before cancelling and posts to the cancel endpoint", async () => {
     const running = task({ status: "running", current_phase: "streaming_turn" });
     const rt = runtime(running, {
