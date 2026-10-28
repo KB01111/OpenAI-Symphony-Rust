@@ -1483,7 +1483,7 @@ impl AgentSession for ClaudeCodeSession {
                     Some("result") => process.close_stdin(),
                     _ => {}
                 }
-                if let Some(u) = extract_token_usage(&val) {
+                if let Some(u) = extract_claude_result_usage(&val) {
                     usage = u;
                 }
                 let msg_type = val
@@ -1680,9 +1680,7 @@ impl AgentSession for OpenCodeSession {
                 {
                     discovered_session = sid.to_string();
                 }
-                if let Some(u) = extract_token_usage(&val) {
-                    usage = u;
-                } else if val.get("type").and_then(Value::as_str) == Some("step_finish") {
+                if val.get("type").and_then(Value::as_str) == Some("step_finish") {
                     // `opencode run --format json` reports each step's tokens on its own.
                     if let Some(step) = val
                         .get("part")
@@ -2164,13 +2162,27 @@ fn build_codex_command(
     cmd
 }
 
+/// Absolute (thread-total) usage of a Codex app-server message: `thread/tokenUsage/updated`'s
+/// `tokenUsage.total` or a `total_token_usage` payload. Generic `usage` maps and per-response
+/// values (`last`, `last_token_usage`) are deliberately not read: SPEC.md §13.5 says to prefer
+/// absolute totals and not to treat a generic `usage` map as cumulative, so a notification that
+/// happens to carry one can never move the usage ledger.
 pub fn extract_token_usage(msg: &Value) -> Option<TokenUsage> {
-    let usage_node = msg
-        .pointer("/params/tokenUsage/total")
-        .or_else(|| msg.pointer("/params/usage"))
+    msg.pointer("/params/tokenUsage/total")
         .or_else(|| msg.pointer("/params/msg/payload/info/total_token_usage"))
-        .or_else(|| msg.get("usage"))?;
+        .and_then(usage_from_map)
+}
 
+/// Usage of a whole Claude Code invocation: the `usage` of its final `result` line. The `usage`
+/// that `assistant` lines carry belongs to a single API response and is not a running total.
+pub fn extract_claude_result_usage(msg: &Value) -> Option<TokenUsage> {
+    if msg.get("type").and_then(Value::as_str) != Some("result") {
+        return None;
+    }
+    msg.get("usage").and_then(usage_from_map)
+}
+
+fn usage_from_map(usage_node: &Value) -> Option<TokenUsage> {
     // Anthropic reports prompt-cache traffic next to `input_tokens`, not inside it
     // (`cache_creation_input_tokens`, `cache_read_input_tokens`); all of it is input the model
     // consumed. Codex's `cachedInputTokens` is a subset of `inputTokens` and is not added.
@@ -2280,7 +2292,7 @@ mod tests {
                 "output_tokens": 800
             }
         });
-        let usage = extract_token_usage(&claude).unwrap();
+        let usage = extract_claude_result_usage(&claude).unwrap();
         assert_eq!(usage.input_tokens, 43_012);
         assert_eq!(usage.output_tokens, 800);
         assert_eq!(usage.total_tokens, 43_812);
@@ -2312,5 +2324,32 @@ mod tests {
         assert_eq!(usage.output_tokens, 500);
         assert_eq!(usage.total_tokens, 1500);
         assert!(usage.estimate_cost_usd(None) > 0.0);
+    }
+
+    #[test]
+    fn generic_usage_maps_are_never_read_as_cumulative_totals() {
+        // SPEC.md §13.5: only absolute thread totals count for Codex.
+        for msg in [
+            json!({ "method": "item/completed", "params": { "usage": { "input_tokens": 10, "output_tokens": 5 } } }),
+            json!({ "method": "codex/event", "usage": { "input_tokens": 10, "output_tokens": 5 } }),
+            json!({ "method": "thread/tokenUsage/updated", "params": { "tokenUsage": {
+                "last": { "inputTokens": 10, "outputTokens": 5, "totalTokens": 15 } } } }),
+        ] {
+            assert_eq!(extract_token_usage(&msg), None, "{msg}");
+        }
+        let legacy = json!({ "params": { "msg": { "payload": { "info": { "total_token_usage": {
+            "input_tokens": 70, "output_tokens": 30, "total_tokens": 100 } } } } } });
+        assert_eq!(extract_token_usage(&legacy).unwrap().total_tokens, 100);
+
+        // Claude: an assistant line's usage is one API response; only the result line totals.
+        let assistant = json!({ "type": "assistant", "message": { "usage": { "input_tokens": 5, "output_tokens": 2 } },
+            "usage": { "input_tokens": 5, "output_tokens": 2 } });
+        assert_eq!(extract_claude_result_usage(&assistant), None);
+        let result =
+            json!({ "type": "result", "usage": { "input_tokens": 50, "output_tokens": 20 } });
+        assert_eq!(
+            extract_claude_result_usage(&result).unwrap().total_tokens,
+            70
+        );
     }
 }

@@ -378,8 +378,11 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
 - **Codex resume without a persisted baseline** (tasks stored by 2.0.0 only): if a live usage notification
   arrived before the `turn/start` response it would be taken as the replay and undercount that turn once.
   Codex answers `turn/start` first (real-binary probe), and new tasks always persist a baseline.
-- **Generic `usage` maps** are read as cumulative in `extract_token_usage` (SPEC 13.5 says not to unless
-  the event defines it); harmless for Codex today (monotone ledger), worth tightening with a captured trace.
+- **Generic `usage` maps**: fixed in the follow-up. Codex usage is read only from absolute totals
+  (`tokenUsage.total`, `total_token_usage`); Claude Code only from the `usage` of its final `result` line
+  (an `assistant` line's usage is one API response); OpenCode only from its per-step `part.tokens`. A generic
+  `usage` map is never taken as a cumulative total (SPEC 13.5), test
+  `generic_usage_maps_are_never_read_as_cumulative_totals`.
 - **Provider model lists**: fixed in the follow-up. Detection reads the installed CLI's catalogue
   (Codex `model/list`, verified against codex-cli 0.164.0; `opencode models`, verified against
   opencode 1.19.4); the static lists are only a fallback, and the old default `gpt-5-codex` (no longer

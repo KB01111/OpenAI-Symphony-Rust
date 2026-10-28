@@ -5567,7 +5567,7 @@ rl.on('line', (line) => {
   } else if (msg.method === 'turn/start') {
     fs.writeFileSync(path.join(process.cwd(), 'CODEX_OUTPUT.txt'), 'created by codex app-server\n');
     process.stdout.write(JSON.stringify({ id: msg.id, result: { turn: { id: 'turn_test_1' } } }) + '\n');
-    process.stdout.write(JSON.stringify({ method: 'thread/tokenUsage/updated', params: { usage: { input_tokens: 320, output_tokens: 180, total_tokens: 500 } } }) + '\n');
+    process.stdout.write(JSON.stringify({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread_test_1', turnId: 'turn_test_1', tokenUsage: { total: { inputTokens: 320, outputTokens: 180, totalTokens: 500 }, last: { inputTokens: 320, outputTokens: 180, totalTokens: 500 } } } }) + '\n');
     process.stdout.write(JSON.stringify({ method: 'item/agentMessage/delta', params: { delta: 'Implemented CODEX_OUTPUT.txt' } }) + '\n');
     process.stdout.write(JSON.stringify({ method: 'turn/completed', params: { turnId: 'turn_test_1' } }) + '\n');
   }
