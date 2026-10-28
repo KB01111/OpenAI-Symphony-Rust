@@ -32,7 +32,7 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
 | RV-01 | P1 | Verified defect | Every review hardcoded `ci_status=passed`, `mergeable=true`, `has_conflicts=false` | Fixed |
 | RV-02 | P2 | Verified defect | Attempt count shown as the pull request number | Fixed |
 | RV-03 | P1 | Gap | The product never creates a pull request (`pr_number`/`pr_url` never set) | Fixed |
-| RV-04 | P2 | Gap | After a pull request exists, its CI status is never refreshed | Fixed (manual refresh) |
+| RV-04 | P2 | Gap | After a pull request exists, its CI status is never refreshed | Fixed (manual refresh; automatic refresh of open pull requests since the follow-up) |
 | RV-05 | P1 | Verified defect | `fetch_pull_request_details`: no check run reported as `passed`, `mergeable: null` as mergeable | Fixed |
 | DOC-02 | P3 | Verified defect | SECURITY.md documented a `require_human_approval_for_merge` setting and an "Approve & Enable Merge" button that do not exist | Fixed |
 | SEC-01 | P1 | Verified defect | `github_api` / `linear_graphql` forward any request with the host's tokens | Fixed |
@@ -57,7 +57,7 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
 | SCH-01 | P0 | Verified (negative) | Concurrent ticks / manual dispatch can start a task twice | **No defect** (stress test added) |
 | WIN-01 | P1 | Unverified | All native Windows behaviour (see §4) | Blocked (Windows) |
 | PROV-01 | P2 | Gap | Provider profiles / compatible endpoints / health model | Fixed as scoped (endpoints via OpenCode, live model catalogues); named profiles and automatic fallback decided against for now |
-| HIST-01 | P2 | Gap | Durable session history: pagination and retention | Fixed (retention, cursor pages, continue a run); tool-result persistence open |
+| HIST-01 | P2 | Gap | Durable session history: pagination and retention | Fixed (retention, cursor pages, continue a run, tool-call history) |
 | PERF-01 | P2 | Unverified | Idle CPU / memory on the reference laptop | Blocked (hardware) |
 | AG-04 | P2 | Verified defect | Claude Code / OpenCode run headless without an approval path | Fixed |
 
@@ -186,8 +186,9 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
   timed-out, action-required, startup-failure and stale runs fail; 100 runs per page. New
   `SymphonyOrchestrator::refresh_pull_request` + local-only `POST /api/v1/prs/{id}/refresh` + a *Refresh
   status* button re-read CI, merge state, merged/closed state and review comments and re-rate the review.
-  Manual only: no background polling (nothing runs when nobody asks). A pull request merged by someone
-  shows state `merged`; the task is not changed.
+  Manual only at first: no background polling (nothing runs when nobody asks). Since the follow-up the
+  owner chose automatic refresh as well (see §3). A pull request merged by someone shows state `merged`;
+  the task is not changed.
 - **Tests**: check-run summary unit test; orchestrator test with a GitHub mock whose answers change
   (no CI + uncomputed merge → neither "passed" nor "clean"; green; red with conflicts and a lower score);
   UI refresh test; remote scope forbids it.
@@ -225,9 +226,10 @@ Windows 11 (DPAPI, tray, installer, WebView2, autostart, multi-monitor, display 
   refused untouched, rollback when the restored database cannot be opened), CLI binary (restore needs the
   runtime lock), router, generated client against the real runtime (no credential material in a backup),
   settings UI.
-- **Not done**: automatic scheduled backups, retention, restore from the desktop UI (needs the runtime
-  stopped; the installer does not ship the CLI, it is a separate release asset), backing up the credential
-  vault (DPAPI-bound by design).
+- **Not done**: restore from the desktop UI (needs the runtime stopped; the installer does not ship the
+  CLI, it is a separate release asset), backing up the credential vault (DPAPI-bound by design).
+  Automatic scheduled backups with retention were added in the follow-up (`backup_interval_hours`,
+  default daily; `backup_keep`, default 7, deletes only automatic backups), see `docs/DATA_BACKUP.md`.
 
 ### DOC-02 — Documentation promised controls that did not exist (P3)
 
@@ -285,7 +287,8 @@ read are refused before anything is sent (tests: `tool_policy` target extraction
 `linear_mutations_change_only_issues_of_the_configured_project`). Reads stay workspace-wide; `SECURITY.md`
 says so.
 (b) Claude/OpenCode report usage per finished invocation, so a killed invocation reports nothing (already
-listed). (c) Pull request status is refreshed on request only (a timer was rejected on purpose).
+listed). (c) Pull request status was refreshed on request only (a timer was rejected on purpose at
+the time; the owner later chose an automatic refresh, see §3).
 
 ### REL-01, ID-01, DOC-01
 
@@ -317,8 +320,11 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
 
 ## 3. Open
 
-- **Pull request status is refreshed on request only** (see RV-04): no timer, so a CI result that arrives
-  later is not shown until the user clicks *Refresh status*. Legacy commit statuses are read since the
+- **Pull request status** (see RV-04): *Refresh status* re-reads on request, and since the follow-up the
+  owner chose (2026-10-28) automatic refresh too: every `pr_refresh_interval_minutes` (default 15, 5–1440,
+  `0` = only on request) the runtime refreshes each open pull request (not merged or closed) one after
+  another, only with a GitHub token, and announces a change (`pr/status_changed`) or a failing refresh
+  (`pr/refresh_failed`, once until it recovers). Legacy commit statuses are read since the earlier
   follow-up (combined with check runs; any failure fails, an unreadable signal is unknown).
 - **REL-02 (P1)**: in-app updates are implemented (`tauri-plugin-updater` driven by host-side commands,
   Settings card and banner, `latest.json` + `.sig` produced by the release workflow). Still needed from the
@@ -345,8 +351,14 @@ listed). (c) Pull request status is refreshed on request only (a timer was rejec
   *Load older events* control were added in the follow-up, and so was *Continue…* on a run that ended
   (`POST /api/v1/tasks/{id}/continue`, local only): the next attempt resumes the agent's thread in the same
   worktree with the operator's instructions as its prompt (stored until delivered, so they survive a
-  restart; a continued task with a pull request gets *Push changes to #N*). Missing: tool-call result persistence beyond
-  raw event payloads.
+  restart; a continued task with a pull request gets *Push changes to #N*). Tool-call history was added in
+  the follow-up: every tool call (Codex commands, file changes and MCP tools, the host-side `github_api` /
+  `linear_graphql` with the answer Symphony gave, Claude Code `tool_use`/`tool_result`, OpenCode tool
+  parts) is one row of `tool_calls` (migration 0004) with redacted arguments and output (capped at
+  64 KiB), served newest first by the local-only `GET /api/v1/tasks/{id}/tool-calls` and shown in the
+  run view's *Tool calls* tab; it follows the activity-log retention. Found on the way: raw event
+  payloads were stored and streamed unredacted (only the message was redacted); every string of a payload
+  is now redacted before it is stored or broadcast.
 - **AG-04 (P2)**: verified against the real `claude` 2.1.310 with a scripted Messages API (no model, no
   key): a headless `claude -p` without a host **silently denies** every tool use its own rules would ask
   about (`permission_denied`) and reports success. Fixed for Claude Code in the follow-up: the driver runs

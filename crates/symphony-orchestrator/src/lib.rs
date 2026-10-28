@@ -85,6 +85,10 @@ fn unpushed_changes_blocker(pr_number: u64) -> String {
 const EVENT_PRUNE_STARTUP_DELAY: Duration = Duration::from_secs(120);
 /// ... and how often it repeats while the runtime keeps running.
 const EVENT_PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Delay before the first automatic pull request refresh after startup.
+const PR_REFRESH_STARTUP_DELAY: Duration = Duration::from_secs(90);
+/// How often the pull request refresh schedule is checked (the interval itself is in minutes).
+const PR_REFRESH_TICK: Duration = Duration::from_secs(60);
 /// Delay before the first automatic-backup check after startup.
 const BACKUP_STARTUP_DELAY: Duration = Duration::from_secs(180);
 /// How often the automatic-backup schedule is checked (the interval itself is in hours).
@@ -284,6 +288,17 @@ struct OrchestratorRuntimeMemory {
     pub provider_cache: Option<(DateTime<Utc>, Vec<ProviderStatus>)>,
     /// Where the workflow is saved when no `WORKFLOW.md` was loaded at startup.
     pub workflow_fallback_path: Option<PathBuf>,
+}
+
+/// What one automatic pull request refresh did ([`SymphonyOrchestrator::refresh_open_pull_requests`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PullRequestSweep {
+    /// Open pull requests that were read from GitHub.
+    pub checked: usize,
+    /// Of those, the ones whose CI, merge state, state, comments or score changed.
+    pub changed: usize,
+    /// Refreshes that failed (unreachable GitHub, missing repository, …).
+    pub failed: usize,
 }
 
 /// Mask secrets in an event's message and in every string of its raw payload. Every event goes
@@ -611,6 +626,30 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     warn!(error = %e, "Pruning old activity-log events failed");
                 }
                 tokio::time::sleep(EVENT_PRUNE_INTERVAL).await;
+            }
+        });
+
+        // Status of open pull requests (CI, merge state, comments) on the configured interval.
+        let orch_prs = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(PR_REFRESH_STARTUP_DELAY).await;
+            let mut failing = HashSet::new();
+            let mut last_sweep: Option<tokio::time::Instant> = None;
+            loop {
+                let minutes = orch_prs
+                    .storage
+                    .get_settings()
+                    .await
+                    .map(|s| s.effective_pr_refresh_interval_minutes())
+                    .unwrap_or(0);
+                let interval = Duration::from_secs(u64::from(minutes) * 60);
+                if minutes > 0 && last_sweep.is_none_or(|at| at.elapsed() >= interval) {
+                    last_sweep = Some(tokio::time::Instant::now());
+                    if let Err(e) = orch_prs.refresh_open_pull_requests(&mut failing).await {
+                        warn!(error = %e, "Automatic pull request refresh failed");
+                    }
+                }
+                tokio::time::sleep(PR_REFRESH_TICK).await;
             }
         });
 
@@ -2240,6 +2279,94 @@ Please implement the requested changes cleanly in the current Git workspace, run
         review.updated_at = Utc::now();
         self.storage.upsert_pr_review(&review).await?;
         Ok(review)
+    }
+
+    /// Refresh every open pull request (one that exists on GitHub and is neither merged nor closed)
+    /// with [`Self::refresh_pull_request`], one after another so GitHub never sees a burst. Nothing
+    /// is read without a GitHub token. A `pr/status_changed` event announces a refresh that changed
+    /// CI, merge state, state, comments or the score; a refresh that fails is announced once
+    /// (`pr/refresh_failed`) until it succeeds again (`failing` carries that across sweeps).
+    pub async fn refresh_open_pull_requests(
+        &self,
+        failing: &mut HashSet<String>,
+    ) -> SymphonyResult<PullRequestSweep> {
+        let mut sweep = PullRequestSweep::default();
+        if self.github_token().is_none() {
+            return Ok(sweep);
+        }
+        let open: Vec<PullRequestReview> = self
+            .storage
+            .list_pr_reviews(None)
+            .await?
+            .into_iter()
+            .filter(|r| r.has_pull_request() && !matches!(r.state.as_str(), "merged" | "closed"))
+            .collect();
+        failing.retain(|id| open.iter().any(|r| &r.id == id));
+        for before in open {
+            sweep.checked += 1;
+            match self.refresh_pull_request(&before.id).await {
+                Ok(after) => {
+                    failing.remove(&before.id);
+                    let summary = |r: &PullRequestReview| {
+                        (
+                            r.ci_status.clone(),
+                            r.state.clone(),
+                            r.mergeable,
+                            r.has_conflicts,
+                            r.merge_readiness.score,
+                            r.review_comments.len(),
+                        )
+                    };
+                    if summary(&before) == summary(&after) {
+                        continue;
+                    }
+                    sweep.changed += 1;
+                    self.emit_event(
+                        Some(after.task_id.clone()),
+                        None,
+                        None,
+                        None,
+                        "pr/status_changed",
+                        None,
+                        format!(
+                            "Pull request #{}: CI {}, {}, readiness {}/5",
+                            after.pr_number,
+                            after.ci_status,
+                            after.state,
+                            after.merge_readiness.score
+                        ),
+                        Some(json!({
+                            "review_id": after.id,
+                            "pr_number": after.pr_number,
+                            "ci_status": after.ci_status,
+                            "state": after.state,
+                            "mergeable": after.mergeable,
+                            "has_conflicts": after.has_conflicts,
+                            "score": after.merge_readiness.score,
+                        })),
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    sweep.failed += 1;
+                    if failing.insert(before.id.clone()) {
+                        warn!(review = %before.id, error = %e, "Refreshing a pull request failed");
+                        self.emit_event(
+                            Some(before.task_id.clone()),
+                            None,
+                            None,
+                            None,
+                            "pr/refresh_failed",
+                            None,
+                            format!("Could not refresh pull request #{}: {e}", before.pr_number),
+                            Some(json!({ "review_id": before.id })),
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+        Ok(sweep)
     }
 
     /// Explicitly approve a Pull Request review for human merge completion (Section 4.F)
@@ -4919,6 +5046,111 @@ rl.on('line', (line) => {
         let again = orch.create_pull_request(&review.id).await.unwrap();
         assert_eq!(again.pr_number, 42);
         assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn open_pull_requests_are_refreshed_and_only_changes_are_announced() {
+        let temp = TempDir::new().unwrap();
+        // GitHub: (check runs, pull request state, head commit).
+        let state = Arc::new(std::sync::Mutex::new((
+            json!([]),
+            "open".to_string(),
+            String::new(),
+        )));
+        let served = state.clone();
+        let (api, _requests) = github_mock_with(Arc::new(move |method: &str, target: &str| {
+            let (runs, pr_state, head_sha) = served.lock().unwrap().clone();
+            let path = target.split('?').next().unwrap_or(target);
+            let payload = match (method, path) {
+                ("POST", _) => {
+                    json!({ "number": 7, "html_url": "https://github.com/acme/widgets/pull/7" })
+                }
+                (_, "/repos/acme/widgets/pulls/7") => json!({
+                    "number": 7, "title": "t", "body": "b", "state": pr_state,
+                    "html_url": "https://github.com/acme/widgets/pull/7",
+                    "head": { "ref": "branch", "sha": head_sha }, "base": { "ref": "main" },
+                    "mergeable": true, "mergeable_state": "clean", "merged": false
+                }),
+                (_, p) if p.contains("/check-runs") => json!({ "check_runs": runs }),
+                (_, p) if p.ends_with("/status") => {
+                    json!({ "state": "pending", "statuses": [], "total_count": 0 })
+                }
+                (_, p) if p.ends_with("/files") || p.ends_with("/comments") => json!([]),
+                _ => json!({}),
+            };
+            ("200 OK".to_string(), payload)
+        }))
+        .await;
+        let (orch, _task, review) = finished_run(
+            &temp,
+            Some("acme/widgets"),
+            Some("ghp_testtokentesttokentesttoken123456"),
+            &api,
+        )
+        .await;
+        let mut failing = HashSet::new();
+        // A local review without a pull request is not read from GitHub.
+        assert_eq!(
+            orch.refresh_open_pull_requests(&mut failing).await.unwrap(),
+            PullRequestSweep::default()
+        );
+        let opened = orch.create_pull_request(&review.id).await.unwrap();
+        state.lock().unwrap().2 = opened.reviewed_commit.clone().expect("pushed commit");
+        orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+
+        let mut events = orch.subscribe_events();
+        let announced = |events: &mut broadcast::Receiver<AgentEvent>, kind: &str| {
+            let mut n = 0;
+            while let Ok(e) = events.try_recv() {
+                if e.event_type == kind {
+                    n += 1;
+                }
+            }
+            n
+        };
+        // Nothing changed on GitHub: checked, nothing announced.
+        let quiet = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+        assert_eq!((quiet.checked, quiet.changed), (1, 0));
+        assert_eq!(announced(&mut events, "pr/status_changed"), 0);
+
+        // CI goes red: one announcement with the new status.
+        state.lock().unwrap().0 = json!([{ "status": "completed", "conclusion": "failure" }]);
+        let red = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+        assert_eq!((red.checked, red.changed), (1, 1));
+        assert_eq!(announced(&mut events, "pr/status_changed"), 1);
+        let stored = orch.get_pr_review(&review.id).await.unwrap();
+        assert_eq!(stored.ci_status, "failed");
+
+        // A refresh that cannot run is announced once, not on every sweep.
+        let mut project = orch
+            .storage
+            .get_project(&review.project_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let repo = project.github_repo.take();
+        orch.storage.upsert_project(&project).await.unwrap();
+        for _ in 0..2 {
+            let broken = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+            assert_eq!(broken.failed, 1);
+        }
+        assert_eq!(announced(&mut events, "pr/refresh_failed"), 1);
+        project.github_repo = repo;
+        orch.storage.upsert_project(&project).await.unwrap();
+
+        // Closed on GitHub: read once more (it changed), then no longer refreshed.
+        state.lock().unwrap().1 = "closed".to_string();
+        let closing = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+        assert_eq!(
+            (closing.checked, closing.changed, closing.failed),
+            (1, 1, 0)
+        );
+        assert!(
+            failing.is_empty(),
+            "a recovered refresh is no longer failing"
+        );
+        let after = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+        assert_eq!(after.checked, 0);
     }
 
     #[tokio::test]
