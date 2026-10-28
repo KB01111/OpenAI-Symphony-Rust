@@ -51,7 +51,8 @@ function renderPage(rt: ReturnType<typeof runtime>) {
 const sizeProps = ["clientHeight", "clientWidth"] as const;
 const originals = sizeProps.map((p) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, p));
 beforeAll(() => {
-  for (const p of sizeProps) Object.defineProperty(HTMLElement.prototype, p, { configurable: true, get: () => 800 });
+  // Wide enough that the run-details panel docks beside the thread (see `DOCK_MIN_WIDTH`).
+  for (const p of sizeProps) Object.defineProperty(HTMLElement.prototype, p, { configurable: true, get: () => (p === "clientWidth" ? 1400 : 800) });
 });
 afterAll(() => {
   sizeProps.forEach((p, i) => {

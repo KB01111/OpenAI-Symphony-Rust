@@ -8,7 +8,7 @@ configure({ asyncUtilTimeout: 5000 });
 Object.defineProperty(window, "matchMedia", {
   writable: true,
   value: (query: string) => ({
-    matches: query.includes("dark") || query.includes("min-width"),
+    matches: query.includes("dark"),
     media: query,
     onchange: null,
     addListener: () => undefined,

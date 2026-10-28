@@ -23,7 +23,7 @@ import {
   TaskStatusBadge
 } from "@symphony/ui";
 import { paths } from "../../app/routes.js";
-import { useMediaQuery } from "../../hooks/useMediaQuery.js";
+import { useElementWidth } from "../../hooks/useElementWidth.js";
 import { useMessages, useT } from "../../lib/i18n.js";
 import { useCancelTask, useDispatchTask, useProjects, useProviders, useRetryTask, useRuntimeState, useTask } from "../../lib/queries.js";
 import { workbenchMessages } from "../../layouts/messages.js";
@@ -104,7 +104,16 @@ const PromptCard: React.FC<{ task: Task }> = ({ task }) => {
     <section aria-label={w.promptHeading} className="shrink-0 border-b border-border bg-surface-sunken px-4 py-3">
       <div className="mx-auto max-w-3xl">
         <p className="mb-1 text-xs font-medium text-muted-foreground">{w.promptBy}</p>
-        <div className={expanded || !long ? "text-sm" : "max-h-24 overflow-hidden text-sm [mask-image:linear-gradient(to_bottom,black_60%,transparent)]"}>
+        <div
+          tabIndex={expanded ? 0 : undefined}
+          className={
+            expanded
+              ? "max-h-[40vh] overflow-y-auto text-sm"
+              : long
+                ? "max-h-24 overflow-hidden text-sm [mask-image:linear-gradient(to_bottom,black_60%,transparent)]"
+                : "text-sm"
+          }
+        >
           <Markdown breakNewLines>{text}</Markdown>
         </div>
         {long ? (
@@ -117,6 +126,9 @@ const PromptCard: React.FC<{ task: Task }> = ({ task }) => {
   );
 };
 
+/** Width of the thread view at which the run-details panel can dock beside it (35rem + 26rem panel). */
+const DOCK_MIN_WIDTH = 976;
+
 const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
   const m = useMessages(executionMessages);
   const w = useMessages(workbenchMessages).thread;
@@ -125,7 +137,10 @@ const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
   const state = useRuntimeState();
   const panelOpen = useUiStore((s) => s.threadPanelOpen);
   const setPanelOpen = useUiStore((s) => s.setThreadPanelOpen);
-  const wide = useMediaQuery("(min-width: 1240px)");
+  // The panel is docked only when the thread keeps at least ~35rem beside it (26rem panel); the view's
+  // own width is used, not the window's, because the sidebar and the shell take their share first.
+  const [frame, frameWidth] = useElementWidth<HTMLDivElement>();
+  const wide = frameWidth >= DOCK_MIN_WIDTH;
   const [sheetOpen, setSheetOpen] = useState(false);
   const session = state.data?.running.find((r) => r.task_id === task.id);
   const project = projects.data?.find((p) => p.id === task.project_id);
@@ -135,7 +150,7 @@ const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
   const details = <RunDetailsPanel task={task} project={project} providerStatus={providerStatus} liveSince={session?.started_at ?? null} />;
 
   return (
-    <div className="flex h-full min-h-0">
+    <div ref={frame} className="flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
         <PageHeader
           title={`${task.issue.identifier} · ${task.issue.title}`}

@@ -1,8 +1,21 @@
-import { useMemo } from "react";
-import { LogModeSwitch, PageHeader, Tabs, TabsContent, TabsList, TabsTrigger, cn } from "@symphony/ui";
+import { useMemo, useState } from "react";
+import {
+  LogModeSwitch,
+  PageHeader,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  cn
+} from "@symphony/ui";
 import { shellMessages } from "../../app/messages.js";
 import { useMessages } from "../../lib/i18n.js";
-import { useApprovals, useRecentEvents } from "../../lib/queries.js";
+import { useApprovals, useRecentEvents, useTasks } from "../../lib/queries.js";
 import { mergeEventHistory, useEventStore } from "../../runtime/eventStore.js";
 import { useUiStore, type DrawerTab } from "../../store/uiStore.js";
 import {
@@ -29,6 +42,16 @@ export default function ActivityPage() {
   const approvals = useApprovals(true);
   const pending = approvals.data?.length ?? 0;
 
+  // Agent output, terminal output and validations belong to one task: pick it here. Without a pick
+  // it is the task that is running (else the most recently updated one).
+  const tasks = useTasks(null);
+  const [picked, setPicked] = useState<string | null>(null);
+  const ordered = useMemo(() => [...(tasks.data ?? [])].sort((a, b) => b.updated_at.localeCompare(a.updated_at)), [tasks.data]);
+  const fallback = ordered.find((t) => t.status === "running") ?? ordered[0] ?? null;
+  const selected = ordered.find((t) => t.id === picked) ?? fallback;
+  const taskId = selected?.id ?? null;
+  const needsTask = tab === "agent" || tab === "terminal" || tab === "validations";
+
   const tabs: { key: DrawerTab; label: string; badge?: number }[] = [
     { key: "events", label: m.drawer.events },
     { key: "agent", label: m.drawer.agent },
@@ -41,7 +64,28 @@ export default function ActivityPage() {
 
   return (
     <section aria-label={m.drawer.label} className="flex h-full min-h-0 flex-col">
-      <PageHeader title={m.drawer.label} actions={showMode ? <LogModeSwitch value={logMode} onChange={setLogMode} /> : null} />
+      <PageHeader
+        title={m.drawer.label}
+        actions={
+          <>
+            {needsTask && ordered.length > 0 ? (
+              <Select value={taskId ?? undefined} onValueChange={setPicked}>
+                <SelectTrigger className="w-64" aria-label={m.drawer.task}>
+                  <SelectValue>{selected ? `${selected.issue.identifier} · ${selected.issue.title}` : m.drawer.task}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {ordered.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.issue.identifier} · {t.issue.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+            {showMode ? <LogModeSwitch value={logMode} onChange={setLogMode} /> : null}
+          </>
+        }
+      />
       <Tabs value={tab} onValueChange={(v) => setTab(v as DrawerTab)} className="min-h-0 flex-1">
         <TabsList aria-label={m.drawer.label}>
           {tabs.map((x) => (
@@ -57,13 +101,13 @@ export default function ActivityPage() {
           <EventFeed events={events} showIdentifier emptyTitle={m.drawer.noEvents} emptyDetail={m.drawer.noEventsDetail} />
         </TabsContent>
         <TabsContent value="agent">
-          <FocusedFeed kinds={AGENT_KINDS} emptyTitle={m.drawer.noEvents} />
+          <FocusedFeed kinds={AGENT_KINDS} emptyTitle={m.drawer.noEvents} taskId={taskId} />
         </TabsContent>
         <TabsContent value="terminal">
-          <FocusedFeed kinds={TERMINAL_KINDS} emptyTitle={m.drawer.noCommands} />
+          <FocusedFeed kinds={TERMINAL_KINDS} emptyTitle={m.drawer.noCommands} taskId={taskId} />
         </TabsContent>
         <TabsContent value="validations">
-          <ValidationsTab />
+          <ValidationsTab taskId={taskId} />
         </TabsContent>
         <TabsContent value="approvals">
           <ApprovalsTab />
