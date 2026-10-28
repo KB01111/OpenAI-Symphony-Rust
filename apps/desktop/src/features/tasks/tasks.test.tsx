@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { getTranslations } from "@symphony/shared-types";
 import NewTaskDialog from "../composer/NewTaskDialog.js";
+import { deriveTitle } from "../composer/TaskComposer.js";
 import { allowedMoveTargets, applyDrop, parseLabels, resolveDrop } from "./taskLogic.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
 import { project, providerStatus, settings, task } from "../../test/fixtures.js";
@@ -89,5 +90,22 @@ describe("NewTaskDialog (composer)", () => {
     await waitFor(() => expect(runtime.calls.filter((c) => c.method === "POST" && c.path === "/tasks")).toHaveLength(1));
     const body = runtime.calls.find((c) => c.method === "POST" && c.path === "/tasks")!.body as Record<string, unknown>;
     expect(body).toMatchObject({ title: "Write the docs", description: null, auto_start: false });
+  });
+});
+
+describe("deriveTitle", () => {
+  it("strips Markdown markers but keeps numbers and letters that belong to the sentence", () => {
+    expect(deriveTitle("# Fix the build\n\nMore detail")).toBe("Fix the build");
+    expect(deriveTitle("- add retry")).toBe("add retry");
+    expect(deriveTitle("1. First step")).toBe("First step");
+    expect(deriveTitle("2026 roadmap")).toBe("2026 roadmap");
+    expect(deriveTitle("3D rendering fix")).toBe("3D rendering fix");
+    expect(deriveTitle("1Password integration")).toBe("1Password integration");
+  });
+
+  it("shortens long prompts at a word boundary", () => {
+    const title = deriveTitle("word ".repeat(40));
+    expect(title.length).toBeLessThanOrEqual(81);
+    expect(title.endsWith("…")).toBe(true);
   });
 });

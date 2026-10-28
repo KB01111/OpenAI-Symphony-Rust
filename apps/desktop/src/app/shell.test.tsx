@@ -63,7 +63,9 @@ describe("Desktop shell", () => {
     renderWithProviders(<AppRoutes />, { runtime: rt, route: "/settings" });
     const threads = await screen.findByRole("region", { name: "Threads" });
     expect(await within(threads).findByRole("link", { name: /Repair the build/ })).toHaveAttribute("href", expect.stringContaining("/runs/t-failed"));
-    expect(within(threads).getByRole("img", { name: "Needs approval" })).toBeInTheDocument();
+    // The marker sits on the task that waits for approval, not on the failed one.
+    expect(within(within(threads).getByRole("link", { name: /Needs a decision/ })).getByRole("img", { name: "Needs approval" })).toBeInTheDocument();
+    expect(within(within(threads).getByRole("link", { name: /Repair the build/ })).queryByRole("img", { name: "Needs approval" })).not.toBeInTheDocument();
     expect(within(threads).getByRole("button", { name: "Collapse Backend" })).toBeInTheDocument();
     fireEvent.click(within(threads).getByRole("button", { name: "Collapse Backend" }));
     expect(within(threads).queryByRole("link", { name: /Repair the build/ })).not.toBeInTheDocument();
@@ -85,5 +87,40 @@ describe("Desktop shell", () => {
     fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), { target: { value: "beta" } });
     expect(within(threads).queryByRole("link", { name: /Alpha work/ })).not.toBeInTheDocument();
     expect(within(threads).getByRole("link", { name: /Beta work/ })).toBeInTheDocument();
+  });
+
+  it("says so when the tasks could not be loaded instead of showing an empty list", async () => {
+    const rt = createMockRuntime({
+      "GET /state": () => snapshot(),
+      "GET /settings": () => settings(),
+      "GET /projects": () => [],
+      "GET /tasks": () => ({ status: 500, body: { error: { code: "internal", message: "boom" } } }),
+      "GET /approvals": () => [],
+      "GET /providers": () => []
+    });
+    renderWithProviders(<AppRoutes />, { runtime: rt, route: "/settings" });
+    const threads = await screen.findByRole("region", { name: "Threads" });
+    expect(await within(threads).findByRole("alert")).toHaveTextContent("Could not load the tasks.");
+    expect(within(threads).queryByText(/No tasks yet/)).not.toBeInTheDocument();
+  });
+
+  it("keeps tasks of projects that have not loaded in separate groups", async () => {
+    const rt = createMockRuntime({
+      "GET /state": () => snapshot(),
+      "GET /settings": () => settings(),
+      "GET /projects": () => [],
+      "GET /tasks": () => [task({ id: "a", project_id: "p-a", title: "From A" }), task({ id: "b", project_id: "p-b", title: "From B" })],
+      "GET /approvals": () => [],
+      "GET /providers": () => []
+    });
+    renderWithProviders(<AppRoutes />, { runtime: rt, route: "/settings" });
+    const threads = await screen.findByRole("region", { name: "Threads" });
+    await within(threads).findByRole("link", { name: /From A/ });
+    const groups = within(threads).getAllByRole("button", { name: /^Collapse/ });
+    expect(groups).toHaveLength(2);
+    fireEvent.click(groups[0]!);
+    // Collapsing one group leaves the other one's tasks visible.
+    expect(within(threads).getAllByRole("link")).toHaveLength(1);
+    useUiStore.setState({ collapsedProjects: [] });
   });
 });

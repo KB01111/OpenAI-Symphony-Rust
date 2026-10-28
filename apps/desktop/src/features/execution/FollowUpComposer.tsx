@@ -29,8 +29,9 @@ export const FollowUpComposer: React.FC<{ task: Task }> = ({ task }) => {
   const continueTask = useContinueTask();
   const [text, setText] = useState("");
   const trimmed = text.trim();
-  // Counted in code points, as the runtime counts (`chars()`), not UTF-16 units: an emoji is one.
-  const tooLong = [...text].length > MAX_INSTRUCTIONS;
+  // Counted in code points, as the runtime counts (`chars()`), not UTF-16 units: an emoji is one. The
+  // runtime trims first, so surrounding whitespace does not count.
+  const tooLong = [...trimmed].length > MAX_INSTRUCTIONS;
   const enabled = isContinuable(task);
 
   const reason =

@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { ChevronDown, ChevronRight, FolderGit2, Search } from "lucide-react";
 import { formatMessage, type Project, type Task, type TaskStatus } from "@symphony/shared-types";
-import { Input, StatusDot, TimeAgo, cn } from "@symphony/ui";
+import { Button, Input, StatusDot, TimeAgo, cn } from "@symphony/ui";
 import { paths } from "../app/routes.js";
 import { useMessages, useT } from "../lib/i18n.js";
 import { useApprovals, useProjects, useTasks } from "../lib/queries.js";
@@ -56,14 +56,15 @@ const ThreadItem: React.FC<{ task: Task; needsApproval: boolean }> = ({ task, ne
   );
 };
 
-const ProjectGroup: React.FC<{ project: Project | null; tasks: Task[]; approvals: Set<string>; forceOpen: boolean }> = ({
+const ProjectGroup: React.FC<{ projectId: string; project: Project | null; tasks: Task[]; approvals: Set<string>; forceOpen: boolean }> = ({
+  projectId,
   project,
   tasks,
   approvals,
   forceOpen
 }) => {
   const m = useMessages(workbenchMessages);
-  const id = project?.id ?? "__none__";
+  const id = projectId;
   const name = project?.name ?? m.sidebar.noProject;
   const collapsedIds = useUiStore((s) => s.collapsedProjects);
   const toggle = useUiStore((s) => s.toggleProjectCollapsed);
@@ -122,6 +123,7 @@ const ProjectGroup: React.FC<{ project: Project | null; tasks: Task[]; approvals
 /** Tasks grouped by project: the sidebar's "threads", like the conversations list of a chat app. */
 export const ThreadList: React.FC = () => {
   const m = useMessages(workbenchMessages);
+  const t = useT();
   const tasks = useTasks(null);
   const projects = useProjects();
   const approvals = useApprovals(true);
@@ -141,6 +143,7 @@ export const ThreadList: React.FC = () => {
     const projectById = new Map((projects.data ?? []).map((p) => [p.id, p] as const));
     return [...byProject.entries()]
       .map(([projectId, list]) => ({
+        projectId,
         project: projectById.get(projectId) ?? null,
         tasks: [...list].sort((a, b) => b.updated_at.localeCompare(a.updated_at))
       }))
@@ -162,14 +165,26 @@ export const ThreadList: React.FC = () => {
         />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" role="region" aria-label={m.sidebar.threads} tabIndex={-1}>
-        {tasks.isLoading ? null : empty ? (
+        {tasks.isLoading ? null : tasks.isError && !tasks.data ? (
+          <div role="alert" className="space-y-2 px-2 py-3 text-xs text-muted-foreground">
+            <p>{m.sidebar.loadFailed}</p>
+            <Button size="sm" onClick={() => void tasks.refetch()}>
+              {t.common.retry}
+            </Button>
+          </div>
+        ) : empty ? (
           <p className="px-2 py-3 text-xs text-muted-foreground">{m.sidebar.noThreads}</p>
         ) : groups.length === 0 ? (
           <p className="px-2 py-3 text-xs text-muted-foreground">{m.sidebar.noMatches}</p>
         ) : (
           <div className="flex flex-col gap-2">
+            {approvals.isError && !approvals.data ? (
+              <p role="status" className="px-2 text-xs text-warning">
+                {m.sidebar.approvalsUnavailable}
+              </p>
+            ) : null}
             {groups.map((g) => (
-              <ProjectGroup key={g.project?.id ?? "__none__"} project={g.project} tasks={g.tasks} approvals={approvalTaskIds} forceOpen={query.trim().length > 0} />
+              <ProjectGroup key={g.projectId} projectId={g.projectId} project={g.project} tasks={g.tasks} approvals={approvalTaskIds} forceOpen={query.trim().length > 0} />
             ))}
           </div>
         )}

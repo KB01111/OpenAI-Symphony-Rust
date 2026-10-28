@@ -37,7 +37,7 @@ import {
   Hint,
   useNotify
 } from "@symphony/ui";
-import { ArrowRightLeft, History, Info, MoreHorizontal, Play, RotateCcw, ScanSearch, XCircle } from "lucide-react";
+import { ArrowRightLeft, MoreHorizontal, Play, RotateCcw, ScanSearch, XCircle } from "lucide-react";
 import { paths } from "../../app/routes.js";
 import { useMessages, useT } from "../../lib/i18n.js";
 import {
@@ -221,25 +221,11 @@ function useTaskMenuModel(task: Task): TaskMenuModel {
     moveTargets: busy ? [] : allowedMoveTargets(task.status, active),
     navigation: [
       {
-        key: "inspect",
-        label: m.actions.inspect,
-        icon: <Info className={icon} aria-hidden />,
-        disabled: false,
-        onSelect: () => actions.inspect(task)
-      },
-      {
         key: "open",
         label: m.actions.openExecution,
         icon: <ScanSearch className={icon} aria-hidden />,
         disabled: false,
         onSelect: () => actions.openRun(task)
-      },
-      {
-        key: "history",
-        label: m.actions.viewHistory,
-        icon: <History className={icon} aria-hidden />,
-        disabled: false,
-        onSelect: () => actions.openHistory(task)
       }
     ]
   };

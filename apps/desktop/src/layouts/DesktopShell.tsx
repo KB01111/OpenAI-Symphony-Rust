@@ -30,7 +30,7 @@ export const DesktopShell: React.FC = () => {
       <div className="flex min-h-0 min-w-0 flex-col">
         <TopBar />
         <UpdateBanner />
-        <main id="main" className="min-h-0 min-w-0 flex-1 overflow-hidden" tabIndex={-1}>
+        <main id="main" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" tabIndex={-1}>
           <Outlet />
         </main>
       </div>

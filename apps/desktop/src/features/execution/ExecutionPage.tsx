@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { isSymphonyApiError } from "@symphony/api-client";
 import { ArrowLeft, FolderOpen, PanelRight, Play, RotateCcw, Square } from "lucide-react";
@@ -131,6 +131,7 @@ const DOCK_MIN_WIDTH = 976;
 
 const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
   const m = useMessages(executionMessages);
+  const t = useT();
   const w = useMessages(workbenchMessages).thread;
   const projects = useProjects();
   const providers = useProviders();
@@ -146,6 +147,20 @@ const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
   const project = projects.data?.find((p) => p.id === task.project_id);
   const providerStatus = providers.data?.find((p) => p.provider === task.provider);
   const inline = wide && panelOpen;
+
+  // Ctrl+J shows or hides the run details: the docked panel when there is room, else the sheet.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "j") return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
+      e.preventDefault();
+      if (wide) setPanelOpen(!panelOpen);
+      else setSheetOpen((open) => !open);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [wide, panelOpen, setPanelOpen]);
 
   const details = <RunDetailsPanel task={task} project={project} providerStatus={providerStatus} liveSince={session?.started_at ?? null} />;
 
@@ -198,7 +213,7 @@ const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
       ) : null}
       {!wide ? (
         <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-          <SheetContent side="right" className="w-[min(32rem,92vw)] gap-0 bg-surface p-0 sm:max-w-none">
+          <SheetContent side="right" closeLabel={t.common.close} className="w-[min(32rem,92vw)] gap-0 bg-surface p-0 sm:max-w-none">
             <SheetHeader className="border-b border-border">
               <SheetTitle>{w.panel}</SheetTitle>
               <SheetDescription className="sr-only">{task.issue.identifier}</SheetDescription>
@@ -221,7 +236,7 @@ export default function ExecutionPage() {
 
   const backButton = useMemo(
     () => (
-      <Button size="sm" onClick={() => navigate(paths.home())}>
+      <Button size="sm" onClick={() => navigate(paths.runs())}>
         <ArrowLeft />
         {m.notFound.back}
       </Button>

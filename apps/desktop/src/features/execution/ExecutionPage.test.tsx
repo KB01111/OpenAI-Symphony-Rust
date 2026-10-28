@@ -110,6 +110,19 @@ describe("ExecutionPage", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
     fireEvent.change(box, { target: { value: "x".repeat(20_001) } });
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    // The runtime trims first: surrounding whitespace does not count against the limit.
+    fireEvent.change(box, { target: { value: `${"x".repeat(20_000)}   
+  ` } });
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+
+  it("shows and hides the run details with Ctrl+J", async () => {
+    renderPage(runtime(task({ status: "human_review" })));
+    expect(await screen.findByRole("tab", { name: "Context" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "j", ctrlKey: true });
+    await waitFor(() => expect(screen.queryByRole("tab", { name: "Context" })).not.toBeInTheDocument());
+    fireEvent.keyDown(window, { key: "j", ctrlKey: true });
+    expect(await screen.findByRole("tab", { name: "Context" })).toBeInTheDocument();
   });
 
   it("offers no follow-up while a task runs and says why", async () => {
