@@ -107,6 +107,12 @@ describe("deriveTitle", () => {
     expect(deriveTitle("---\nFix the flaky test")).toBe("Fix the flaky test");
     expect(deriveTitle("***\n\n- \n-\n#\n2. Real instruction")).toBe("Real instruction");
     expect(deriveTitle("- - -\nDo the thing")).toBe("Do the thing");
+    expect(deriveTitle("___\nDo the thing")).toBe("Do the thing");
+  });
+
+  it("keeps a line that only looks like a rule but mixes characters", () => {
+    expect(deriveTitle("-*-\nDo the thing")).toBe("-*-");
+    expect(deriveTitle("===\nDo the thing")).toBe("===");
   });
 
   it("shortens long prompts at a word boundary", () => {

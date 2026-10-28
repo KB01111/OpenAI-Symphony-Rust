@@ -36,7 +36,7 @@ export function deriveTitle(prompt: string): string {
   // horizontal rule (`---`, `***`, `- - -`) has no text and is skipped.
   const line = prompt
     .split(/\r?\n/)
-    .map((l) => (/^\s*(?:[-*_=]\s*){3,}$/.test(l) ? "" : l.replace(/^\s*(?:(?:#{1,6}|[>*+-]|\d+[.)])(?:\s+|$))+/, "").trim()))
+    .map((l) => (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(l) ? "" : l.replace(/^\s*(?:(?:#{1,6}|[>*+-]|\d+[.)])(?:\s+|$))+/, "").trim()))
     .find((l) => l.length > 0);
   const base = (line ?? prompt.trim()).replace(/\s+/g, " ");
   if (base.length <= MAX_TITLE) return base;
