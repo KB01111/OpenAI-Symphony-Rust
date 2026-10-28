@@ -47,6 +47,9 @@ export function keysToInvalidate(batch: AgentEvent[]): QueryKey[] {
       }
     }
     if (type.startsWith("attempt/") || type.startsWith("pr/")) add(qk.prsAll);
+    // An automatic refresh changes one review: refresh its open detail view too.
+    const reviewId = (e.payload as { review_id?: unknown } | null)?.review_id;
+    if (type.startsWith("pr/") && typeof reviewId === "string") add(qk.pr(reviewId));
     if (type.startsWith("approval/") || type.endsWith("requestApproval") || type.endsWith("approvalResolved")) {
       add(qk.approvalsAll);
       add(qk.state);

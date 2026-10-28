@@ -201,8 +201,8 @@ pub fn redact_secrets(input: &str, extra_secrets: &[String]) -> String {
     out
 }
 
-/// Redacts every string inside a JSON value in place (object keys are left alone), with the same
-/// rules as [`redact_secrets`]. Raw provider payloads (command output, tool results, file diffs)
+/// Redacts every string inside a JSON value in place, object keys included, with the same rules
+/// as [`redact_secrets`] (model-written tool arguments can use any string as a key). Raw provider payloads (command output, tool results, file diffs)
 /// pass through this before they are stored or streamed, so a token an agent printed never
 /// reaches the database, the event stream or a diagnostics export. Strings shorter than any
 /// secret the patterns or the registry can match are skipped without scanning.
@@ -215,7 +215,18 @@ pub fn redact_json_strings(value: &mut serde_json::Value) {
             }
         }
         serde_json::Value::Array(items) => items.iter_mut().for_each(redact_json_strings),
-        serde_json::Value::Object(map) => map.values_mut().for_each(redact_json_strings),
+        serde_json::Value::Object(map) => {
+            map.values_mut().for_each(redact_json_strings);
+            let leaking =
+                |key: &String| key.len() >= MIN_SECRET_LEN && redact_secrets(key, &[]) != *key;
+            if map.keys().any(leaking) {
+                // Rebuild the map only when a key holds a secret (the common case costs no copy).
+                *map = std::mem::take(map)
+                    .into_iter()
+                    .map(|(key, value)| (redact_secrets(&key, &[]), value))
+                    .collect();
+            }
+        }
         _ => {}
     }
 }
@@ -274,7 +285,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn json_payloads_are_redacted_at_every_depth_but_keys_and_short_values_stay() {
+    fn json_payloads_are_redacted_at_every_depth_keys_included_and_short_values_stay() {
         register_secret("test:json-payload", "vault-value-0123456789");
         let mut payload = serde_json::json!({
             "method": "item/completed",
@@ -291,6 +302,9 @@ mod tests {
         assert_eq!(item["lines"][1], "key [REDACTED] used");
         assert_eq!(item["lines"][2], 42);
         assert_eq!(payload["method"], "item/completed");
+        // A secret used as a key is masked too; its value stays.
+        assert_eq!(item["[REDACTED]"], true);
+        assert!(!payload.to_string().contains("ghp_"), "{payload}");
         release_secret("test:json-payload");
     }
 

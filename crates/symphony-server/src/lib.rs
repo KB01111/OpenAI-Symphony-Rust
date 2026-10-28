@@ -276,6 +276,7 @@ pub struct TaskEventsQuery {
 #[into_params(parameter_in = Query)]
 pub struct ToolCallsQuery {
     /// Maximum number of tool calls (1–500, default 200).
+    #[param(minimum = 1, maximum = 500)]
     pub limit: Option<u32>,
     /// Return only calls older than this tool-call id of the same task (the oldest call of the
     /// previous page); omit for the newest calls.

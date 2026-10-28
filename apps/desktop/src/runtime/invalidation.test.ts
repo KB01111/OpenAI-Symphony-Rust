@@ -32,3 +32,13 @@ describe("keysToInvalidate", () => {
     }
   });
 });
+
+describe("pull request events", () => {
+  it("refresh the open review detail named in the payload", () => {
+    const changed = { ...event("pr/status_changed"), payload: { review_id: "r1", ci_status: "failed" } };
+    const keys = keysToInvalidate([changed]);
+    expect(has(keys, qk.pr("r1"))).toBe(true);
+    expect(has(keys, qk.prsAll)).toBe(true);
+    expect(has(keysToInvalidate([event("pr/status_changed")]), qk.pr("r1"))).toBe(false);
+  });
+});

@@ -2307,17 +2307,15 @@ Please implement the requested changes cleanly in the current Git workspace, run
             match self.refresh_pull_request(&before.id).await {
                 Ok(after) => {
                     failing.remove(&before.id);
-                    let summary = |r: &PullRequestReview| {
-                        (
-                            r.ci_status.clone(),
-                            r.state.clone(),
-                            r.mergeable,
-                            r.has_conflicts,
-                            r.merge_readiness.score,
-                            r.review_comments.len(),
-                        )
-                    };
-                    if summary(&before) == summary(&after) {
+                    // Compared by content: an edited comment is a change even when the count
+                    // stays the same.
+                    let unchanged = before.ci_status == after.ci_status
+                        && before.state == after.state
+                        && before.mergeable == after.mergeable
+                        && before.has_conflicts == after.has_conflicts
+                        && before.merge_readiness.score == after.merge_readiness.score
+                        && before.review_comments == after.review_comments;
+                    if unchanged {
                         continue;
                     }
                     sweep.changed += 1;

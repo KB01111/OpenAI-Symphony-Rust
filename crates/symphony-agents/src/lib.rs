@@ -1826,6 +1826,9 @@ pub struct SimulatedAgentSession {
     config: AgentLaunchConfig,
     thread_id: String,
     turn_counter: u32,
+    /// Unique per session, so the item ids of a retried attempt (whose turn counter starts
+    /// again) never collide with an earlier attempt's tool calls.
+    item_prefix: String,
     /// Usage of the finished turns, so stream events report session totals.
     completed_usage: TokenUsage,
     cancel_tx: Option<oneshot::Sender<()>>,
@@ -1839,6 +1842,7 @@ impl SimulatedAgentSession {
             thread_id: existing_thread_id
                 .unwrap_or_else(|| format!("thread-sim-{}", uuid::Uuid::new_v4())),
             turn_counter: 0,
+            item_prefix: uuid::Uuid::new_v4().simple().to_string(),
             completed_usage: TokenUsage::default(),
             cancel_tx: None,
             approval_gate: None,
@@ -2047,7 +2051,7 @@ impl AgentSession for SimulatedAgentSession {
                 None,
                 json!({ "item": {
                     "type": "commandExecution",
-                    "id": format!("{turn_id}-command"),
+                    "id": format!("{}-{turn_id}-command", self.item_prefix),
                     "durationMs": 40,
                     "command": "git status --short",
                     "cwd": self.config.workspace_path.to_string_lossy(),
@@ -2127,7 +2131,7 @@ impl AgentSession for SimulatedAgentSession {
                 None,
                 json!({ "item": {
                     "type": "fileChange",
-                    "id": format!("{turn_id}-file"),
+                    "id": format!("{}-{turn_id}-file", self.item_prefix),
                     "status": "completed",
                     "changes": [{ "path": "SYMPHONY_TASK_NOTE.md", "kind": "add", "diff": content }]
                 } }),

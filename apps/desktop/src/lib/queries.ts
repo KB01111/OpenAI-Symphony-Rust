@@ -142,13 +142,17 @@ export const TOOL_CALL_PAGE = 100;
 /** A task's tool-call history, newest first, one page at a time (`fetchNextPage` reads older calls). */
 export function useTaskToolCalls(id: string | null | undefined) {
   const client = useClient();
+  // Without the event stream (fallback polling) nothing invalidates this query: poll like the
+  // other task queries.
+  const refetchInterval = usePoll();
   return useInfiniteQuery({
     queryKey: qk.taskToolCalls(id ?? ""),
     queryFn: ({ signal, pageParam }) => client.listTaskToolCalls(id!, TOOL_CALL_PAGE, signal, pageParam),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => (last.length >= TOOL_CALL_PAGE ? last[last.length - 1]!.id : undefined),
     enabled: Boolean(id),
-    staleTime: 10_000
+    staleTime: 10_000,
+    refetchInterval
   });
 }
 

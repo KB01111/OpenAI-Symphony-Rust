@@ -68,7 +68,10 @@ export const ToolCallsTab: React.FC<{ taskId: string }> = ({ taskId }) => {
   const t = useT();
   const calls = useTaskToolCalls(taskId);
   if (calls.isLoading) return <LoadingRows rows={3} label={t.common.loading} />;
-  if (calls.isError) return <ErrorState title={m.toolCalls.loadFailed} message={calls.error.message} onRetry={() => void calls.refetch()} />;
+  // Only a failed first page replaces the list; pages already loaded stay when a later one fails.
+  if (calls.isError && !calls.data) {
+    return <ErrorState title={m.toolCalls.loadFailed} message={calls.error.message} onRetry={() => void calls.refetch()} />;
+  }
   const list = calls.data?.pages.flat() ?? [];
   if (list.length === 0) return <AiEmptyView title={m.toolCalls.empty} description={m.toolCalls.emptyDetail} />;
   return (
@@ -79,7 +82,10 @@ export const ToolCallsTab: React.FC<{ taskId: string }> = ({ taskId }) => {
           <ToolCallItem key={call.id} call={call} />
         ))}
       </ul>
-      {calls.hasNextPage ? (
+      {calls.isFetchNextPageError ? (
+        <ErrorState title={m.toolCalls.loadOlderFailed} message={calls.error?.message ?? ""} onRetry={() => void calls.fetchNextPage()} />
+      ) : null}
+      {calls.hasNextPage && !calls.isFetchNextPageError ? (
         <Button size="small" appearance="secondary" disabled={calls.isFetchingNextPage} onClick={() => void calls.fetchNextPage()}>
           {calls.isFetchingNextPage ? t.common.loading : m.toolCalls.loadOlder}
         </Button>

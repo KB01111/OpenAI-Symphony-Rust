@@ -269,9 +269,40 @@ describe("ExecutionPage", () => {
     // A failed call opens with its output.
     expect(within(item).getByText("Failed")).toBeInTheDocument();
     expect(within(item).getByText("Symphony tool")).toBeInTheDocument();
+    expect(within(item).getByText("refused")).toBeInTheDocument();
     expect(within(item).getByText("The output was longer than 64 KiB and was cut.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Load older tool calls" })).not.toBeInTheDocument();
     expect(rt.calls.filter((c) => c.path === "/tasks/t1/tool-calls")).toHaveLength(2);
+  });
+
+  it("keeps the loaded tool calls when an older page fails", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, i) => ({
+      id: `t1:c${i}`,
+      task_id: "t1",
+      session_id: null,
+      provider: "codex" as const,
+      call_id: `c${i}`,
+      tool_name: `tool_${i}`,
+      kind: "command" as const,
+      arguments: null,
+      output: null,
+      output_truncated: false,
+      status: "succeeded" as const,
+      started_at: "2026-10-20T10:00:00Z",
+      finished_at: null,
+      duration_ms: null
+    }));
+    const rt = runtime(task({ status: "human_review" }), {
+      "GET /tasks/:id/tool-calls": ({ query }) =>
+        query.get("before") ? { status: 500, body: { error: { code: "storage_error", message: "disk busy" } } } : firstPage
+    });
+    renderPage(rt);
+    fireEvent.click(await screen.findByRole("tab", { name: "Tool calls" }));
+    await screen.findByText("tool_0");
+    fireEvent.click(screen.getByRole("button", { name: "Load older tool calls" }));
+    expect(await screen.findByText("Could not load older tool calls")).toBeInTheDocument();
+    expect(screen.getByText("tool_0")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Tool calls of this task" })).getAllByRole("listitem")).toHaveLength(100);
   });
 
   it("requires confirmation before cancelling and posts to the cancel endpoint", async () => {
