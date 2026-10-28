@@ -221,10 +221,20 @@ pub fn redact_json_strings(value: &mut serde_json::Value) {
                 |key: &String| key.len() >= MIN_SECRET_LEN && redact_secrets(key, &[]) != *key;
             if map.keys().any(leaking) {
                 // Rebuild the map only when a key holds a secret (the common case costs no copy).
-                *map = std::mem::take(map)
-                    .into_iter()
-                    .map(|(key, value)| (redact_secrets(&key, &[]), value))
-                    .collect();
+                // Two keys can redact to the same text: number the later ones so no value is
+                // dropped.
+                let mut rebuilt = serde_json::Map::with_capacity(map.len());
+                for (key, value) in std::mem::take(map) {
+                    let redacted = redact_secrets(&key, &[]);
+                    let mut unique = redacted.clone();
+                    let mut n = 2;
+                    while rebuilt.contains_key(&unique) {
+                        unique = format!("{redacted}#{n}");
+                        n += 1;
+                    }
+                    rebuilt.insert(unique, value);
+                }
+                *map = rebuilt;
             }
         }
         _ => {}
@@ -302,9 +312,24 @@ mod tests {
         assert_eq!(item["lines"][1], "key [REDACTED] used");
         assert_eq!(item["lines"][2], 42);
         assert_eq!(payload["method"], "item/completed");
-        // A secret used as a key is masked too; its value stays.
+        // A secret used as a key is masked too; its value stays, also when keys collide.
         assert_eq!(item["[REDACTED]"], true);
         assert!(!payload.to_string().contains("ghp_"), "{payload}");
+        let mut colliding = serde_json::json!({
+            "[REDACTED]": 1,
+            "ghp_abcdefghijklmnopqrstuvwxyz0123": 2,
+            "ghp_zyxwvutsrqponmlkjihgfedcba3210": 3
+        });
+        redact_json_strings(&mut colliding);
+        let mut values: Vec<i64> = colliding
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        values.sort();
+        assert_eq!(values, [1, 2, 3], "{colliding}");
+        assert!(!colliding.to_string().contains("ghp_"), "{colliding}");
         release_secret("test:json-payload");
     }
 
