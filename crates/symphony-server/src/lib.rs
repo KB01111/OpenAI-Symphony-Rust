@@ -99,9 +99,9 @@ pub fn default_local_origins() -> Vec<String> {
 /// under its owner: [`LOCAL_API_TOKEN_OWNER`] for the local API token, the credential vault for a
 /// remote token.
 pub fn generate_access_token() -> String {
-    use rand::RngCore;
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    // Thread-local ChaCha CSPRNG seeded from the operating system.
+    rand::fill(&mut bytes);
     hex::encode(bytes)
 }
 

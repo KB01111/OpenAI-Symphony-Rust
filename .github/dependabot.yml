@@ -4,6 +4,10 @@
 # suppress security updates): the exactly pinned API generators (utoipa, @hey-api/*) get PRs too,
 # and the "Generated contracts are up to date" check fails any bump that changes the contract
 # until `pnpm generate:api` output is committed with it.
+#
+# Close (do not merge) a TypeScript major bump of tools/api-generator: @hey-api/openapi-ts needs the
+# TypeScript 6 compiler API (docs/PRODUCTION_READINESS.md §5). `pnpm generate:api` refuses any
+# other major with that reason, and the contract check fails such a pull request.
 version: 2
 updates:
   - package-ecosystem: cargo
