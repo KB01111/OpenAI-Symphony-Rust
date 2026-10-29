@@ -35,6 +35,12 @@ const PAGE_SIZE = 60;
 const STATUS_SET = new Set<string>(ALL_TASK_STATUSES);
 
 /**
+ * Parking states that are usually empty. Their columns are shown only while they hold a task or a card
+ * is being dragged (so they remain drop targets); the card menu can always move a task there.
+ */
+const OCCASIONAL_STATUSES = new Set<TaskStatus>(["backlog", "blocked", "cancelled"]);
+
+/**
  * Pointer: drop only on the column under the cursor (a gutter is no drop); keyboard drags have no
  * pointer coordinates, so they use rectangle overlap.
  */
@@ -186,7 +192,7 @@ const BoardColumn = React.memo(function BoardColumn({
   );
 });
 
-/** Kanban board with all nine status columns and state-machine-validated drag and drop. */
+/** Kanban board over the task statuses with state-machine-validated drag and drop. */
 export const TaskBoard: React.FC<{ tasks: ReadonlyArray<Task> }> = ({ tasks }) => {
   const m = useMessages(taskMessages);
   const t = useT();
@@ -253,7 +259,7 @@ export const TaskBoard: React.FC<{ tasks: ReadonlyArray<Task> }> = ({ tasks }) =
       accessibility={{ announcements, screenReaderInstructions: { draggable: m.dnd.instructions } }}
     >
       <div className="flex h-full min-h-0 gap-2 overflow-x-auto p-3" role="group" aria-label={m.page.boardLabel}>
-        {ALL_TASK_STATUSES.map((status) => (
+        {ALL_TASK_STATUSES.filter((status) => activeTask !== null || !OCCASIONAL_STATUSES.has(status) || grouped[status].length > 0).map((status) => (
           <BoardColumn
             key={status}
             status={status}

@@ -2,10 +2,11 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { getTranslations } from "@symphony/shared-types";
 import NewTaskDialog from "../composer/NewTaskDialog.js";
+import TasksPage from "./TasksPage.js";
 import { deriveTitle } from "../composer/TaskComposer.js";
 import { allowedMoveTargets, applyDrop, parseLabels, resolveDrop } from "./taskLogic.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
-import { project, providerStatus, settings, task } from "../../test/fixtures.js";
+import { project, providerStatus, settings, snapshot, task } from "../../test/fixtures.js";
 import { useUiStore } from "../../store/uiStore.js";
 
 describe("board state machine", () => {
@@ -124,5 +125,29 @@ describe("deriveTitle", () => {
     const early = `${"a".repeat(30)} ${"b".repeat(30)} ${"c".repeat(10)} ${"d".repeat(40)}`;
     expect(deriveTitle(early)).toBe(`${"a".repeat(30)} ${"b".repeat(30)} ${"c".repeat(10)}…`);
     expect(deriveTitle("#\nFix the build")).toBe("Fix the build");
+  });
+});
+
+describe("task board columns", () => {
+  const boardRuntime = (tasks: ReturnType<typeof task>[]) =>
+    createMockRuntime({
+      "GET /settings": () => settings(),
+      "GET /state": () => snapshot(),
+      "GET /projects": () => [project({ id: "p1" })],
+      "GET /tasks": () => tasks,
+      "GET /approvals": () => [],
+      "GET /providers": () => []
+    });
+
+  it("shows Backlog, Blocked and Cancelled only once they hold a task", async () => {
+    useUiStore.getState().setTaskView("board");
+    const { unmount } = renderWithProviders(<TasksPage />, { runtime: boardRuntime([task({ id: "a", project_id: "p1", status: "ready" })]), route: "/tasks" });
+    expect(await screen.findByRole("region", { name: "Ready" })).toBeInTheDocument();
+    for (const name of ["Backlog", "Blocked", "Cancelled"]) expect(screen.queryByRole("region", { name })).not.toBeInTheDocument();
+    unmount();
+
+    renderWithProviders(<TasksPage />, { runtime: boardRuntime([task({ id: "b", project_id: "p1", status: "blocked" })]), route: "/tasks" });
+    expect(await screen.findByRole("region", { name: "Blocked" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Backlog" })).not.toBeInTheDocument();
   });
 });

@@ -20,6 +20,7 @@ test("keyboard shortcut help opens with F1, from the palette and from Settings, 
   await page.keyboard.press("Escape");
 
   await openApp(page, "/settings");
+  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Application" }).click();
   await page.getByRole("button", { name: "Show keyboard shortcuts" }).click();
   await expect(dialog).toBeVisible();
 });

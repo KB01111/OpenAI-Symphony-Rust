@@ -264,13 +264,40 @@ describe("BackupsSection", () => {
 });
 
 describe("SettingsPage", () => {
-  it("offers Reset only once something has been edited", async () => {
+  const renderPage = () => {
     const rt = createMockRuntime({ "GET /settings": () => settings(), "GET /providers": () => [] });
     renderWithProviders(<SettingsPage />, { runtime: rt, route: "/settings" });
+  };
+  const openSection = (name: string) => fireEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name }));
+
+  it("shows one section at a time", async () => {
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Backups" })).not.toBeInTheDocument();
+    openSection("Backups");
+    expect(await screen.findByRole("heading", { name: "Backups" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Appearance" })).not.toBeInTheDocument();
+  });
+
+  it("offers Reset only once something has been edited", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "Appearance" });
+    openSection("Scheduling & resources");
     const polling = await screen.findByLabelText("Polling interval (ms)");
     expect(screen.queryByRole("button", { name: "Reset" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
     fireEvent.change(polling, { target: { value: "45000" } });
     expect(await screen.findByRole("button", { name: "Reset" })).toBeEnabled();
+  });
+
+  it("marks a section that has an invalid field even while another section is open", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "Appearance" });
+    openSection("Scheduling & resources");
+    fireEvent.change(await screen.findByLabelText("Polling interval (ms)"), { target: { value: "10" } });
+    openSection("Appearance");
+    const nav = screen.getByRole("navigation", { name: "Settings sections" });
+    expect(within(within(nav).getByRole("button", { name: /Scheduling & resources/ })).getByRole("img", { name: "Has a field that needs attention" })).toBeInTheDocument();
+    expect(within(within(nav).getByRole("button", { name: /Appearance/ })).queryByRole("img")).not.toBeInTheDocument();
   });
 });

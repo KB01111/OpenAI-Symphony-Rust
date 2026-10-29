@@ -1,8 +1,8 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { RotateCcw, Save } from "lucide-react";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage, type AppSettings, type Locale } from "@symphony/shared-types";
-import { Alert, Badge, Button, cn, ErrorState, LoadingRows, PageHeader, Spinner, useDesign, useNotify, type ThemeMode } from "@symphony/ui";
+import { Alert, Badge, Button, cn, ErrorState, LoadingRows, PageHeader, Spinner, useNotify, type ThemeMode } from "@symphony/ui";
 import { useMessages } from "../../lib/i18n.js";
 import { useSaveSettings, useSettings } from "../../lib/queries.js";
 import { useUiStore } from "../../store/uiStore.js";
@@ -18,11 +18,25 @@ import {
   RemoteSection,
   SECTION_IDS,
   SchedulingSection,
-  sectionDomId,
   type SectionId
 } from "./sections.js";
 import { portOf, serverErrorFields, validateSettings, type SettingsErrors, type SettingsField } from "./validation.js";
 import { useRuntime } from "../../runtime/RuntimeProvider.js";
+
+/** The section each validated field lives in, so the nav can flag a section that has an error. */
+const SECTION_FIELDS: Partial<Record<SectionId, ReadonlyArray<SettingsField>>> = {
+  scheduling: [
+    "polling_interval_ms",
+    "max_concurrent_on_ac",
+    "max_concurrent_on_battery",
+    "high_memory_threshold_percent",
+    "high_cpu_threshold_percent",
+    "event_retention_days",
+    "pr_refresh_interval_minutes"
+  ],
+  remote: ["remote_bind_address", "remote_port", "remote_allowed_origins"],
+  backups: ["backup_interval_hours", "backup_keep"]
+};
 
 /** Fields edited through the draft form (theme/locale persist immediately; others are not edited here). */
 type EditableSettings = Pick<
@@ -80,7 +94,6 @@ function sameEditable(a: AppSettings, b: AppSettings): boolean {
 export default function SettingsPage() {
   const m = useMessages(settingsMessages);
   const notify = useNotify();
-  const { reducedMotion } = useDesign();
   const settings = useSettings();
   const save = useSaveSettings();
   const themeMode = useUiStore((s) => s.themeMode);
@@ -151,9 +164,11 @@ export default function SettingsPage() {
   const onTheme = (mode: ThemeMode) => setThemeMode(mode);
   const onLocale = (next: Locale) => setLocale(next);
 
+  // One section at a time keeps the page short; edits live in the shared draft, so switching loses nothing.
+  const content = useRef<HTMLDivElement>(null);
   const goTo = (id: SectionId) => {
     setActive(id);
-    document.getElementById(sectionDomId(id))?.scrollIntoView({ block: "start", behavior: reducedMotion ? "auto" : "smooth" });
+    content.current?.scrollTo({ top: 0 });
   };
 
   return (
@@ -209,12 +224,15 @@ export default function SettingsPage() {
                   )}
                 >
                   {m.sections[id]}
+                  {(SECTION_FIELDS[id] ?? []).some((field) => errors[field]) ? (
+                    <span className="ms-auto size-2 shrink-0 rounded-full bg-destructive" role="img" aria-label={m.invalidSection} />
+                  ) : null}
                 </button>
               </li>
             ))}
           </ul>
         </nav>
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div ref={content} className="min-h-0 flex-1 overflow-auto">
           <div className="mx-auto flex max-w-4xl flex-col gap-4 p-4">
             {settings.isPending ? (
               <LoadingRows rows={10} label={m.title} />
@@ -225,22 +243,24 @@ export default function SettingsPage() {
                 {serverMessage ? (
                   <Alert intent="error" title={m.saveFailed}>{serverMessage}</Alert>
                 ) : null}
-                <AppearanceSection
-                  themeMode={themeMode}
-                  locale={locale}
-                  density={density}
-                  onTheme={onTheme}
-                  onLocale={onLocale}
-                  onDensity={setDensity}
-                />
-                <DesktopSection draft={current} errors={errors} update={update} />
-                <SchedulingSection draft={current} errors={errors} update={update} />
-                <DefaultsSection draft={current} errors={errors} update={update} />
-                <RemoteSection draft={current} errors={errors} update={update} />
-                <IntegrationsSection />
-                <BackupsSection draft={current} errors={errors} update={update} />
-                <DiagnosticsSection />
-                <ApplicationSection />
+                {active === "appearance" ? (
+                  <AppearanceSection
+                    themeMode={themeMode}
+                    locale={locale}
+                    density={density}
+                    onTheme={onTheme}
+                    onLocale={onLocale}
+                    onDensity={setDensity}
+                  />
+                ) : null}
+                {active === "desktop" ? <DesktopSection draft={current} errors={errors} update={update} /> : null}
+                {active === "scheduling" ? <SchedulingSection draft={current} errors={errors} update={update} /> : null}
+                {active === "defaults" ? <DefaultsSection draft={current} errors={errors} update={update} /> : null}
+                {active === "remote" ? <RemoteSection draft={current} errors={errors} update={update} /> : null}
+                {active === "integrations" ? <IntegrationsSection /> : null}
+                {active === "backups" ? <BackupsSection draft={current} errors={errors} update={update} /> : null}
+                {active === "diagnostics" ? <DiagnosticsSection /> : null}
+                {active === "application" ? <ApplicationSection /> : null}
               </>
             )}
           </div>

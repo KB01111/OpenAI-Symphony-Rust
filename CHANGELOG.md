@@ -117,7 +117,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   concise run timeline leaves out the contentless "Event: item/started"-style protocol rows (the
   technical view keeps every event). Empty Kanban columns are slim, so more of the populated ones fit on
   screen, and Settings shows *Reset* only once something has been edited. The Overview live-sessions
-  table no longer clips its last column: Project and Tokens appear only on wide windows.
+  table no longer clips its last column: Project and Tokens appear only on wide windows. The Kanban
+  board shows Backlog, Blocked and Cancelled only when they hold a task or while a card is dragged.
+  Settings shows one section at a time (a dot in the section list marks one with an invalid field), and
+  each provider card keeps capabilities and models behind a single "Capabilities and models" disclosure.
 - **One component system on the desktop**: Fluent UI and the OpenAI Apps SDK UI are removed from the
   desktop app and the shared UI package in favour of shadcn/ui (Radix) with Tailwind tokens, so controls,
   dialogs and tabs share one sizing, one set of breakpoints and one CSS layer order. Markdown uses
