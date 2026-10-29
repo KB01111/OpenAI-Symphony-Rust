@@ -223,7 +223,7 @@ export default function SettingsPage() {
                   onClick={() => goTo(id)}
                   aria-current={active === id ? "location" : undefined}
                   className={cn(
-                    "flex h-row shrink-0 items-center whitespace-nowrap rounded-md px-2 text-start text-sm transition-colors @3xl:w-full",
+                    "flex h-row shrink-0 items-center whitespace-nowrap rounded-md px-2 text-start text-sm transition-colors @3xl:h-auto @3xl:min-h-row @3xl:w-full @3xl:whitespace-normal @3xl:py-1.5",
                     active === id
                       ? "bg-surface-selected font-medium text-foreground"
                       : "text-muted-foreground hover:bg-surface-hover hover:text-foreground"

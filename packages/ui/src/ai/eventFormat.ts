@@ -63,10 +63,13 @@ function normalizeAgentEvent(event: AgentEvent): FormattedAgentEvent {
   const payload = asObject(raw?.params) ?? raw;
   const item = asObject(payload?.item) ?? payload;
   const itemType = str(item?.type ?? undefined) ?? "";
+  // The Codex driver labels a notification it has no text for "Event: <method>"; when the notification
+  // itself carries a summary (e.g. `configWarning`), that is the text worth showing.
+  const summary = str(payload?.summary);
   const base: FormattedAgentEvent = {
     kind: "other",
     tone: "neutral",
-    text: event.message,
+    text: summary && event.message === `Event: ${type}` ? summary : event.message,
     command: null,
     output: null,
     exitCode: null,

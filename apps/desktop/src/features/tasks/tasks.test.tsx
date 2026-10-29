@@ -176,6 +176,20 @@ describe("task board columns", () => {
     expect(await screen.findByRole("radio", { name: "Board" })).toHaveAttribute("aria-checked", "true");
   });
 
+  it("shows the project-load failure in Runs too instead of a list built without projects", async () => {
+    const rt = createMockRuntime({
+      "GET /settings": () => settings(),
+      "GET /state": () => snapshot(),
+      "GET /projects": () => ({ status: 500, body: { error: { code: "internal", message: "projects unavailable" } } }),
+      "GET /tasks": () => [],
+      "GET /approvals": () => [],
+      "GET /providers": () => []
+    });
+    renderWithProviders(<TasksPage />, { runtime: rt, route: "/tasks?view=runs", path: "/tasks" });
+    expect(await screen.findByText("Projects could not be loaded")).toBeInTheDocument();
+    expect(screen.queryByText("No agent runs yet")).not.toBeInTheDocument();
+  });
+
   it("keeps the selected project's name off the Runs heading, since Runs spans every project", async () => {
     useUiStore.getState().setTaskView("board");
     useUiStore.getState().setActiveProject("p1");

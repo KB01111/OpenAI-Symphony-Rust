@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import React, { Suspense, lazy, useEffect, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage } from "@symphony/shared-types";
@@ -22,16 +22,12 @@ export default function TasksPage() {
   const m = useMessages(taskMessages);
   const taskView = useUiStore((s) => s.taskView);
   const setTaskView = useUiStore((s) => s.setTaskView);
-  // Runs is not a saved preference: every link to /tasks shows the board or table, and only
-  // `/tasks?view=runs` (the old /runs page, and links to it) or the toggle opens the Runs view.
+  // The address is the source of truth for Runs (`/tasks?view=runs`, also what the old /runs page opens),
+  // so the view is shareable and follows Back/Forward. It is not a saved preference: a plain /tasks link
+  // shows the board or table.
   const [search, setSearch] = useSearchParams();
-  const wantsRuns = search.get("view") === "runs";
-  const [runsOpen, setRunsOpen] = useState(wantsRuns);
-  useEffect(() => {
-    if (!wantsRuns) return;
-    setRunsOpen(true);
-    setSearch({}, { replace: true });
-  }, [wantsRuns, setSearch]);
+  const runsOpen = search.get("view") === "runs";
+  const showRuns = (open: boolean) => setSearch(open ? { view: "runs" } : {}, { replace: true });
   const activeProjectId = useUiStore((s) => s.activeProjectId);
   const filters = useUiStore((s) => s.taskFilters);
   const resetTaskFilters = useUiStore((s) => s.resetTaskFilters);
@@ -63,7 +59,7 @@ export default function TasksPage() {
       value={runsOpen ? "runs" : taskView}
       onValueChange={(next) => {
         if (!next) return;
-        setRunsOpen(next === "runs");
+        showRuns(next === "runs");
         if (next !== "runs") setTaskView(next as TaskView);
       }}
     >
@@ -100,15 +96,16 @@ export default function TasksPage() {
   );
 
   let content: React.ReactNode;
-  if (runsOpen) {
+  if (projects.isError) {
+    // Runs groups ready tasks by their project's auto-dispatch setting, so it needs the projects too.
+    content = <ErrorState className="m-4" title={m.page.projectsError} message={errorMessage(projects.error)} onRetry={() => void projects.refetch()} />;
+  } else if (runsOpen) {
     // Runs has its own tabs, loading and empty states, so the task filters and lists stay out of the way.
     content = (
       <Suspense fallback={<LoadingRows className="p-4" rows={8} label={m.page.loading} />}>
-        <AgentRunsView onShowTasks={() => setRunsOpen(false)} />
+        <AgentRunsView onShowTasks={() => showRuns(false)} />
       </Suspense>
     );
-  } else if (projects.isError) {
-    content = <ErrorState className="m-4" title={m.page.projectsError} message={errorMessage(projects.error)} onRetry={() => void projects.refetch()} />;
   } else if (tasks.isError) {
     content = <ErrorState className="m-4" title={m.page.loadError} message={errorMessage(tasks.error)} onRetry={() => void tasks.refetch()} />;
   } else if (projects.isLoading || tasks.isLoading) {

@@ -27,6 +27,10 @@ describe("isProtocolNoise", () => {
     expect(isProtocolNoise(ev("b", 1, { event_type: "item/started", message: "Event: item/started with details" }))).toBe(false);
     expect(isProtocolNoise(ev("c", 1, { event_type: "item/started", message: "Ran the tests" }))).toBe(false);
     expect(isProtocolNoise(ev("d", 1, { event_type: "error", message: "Event: error" }))).toBe(false);
+    // A notification that carries its own summary is content: a configuration warning must stay visible.
+    expect(
+      isProtocolNoise(ev("f", 1, { event_type: "configWarning", message: "Event: configWarning", payload: { method: "configWarning", params: { summary: "Custom rules were not applied" } } }))
+    ).toBe(false);
     // Another driver's real text that merely looks like the label stays visible.
     expect(isProtocolNoise(ev("e", 1, { event_type: "opencode/event", message: "Event: ready" }))).toBe(false);
   });

@@ -77,6 +77,18 @@ describe("formatAgentEvent", () => {
     expect(formatAgentEvent({ ...baseEvent, event_type: "agent/stderr", message: truecolor }).text).toBe("red bold");
   });
 
+  it("shows a notification's own summary instead of the 'Event: <method>' fallback", () => {
+    const warned = formatAgentEvent({
+      ...baseEvent,
+      event_type: "configWarning",
+      message: "Event: configWarning",
+      payload: { method: "configWarning", params: { summary: "Custom execution rules were not applied" } }
+    });
+    expect(warned.text).toBe("Custom execution rules were not applied");
+    // Without a summary the fallback label stays as it was.
+    expect(formatAgentEvent({ ...baseEvent, event_type: "thread/started", message: "Event: thread/started", payload: null }).text).toBe("Event: thread/started");
+  });
+
   it("classifies provider item events", () => {
     expect(formatAgentEvent(baseEvent).kind).toBe("message");
     const cmd = formatAgentEvent({
