@@ -96,7 +96,7 @@ pub fn find_runner_bundle(configured: Option<&str>) -> Option<PathBuf> {
             continue;
         }
         let path = PathBuf::from(explicit);
-        return path.is_file().then_some(path);
+        return path.is_file().then(|| absolute(path));
     }
     let mut roots: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
@@ -116,12 +116,18 @@ pub fn find_runner_bundle(configured: Option<&str>) -> Option<PathBuf> {
             ] {
                 let candidate = dir.join(relative);
                 if candidate.is_file() {
-                    return Some(candidate);
+                    return Some(absolute(candidate));
                 }
             }
         }
     }
     None
+}
+
+/// The bridge is started with the task's workspace as its working directory, so a path that was
+/// relative to wherever Symphony runs must be made absolute first.
+fn absolute(path: PathBuf) -> PathBuf {
+    std::path::absolute(&path).unwrap_or(path)
 }
 
 fn tool_kind(kind: &str) -> ToolCallKind {
@@ -181,6 +187,9 @@ pub struct CodeSandboxSession {
     cancelled: bool,
     /// Usage of the finished turns; each turn reports only its own.
     completed_usage: TokenUsage,
+    /// What the turn in progress has used so far. Kept on the session (not a local of `run_turn`) so
+    /// a turn that ends by timeout, error or cancellation still counts what it consumed.
+    turn_usage: TokenUsage,
 }
 
 impl CodeSandboxSession {
@@ -199,6 +208,7 @@ impl CodeSandboxSession {
             turn_counter: 0,
             cancelled: false,
             completed_usage: TokenUsage::default(),
+            turn_usage: TokenUsage::default(),
         }
     }
 
@@ -292,13 +302,18 @@ impl CodeSandboxSession {
             let _ = stdin.write_all(line.as_bytes()).await;
             let _ = stdin.flush().await;
         }
-        if tokio::time::timeout(CONTROL_TIMEOUT, tree.wait(&mut child))
-            .await
-            .is_err()
-        {
-            tracing::warn!("CodeSandbox control call timed out; killing the bridge");
-            tree.kill();
-            let _ = child.kill().await;
+        match tokio::time::timeout(CONTROL_TIMEOUT, tree.wait(&mut child)).await {
+            Err(_) => {
+                tracing::warn!("CodeSandbox control call timed out; killing the bridge");
+                tree.kill();
+                let _ = child.kill().await;
+            }
+            // The bridge exits non-zero when it could not reach the sandbox (an abort that did not
+            // land leaves the agent running), which is worth knowing even though cleanup is best effort.
+            Ok(Ok(status)) if !status.success() => {
+                tracing::warn!(%status, "CodeSandbox control call did not complete");
+            }
+            Ok(_) => {}
         }
     }
 
@@ -334,7 +349,7 @@ impl AgentSession for CodeSandboxSession {
 
     fn usage_snapshot(&self) -> UsageSnapshot {
         UsageSnapshot {
-            session_usage: self.completed_usage,
+            session_usage: self.completed_usage.plus(&self.turn_usage),
             thread_total: None,
             estimated: false,
         }
@@ -346,6 +361,9 @@ impl AgentSession for CodeSandboxSession {
         event_tx: mpsc::Sender<AgentStreamEvent>,
     ) -> Result<TurnExecutionOutcome> {
         self.turn_counter += 1;
+        // A turn that was cut off earlier (its future dropped) left its usage here: keep it.
+        self.completed_usage.add(&self.turn_usage);
+        self.turn_usage = TokenUsage::default();
         let turn_id = format!("turn-{}", self.turn_counter);
         let request = self.turn_request(prompt, &turn_id)?;
         let (mut cmd, exe) = self.bridge_command()?;
@@ -416,6 +434,7 @@ impl AgentSession for CodeSandboxSession {
                         output_tokens: output,
                         total_tokens: input.saturating_add(output),
                     });
+                    self.turn_usage = usage;
                     event_usage = Some(self.completed_usage.plus(&usage));
                 }
                 "pushed" => {
@@ -477,6 +496,7 @@ impl AgentSession for CodeSandboxSession {
 
         let status = process.wait().await?;
         self.completed_usage.add(&usage);
+        self.turn_usage = TokenUsage::default();
         let cancelled = self.cancelled;
         let sandbox_id = self.sandbox_id.clone().unwrap_or_default();
         let (turn_ok, error_code, error_message) = match (&completed, &failure) {

@@ -1089,6 +1089,7 @@ impl WorkspaceManager {
         hooks: &SafeHooksDir,
         token: Option<&str>,
         check_push_url: bool,
+        expected_remote: Option<&str>,
     ) -> SymphonyResult<Vec<(String, String)>> {
         let remote =
             Self::git_checked(workspace_path, hooks, &[], &["remote", "get-url", "origin"])
@@ -1100,6 +1101,15 @@ impl WorkspaceManager {
                 })?
                 .trim()
                 .to_string();
+        // The caller validated one origin; if it is another now, the token is not for that host.
+        if let Some(expected) = expected_remote {
+            if remote != expected.trim() {
+                return Err(SymphonyError::Conflict(
+                    "the `origin` remote changed after the cloud run was prepared; not contacting it with the GitHub token"
+                        .into(),
+                ));
+            }
+        }
         // `pushurl`/`pushInsteadOf` can send a push somewhere other than the fetch URL that was
         // checked (and a remote can have several push URLs, all of which receive the branch); the
         // credential below is scoped to the URL git actually pushes to, so refuse.
@@ -1183,7 +1193,7 @@ impl WorkspaceManager {
             )));
         }
         let hooks = SafeHooksDir::new()?;
-        let env = Self::origin_auth_env(workspace_path, &hooks, token, true).await?;
+        let env = Self::origin_auth_env(workspace_path, &hooks, token, true, None).await?;
         let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
         let env_refs: Vec<(&str, &str)> =
             env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -1209,12 +1219,15 @@ impl WorkspaceManager {
     /// new commit, or `None` when the worktree already had everything. Refuses (with a
     /// [`SymphonyError::Conflict`], touching nothing) when the worktree has uncommitted changes,
     /// has another branch checked out or has diverged from the remote. `token` authenticates an
-    /// `https://` remote the same way as [`Self::push_branch`].
+    /// `https://` remote the same way as [`Self::push_branch`]. With `expected_origin`, the update is
+    /// refused when `origin` is not exactly that URL any more (the one that was validated before the
+    /// token was handed out).
     pub async fn fast_forward_from_origin(
         &self,
         workspace_path: &Path,
         branch: &str,
         token: Option<&str>,
+        expected_origin: Option<&str>,
     ) -> SymphonyResult<Option<String>> {
         if branch.is_empty() || branch.starts_with('-') || branch.contains(char::is_whitespace) {
             return Err(SymphonyError::GitWorktreeError(format!(
@@ -1254,7 +1267,8 @@ impl WorkspaceManager {
             .await?
             .trim()
             .to_string();
-        let env = Self::origin_auth_env(workspace_path, &hooks, token, false).await?;
+        let env =
+            Self::origin_auth_env(workspace_path, &hooks, token, false, expected_origin).await?;
         let env_refs: Vec<(&str, &str)> =
             env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let refspec = format!("refs/heads/{branch}");
@@ -1272,18 +1286,31 @@ impl WorkspaceManager {
         )
         .await
         .map_err(redact)?;
-        if Self::git_checked(
+        if let Err(merge_error) = Self::git_checked(
             workspace_path,
             &hooks,
             &[],
             &["merge", "--ff-only", "--no-edit", "FETCH_HEAD"],
         )
         .await
-        .is_err()
         {
-            return Err(SymphonyError::Conflict(format!(
-                "`{branch}` has diverged from origin/{branch}; the cloud agent's commits were not applied"
-            )));
+            // Diverged histories are the expected refusal; anything else (disk, permissions, a ref
+            // lock) is reported as what it is, not as a divergence.
+            let can_fast_forward = Self::git_checked(
+                workspace_path,
+                &hooks,
+                &[],
+                &["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"],
+            )
+            .await
+            .is_ok();
+            return Err(if can_fast_forward {
+                merge_error
+            } else {
+                SymphonyError::Conflict(format!(
+                    "`{branch}` has diverged from origin/{branch}; the cloud agent's commits were not applied"
+                ))
+            });
         }
         let after = Self::git_checked(workspace_path, &hooks, &[], &["rev-parse", "HEAD"])
             .await?
@@ -1976,7 +2003,7 @@ mod tests {
         // Nothing new on the remote.
         assert_eq!(
             manager
-                .fast_forward_from_origin(&wt, "task", None)
+                .fast_forward_from_origin(&wt, "task", None, None)
                 .await
                 .unwrap(),
             None
@@ -1985,7 +2012,7 @@ mod tests {
         // The sandbox pushed: the worktree moves to that commit and has the file.
         let pushed = push_from_other_clone(dir.path(), &origin, "cloud.txt");
         let moved = manager
-            .fast_forward_from_origin(&wt, "task", None)
+            .fast_forward_from_origin(&wt, "task", None, None)
             .await
             .unwrap();
         assert_eq!(moved.as_deref(), Some(pushed.as_str()));
@@ -1995,7 +2022,7 @@ mod tests {
         let pushed_again = push_from_other_clone(dir.path(), &origin, "cloud2.txt");
         std::fs::write(wt.join("scratch.txt"), "my notes\n").unwrap();
         let err = manager
-            .fast_forward_from_origin(&wt, "task", None)
+            .fast_forward_from_origin(&wt, "task", None, None)
             .await
             .unwrap_err();
         assert_eq!(err.code(), "conflict", "{err}");
@@ -2006,7 +2033,7 @@ mod tests {
         // Uncommitted local work is never touched.
         std::fs::write(wt.join("start.txt"), "edited locally\n").unwrap();
         let err = manager
-            .fast_forward_from_origin(&wt, "task", None)
+            .fast_forward_from_origin(&wt, "task", None, None)
             .await
             .unwrap_err();
         assert_eq!(err.code(), "conflict", "{err}");
@@ -2025,7 +2052,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let err = manager
-            .fast_forward_from_origin(&wt, "task", None)
+            .fast_forward_from_origin(&wt, "task", None, None)
             .await
             .unwrap_err();
         assert_eq!(err.code(), "conflict", "{err}");
@@ -2034,13 +2061,56 @@ mod tests {
 
         // Wrong branch and unsafe names are refused.
         assert!(manager
-            .fast_forward_from_origin(&wt, "other", None)
+            .fast_forward_from_origin(&wt, "other", None, None)
             .await
             .is_err());
         assert!(manager
-            .fast_forward_from_origin(&wt, "--upload-pack=x", None)
+            .fast_forward_from_origin(&wt, "--upload-pack=x", None, None)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn fast_forward_refuses_an_origin_other_than_the_validated_one() {
+        let dir = tempdir().unwrap();
+        let (_repo, wt, origin) = repo_with_origin(dir.path());
+        let manager = WorkspaceManager::new();
+        std::fs::write(wt.join("start.txt"), "start\n").unwrap();
+        manager
+            .commit_changes(&wt, "task", "start")
+            .await
+            .unwrap()
+            .unwrap();
+        manager.push_branch(&wt, "task", None).await.unwrap();
+        let validated = manager.origin_url(&wt).await.unwrap();
+
+        // The origin that was validated: the cloud agent's commit is applied.
+        push_from_other_clone(dir.path(), &origin, "cloud.txt");
+        assert!(manager
+            .fast_forward_from_origin(&wt, "task", None, Some(&validated))
+            .await
+            .unwrap()
+            .is_some());
+
+        // The origin points somewhere else afterwards: nothing is fetched, with or without a token,
+        // and the token is not part of the message.
+        push_from_other_clone(dir.path(), &origin, "cloud2.txt");
+        let elsewhere = dir.path().join("elsewhere.git");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        git(&elsewhere, &["init", "--bare", "-b", "main"]);
+        git(
+            &wt,
+            &["remote", "set-url", "origin", elsewhere.to_str().unwrap()],
+        );
+        let token = "ghp_exampleexampleexample1234";
+        let err = manager
+            .fast_forward_from_origin(&wt, "task", Some(token), Some(&validated))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "conflict", "{err}");
+        assert!(err.to_string().contains("changed"), "{err}");
+        assert!(!err.to_string().contains(token), "{err}");
+        assert!(!wt.join("cloud2.txt").exists());
     }
 
     #[tokio::test]

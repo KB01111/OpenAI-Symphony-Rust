@@ -29,8 +29,11 @@ async function main(): Promise<number> {
 main()
   .then((code) => {
     process.exitCode = code;
-    // Open SDK connections must not keep the process alive after the request is done.
-    setTimeout(() => process.exit(code), 100).unref();
+    // Open SDK connections must not keep the process alive after the request is done, but queued
+    // events (the last one is `turn_completed`) must be written first: the callback runs once
+    // everything written before it has been flushed.
+    process.stdout.write("", () => process.exit(code));
+    setTimeout(() => process.exit(code), 10_000).unref();
   })
   .catch((error: unknown) => {
     // No request credentials are in scope here; mask the token shapes that could still be in a message.

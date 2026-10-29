@@ -26,6 +26,12 @@ if (!process.env.CSB_API_KEY) {
 }
 
 const alias = option("alias", "symphony-agents");
+// The CLI is started through a shell on Windows (a .cmd shim), so the alias is restricted to what a
+// template alias can contain instead of being quoted.
+if (!/^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/.test(alias)) {
+  console.error(`Invalid --alias "${alias}": use letters, digits and . _ @ - (at most 64, starting with a letter or digit).`);
+  process.exit(2);
+}
 const vmTier = option("vm-tier", "Small");
 const vmBuildTier = option("vm-build-tier", "Medium");
 for (const tier of [vmTier, vmBuildTier]) {

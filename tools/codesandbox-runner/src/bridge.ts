@@ -174,8 +174,10 @@ export async function runTurn(
 
 /** `abort`: stop the agent process in a running sandbox (dropping the bridge does not). `stop`: hibernate / shut down. */
 export async function runControl(request: ControlRequest, gateway: SandboxGateway): Promise<boolean> {
+  // `null`: the sandbox no longer exists, so nothing is running in it and there is nothing to stop.
+  // Any other failure to reach it throws, and is reported by `runRequest`.
   const handle = await gateway.attach(request.csbApiKey, request.sandboxId);
-  if (!handle) return false;
+  if (!handle) return true;
   try {
     if (request.type === "abort") {
       const kill = await handle.run(`pkill -f '${DRIVER_PROCESS_PATTERN}' || true`, { name: "abort" });

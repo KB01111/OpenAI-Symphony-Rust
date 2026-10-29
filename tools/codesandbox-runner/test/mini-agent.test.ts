@@ -124,6 +124,7 @@ describe.skipIf(!runnable)("mini_durable_agent.DurableAgent", () => {
       { text: "Create a.", commands: ["echo a > a.txt"] },
       { text: "Create b and c.", commands: ["echo b > b.txt", "echo c > c.txt"] },
       { text: "Inspect only.", commands: ["ls"] },
+      { text: "Look for something that is not there.", commands: ["ls /no/such/directory-for-symphony"] },
       { text: "Done.", commands: ["echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"] },
     ]);
 
@@ -145,8 +146,11 @@ describe.skipIf(!runnable)("mini_durable_agent.DurableAgent", () => {
       "echo b > b.txt",
       "echo c > c.txt",
       "ls",
+      "ls /no/such/directory-for-symphony",
       "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",
     ]);
+    // A command that failed is reported as failed, the others as succeeded.
+    expect(tools.map((t) => t.status)).toEqual(["succeeded", "succeeded", "succeeded", "succeeded", "failed", "succeeded"]);
     expect(new Set(tools.map((t) => t.callId)).size).toBe(tools.length);
     expect(run.events.filter((e) => e.type === "output").map((e) => e.text)).toContain("Create b and c.");
     expect(run.events.some((e) => e.type === "usage")).toBe(true);

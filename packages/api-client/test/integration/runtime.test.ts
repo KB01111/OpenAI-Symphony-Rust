@@ -94,7 +94,7 @@ describe("Symphony runtime contract (real Axum router)", () => {
     client = new SymphonyClient({ baseUrl: record.base_url, token: record.token });
     const info = await client.runtime();
     expect(info.auth_required).toBe(true);
-    expect(info.api_version).toBe(2);
+    expect(info.api_version).toBe(3);
 
     const anonymous = new SymphonyClient({ baseUrl: record.base_url });
     const err = (await anonymous.getState().catch((e: unknown) => e)) as SymphonyApiError;

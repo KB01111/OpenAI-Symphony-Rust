@@ -15,6 +15,7 @@ Used as ``mini --agent-class mini_durable_agent.DurableAgent`` (the drivers dire
 
 import json
 import os
+import re
 import subprocess  # nosec B404 - only used to run the commit/push script below
 from pathlib import Path
 
@@ -130,13 +131,16 @@ class DurableAgent(DefaultAgent):
         actions = extra.get("actions", []) or []
         for index, action in enumerate(actions):
             observation = _text_of(observations[index].get("content")) if index < len(observations) else ""
+            # The observation template reports `<returncode>N</returncode>`; a non-zero code is a failure.
+            returncode = re.search(r"<returncode>\s*(-?\d+)\s*</returncode>", observation)
+            failed = bool(returncode) and int(returncode.group(1)) != 0
             emit(
                 {
                     "type": "tool",
                     "callId": f"{os.environ.get('SYMPHONY_TURN_ID', 'turn')}-{self.n_calls}-{index}",
                     "name": "bash",
                     "kind": "command",
-                    "status": "succeeded",
+                    "status": "failed" if failed else "succeeded",
                     "input": action if isinstance(action, dict) else {"command": str(action)},
                     "output": _clip(observation),
                 }

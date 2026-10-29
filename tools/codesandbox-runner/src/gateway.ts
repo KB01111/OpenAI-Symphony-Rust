@@ -51,6 +51,15 @@ const TIERS: Record<VmTierName, VMTier> = {
   xlarge: VMTier.XLarge,
 };
 
+/**
+ * Whether a resume / connect failure means the sandbox is gone (deleted or expired), as opposed to a
+ * transient or permission problem. The SDK reports an HTTP 404 as `<operation>: Sandbox not found`;
+ * everything else (`Unauthorized`, `Bad gateway`, rate limits, network errors) says something else.
+ */
+export function isSandboxMissing(error: unknown): boolean {
+  return /sandbox not found/i.test(error instanceof Error ? error.message : String(error));
+}
+
 /** Workspace folder of CodeSandbox sandboxes when the client does not report one. */
 const FALLBACK_WORKSPACE = "/project/sandbox";
 
@@ -79,22 +88,32 @@ class SdkHandle implements SandboxHandle {
     options: { cwd?: string; env?: Record<string, string>; name?: string },
   ): Promise<RunningCommand> {
     const cmd = await this.client.commands.runBackground(command, options);
-    let listener: (chunk: string) => void = () => {};
-    let received = "";
+    let listener: ((chunk: string) => void) | undefined;
+    // Output that arrives before the caller has subscribed is held, not dropped.
+    let early: string[] = [];
+    // Everything the caller has been given, in order.
+    let delivered = "";
+    const deliver = (chunk: string) => {
+      delivered += chunk;
+      listener?.(chunk);
+    };
     cmd.onOutput((chunk) => {
-      received += chunk;
-      listener(chunk);
+      if (listener) deliver(chunk);
+      else early.push(chunk);
     });
-    // The SDK only delivers output printed after the subscription; the full output it returns on
+    // The SDK only delivers output printed after its own subscription; the full output it returns on
     // completion also holds what the command printed before it. Hand that over too.
     const replayMissed = (full: string) => {
-      if (full.length > received.length && full.endsWith(received)) {
-        listener(full.slice(0, full.length - received.length));
+      if (listener && full.length > delivered.length && full.endsWith(delivered)) {
+        listener(full.slice(0, full.length - delivered.length));
       }
     };
     return {
       onOutput: (l) => {
         listener = l;
+        const held = early;
+        early = [];
+        for (const chunk of held) deliver(chunk);
       },
       wait: async () => {
         try {
@@ -135,8 +154,11 @@ export class CodeSandboxGateway implements SandboxGateway {
       try {
         sandbox = await sdk.sandboxes.resume(options.sandboxId);
         resumed = true;
-      } catch {
-        // Deleted or expired: the run continues in a fresh sandbox from the pushed branch.
+      } catch (error) {
+        // Only a sandbox that no longer exists is replaced (the run then continues in a fresh one from
+        // the pushed branch). A transient or permission failure must not strand the old sandbox, with
+        // its checkpoint and unpushed edits, behind a new one: it is reported, and the retry resumes.
+        if (!isSandboxMissing(error)) throw error;
         sandbox = undefined;
       }
     }
@@ -173,8 +195,11 @@ export class CodeSandboxGateway implements SandboxGateway {
       const sandbox = await sdk.sandboxes.resume(sandboxId);
       const client = await sandbox.connect();
       return new SdkHandle(sdk, sandbox, client, true);
-    } catch {
-      return null;
+    } catch (error) {
+      // Gone: nothing to stop. Anything else must not look like that, or an `abort` that could not
+      // reach the sandbox would leave the agent running and pushing.
+      if (isSandboxMissing(error)) return null;
+      throw error;
     }
   }
 }

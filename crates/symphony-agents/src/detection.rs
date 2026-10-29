@@ -552,6 +552,7 @@ pub async fn detect_provider_status(
     vault_keys: &[String],
     default_model: Option<String>,
     refresh_models: bool,
+    codesandbox_runner: Option<&str>,
 ) -> ProviderStatus {
     let mut capabilities = kind.default_capabilities();
     let (installed, binary_path, version) = match provider_binary_name(kind) {
@@ -571,7 +572,7 @@ pub async fn detect_provider_status(
     // The cloud provider also needs the compiled bridge next to Node.
     let bridge_missing = kind == ProviderKind::CodeSandbox
         && installed
-        && crate::codesandbox::find_runner_bundle(None).is_none();
+        && crate::codesandbox::find_runner_bundle(codesandbox_runner).is_none();
     if bridge_missing {
         capabilities.status_message = format!(
             "{} · Bridge not built: run `pnpm --filter @symphony/codesandbox-runner build` or set {}",
@@ -611,6 +612,7 @@ pub async fn detect_provider_statuses(
     vault_keys: &[String],
     default_model_for: impl Fn(ProviderKind) -> Option<String>,
     refresh_models: bool,
+    codesandbox_runner: Option<&str>,
 ) -> Vec<ProviderStatus> {
     let kinds = [
         ProviderKind::Codex,
@@ -620,7 +622,13 @@ pub async fn detect_provider_statuses(
         ProviderKind::Simulated,
     ];
     let futures = kinds.iter().map(|kind| {
-        detect_provider_status(*kind, vault_keys, default_model_for(*kind), refresh_models)
+        detect_provider_status(
+            *kind,
+            vault_keys,
+            default_model_for(*kind),
+            refresh_models,
+            codesandbox_runner,
+        )
     });
     futures::future::join_all(futures).await
 }
@@ -631,7 +639,7 @@ mod tests {
 
     #[tokio::test]
     async fn simulated_provider_is_always_installed_without_auth() {
-        let status = detect_provider_status(ProviderKind::Simulated, &[], None, false).await;
+        let status = detect_provider_status(ProviderKind::Simulated, &[], None, false, None).await;
         assert!(status.installed);
         assert_eq!(status.auth_state, ProviderAuthState::NotRequired);
         assert!(status.capabilities.available);

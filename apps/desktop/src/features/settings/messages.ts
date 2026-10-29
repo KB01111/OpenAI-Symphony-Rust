@@ -127,12 +127,12 @@ export const settingsMessages = defineMessages({
       tokenFailed: "Could not update the remote access token"
     },
     integrations: {
-      intro: "Tracker tokens used by host-side tools (GitHub Issues, Linear). Agents never receive these values.",
+      intro: "Tracker tokens used by host-side tools (GitHub Issues, Linear). Local agents never receive these values. The one exception is a CodeSandbox cloud run: it gives the sandbox the GitHub token (as a git credential) so the agent can push to the task branch.",
       providerKeys: "Provider API keys (OpenAI, Anthropic) are managed on the Providers page.",
       openProviders: "Open Providers",
       loadError: "Could not load credentials",
       descriptions: {
-        GITHUB_TOKEN: "GitHub Issues tracker and pull request tools.",
+        GITHUB_TOKEN: "GitHub Issues tracker and pull request tools; also sent to the sandbox of CodeSandbox cloud runs.",
         GH_TOKEN: "Alternative GitHub token name used by the gh CLI.",
         GITHUB_ENTERPRISE_TOKEN: "GitHub Enterprise Server.",
         LINEAR_API_KEY: "Linear tracker.",
@@ -359,12 +359,12 @@ export const settingsMessages = defineMessages({
       tokenFailed: "Det gick inte att uppdatera åtkomsttoken för fjärråtkomst"
     },
     integrations: {
-      intro: "Spårartoken som används av verktyg på värden (GitHub Issues, Linear). Agenter får aldrig dessa värden.",
+      intro: "Spårartoken som används av verktyg på värden (GitHub Issues, Linear). Lokala agenter får aldrig dessa värden. Enda undantaget är en CodeSandbox-molnkörning: den ger sandlådan GitHub-token (som git-uppgift) så att agenten kan pusha till uppgiftens gren.",
       providerKeys: "API-nycklar för leverantörer (OpenAI, Anthropic) hanteras på sidan Leverantörer.",
       openProviders: "Öppna Leverantörer",
       loadError: "Det gick inte att läsa in autentiseringsuppgifter",
       descriptions: {
-        GITHUB_TOKEN: "GitHub Issues-spårare och verktyg för pull requests.",
+        GITHUB_TOKEN: "GitHub Issues-spårare och verktyg för pull requests; skickas också till sandlådan vid CodeSandbox-molnkörningar.",
         GH_TOKEN: "Alternativt GitHub-tokennamn som används av gh CLI.",
         GITHUB_ENTERPRISE_TOKEN: "GitHub Enterprise Server.",
         LINEAR_API_KEY: "Linear-spårare.",

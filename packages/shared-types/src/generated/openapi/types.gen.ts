@@ -57,7 +57,7 @@ export type AppSettings = {
     start_background_runtime_on_login: boolean;
     default_provider: ProviderKind;
     default_model: string;
-    default_cloud_agent: CloudAgentKind | null;
+    default_cloud_agent?: CloudAgentKind | null;
     polling_interval_ms: number;
     resource_policy: ResourcePolicy;
     remote_api_enabled: boolean;

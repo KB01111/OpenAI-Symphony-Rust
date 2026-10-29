@@ -367,11 +367,28 @@ describe("controls", () => {
     expect([handle.hibernated, handle.shutdowns]).toEqual([1, 1]);
   });
 
-  it("does nothing for a sandbox that no longer exists", async () => {
+  it("treats a sandbox that no longer exists as already stopped", async () => {
     const { events, out } = collect();
-    const ok = await runRequest({ type: "stop", csbApiKey: CSB_KEY, sandboxId: "gone", mode: null }, new FakeGateway(null), out, { hostGone: never });
-    expect(ok).toBe(false);
+    const ok = await runRequest({ type: "abort", csbApiKey: CSB_KEY, sandboxId: "gone" }, new FakeGateway(null), out, { hostGone: never });
+    expect(ok).toBe(true);
     expect(events).toEqual([]);
+  });
+
+  it("reports an abort that could not reach the sandbox instead of looking like a success", async () => {
+    const unreachable: SandboxGateway = {
+      open: async () => {
+        throw new Error("unused");
+      },
+      attach: async () => {
+        throw new Error(`Failed to start VM sb-1: Bad gateway (${CSB_KEY})`);
+      },
+    };
+    const { events, out } = collect();
+    const ok = await runRequest({ type: "abort", csbApiKey: CSB_KEY, sandboxId: "sb-1" }, unreachable, out, { hostGone: never });
+    // The agent may still be running and pushing: the caller has to be told.
+    expect(ok).toBe(false);
+    expect(events).toEqual([{ type: "error", code: "abort_failed", message: expect.stringContaining("Bad gateway") }]);
+    expect(JSON.stringify(events)).not.toContain(CSB_KEY);
   });
 });
 

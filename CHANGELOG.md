@@ -22,6 +22,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   `tools/codesandbox-runner/README.md`. New: `ProviderKind::CodeSandbox`, `CloudAgentKind`,
   `Task.cloud_agent` (migration 0005), `AppSettings.default_cloud_agent`, `CreateTaskRequest.cloud_agent`,
   the `codesandbox:` section of `WORKFLOW.md`, and `WorkspaceManager::fast_forward_from_origin`.
+  **API:** `API_VERSION` is now 3: the `ProviderKind` enum that appears in responses gained `codesandbox`
+  (a client that matches on providers must handle it), which the API contract policy treats as a breaking
+  change. `AppSettings.default_cloud_agent` and `CreateTaskRequest.cloud_agent` are optional, so existing
+  `PUT /settings` and `POST /tasks` callers keep working unchanged.
 
 - **Thread-first desktop UI (Codex-style)**: the app opens on a prompt composer. One prompt box plus chips
   for repository (with its base branch), provider and model (with install state), priority, labels and

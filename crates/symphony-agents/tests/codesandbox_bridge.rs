@@ -55,6 +55,11 @@ rl.once("line", (line) => {
   const sandboxId = req.sandboxId || "sb-fake-1";
   out({ type: "started", sandboxId, resumed: !!req.sandboxId });
   if (req.prompt.includes("SCENARIO_CRASH")) process.exit(3);
+  if (req.prompt.includes("SCENARIO_HANG_AFTER_USAGE")) {
+    out({ type: "usage", inputTokens: 100, outputTokens: 20 });
+    setInterval(() => {}, 1000); // never finishes: the host gives up on it
+    return;
+  }
   if (req.prompt.includes("SCENARIO_LEAK")) out({ type: "output", text: "token " + req.git.token });
   out({ type: "output", text: "working" });
   out({ type: "tool", callId: "c1", name: "bash", kind: "command", status: "started", input: { command: "ls" } });
@@ -468,4 +473,93 @@ fn debug_output_and_serialization_never_contain_the_credentials() {
     // And a round trip loses them: they are never persisted with a launch config.
     let restored: CloudLaunch = serde_json::from_str(&serialized).unwrap();
     assert!(restored.git_token.is_empty() && restored.csb_api_key.is_empty());
+}
+
+#[tokio::test]
+async fn usage_of_a_turn_that_was_cut_off_still_counts() {
+    if !have_node() {
+        return;
+    }
+    let fx = Fixture::new();
+    let (tx, _rx) = mpsc::channel(64);
+    let mut session = CodeSandboxSession::new(fx.config(), None);
+
+    // The bridge reports usage and then never finishes; the orchestrator drops the turn (timeout,
+    // cancel). What it consumed is read from the session afterwards, to settle the attempt.
+    let cut_off = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        session.run_turn("SCENARIO_HANG_AFTER_USAGE", tx.clone()),
+    )
+    .await;
+    assert!(cut_off.is_err(), "the scripted bridge never finishes");
+    assert_eq!(session.usage_snapshot().session_usage.total_tokens, 120);
+
+    // The next turn starts from that and does not count it twice.
+    session.run_turn("again", tx).await.unwrap();
+    assert_eq!(
+        session.usage_snapshot().session_usage.total_tokens,
+        120 + 180
+    );
+}
+
+#[test]
+fn a_relative_runner_path_is_made_absolute() {
+    // The bridge is started in the task's workspace, so a path relative to where Symphony runs would
+    // point nowhere. `Cargo.toml` is relative to this test's working directory (the crate).
+    let found = symphony_agents::find_runner_bundle(Some("Cargo.toml")).unwrap();
+    assert!(found.is_absolute(), "{}", found.display());
+    assert!(found.ends_with("Cargo.toml"));
+    // An explicit path that does not exist is not replaced by a search.
+    assert!(symphony_agents::find_runner_bundle(Some("no-such-bridge.mjs")).is_none());
+}
+
+#[tokio::test]
+async fn detection_honours_the_runner_path_from_the_workflow() {
+    if !have_node() {
+        return;
+    }
+    let fx = Fixture::new();
+    let configured = fx.bridge.display().to_string();
+
+    let with_bridge = symphony_agents::detect_provider_status(
+        ProviderKind::CodeSandbox,
+        &[],
+        None,
+        false,
+        Some(&configured),
+    )
+    .await;
+    assert!(
+        with_bridge.installed,
+        "{:?}",
+        with_bridge.capabilities.status_message
+    );
+    assert!(
+        !with_bridge
+            .capabilities
+            .status_message
+            .contains("Bridge not built"),
+        "{}",
+        with_bridge.capabilities.status_message
+    );
+
+    // A configured path that is not a file is reported, not silently replaced by another bridge.
+    let wrong = fx
+        .workspace
+        .join("missing-bridge.mjs")
+        .display()
+        .to_string();
+    let without = symphony_agents::detect_provider_status(
+        ProviderKind::CodeSandbox,
+        &[],
+        None,
+        false,
+        Some(&wrong),
+    )
+    .await;
+    assert!(!without.installed);
+    assert!(without
+        .capabilities
+        .status_message
+        .contains("Bridge not built"));
 }

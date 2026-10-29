@@ -92,6 +92,8 @@ struct CloudSync {
     workspace: PathBuf,
     branch: String,
     git_token: Option<String>,
+    /// The `origin` that was validated before the token was handed out; the sync refuses another.
+    origin: String,
     /// Held while the worktree is updated: the live event stream and the end of a turn both do it.
     lock: Arc<Mutex<()>>,
 }
@@ -989,6 +991,14 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
         let settings = self.storage.get_settings().await.unwrap_or_default();
         let vault_keys = self.secret_store.list_configured_keys();
+        let codesandbox_runner = self
+            .memory
+            .read()
+            .await
+            .active_config
+            .codesandbox
+            .runner_path
+            .clone();
         let statuses = detect_provider_statuses(
             &vault_keys,
             |kind| {
@@ -1002,6 +1012,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     })
             },
             force_refresh,
+            codesandbox_runner.as_deref(),
         )
         .await;
         self.memory.write().await.provider_cache = Some((Utc::now(), statuses.clone()));
@@ -2807,6 +2818,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             workspace: workspace.to_path_buf(),
             branch: branch.to_string(),
             git_token: Some(git_token),
+            origin: origin.clone(),
             lock: Arc::new(Mutex::new(())),
         };
         Ok((launch, sync))
@@ -2820,7 +2832,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let secrets = self.secret_store.all_secret_values();
         let result = self
             .workspaces
-            .fast_forward_from_origin(&sync.workspace, &sync.branch, sync.git_token.as_deref())
+            .fast_forward_from_origin(
+                &sync.workspace,
+                &sync.branch,
+                sync.git_token.as_deref(),
+                Some(&sync.origin),
+            )
             .await;
         let (event_type, message) = match result {
             Ok(Some(commit)) => (

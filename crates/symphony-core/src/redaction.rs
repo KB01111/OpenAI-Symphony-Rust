@@ -254,6 +254,7 @@ fn secret_patterns() -> &'static [(&'static str, Regex)] {
             ),
             ("API key (sk-…)", r"\bsk-[A-Za-z0-9_-]{20,255}"),
             ("Linear API key", r"\blin_api_[A-Za-z0-9_]{20,255}"),
+            ("CodeSandbox API token", r"\bcsb_v\d+_[A-Za-z0-9_-]{20,255}"),
             ("AWS access key id", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
             (
                 "AWS secret access key",

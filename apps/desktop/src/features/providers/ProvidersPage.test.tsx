@@ -151,7 +151,7 @@ describe("ProvidersPage: CodeSandbox cloud agents", () => {
           provider: "codesandbox",
           display_name: "CodeSandbox Cloud Agent",
           installed: true,
-          binary_path: "C:\Program Files\nodejs\node.exe",
+          binary_path: "C:/Program Files/nodejs/node.exe",
           version: "v24.15.0",
           auth_state: configured.includes("CSB_API_KEY") ? "authenticated" : "unauthenticated",
           auth_detail: configured.includes("CSB_API_KEY") ? "CSB_API_KEY in Symphony credential vault" : null,

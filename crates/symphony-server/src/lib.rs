@@ -65,7 +65,7 @@ use symphony_orchestrator::{
 };
 
 /// API contract version reported by `GET /api/v1/runtime`. Bump on breaking changes.
-pub const API_VERSION: u32 = 2;
+pub const API_VERSION: u32 = 3;
 
 /// Credential keys that may be stored through the API. Anything else is rejected so the endpoint
 /// can never be used to inject arbitrary process environment variables (e.g. `PATH`).
@@ -423,6 +423,7 @@ const OPTIONAL_PROPERTIES: &[(&str, &str)] = &[
     ("AppSettings", "backup_interval_hours"),
     ("AppSettings", "backup_keep"),
     ("AppSettings", "pr_refresh_interval_minutes"),
+    ("AppSettings", "default_cloud_agent"),
 ];
 
 /// OpenAPI extension that marks whether an operation is available on the remote listener.

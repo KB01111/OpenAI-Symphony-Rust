@@ -152,6 +152,7 @@ async function runPi(): Promise<number> {
           break;
         case "tool_execution_end": {
           const call = started.get(event.toolCallId);
+          started.delete(event.toolCallId);
           const name: string = event.toolName ?? call?.name ?? "tool";
           const output = (event.result?.content ?? [])
             .map((part: { text?: string }) => part.text ?? "")

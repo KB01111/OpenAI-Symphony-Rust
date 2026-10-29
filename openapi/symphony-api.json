@@ -2468,7 +2468,6 @@
           "start_background_runtime_on_login",
           "default_provider",
           "default_model",
-          "default_cloud_agent",
           "polling_interval_ms",
           "resource_policy",
           "remote_api_enabled",

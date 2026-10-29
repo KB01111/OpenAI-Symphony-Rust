@@ -147,11 +147,13 @@ export async function runPiDurableAgent(): Promise<boolean> {
     harness.resume();
 
     // The same request id returns the same submission, so a rerun of an interrupted turn waits for
-    // the recovered run instead of asking the model again. A submission that is already settled
-    // belongs to an earlier, finished run: this prompt is new work and gets a new id.
+    // the recovered run instead of asking the model again. A submission that already ended, answered
+    // ("done") or not ("unanswered"), belongs to an earlier run: this prompt is new work and gets a
+    // new id, otherwise a retry would just replay the earlier outcome.
     const base = `${config.taskId}-${config.turnId}`;
     let submission = await root.submit({ type: "input", content: prompt, requestId: base }, ctx);
-    if ((await submission.status(ctx)).status === "done") {
+    const existing = (await submission.status(ctx)).status;
+    if (existing === "done" || existing === "unanswered") {
       submission = await root.submit({ type: "input", content: prompt, requestId: `${base}-${Date.now()}` }, ctx);
     }
     const settled = await submission.wait(ctx);
