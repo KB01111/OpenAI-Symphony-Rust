@@ -98,10 +98,16 @@ What protects an installed app from a doctored manifest: the installer must carr
 compiled-in key, the manifest's version must match the release the GitHub API announced, the installer URL must
 live in that same release's download path, and the version must be newer than the running one.
 
-Not enforced yet: `require_signed_version` (the updater would also check that the signature names the same
-version as the manifest, which blocks downgrade tricks through a forged manifest). The Tauri CLI used here
-does not record the version in the signature; enable it once it does. The downgrade guard that exists today is
-the updater's own "must be newer" comparison over HTTPS from github.com.
+The signature must also name the manifest's version: the workflow signs with
+`tauri signer sign --app-version <version>`, which records the version in the signature's trusted comment, and
+`plugins.updater.requireSignedVersion` makes the app compare it with the version the manifest announces. A
+forged manifest therefore cannot pair a newer version number with an older, genuinely signed installer.
+`scripts/updater-manifest.mjs` refuses to write `latest.json` for a signature that carries no version or a
+different one, and a unit test keeps the setting in `tauri.conf.json`.
+
+Consequence: a release signed *without* `--app-version` is rejected by builds that have this setting (the user
+is sent to the releases page instead). Every release the app should update to must be cut by the current
+workflow; apps installed before this setting existed are unaffected and update normally.
 
 ## Verifying a download
 

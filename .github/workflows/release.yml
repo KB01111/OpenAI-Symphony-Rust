@@ -204,7 +204,9 @@ jobs:
         run: |
           $installer = Get-ChildItem target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
           if (-not $installer) { throw 'NSIS installer not found' }
-          pnpm --filter @symphony/desktop tauri signer sign $installer.FullName
+          # --app-version writes the version into the signed trusted comment; the app refuses an
+          # installer whose signed version differs from the one the manifest announces.
+          pnpm --filter @symphony/desktop tauri signer sign --app-version $env:RELEASE_VERSION $installer.FullName
           if ($LASTEXITCODE -ne 0) { throw 'signing the installer for the updater failed' }
           if (-not (Test-Path "$($installer.FullName).sig")) { throw 'the signer did not write a .sig file' }
 
