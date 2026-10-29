@@ -175,10 +175,12 @@ export default function SettingsPage() {
                 {formatMessage(m.invalidCount, { count: errorCount })}
               </span>
             ) : null}
-            <Button disabled={!dirty || save.isPending} onClick={onReset}>
-              <RotateCcw />
-              {m.reset}
-            </Button>
+            {dirty ? (
+              <Button disabled={save.isPending} onClick={onReset}>
+                <RotateCcw />
+                {m.reset}
+              </Button>
+            ) : null}
             <Button
               variant="default"
               disabled={!dirty || errorCount > 0 || save.isPending}

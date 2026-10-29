@@ -115,7 +115,8 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   identical status badge, the Projects tracker filter appears only when repositories use more than one
   tracker, and the sidebar's view list is tall enough to show every entry without its own scrollbar. The
   concise run timeline leaves out the contentless "Event: item/started"-style protocol rows (the
-  technical view keeps every event).
+  technical view keeps every event). Empty Kanban columns are slim, so more of the populated ones fit on
+  screen, and Settings shows *Reset* only once something has been edited.
 - **One component system on the desktop**: Fluent UI and the OpenAI Apps SDK UI are removed from the
   desktop app and the shared UI package in favour of shadcn/ui (Radix) with Tailwind tokens, so controls,
   dialogs and tabs share one sizing, one set of breakpoints and one CSS layer order. Markdown uses

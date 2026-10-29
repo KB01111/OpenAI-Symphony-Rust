@@ -64,7 +64,7 @@ const columnKeyboardCoordinates: KeyboardCoordinateGetter = (event, { currentCoo
 
 type DropTone = "neutral" | "valid" | "invalid";
 
-const BoardCard = React.memo(function BoardCard({ task, selected, dragging }: { task: Task; selected: boolean; dragging: boolean }) {
+const BoardCard = React.memo(function BoardCard({ task, dragging }: { task: Task; dragging: boolean }) {
   const m = useMessages(taskMessages);
   const actions = useTaskActions();
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, isDragging } = useDraggable({
@@ -82,7 +82,7 @@ const BoardCard = React.memo(function BoardCard({ task, selected, dragging }: { 
         ref={setNodeRef}
         className={cn(
           "group relative rounded-md border bg-surface-raised p-2.5 transition-colors",
-          selected ? "border-accent bg-surface-selected" : "border-border hover:border-border-strong hover:bg-surface-hover",
+          "border-border hover:border-border-strong hover:bg-surface-hover",
           isDragging && "opacity-40"
         )}
         data-task-id={task.id}
@@ -124,13 +124,11 @@ const BoardColumn = React.memo(function BoardColumn({
   status,
   tasks,
   tone,
-  selectedId,
   dragging
 }: {
   status: TaskStatus;
   tasks: Task[];
   tone: DropTone;
-  selectedId: string | null;
   dragging: boolean;
 }) {
   const m = useMessages(taskMessages);
@@ -146,7 +144,9 @@ const BoardColumn = React.memo(function BoardColumn({
       data-status={status}
       data-drop={tone}
       className={cn(
-        "flex w-72 shrink-0 flex-col rounded-md border bg-surface-sunken transition-[opacity,border-color,background-color]",
+        "flex shrink-0 flex-col rounded-md border bg-surface-sunken transition-[opacity,border-color,background-color]",
+        // Empty columns stay slim (they still take drops) so more of the populated ones fit on screen.
+        tasks.length === 0 ? "w-44" : "w-72",
         tone === "valid" && "border-accent bg-accent-subtle",
         tone === "valid" && isOver && "ring-2 ring-accent",
         tone === "invalid" && "border-border opacity-50",
@@ -172,7 +172,7 @@ const BoardColumn = React.memo(function BoardColumn({
         ) : (
           <ul className="flex flex-col gap-1.5" aria-label={label}>
             {visible.map((task) => (
-              <BoardCard key={task.id} task={task} selected={task.id === selectedId} dragging={dragging} />
+              <BoardCard key={task.id} task={task} dragging={dragging} />
             ))}
           </ul>
         )}
@@ -191,7 +191,6 @@ export const TaskBoard: React.FC<{ tasks: ReadonlyArray<Task> }> = ({ tasks }) =
   const m = useMessages(taskMessages);
   const t = useT();
   const actions = useTaskActions();
-  const selectedId: string | null = null;
   const [activeId, setActiveId] = useState<UniqueIdentifier | null>(null);
   const grouped = useMemo(() => groupByStatus(tasks), [tasks]);
   const byId = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
@@ -260,7 +259,6 @@ export const TaskBoard: React.FC<{ tasks: ReadonlyArray<Task> }> = ({ tasks }) =
             status={status}
             tasks={grouped[status]}
             tone={toneFor(status)}
-            selectedId={selectedId}
             dragging={activeTask !== null}
           />
         ))}

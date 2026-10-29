@@ -6,6 +6,7 @@ import { settings } from "../../test/fixtures.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
 import { settingsMessages } from "./messages.js";
 import { BackupsSection, RemoteSection } from "./sections.js";
+import SettingsPage from "./SettingsPage.js";
 import { isLoopback, isValidRemoteOrigin, parseOrigins, portOf, serverErrorFields, validateSettings } from "./validation.js";
 
 const v = settingsMessages.en.validation;
@@ -259,5 +260,17 @@ describe("BackupsSection", () => {
     renderWithProviders(<Backups />, { runtime });
     expect(await screen.findByText(m.unavailable)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: m.create })).not.toBeInTheDocument();
+  });
+});
+
+describe("SettingsPage", () => {
+  it("offers Reset only once something has been edited", async () => {
+    const rt = createMockRuntime({ "GET /settings": () => settings(), "GET /providers": () => [] });
+    renderWithProviders(<SettingsPage />, { runtime: rt, route: "/settings" });
+    const polling = await screen.findByLabelText("Polling interval (ms)");
+    expect(screen.queryByRole("button", { name: "Reset" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    fireEvent.change(polling, { target: { value: "45000" } });
+    expect(await screen.findByRole("button", { name: "Reset" })).toBeEnabled();
   });
 });
