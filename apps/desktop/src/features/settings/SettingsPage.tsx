@@ -208,25 +208,14 @@ export default function SettingsPage() {
           </>
         }
       />
-      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        {/* Below md the section list is a picker, so every section stays reachable in a narrow window. */}
-        <div className="shrink-0 border-b border-border bg-surface p-2 md:hidden">
-          <select
-            aria-label={m.sectionsNav}
-            value={active}
-            onChange={(e) => goTo(e.target.value as SectionId)}
-            className="h-8 w-full rounded-md border border-border bg-surface-sunken px-2 text-sm text-foreground"
-          >
-            {SECTION_IDS.map((id) => (
-              <option key={id} value={id}>
-                {m.sections[id]}
-                {(SECTION_FIELDS[id] ?? []).some((field) => errors[field]) ? ` – ${m.invalidSection}` : ""}
-              </option>
-            ))}
-          </select>
-        </div>
-        <nav aria-label={m.sectionsNav} className="hidden w-52 shrink-0 overflow-auto border-e border-border bg-surface p-2 md:block">
-          <ul className="space-y-0.5">
+      {/* Container queries, not viewport breakpoints: the sidebar takes its share before this page is measured. */}
+      <div className="@container flex min-h-0 flex-1 flex-col @3xl:flex-row">
+        {/* A scrolling strip while the page is narrow, a side list once it has room. */}
+        <nav
+          aria-label={m.sectionsNav}
+          className="shrink-0 overflow-x-auto border-b border-border bg-surface p-2 @3xl:w-52 @3xl:overflow-y-auto @3xl:overflow-x-hidden @3xl:border-b-0 @3xl:border-e"
+        >
+          <ul className="flex gap-1 @3xl:block @3xl:space-y-0.5">
             {SECTION_IDS.map((id) => (
               <li key={id}>
                 <button
@@ -234,7 +223,7 @@ export default function SettingsPage() {
                   onClick={() => goTo(id)}
                   aria-current={active === id ? "location" : undefined}
                   className={cn(
-                    "flex h-row w-full items-center rounded-md px-2 text-start text-sm transition-colors",
+                    "flex h-row shrink-0 items-center whitespace-nowrap rounded-md px-2 text-start text-sm transition-colors @3xl:w-full",
                     active === id
                       ? "bg-surface-selected font-medium text-foreground"
                       : "text-muted-foreground hover:bg-surface-hover hover:text-foreground"
@@ -242,7 +231,7 @@ export default function SettingsPage() {
                 >
                   {m.sections[id]}
                   {(SECTION_FIELDS[id] ?? []).some((field) => errors[field]) ? (
-                    <span className="ms-auto size-2 shrink-0 rounded-full bg-destructive" role="img" aria-label={m.invalidSection} />
+                    <span className="ms-1.5 size-2 shrink-0 rounded-full bg-destructive @3xl:ms-auto" role="img" aria-label={m.invalidSection} />
                   ) : null}
                 </button>
               </li>

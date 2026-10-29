@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it } from "vitest";
 import type { RunningSessionSummary } from "@symphony/shared-types";
 import AgentRunsView from "./AgentRunsView.js";
-import { buildAgentRows, groupAgentRows } from "./grouping.js";
+import { buildAgentRows, groupAgentRows, rowActions } from "./grouping.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
 import { project, providerStatus, snapshot, task } from "../../test/fixtures.js";
 
@@ -45,6 +45,21 @@ describe("agent grouping", () => {
     expect(groups.queued.map((r) => r.taskId)).toEqual(["t8"]);
     expect(groups.failed.map((r) => r.taskId)).toEqual(["t9"]);
     expect(new Set(rows.map((r) => r.taskId)).size).toBe(rows.length);
+  });
+});
+
+describe("row actions", () => {
+  it("offers Start but not Retry on a ready task that never ran, and both once it has", () => {
+    const rowFor = (attempt_count: number) =>
+      buildAgentRows({
+        snapshot: snapshot(),
+        tasks: [task({ id: "r1", status: "ready", project_id: "p1", attempt_count })],
+        approvals: [],
+        projects: [project({ id: "p1", auto_dispatch: true })],
+        now: Date.now()
+      })[0]!;
+    expect(rowActions(rowFor(0), undefined)).toMatchObject({ dispatch: true, retry: false });
+    expect(rowActions(rowFor(2), undefined)).toMatchObject({ dispatch: true, retry: true });
   });
 });
 
