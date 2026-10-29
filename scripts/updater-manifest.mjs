@@ -33,7 +33,7 @@ function strictBase64(text) {
  * signature itself (that needs the public key); it catches truncated, hand-edited or foreign files
  * before they are published.
  */
-export function checkSignature(signature) {
+export function checkSignature(signature, version) {
   const fail = (why) => {
     throw new Error(`the signature is not a minisign signature created by \`tauri build\` / \`tauri signer sign\` (${why})`);
   };
@@ -46,6 +46,12 @@ export function checkSignature(signature) {
   const body = strictBase64(lines[1]);
   if (!body || body.length !== 74 || body[0] !== 0x45 || (body[1] !== 0x64 && body[1] !== 0x44)) fail("bad signature line");
   if (!lines[2].startsWith("trusted comment:")) fail("missing trusted comment");
+  if (version !== undefined) {
+    // The app (`requireSignedVersion`) compares this signed field with the manifest's version.
+    const signed = lines[2].slice("trusted comment:".length).trimStart().split("\t").find((field) => field.startsWith("version:"));
+    if (signed === undefined) fail("it records no version: sign with `tauri signer sign --app-version`");
+    if (signed.slice("version:".length) !== version) fail(`it was signed for version ${signed.slice("version:".length)}, not ${version}`);
+  }
   const global = strictBase64(lines[3]);
   if (!global || global.length !== 64) fail("bad global signature");
 }
@@ -57,7 +63,7 @@ export function buildManifest({ tag, repo, installer, signature, notes = "", pub
   if (!REPO.test(repo)) throw new Error(`repository "${repo}" must be owner/name`);
   if (!ASSET.test(installer)) throw new Error(`installer name "${installer}" has unexpected characters`);
   const sig = signature.trim();
-  checkSignature(sig);
+  checkSignature(sig, version);
   return {
     version,
     notes: notes.trim(),

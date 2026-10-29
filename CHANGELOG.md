@@ -193,7 +193,8 @@ First release of Symphony Desktop 2.0: a Windows 11 app that runs coding agents 
   built into the app, runs it and restarts; it asks first when agents are running. Releases built without
   the update key (no `latest.json`) are announced and open the releases page. The release workflow signs
   the installer for the updater and publishes `latest.json` when the `TAURI_SIGNING_PRIVATE_KEY` secret is
-  set (`docs/RELEASING.md`).
+  set (`docs/RELEASING.md`). The installer signature records the release version and the app requires it
+  to match the manifest (`requireSignedVersion`), so a forged manifest cannot downgrade the app.
 - **Activity-history retention** (Settings → Scheduling & resources, `event_retention_days`, default 30, `0` keeps
   everything): the runtime deletes old activity-log events of finished tasks a couple of minutes after startup
   and every six hours, in small batches. Events of tasks that are still active are never deleted. Before this the
