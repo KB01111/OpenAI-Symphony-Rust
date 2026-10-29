@@ -218,7 +218,7 @@ const AgentRunRow = React.memo(function AgentRunRow({
 });
 
 /** The Runs view of the Tasks page: live sessions, retry queue, queued and recently finished runs. */
-export default function AgentRunsView() {
+export default function AgentRunsView({ onShowTasks }: { onShowTasks?: () => void } = {}) {
   const m = useMessages(agentsMessages);
   const t = useT();
   const navigate = useNavigate();
@@ -312,7 +312,7 @@ export default function AgentRunsView() {
           title={m.empty.title}
           description={m.empty.description}
           action={
-            <Button size="sm" variant="default" onClick={() => navigate(paths.tasks())}>
+            <Button size="sm" variant="default" onClick={() => (onShowTasks ? onShowTasks() : navigate(paths.tasks()))}>
               {m.empty.cta}
             </Button>
           }

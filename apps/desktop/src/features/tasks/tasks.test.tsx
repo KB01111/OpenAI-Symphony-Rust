@@ -155,13 +155,45 @@ describe("task board columns", () => {
     });
     expect(await screen.findByRole("button", { name: "Queued work" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "Runs" })).toHaveAttribute("aria-checked", "true");
-    expect(useUiStore.getState().taskView).toBe("runs");
     // The task filters belong to Board and Table only.
     expect(screen.queryByRole("search", { name: /filters/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: "Board" }));
     expect(await screen.findByRole("region", { name: "Queued" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Queued work" })).not.toBeInTheDocument();
     useUiStore.getState().setTaskView("board");
+  });
+
+  it("never keeps Runs as the saved view: /tasks opens the board, and Go to Tasks leaves Runs", async () => {
+    useUiStore.getState().setTaskView("board");
+    // A plain /tasks link (Overview tiles, project links) shows the board even right after Runs was used.
+    const first = renderWithProviders(<TasksPage />, { runtime: boardRuntime([]), route: "/tasks?view=runs", path: "/tasks" });
+    expect(await screen.findByText("No agent runs yet")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Go to Tasks" }));
+    expect(await screen.findByRole("radio", { name: "Board" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByText("No agent runs yet")).not.toBeInTheDocument();
+    first.unmount();
+    renderWithProviders(<TasksPage />, { runtime: boardRuntime([]), route: "/tasks", path: "/tasks" });
+    expect(await screen.findByRole("radio", { name: "Board" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("keeps the selected project's name off the Runs heading, since Runs spans every project", async () => {
+    useUiStore.getState().setTaskView("board");
+    useUiStore.getState().setActiveProject("p1");
+    const rt = createMockRuntime({
+      "GET /settings": () => settings(),
+      "GET /state": () => snapshot(),
+      "GET /projects": () => [project({ id: "p1", name: "Alpha" })],
+      "GET /tasks": () => [task({ id: "a", project_id: "p1", status: "ready" })],
+      "GET /approvals": () => [],
+      "GET /providers": () => []
+    });
+    renderWithProviders(<TasksPage />, { runtime: rt, route: "/tasks?view=runs", path: "/tasks" });
+    await screen.findByRole("radio", { name: "Runs" });
+    expect(screen.getByText(/Plan, dispatch and track agent work/)).toBeInTheDocument();
+    expect(screen.queryByText("Tasks in Alpha")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Board" }));
+    expect(await screen.findByText("Tasks in Alpha")).toBeInTheDocument();
+    useUiStore.getState().setActiveProject(null);
   });
 
   it("shows Backlog, Blocked and Cancelled only once they hold a task", async () => {

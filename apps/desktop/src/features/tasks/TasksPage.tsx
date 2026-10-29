@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect, useMemo } from "react";
+import React, { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage } from "@symphony/shared-types";
@@ -22,14 +22,16 @@ export default function TasksPage() {
   const m = useMessages(taskMessages);
   const taskView = useUiStore((s) => s.taskView);
   const setTaskView = useUiStore((s) => s.setTaskView);
-  // `/tasks?view=runs` (the old /runs page, and links to it) opens the Runs view; the choice is remembered.
+  // Runs is not a saved preference: every link to /tasks shows the board or table, and only
+  // `/tasks?view=runs` (the old /runs page, and links to it) or the toggle opens the Runs view.
   const [search, setSearch] = useSearchParams();
   const wantsRuns = search.get("view") === "runs";
+  const [runsOpen, setRunsOpen] = useState(wantsRuns);
   useEffect(() => {
     if (!wantsRuns) return;
-    setTaskView("runs");
+    setRunsOpen(true);
     setSearch({}, { replace: true });
-  }, [wantsRuns, setTaskView, setSearch]);
+  }, [wantsRuns, setSearch]);
   const activeProjectId = useUiStore((s) => s.activeProjectId);
   const filters = useUiStore((s) => s.taskFilters);
   const resetTaskFilters = useUiStore((s) => s.resetTaskFilters);
@@ -58,8 +60,12 @@ export default function TasksPage() {
     <ToggleGroup
       type="single"
       aria-label={m.page.viewLabel}
-      value={taskView}
-      onValueChange={(next) => next && setTaskView(next as TaskView)}
+      value={runsOpen ? "runs" : taskView}
+      onValueChange={(next) => {
+        if (!next) return;
+        setRunsOpen(next === "runs");
+        if (next !== "runs") setTaskView(next as TaskView);
+      }}
     >
       <ToggleGroupItem value="board" className="gap-1.5">
         <KanbanSquare className="size-3.5" aria-hidden />
@@ -79,7 +85,8 @@ export default function TasksPage() {
   const header = (
     <PageHeader
       title={m.page.title}
-      description={activeProject ? formatMessage(m.page.descriptionProject, { project: activeProject.name }) : m.page.description}
+      // Runs spans every project, so it never carries the selected project's name.
+      description={activeProject && !runsOpen ? formatMessage(m.page.descriptionProject, { project: activeProject.name }) : m.page.description}
       actions={
         <>
           {viewToggle}
@@ -93,11 +100,11 @@ export default function TasksPage() {
   );
 
   let content: React.ReactNode;
-  if (taskView === "runs") {
+  if (runsOpen) {
     // Runs has its own tabs, loading and empty states, so the task filters and lists stay out of the way.
     content = (
       <Suspense fallback={<LoadingRows className="p-4" rows={8} label={m.page.loading} />}>
-        <AgentRunsView />
+        <AgentRunsView onShowTasks={() => setRunsOpen(false)} />
       </Suspense>
     );
   } else if (projects.isError) {
@@ -155,7 +162,7 @@ export default function TasksPage() {
     <TaskActionsProvider>
       <div className="flex h-full min-h-0 flex-col">
         {header}
-        {projectList.length > 0 && taskView !== "runs" ? <TaskToolbar projects={projectList} shown={visible.length} total={allTasks.length} /> : null}
+        {projectList.length > 0 && !runsOpen ? <TaskToolbar projects={projectList} shown={visible.length} total={allTasks.length} /> : null}
         <div className="min-h-0 flex-1 overflow-hidden">{content}</div>
       </div>
     </TaskActionsProvider>
