@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@symphony/shared-types";
-import { buildTaskTimeline, countByKind, eventKind, filterByKinds, toggleKind, unseenSince } from "./timeline.js";
+import { buildTaskTimeline, countByKind, eventKind, filterByKinds, isProtocolNoise, toggleKind, unseenSince } from "./timeline.js";
 
 function ev(id: string, second: number, overrides: Partial<AgentEvent> = {}): AgentEvent {
   return {
@@ -20,6 +20,21 @@ function ev(id: string, second: number, overrides: Partial<AgentEvent> = {}): Ag
 
 const command = (id: string, second: number) =>
   ev(id, second, { event_type: "item/commandExecution/completed", payload: { item: { type: "commandExecution", command: "ls", exitCode: 0 } } });
+
+describe("isProtocolNoise", () => {
+  it("flags the bare 'Event: <method>' label but never real content or errors", () => {
+    expect(isProtocolNoise(ev("a", 1, { event_type: "item/started", message: "Event: item/started" }))).toBe(true);
+    expect(isProtocolNoise(ev("b", 1, { event_type: "item/started", message: "Event: item/started with details" }))).toBe(false);
+    expect(isProtocolNoise(ev("c", 1, { event_type: "item/started", message: "Ran the tests" }))).toBe(false);
+    expect(isProtocolNoise(ev("d", 1, { event_type: "error", message: "Event: error" }))).toBe(false);
+    // A notification that carries its own summary is content: a configuration warning must stay visible.
+    expect(
+      isProtocolNoise(ev("f", 1, { event_type: "configWarning", message: "Event: configWarning", payload: { method: "configWarning", params: { summary: "Custom rules were not applied" } } }))
+    ).toBe(false);
+    // Another driver's real text that merely looks like the label stays visible.
+    expect(isProtocolNoise(ev("e", 1, { event_type: "opencode/event", message: "Event: ready" }))).toBe(false);
+  });
+});
 
 describe("execution timeline", () => {
   it("merges newest-first history with live events, oldest first, without duplicates", () => {

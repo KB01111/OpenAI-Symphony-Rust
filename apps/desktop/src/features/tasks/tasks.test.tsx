@@ -1,11 +1,13 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import { getTranslations } from "@symphony/shared-types";
+import { canRetryTask, getTranslations } from "@symphony/shared-types";
 import NewTaskDialog from "../composer/NewTaskDialog.js";
+import TasksPage from "./TasksPage.js";
 import { deriveTitle } from "../composer/TaskComposer.js";
 import { allowedMoveTargets, applyDrop, parseLabels, resolveDrop } from "./taskLogic.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
-import { project, providerStatus, settings, task } from "../../test/fixtures.js";
+import { project, providerStatus, settings, snapshot, task } from "../../test/fixtures.js";
 import { useUiStore } from "../../store/uiStore.js";
 
 describe("board state machine", () => {
@@ -32,6 +34,13 @@ describe("board state machine", () => {
     expect(move).toHaveBeenCalledTimes(1);
     expect(move).toHaveBeenCalledWith("t1", "blocked");
     expect(resolveDrop({ id: "t1", status: "ready" }, "ready", new Set())).toEqual({ kind: "noop" });
+  });
+
+  it("offers Retry on a ready task only once it has run", () => {
+    expect(canRetryTask({ status: "ready", attempt_count: 0 })).toBe(false);
+    expect(canRetryTask({ status: "ready", attempt_count: 2 })).toBe(true);
+    expect(canRetryTask({ status: "failed", attempt_count: 0 })).toBe(true);
+    expect(canRetryTask({ status: "running", attempt_count: 1 })).toBe(false);
   });
 
   it("parses comma separated labels", () => {
@@ -124,5 +133,156 @@ describe("deriveTitle", () => {
     const early = `${"a".repeat(30)} ${"b".repeat(30)} ${"c".repeat(10)} ${"d".repeat(40)}`;
     expect(deriveTitle(early)).toBe(`${"a".repeat(30)} ${"b".repeat(30)} ${"c".repeat(10)}…`);
     expect(deriveTitle("#\nFix the build")).toBe("Fix the build");
+  });
+});
+
+describe("task board columns", () => {
+  const boardRuntime = (tasks: ReturnType<typeof task>[]) =>
+    createMockRuntime({
+      "GET /settings": () => settings(),
+      "GET /state": () => snapshot(),
+      "GET /projects": () => [project({ id: "p1" })],
+      "GET /tasks": () => tasks,
+      "GET /approvals": () => [],
+      "GET /providers": () => []
+    });
+
+  it("opens the Runs view from /tasks?view=runs and switches back with the toggle", async () => {
+    useUiStore.getState().setTaskView("board");
+    renderWithProviders(<TasksPage />, {
+      runtime: boardRuntime([task({ id: "q", project_id: "p1", status: "queued", identifier: "SYM-9", title: "Queued work" })]),
+      route: "/tasks?view=runs",
+      path: "/tasks"
+    });
+    expect(await screen.findByRole("button", { name: "Queued work" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Runs" })).toHaveAttribute("aria-checked", "true");
+    // The task filters belong to Board and Table only.
+    expect(screen.queryByRole("search", { name: /filters/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Board" }));
+    expect(await screen.findByRole("region", { name: "Queued" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Queued work" })).not.toBeInTheDocument();
+    useUiStore.getState().setTaskView("board");
+  });
+
+  it("never keeps Runs as the saved view: /tasks opens the board, and Go to Tasks leaves Runs", async () => {
+    useUiStore.getState().setTaskView("board");
+    // A plain /tasks link (Overview tiles, project links) shows the board even right after Runs was used.
+    const first = renderWithProviders(<TasksPage />, { runtime: boardRuntime([]), route: "/tasks?view=runs", path: "/tasks" });
+    expect(await screen.findByText("No agent runs yet")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Go to Tasks" }));
+    expect(await screen.findByRole("radio", { name: "Board" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByText("No agent runs yet")).not.toBeInTheDocument();
+    first.unmount();
+    renderWithProviders(<TasksPage />, { runtime: boardRuntime([]), route: "/tasks", path: "/tasks" });
+    expect(await screen.findByRole("radio", { name: "Board" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("makes Back return to the view you came from when switching to Runs", async () => {
+    useUiStore.getState().setTaskView("board");
+    const Back = () => {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate(-1)}>history-back</button>;
+    };
+    renderWithProviders(
+      <>
+        <TasksPage />
+        <Back />
+      </>,
+      { runtime: boardRuntime([]), route: "/tasks", path: "/tasks" }
+    );
+    fireEvent.click(await screen.findByRole("radio", { name: "Runs" }));
+    expect(await screen.findByText("No agent runs yet")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "history-back" }));
+    expect(await screen.findByRole("radio", { name: "Board" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByText("No agent runs yet")).not.toBeInTheDocument();
+  });
+
+  it("adds a history entry only when entering or leaving Runs, not when switching Board and Table", async () => {
+    useUiStore.getState().setTaskView("board");
+    const Entry = () => <output data-testid="entry">{useLocation().key}</output>;
+    renderWithProviders(
+      <>
+        <TasksPage />
+        <Entry />
+      </>,
+      { runtime: boardRuntime([task({ id: "a", project_id: "p1", status: "ready" })]), route: "/tasks", path: "/tasks" }
+    );
+    const entry = () => screen.getByTestId("entry").textContent;
+    fireEvent.click(await screen.findByRole("radio", { name: "Table" }));
+    expect(useUiStore.getState().taskView).toBe("table");
+    const afterTable = entry();
+    fireEvent.click(screen.getByRole("radio", { name: "Board" }));
+    expect(useUiStore.getState().taskView).toBe("board");
+    // Board and Table are a preference: the history entry does not change.
+    expect(entry()).toBe(afterTable);
+    fireEvent.click(screen.getByRole("radio", { name: "Runs" }));
+    await waitFor(() => expect(entry()).not.toBe(afterTable));
+    useUiStore.getState().setTaskView("board");
+  });
+
+  it("keeps showing Runs from cached projects when a later project refresh fails", async () => {
+    let calls = 0;
+    const rt = createMockRuntime({
+      "GET /settings": () => settings(),
+      "GET /state": () => snapshot(),
+      "GET /projects": () => (++calls === 1 ? [project({ id: "p1" })] : { status: 500, body: { error: { code: "internal", message: "projects unavailable" } } }),
+      "GET /tasks": () => [],
+      "GET /approvals": () => [],
+      "GET /providers": () => []
+    });
+    const { queryClient } = renderWithProviders(<TasksPage />, { runtime: rt, route: "/tasks?view=runs", path: "/tasks" });
+    expect(await screen.findByText("No agent runs yet")).toBeInTheDocument();
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["projects"] });
+    });
+    expect(calls).toBeGreaterThan(1);
+    expect(screen.getByText("No agent runs yet")).toBeInTheDocument();
+    expect(screen.queryByText("Projects could not be loaded")).not.toBeInTheDocument();
+  });
+
+  it("shows the project-load failure in Runs too instead of a list built without projects", async () => {
+    const rt = createMockRuntime({
+      "GET /settings": () => settings(),
+      "GET /state": () => snapshot(),
+      "GET /projects": () => ({ status: 500, body: { error: { code: "internal", message: "projects unavailable" } } }),
+      "GET /tasks": () => [],
+      "GET /approvals": () => [],
+      "GET /providers": () => []
+    });
+    renderWithProviders(<TasksPage />, { runtime: rt, route: "/tasks?view=runs", path: "/tasks" });
+    expect(await screen.findByText("Projects could not be loaded")).toBeInTheDocument();
+    expect(screen.queryByText("No agent runs yet")).not.toBeInTheDocument();
+  });
+
+  it("keeps the selected project's name off the Runs heading, since Runs spans every project", async () => {
+    useUiStore.getState().setTaskView("board");
+    useUiStore.getState().setActiveProject("p1");
+    const rt = createMockRuntime({
+      "GET /settings": () => settings(),
+      "GET /state": () => snapshot(),
+      "GET /projects": () => [project({ id: "p1", name: "Alpha" })],
+      "GET /tasks": () => [task({ id: "a", project_id: "p1", status: "ready" })],
+      "GET /approvals": () => [],
+      "GET /providers": () => []
+    });
+    renderWithProviders(<TasksPage />, { runtime: rt, route: "/tasks?view=runs", path: "/tasks" });
+    await screen.findByRole("radio", { name: "Runs" });
+    expect(screen.getByText(/Plan, dispatch and track agent work/)).toBeInTheDocument();
+    expect(screen.queryByText("Tasks in Alpha")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Board" }));
+    expect(await screen.findByText("Tasks in Alpha")).toBeInTheDocument();
+    useUiStore.getState().setActiveProject(null);
+  });
+
+  it("shows Backlog, Blocked and Cancelled only once they hold a task", async () => {
+    useUiStore.getState().setTaskView("board");
+    const { unmount } = renderWithProviders(<TasksPage />, { runtime: boardRuntime([task({ id: "a", project_id: "p1", status: "ready" })]), route: "/tasks" });
+    expect(await screen.findByRole("region", { name: "Ready" })).toBeInTheDocument();
+    for (const name of ["Backlog", "Blocked", "Cancelled"]) expect(screen.queryByRole("region", { name })).not.toBeInTheDocument();
+    unmount();
+
+    renderWithProviders(<TasksPage />, { runtime: boardRuntime([task({ id: "b", project_id: "p1", status: "blocked" })]), route: "/tasks" });
+    expect(await screen.findByRole("region", { name: "Blocked" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Backlog" })).not.toBeInTheDocument();
   });
 });

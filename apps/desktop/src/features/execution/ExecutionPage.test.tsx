@@ -6,6 +6,7 @@ import ExecutionPage from "./ExecutionPage.js";
 import { createMockRuntime, renderWithProviders, type MockHandler } from "../../test/renderWithProviders.js";
 import { approval, project, providerStatus, snapshot, task } from "../../test/fixtures.js";
 import { useEventStore } from "../../runtime/eventStore.js";
+import { useUiStore } from "../../store/uiStore.js";
 
 function ev(id: string, second: number, overrides: Partial<AgentEvent> = {}): AgentEvent {
   return {
@@ -173,6 +174,20 @@ describe("ExecutionPage", () => {
     expect(texts).toEqual(["message e1", "message e2", "message e3"]);
     expect(screen.queryByText("foreign")).not.toBeInTheDocument();
     expect(screen.getByText(/Agent is working/)).toBeInTheDocument();
+  });
+
+  it("leaves contentless protocol events out of the concise timeline but keeps them in technical", async () => {
+    const rt = runtime(task(), {
+      "GET /tasks/:id/events": () => [ev("e1", 1), ev("n1", 2, { event_type: "item/started", message: "Event: item/started" })]
+    });
+    renderPage(rt);
+    expect(await screen.findByText("message e1")).toBeInTheDocument();
+    expect(screen.getByText("1 event")).toBeInTheDocument();
+    expect(screen.queryByText("Event: item/started")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Technical" }));
+    expect(await screen.findByText("Event: item/started")).toBeInTheDocument();
+    expect(screen.getByText("2 events")).toBeInTheDocument();
+    useUiStore.getState().setLogMode("concise");
   });
 
   it("hides event kinds with the filter chips", async () => {
@@ -369,5 +384,31 @@ describe("ExecutionPage", () => {
     expect(await screen.findByRole("button", { name: "Start" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(rt.calls.filter((c) => c.method === "POST" && c.path === "/tasks/t1/retry")).toHaveLength(1));
+  });
+
+  it("does not repeat the status as a phase badge once the run has ended", async () => {
+    renderPage(runtime(task({ status: "cancelled", current_phase: "canceled_by_reconciliation" })));
+    await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getAllByText("Cancelled")).toHaveLength(1);
+  });
+
+  it("keeps the reason a run ended (timed out) next to the failed status", async () => {
+    renderPage(runtime(task({ status: "failed", current_phase: "timed_out" })));
+    await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getByText("Timed out")).toBeInTheDocument();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+  });
+
+  it("keeps Retry on a ready task that has already run", async () => {
+    // Moved back to ready after a failure: Retry also clears follow-up instructions that Start would reuse.
+    renderPage(runtime(task({ status: "ready", attempt_count: 2 })));
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
+  });
+
+  it("offers only Start (no Retry) for a task that has not run yet", async () => {
+    renderPage(runtime(task({ status: "ready" })));
+    expect(await screen.findByRole("button", { name: "Start" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 });

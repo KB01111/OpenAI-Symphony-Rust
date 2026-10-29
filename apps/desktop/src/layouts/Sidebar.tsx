@@ -41,7 +41,7 @@ export const Sidebar: React.FC = () => {
 
   // Runs show pending approvals (needs attention) first, otherwise the number of live sessions.
   const badges: Partial<Record<NavKey, { count: number; important: boolean }>> = {
-    runs: pendingApprovals > 0 ? { count: pendingApprovals, important: true } : { count: state.data?.counts.running ?? 0, important: false },
+    tasks: pendingApprovals > 0 ? { count: pendingApprovals, important: true } : { count: state.data?.counts.running ?? 0, important: false },
     reviews: { count: state.data?.counts.human_review ?? 0, important: false }
   };
 
@@ -54,10 +54,9 @@ export const Sidebar: React.FC = () => {
         const link = (
           <NavLink
             to={item.path}
-            end={item.key === "runs"}
             className={({ isActive }) =>
               cn(
-                "relative flex h-8 items-center gap-2.5 rounded-lg px-2 text-sm text-muted-foreground outline-none transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60",
+                "relative flex h-8 items-center gap-2.5 rounded-lg px-2 text-sm [@media(max-height:760px)]:h-7 text-muted-foreground outline-none transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60",
                 isActive && "bg-surface-selected font-medium text-foreground"
               )
             }
@@ -68,8 +67,9 @@ export const Sidebar: React.FC = () => {
             {badge > 0 ? <Count count={badge} important={badges[item.key]?.important ?? false} floating={collapsed} /> : null}
           </NavLink>
         );
+        const startsSetup = item.group === "setup" && NAV_ITEMS[NAV_ITEMS.indexOf(item) - 1]?.group === "work";
         return (
-          <li key={item.key}>
+          <li key={item.key} className={cn(startsSetup && "mt-1 border-t border-border pt-1")}>
             {collapsed ? (
               <Hint label={label} side="right">
                 {link}
@@ -131,7 +131,7 @@ export const Sidebar: React.FC = () => {
               <ChevronDown className={cn("size-3.5 transition-transform", !manageOpen && "-rotate-90")} aria-hidden />
               {w.sidebar.manage}
             </button>
-            {manageOpen ? <div className="max-h-[40vh] overflow-y-auto">{items}</div> : null}
+            {manageOpen ? <div className="max-h-[min(56vh,calc(100vh_-_18rem))] overflow-y-auto">{items}</div> : null}
           </div>
         </>
       )}

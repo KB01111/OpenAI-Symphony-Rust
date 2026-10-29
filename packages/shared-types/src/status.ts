@@ -46,6 +46,14 @@ export function canRetry(status: TaskStatus): boolean {
   return status !== "queued" && status !== "running" && canTransitionTaskStatus(status, "queued");
 }
 
+/**
+ * Whether the UI offers Retry for a task. A ready task that never ran is started, not retried; one that
+ * already ran (moved back to ready) keeps Retry, which also drops stored follow-up instructions.
+ */
+export function canRetryTask(task: { status: TaskStatus; attempt_count: number }): boolean {
+  return canRetry(task.status) && !(task.status === "ready" && task.attempt_count === 0);
+}
+
 export function canCancel(status: TaskStatus): boolean {
   return status !== "cancelled" && canTransitionTaskStatus(status, "cancelled");
 }

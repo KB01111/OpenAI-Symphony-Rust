@@ -39,11 +39,23 @@ function str(value: JsonValue | undefined): string | null {
   return typeof value === "string" ? value : null;
 }
 
+// CSI sequences (colours incl. colon-delimited 24-bit form, cursor moves) that CLI agents write to their log streams.
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+
+const plain = (value: string | null): string | null => (value === null ? null : value.replace(ANSI_ESCAPE, ""));
+
 /**
  * Normalize runtime events (orchestrator lifecycle events and provider item events such as Codex
  * App Server `item/*` notifications) into a presentation model. Pure and memoizable per event id.
+ * Terminal colour codes are removed from the free text, as the UI cannot render them.
  */
 export function formatAgentEvent(event: AgentEvent): FormattedAgentEvent {
+  const formatted = normalizeAgentEvent(event);
+  return { ...formatted, text: plain(formatted.text) ?? "", command: plain(formatted.command), output: plain(formatted.output) };
+}
+
+function normalizeAgentEvent(event: AgentEvent): FormattedAgentEvent {
   const type = event.event_type;
   // Codex App Server events carry the raw JSON-RPC notification (`{ method, params: { item } }`);
   // orchestrator and simulated events carry the fields directly or under `item`.
@@ -51,10 +63,13 @@ export function formatAgentEvent(event: AgentEvent): FormattedAgentEvent {
   const payload = asObject(raw?.params) ?? raw;
   const item = asObject(payload?.item) ?? payload;
   const itemType = str(item?.type ?? undefined) ?? "";
+  // The Codex driver labels a notification it has no text for "Event: <method>"; when the notification
+  // itself carries a summary (e.g. `configWarning`), that is the text worth showing.
+  const summary = str(payload?.summary);
   const base: FormattedAgentEvent = {
     kind: "other",
     tone: "neutral",
-    text: event.message,
+    text: summary && event.message === `Event: ${type}` ? summary : event.message,
     command: null,
     output: null,
     exitCode: null,

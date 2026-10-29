@@ -32,6 +32,25 @@ export function buildTaskTimeline(
   return mergeEventHistory(scopedHistory, scopedLive);
 }
 
+const noiseCache = new WeakMap<AgentEvent, boolean>();
+
+/**
+ * Protocol bookkeeping with nothing to read: the Codex driver labels notifications it has no text for
+ * (`item/started`, `thread/status/changed`, ...) as exactly "Event: <method>", and uses the method as the
+ * event type. Matching on that keeps other drivers' real text (e.g. an OpenCode "Event: ready") visible, and
+ * a notification that carries its own summary (a `configWarning`) is content, not noise. The concise
+ * timeline leaves noise out; the technical one keeps every event. Errors always stay.
+ */
+export function isProtocolNoise(event: AgentEvent): boolean {
+  let noise = noiseCache.get(event);
+  if (noise === undefined) {
+    const formatted = formatAgentEvent(event);
+    noise = event.message === `Event: ${event.event_type}` && formatted.kind === "other" && formatted.text === event.message;
+    noiseCache.set(event, noise);
+  }
+  return noise;
+}
+
 export type KindCounts = Record<AgentEventKind, number>;
 
 export function countByKind(events: ReadonlyArray<AgentEvent>): KindCounts {

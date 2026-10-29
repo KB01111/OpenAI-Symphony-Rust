@@ -79,3 +79,27 @@ test("the Concise / Technical toggle keeps its two labels apart", async ({ page 
   const technical = (await group.getByRole("radio", { name: "Technical" }).boundingBox())!;
   expect(concise.x + concise.width).toBeLessThanOrEqual(technical.x + 0.5);
 });
+
+test("Settings keeps every section reachable: a strip while the page is narrow, a side list once it has room", async ({ page }) => {
+  const nav = page.getByRole("navigation", { name: "Settings sections" });
+  const firstTwo = async () => {
+    const buttons = nav.getByRole("button");
+    return [(await buttons.nth(0).boundingBox())!, (await buttons.nth(1).boundingBox())!] as const;
+  };
+
+  // Narrow window: the sidebar leaves the page too little room for a side list, so the sections form a row.
+  await page.setViewportSize({ width: 800, height: 700 });
+  await openApp(page, "/settings");
+  await expect(nav).toBeVisible();
+  const [a, b] = await firstTwo();
+  expect(Math.abs(a.y - b.y)).toBeLessThan(2);
+  await nav.getByRole("button", { name: "Backups" }).click();
+  await expect(page.getByRole("heading", { name: "Backups" })).toBeVisible();
+  await noPageOverflow(page);
+
+  // Wide window: a vertical list beside the form.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openApp(page, "/settings");
+  const [c, d] = await firstTwo();
+  expect(d.y).toBeGreaterThan(c.y + 10);
+});

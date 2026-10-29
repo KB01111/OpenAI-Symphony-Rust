@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { isSymphonyApiError } from "@symphony/api-client";
 import { ArrowLeft, FolderOpen, PanelRight, Play, RotateCcw, Square } from "lucide-react";
-import { canCancel, canDispatch, canRetry, formatMessage, providerActions, type Task } from "@symphony/shared-types";
+import { canCancel, canDispatch, canRetryTask, formatMessage, isActivePhase, providerActions, type RunAttemptPhase, type Task } from "@symphony/shared-types";
 import {
   Button,
   ConfirmDialog,
@@ -34,6 +34,9 @@ import { RunDetailsPanel } from "./RunDetailsPanel.js";
 import { TimelinePanel } from "./TimelinePanel.js";
 import { useWorkspaceOpener } from "./useWorkspaceOpener.js";
 
+/** Terminal phases that add information beyond the status badge (why a failed run ended). */
+const EXPLANATORY_PHASES: ReadonlySet<RunAttemptPhase> = new Set(["timed_out", "stalled"]);
+
 /** Status- and capability-gated run controls. The runtime re-validates every request. */
 const ExecutionControls: React.FC<{ task: Task }> = ({ task }) => {
   const m = useMessages(executionMessages);
@@ -58,7 +61,7 @@ const ExecutionControls: React.FC<{ task: Task }> = ({ task }) => {
           {m.actions.start}
         </Button>
       ) : null}
-      {canRetry(task.status) ? (
+      {canRetryTask(task) ? (
         <Button size="sm" disabled={busy} onClick={() => retry.mutate(task.id)}>
           <RotateCcw />
           {m.actions.retry}
@@ -177,7 +180,10 @@ const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
           meta={
             <span className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
               <TaskStatusBadge status={task.status} />
-              {task.current_phase ? <PhaseBadge phase={task.current_phase} /> : null}
+              {/* A finished run's phase only repeats the status, except the ones that say why it ended. */}
+              {task.current_phase && (isActivePhase(task.current_phase) || EXPLANATORY_PHASES.has(task.current_phase)) ? (
+                <PhaseBadge phase={task.current_phase} />
+              ) : null}
               <ProviderBadge provider={task.provider} model={session?.model ?? task.model} />
               <span className="text-xs text-muted-foreground" aria-label={session ? m.started : m.totalDuration}>
                 {session ? <Duration since={session.started_at} /> : <Duration seconds={task.duration_seconds} />}

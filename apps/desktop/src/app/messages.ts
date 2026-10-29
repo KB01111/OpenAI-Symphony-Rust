@@ -8,7 +8,6 @@ export const shellMessages = defineMessages({
       overview: "Overview",
       projects: "Projects",
       tasks: "Tasks",
-      runs: "Agent runs",
       activity: "Activity",
       worktrees: "Worktrees",
       reviews: "Pull requests",
@@ -27,7 +26,7 @@ export const shellMessages = defineMessages({
     commandBar: {
       search: "Search or run a command…",
       newTask: "New task",
-      refresh: "Poll & reconcile",
+      refresh: "Refresh",
       pause: "Pause dispatching",
       resume: "Resume dispatching",
       approvals: "{count, plural, one {# pending approval} other {# pending approvals}}",
@@ -165,7 +164,6 @@ export const shellMessages = defineMessages({
       overview: "Översikt",
       projects: "Projekt",
       tasks: "Uppgifter",
-      runs: "Agentkörningar",
       activity: "Aktivitet",
       worktrees: "Arbetsträd",
       reviews: "Pull requests",
@@ -184,7 +182,7 @@ export const shellMessages = defineMessages({
     commandBar: {
       search: "Sök eller kör ett kommando…",
       newTask: "Ny uppgift",
-      refresh: "Avsök och stäm av",
+      refresh: "Uppdatera",
       pause: "Pausa utskick",
       resume: "Återuppta utskick",
       approvals: "{count, plural, one {# väntande godkännande} other {# väntande godkännanden}}",

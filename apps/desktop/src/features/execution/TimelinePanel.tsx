@@ -20,7 +20,7 @@ import { useApprovals, useDecideApproval, useOlderTaskEvents, useTaskEventHistor
 import { useEventStore } from "../../runtime/eventStore.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { executionMessages } from "./messages.js";
-import { buildTaskTimeline, countByKind, filterByKinds, toggleKind, unseenSince, type PauseAnchor } from "./timeline.js";
+import { buildTaskTimeline, countByKind, filterByKinds, isProtocolNoise, toggleKind, unseenSince, type PauseAnchor } from "./timeline.js";
 
 /** Pending approvals for one task, pinned above the timeline. One decision in flight per approval. */
 const TaskApprovals: React.FC<{ taskId: string }> = ({ taskId }) => {
@@ -100,7 +100,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
     () => (older.older.length > 0 ? [...(history.data ?? []), ...older.older] : history.data),
     [history.data, older.older]
   );
-  const all = useMemo(() => buildTaskTimeline(task.id, persisted, live), [task.id, persisted, live]);
+  const merged = useMemo(() => buildTaskTimeline(task.id, persisted, live), [task.id, persisted, live]);
+  const all = useMemo(() => (logMode === "concise" ? merged.filter((e) => !isProtocolNoise(e)) : merged), [merged, logMode]);
   const counts = useMemo(() => countByKind(all), [all]);
   const visible = useMemo(() => filterByKinds(all, hidden), [all, hidden]);
   // The pause baseline is taken from the unfiltered timeline, so changing kind filters while

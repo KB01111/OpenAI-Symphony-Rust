@@ -177,40 +177,48 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
         ) : null}
       </Section>
 
-      <Section title={m.capabilities}>
-        <ul
-          aria-label={formatMessage(m.capabilitiesLabel, { provider: provider.display_name })}
-          className="grid grid-cols-1 gap-x-4 gap-y-1 @md:grid-cols-2"
-        >
-          {capabilities.map(({ key, supported }) => (
-            <li key={key} className="flex items-center gap-1.5 text-sm">
-              {supported ? (
-                <Check className="size-4 shrink-0 text-success" aria-hidden />
-              ) : (
-                <X className="size-4 shrink-0 text-subtle-foreground" aria-hidden />
-              )}
-              <span className={supported ? "text-foreground" : "text-muted-foreground"}>{m.capability[key]}</span>
-              <span className="sr-only">: {supported ? m.supported : m.unsupported}</span>
-            </li>
-          ))}
-        </ul>
-      </Section>
+      {/* Reference detail: one click away instead of two more sections on every card. */}
+      <details className="rounded-md border border-border @2xl:col-span-2">
+        <summary className="cursor-pointer select-none px-3 py-2 text-xs font-semibold uppercase tracking-wide text-subtle-foreground">
+          {m.moreDetails}
+        </summary>
+        <div className="grid gap-4 border-t border-border p-3 @2xl:grid-cols-2">
+          <Section title={m.capabilities}>
+            <ul
+              aria-label={formatMessage(m.capabilitiesLabel, { provider: provider.display_name })}
+              className="grid grid-cols-1 gap-x-4 gap-y-1 @md:grid-cols-2"
+            >
+              {capabilities.map(({ key, supported }) => (
+                <li key={key} className="flex items-center gap-1.5 text-sm">
+                  {supported ? (
+                    <Check className="size-4 shrink-0 text-success" aria-hidden />
+                  ) : (
+                    <X className="size-4 shrink-0 text-subtle-foreground" aria-hidden />
+                  )}
+                  <span className={supported ? "text-foreground" : "text-muted-foreground"}>{m.capability[key]}</span>
+                  <span className="sr-only">: {supported ? m.supported : m.unsupported}</span>
+                </li>
+              ))}
+            </ul>
+          </Section>
 
-      <Section title={m.models}>
-        {models.length > 0 ? (
-          <ul className="flex flex-wrap gap-1.5" aria-label={m.models}>
-            {models.map((name) => (
-              <li key={name}>
-                <Badge tone="outline" className="font-mono">
-                  {name}
-                </Badge>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-xs text-muted-foreground">{m.noModels}</p>
-        )}
-      </Section>
+          <Section title={m.models}>
+            {models.length > 0 ? (
+              <ul className="flex flex-wrap gap-1.5" aria-label={m.models}>
+                {models.map((name) => (
+                  <li key={name}>
+                    <Badge tone="outline" className="font-mono">
+                      {name}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">{m.noModels}</p>
+            )}
+          </Section>
+        </div>
+      </details>
 
       <div className="space-y-2 border-t border-border pt-3 @2xl:col-span-2">
         <div className="flex flex-wrap items-end gap-2">

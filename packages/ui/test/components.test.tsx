@@ -63,6 +63,32 @@ describe("SymphonyDesignProvider", () => {
 });
 
 describe("formatAgentEvent", () => {
+  it("removes terminal colour codes from log text, commands and output", () => {
+    const colored = "\u001b[2m2026-10-29T14:24:15Z\u001b[0m \u001b[31mERROR\u001b[0m worker quit";
+    expect(formatAgentEvent({ ...baseEvent, event_type: "agent/stderr", message: colored }).text).toBe("2026-10-29T14:24:15Z ERROR worker quit");
+    const cmd = formatAgentEvent({
+      ...baseEvent,
+      event_type: "item/commandExecution",
+      payload: { item: { type: "commandExecution", command: "\u001b[1mcargo test\u001b[0m", aggregatedOutput: "\u001b[32mok\u001b[0m" } }
+    });
+    expect(cmd).toMatchObject({ command: "cargo test", output: "ok" });
+    // Colon-delimited parameters (24-bit colour) and other CSI finals are removed too.
+    const truecolor = "[38:2:255:0:0mred[0m [1;38;2;1;2;3mbold[0m[2K";
+    expect(formatAgentEvent({ ...baseEvent, event_type: "agent/stderr", message: truecolor }).text).toBe("red bold");
+  });
+
+  it("shows a notification's own summary instead of the 'Event: <method>' fallback", () => {
+    const warned = formatAgentEvent({
+      ...baseEvent,
+      event_type: "configWarning",
+      message: "Event: configWarning",
+      payload: { method: "configWarning", params: { summary: "Custom execution rules were not applied" } }
+    });
+    expect(warned.text).toBe("Custom execution rules were not applied");
+    // Without a summary the fallback label stays as it was.
+    expect(formatAgentEvent({ ...baseEvent, event_type: "thread/started", message: "Event: thread/started", payload: null }).text).toBe("Event: thread/started");
+  });
+
   it("classifies provider item events", () => {
     expect(formatAgentEvent(baseEvent).kind).toBe("message");
     const cmd = formatAgentEvent({
