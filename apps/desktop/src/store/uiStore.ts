@@ -6,7 +6,7 @@ import { safeJSONStorage } from "./safeStorage.js";
 
 /** Tabs of the run details panel next to a thread, and of the Activity view. */
 export type DrawerTab = "events" | "agent" | "terminal" | "validations" | "approvals" | "problems";
-export type TaskView = "board" | "table";
+export type TaskView = "board" | "table" | "runs";
 export type LogMode = "concise" | "technical";
 
 /** Where an in-app update install stands. Shared by the banner, Settings and the confirm dialog. */

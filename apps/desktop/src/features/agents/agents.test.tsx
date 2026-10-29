@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { RunningSessionSummary } from "@symphony/shared-types";
-import AgentsPage from "./AgentsPage.js";
+import AgentRunsView from "./AgentRunsView.js";
 import { buildAgentRows, groupAgentRows } from "./grouping.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
 import { project, providerStatus, snapshot, task } from "../../test/fixtures.js";
@@ -48,7 +48,7 @@ describe("agent grouping", () => {
   });
 });
 
-describe("AgentsPage", () => {
+describe("AgentRunsView", () => {
   it("opens a run from its title, but not from clicks inside the row's toolbar", async () => {
     const runtime = createMockRuntime({
       "GET /state": () => snapshot(),
@@ -58,7 +58,7 @@ describe("AgentsPage", () => {
       "GET /providers": () => [providerStatus({ provider: "simulated", installed: true })]
     });
     // Only /runs is routed, so opening a run (/runs/t8) unmounts the page.
-    renderWithProviders(<AgentsPage />, { runtime, route: "/runs", path: "/runs" });
+    renderWithProviders(<AgentRunsView />, { runtime, route: "/runs", path: "/runs" });
     const toolbar = await screen.findByRole("toolbar", { name: /SYM-8/ });
     fireEvent.click(toolbar);
     expect(screen.getByRole("toolbar", { name: /SYM-8/ })).toBeInTheDocument();
@@ -75,7 +75,7 @@ describe("AgentsPage", () => {
       "GET /providers": () => [providerStatus({ provider: "simulated", installed: true })],
       "POST /tasks/:id/cancel": () => task({ id: "t7", status: "cancelled" })
     });
-    renderWithProviders(<AgentsPage />, { runtime, route: "/runs", path: "/runs" });
+    renderWithProviders(<AgentRunsView />, { runtime, route: "/runs", path: "/runs" });
     expect((await screen.findAllByText(/SYM-7/)).length).toBeGreaterThan(0);
     fireEvent.click(screen.getAllByRole("button", { name: /Cancel run/ })[0]!);
     const dialog = await screen.findByRole("alertdialog");

@@ -118,8 +118,8 @@ apps/desktop/src/
   test/         renderWithProviders (in-memory runtime), fixtures, setup
 ```
 
-Routes: `/` (prompt composer), `/overview`, `/projects[/:projectId]`, `/tasks`, `/runs`, `/runs/:taskId`
-(a task as a thread), `/activity`, `/worktrees`, `/reviews[/:reviewId]`, `/workflow`, `/providers`, `/settings`.
+Routes: `/` (prompt composer), `/overview`, `/projects[/:projectId]`, `/tasks` (Board, Table and Runs views), `/runs/:taskId`
+(a task as a thread; the bare `/runs` redirects to the Runs view), `/activity`, `/worktrees`, `/reviews[/:reviewId]`, `/workflow`, `/providers`, `/settings`.
 The app always opens on the composer.
 
 The app uses a data router (`createHashRouter`; tests use `createMemoryRouter`), which lets a view block
@@ -132,8 +132,7 @@ loaded chunk; the CodeMirror editor is a separate lazy chunk loaded only by Work
 | --- | --- |
 | Overview | Metrics from the snapshot/tasks, live sessions, pending approvals (decide inline), persisted + live activity. |
 | Projects | Full-width repository table (columns drop by container width) with the selected project's settings in a side sheet, guided Add repository (native folder picker in Tauri, runtime validation, checkout-root resolution), delete with confirmation (409 while running). |
-| Tasks | Kanban by status (dnd-kit, keyboard + menu moves validated by the shared state machine before any request; the occasional Backlog, Blocked and Cancelled columns appear only when they hold a task or while a card is dragged, empty columns are slim) and a data table; New task dialog (`auto_start`). |
-| Agent runs | One row per task by precedence (live > approval > retrying > queued > recent finished), grouping by status/provider/project, capability-gated actions. |
+| Tasks | Kanban by status (dnd-kit, keyboard + menu moves validated by the shared state machine before any request; the occasional Backlog, Blocked and Cancelled columns appear only when they hold a task or while a card is dragged, empty columns are slim) and a data table; New task dialog (`auto_start`). A third view, *Runs*, lists one row per task by precedence (live > approval > retrying > queued > recent finished) with status tabs, grouping by status/provider/project and capability-gated actions (it has its own tabs, so the task filters are hidden there). `/runs` and `paths.runs()` open `/tasks?view=runs`. |
 | Home / composer | Large prompt box with chips: repository (shows the base branch), provider + model, priority, labels, *Run now* / *Add to queue* (`auto_start`). The first line of the prompt is the title, the whole prompt the description; the identifier is generated. Recent threads below. The same composer opens in a dialog (Ctrl+N) from other views. |
 | Thread (`/runs/:taskId`) | Prompt, merged persisted + live timeline (concise/technical, kind filters, tail-following), pinned approvals, inline follow-up box (`POST /tasks/{id}/continue`, only after a run ended, 20 000 character limit) and a run-details panel (Changes, Validation, Tool calls, Usage, Pull request, Context). Wide windows dock the panel, narrow ones open it as a sheet. |
 | Activity | Cross-task events, scoped agent/terminal output, validations, approvals and problems (the former bottom dock). |
@@ -147,7 +146,7 @@ loaded chunk; the CodeMirror editor is a separate lazy chunk loaded only by Work
 
 - **Sidebar** (collapsible, persisted): *New task*, a search field, tasks grouped by project as **threads**
   (status dot, approval mark, relative time, collapsible groups) and a *Manage* group with the other views:
-  the day-to-day ones (Overview, Projects, Tasks, Agent runs, Pull requests, Activity) above a divider, then
+  the day-to-day ones (Overview, Projects, Tasks, Pull requests, Activity) above a divider, then
   the setup ones (Worktrees, Workflow Studio, Providers, Settings). Collapsed it is an icon rail with tooltips.
 - **Top bar** (below the native title bar - native decorations are kept for reliable drag, snap, maximize and
   system controls): current view, palette launcher, runtime connection status (derived from the real

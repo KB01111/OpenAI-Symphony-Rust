@@ -34,7 +34,7 @@ export const onboardingMessages = defineMessages({
     },
     finish: {
       heading: "You're ready",
-      body: "Create a task with Ctrl+N, watch agents in Agent runs and review results in Pull requests. Press Ctrl+K at any time for the command palette."
+      body: "Create a task with Ctrl+N, watch agents in Tasks (Runs) and review results in Pull requests. Press Ctrl+K at any time for the command palette."
     },
     actions: { back: "Back", next: "Next", skip: "Skip setup", finish: "Start using Symphony", finishing: "Saving…" },
     saveFailed: "Could not save onboarding progress"
@@ -71,7 +71,7 @@ export const onboardingMessages = defineMessages({
     },
     finish: {
       heading: "Du är redo",
-      body: "Skapa en uppgift med Ctrl+N, följ agenter under Agentkörningar och granska resultat under Pull requests. Tryck Ctrl+K när som helst för kommandopaletten."
+      body: "Skapa en uppgift med Ctrl+N, följ agenter under Uppgifter (Körningar) och granska resultat under Pull requests. Tryck Ctrl+K när som helst för kommandopaletten."
     },
     actions: { back: "Tillbaka", next: "Nästa", skip: "Hoppa över", finish: "Börja använda Symphony", finishing: "Sparar…" },
     saveFailed: "Kunde inte spara introduktionen"

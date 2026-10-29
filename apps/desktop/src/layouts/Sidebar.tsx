@@ -41,7 +41,7 @@ export const Sidebar: React.FC = () => {
 
   // Runs show pending approvals (needs attention) first, otherwise the number of live sessions.
   const badges: Partial<Record<NavKey, { count: number; important: boolean }>> = {
-    runs: pendingApprovals > 0 ? { count: pendingApprovals, important: true } : { count: state.data?.counts.running ?? 0, important: false },
+    tasks: pendingApprovals > 0 ? { count: pendingApprovals, important: true } : { count: state.data?.counts.running ?? 0, important: false },
     reviews: { count: state.data?.counts.human_review ?? 0, important: false }
   };
 
@@ -54,7 +54,6 @@ export const Sidebar: React.FC = () => {
         const link = (
           <NavLink
             to={item.path}
-            end={item.key === "runs"}
             className={({ isActive }) =>
               cn(
                 "relative flex h-8 items-center gap-2.5 rounded-lg px-2 text-sm [@media(max-height:760px)]:h-7 text-muted-foreground outline-none transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60",

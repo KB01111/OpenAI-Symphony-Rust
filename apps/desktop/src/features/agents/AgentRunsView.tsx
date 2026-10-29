@@ -11,7 +11,6 @@ import {
   ErrorState,
   Hint,
   LoadingRows,
-  PageHeader,
   PhaseBadge,
   ProviderBadge,
   Select,
@@ -218,8 +217,8 @@ const AgentRunRow = React.memo(function AgentRunRow({
   );
 });
 
-/** Agent Runs control center (`/runs`): live sessions, retry queue, queued and recently finished runs. */
-export default function AgentsPage() {
+/** The Runs view of the Tasks page: live sessions, retry queue, queued and recently finished runs. */
+export default function AgentRunsView() {
   const m = useMessages(agentsMessages);
   const t = useT();
   const navigate = useNavigate();
@@ -361,15 +360,6 @@ export default function AgentsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader
-        title={m.title}
-        description={formatMessage(m.description, {
-          running: counts.running,
-          approval: counts.approval,
-          retrying: counts.retrying,
-          queued: counts.queued
-        })}
-      />
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface px-2 py-1">
         <Tabs value={filter} onValueChange={(v) => setFilter(v as SegmentFilter)} className="min-w-0 flex-1">
           <TabsList aria-label={m.segmentTabs} className="flex-wrap border-b-0 px-0">

@@ -49,7 +49,7 @@ test("collects performance measurements", async ({ page }) => {
   results.navigation_timing = nav;
 
   // View switching latency (client-side routing, includes lazy chunk load on first visit).
-  const views = ["Projects", "Tasks", "Agent runs", "Worktrees", "Pull requests", "Workflow Studio", "Providers", "Settings", "Overview"];
+  const views = ["Projects", "Tasks", "Worktrees", "Pull requests", "Workflow Studio", "Providers", "Settings", "Overview"];
   const navLatency: Record<string, number> = {};
   for (const label of views) {
     const start = Date.now();

@@ -146,6 +146,24 @@ describe("task board columns", () => {
       "GET /providers": () => []
     });
 
+  it("opens the Runs view from /tasks?view=runs and switches back with the toggle", async () => {
+    useUiStore.getState().setTaskView("board");
+    renderWithProviders(<TasksPage />, {
+      runtime: boardRuntime([task({ id: "q", project_id: "p1", status: "queued", identifier: "SYM-9", title: "Queued work" })]),
+      route: "/tasks?view=runs",
+      path: "/tasks"
+    });
+    expect(await screen.findByRole("button", { name: "Queued work" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Runs" })).toHaveAttribute("aria-checked", "true");
+    expect(useUiStore.getState().taskView).toBe("runs");
+    // The task filters belong to Board and Table only.
+    expect(screen.queryByRole("search", { name: /filters/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Board" }));
+    expect(await screen.findByRole("region", { name: "Queued" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Queued work" })).not.toBeInTheDocument();
+    useUiStore.getState().setTaskView("board");
+  });
+
   it("shows Backlog, Blocked and Cancelled only once they hold a task", async () => {
     useUiStore.getState().setTaskView("board");
     const { unmount } = renderWithProviders(<TasksPage />, { runtime: boardRuntime([task({ id: "a", project_id: "p1", status: "ready" })]), route: "/tasks" });

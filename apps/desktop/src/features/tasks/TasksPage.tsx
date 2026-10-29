@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo } from "react";
+import React, { Suspense, lazy, useEffect, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage } from "@symphony/shared-types";
 import { AiEmptyView, Button, ErrorState, LoadingRows, PageHeader, ToggleGroup, ToggleGroupItem } from "@symphony/ui";
-import { FilterX, FolderPlus, KanbanSquare, ListTodo, Plus, Table2 } from "lucide-react";
+import { Bot, FilterX, FolderPlus, KanbanSquare, ListTodo, Plus, Table2 } from "lucide-react";
 import { useMessages } from "../../lib/i18n.js";
 import { useProjects, useTasks } from "../../lib/queries.js";
 import { useUiStore, type TaskView } from "../../store/uiStore.js";
@@ -13,11 +14,22 @@ import { TaskTable } from "./TaskTable.js";
 import { TaskToolbar } from "./TaskToolbar.js";
 import { filterTasks, hasActiveFilters } from "./taskLogic.js";
 
-/** Task management: Kanban board or data table over the runtime's tasks, with shared filters. */
+// The Runs view (live sessions, retries, recent finishes) is its own chunk, loaded when first shown.
+const AgentRunsView = lazy(() => import("../agents/AgentRunsView.js"));
+
+/** Task management: Kanban board, data table or agent runs over the runtime's tasks. */
 export default function TasksPage() {
   const m = useMessages(taskMessages);
   const taskView = useUiStore((s) => s.taskView);
   const setTaskView = useUiStore((s) => s.setTaskView);
+  // `/tasks?view=runs` (the old /runs page, and links to it) opens the Runs view; the choice is remembered.
+  const [search, setSearch] = useSearchParams();
+  const wantsRuns = search.get("view") === "runs";
+  useEffect(() => {
+    if (!wantsRuns) return;
+    setTaskView("runs");
+    setSearch({}, { replace: true });
+  }, [wantsRuns, setTaskView, setSearch]);
   const activeProjectId = useUiStore((s) => s.activeProjectId);
   const filters = useUiStore((s) => s.taskFilters);
   const resetTaskFilters = useUiStore((s) => s.resetTaskFilters);
@@ -57,6 +69,10 @@ export default function TasksPage() {
         <Table2 className="size-3.5" aria-hidden />
         {m.page.table}
       </ToggleGroupItem>
+      <ToggleGroupItem value="runs" className="gap-1.5">
+        <Bot className="size-3.5" aria-hidden />
+        {m.page.runs}
+      </ToggleGroupItem>
     </ToggleGroup>
   );
 
@@ -77,7 +93,14 @@ export default function TasksPage() {
   );
 
   let content: React.ReactNode;
-  if (projects.isError) {
+  if (taskView === "runs") {
+    // Runs has its own tabs, loading and empty states, so the task filters and lists stay out of the way.
+    content = (
+      <Suspense fallback={<LoadingRows className="p-4" rows={8} label={m.page.loading} />}>
+        <AgentRunsView />
+      </Suspense>
+    );
+  } else if (projects.isError) {
     content = <ErrorState className="m-4" title={m.page.projectsError} message={errorMessage(projects.error)} onRetry={() => void projects.refetch()} />;
   } else if (tasks.isError) {
     content = <ErrorState className="m-4" title={m.page.loadError} message={errorMessage(tasks.error)} onRetry={() => void tasks.refetch()} />;
@@ -132,7 +155,7 @@ export default function TasksPage() {
     <TaskActionsProvider>
       <div className="flex h-full min-h-0 flex-col">
         {header}
-        {projectList.length > 0 ? <TaskToolbar projects={projectList} shown={visible.length} total={allTasks.length} /> : null}
+        {projectList.length > 0 && taskView !== "runs" ? <TaskToolbar projects={projectList} shown={visible.length} total={allTasks.length} /> : null}
         <div className="min-h-0 flex-1 overflow-hidden">{content}</div>
       </div>
     </TaskActionsProvider>

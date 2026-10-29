@@ -5,6 +5,7 @@ import { DesktopShell } from "../layouts/DesktopShell.js";
 import { ErrorBoundary } from "../components/ErrorBoundary.js";
 import { useMessages } from "../lib/i18n.js";
 import { shellMessages } from "./messages.js";
+import { paths } from "./routes.js";
 
 // Each feature view is code-split; heavy views (Workflow Studio's editor, execution timeline)
 // load only when opened.
@@ -13,7 +14,6 @@ const ActivityPage = lazy(() => import("../features/activity/ActivityPage.js"));
 const OverviewPage = lazy(() => import("../features/overview/OverviewPage.js"));
 const ProjectsPage = lazy(() => import("../features/projects/ProjectsPage.js"));
 const TasksPage = lazy(() => import("../features/tasks/TasksPage.js"));
-const AgentsPage = lazy(() => import("../features/agents/AgentsPage.js"));
 const ExecutionPage = lazy(() => import("../features/execution/ExecutionPage.js"));
 const WorktreesPage = lazy(() => import("../features/worktrees/WorktreesPage.js"));
 const ReviewsPage = lazy(() => import("../features/reviews/ReviewsPage.js"));
@@ -42,7 +42,7 @@ export const AppRoutes: React.FC = () => (
       <Route path="projects" element={frame(<ProjectsPage />)} />
       <Route path="projects/:projectId" element={frame(<ProjectsPage />)} />
       <Route path="tasks" element={frame(<TasksPage />)} />
-      <Route path="runs" element={frame(<AgentsPage />)} />
+      <Route path="runs" element={<Navigate to={paths.runs()} replace />} />
       <Route path="runs/:taskId" element={frame(<ExecutionPage />)} />
       <Route path="worktrees" element={frame(<WorktreesPage />)} />
       <Route path="reviews" element={frame(<ReviewsPage />)} />

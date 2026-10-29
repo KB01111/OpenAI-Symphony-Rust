@@ -38,7 +38,9 @@ export const TopBar: React.FC<{ children?: React.ReactNode }> = ({ children }) =
   const connection = useConnectionSummary();
   const paused = state.data?.scheduler_paused ?? false;
   const pending = approvals.data?.length ?? 0;
-  const here = NAV_ITEMS.find((item) => location.pathname === item.path || location.pathname.startsWith(`${item.path}/`));
+  // A task thread (/runs/:id) belongs to Tasks.
+  const current = location.pathname.startsWith("/runs") ? "/tasks" : location.pathname;
+  const here = NAV_ITEMS.find((item) => current === item.path || current.startsWith(`${item.path}/`));
   const ThemeIcon = themeMode === "light" ? Sun : themeMode === "dark" ? Moon : SunMoon;
 
   return (

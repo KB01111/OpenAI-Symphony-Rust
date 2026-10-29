@@ -69,6 +69,7 @@ const VIEWS: [string, () => string, (page: Page) => Promise<void>][] = [
   ["overview", () => "/overview", (p) => expect(p.getByText("Live agent activity")).toBeVisible()],
   ["projects", () => "/projects", (p) => expect(p.getByRole("main").getByText("E2E fixture").first()).toBeVisible()],
   ["task-board", () => "/tasks", (p) => expect(p.getByText("Speed up provider detection").first()).toBeVisible()],
+  ["task-runs", () => "/tasks?view=runs", (p) => expect(p.getByRole("button", { name: "Run the full test suite before merging" })).toBeVisible()],
   ["agent-execution", () => `/runs/${runningTask.id}`, (p) => expect(p.getByRole("button", { name: "Approve once" }).first()).toBeVisible()],
   ["pr-review", () => `/reviews/${reviewId}`, (p) => expect(p.getByRole("main").getByText(reviewTitle).first()).toBeVisible()],
   ["workflow-studio", () => "/workflow", (p) => expect(p.getByText("Workflow is valid").or(p.getByText("Workflow has errors")).first()).toBeVisible()],

@@ -20,7 +20,7 @@ describe("Desktop shell", () => {
   it("renders navigation, live runtime status and pending approvals", async () => {
     renderWithProviders(<AppRoutes />, { runtime: runtime(), route: "/settings" });
     expect(await screen.findByRole("navigation", { name: "Primary navigation" })).toBeInTheDocument();
-    for (const name of ["Overview", "Projects", "Tasks", "Agent runs", "Activity", "Worktrees", "Pull requests", "Workflow Studio", "Providers", "Settings"]) {
+    for (const name of ["Overview", "Projects", "Tasks", "Pull requests", "Activity", "Worktrees", "Workflow Studio", "Providers", "Settings"]) {
       expect(screen.getByRole("link", { name: new RegExp(name) })).toBeInTheDocument();
     }
     await waitFor(() => expect(screen.getByText("1 running")).toBeInTheDocument());
@@ -34,7 +34,7 @@ describe("Desktop shell", () => {
       .getAllByRole("link")
       .map((link) => link.getAttribute("href")?.replace(/^#?\//, ""))
       .filter((view) => view && !view.startsWith("runs/"));
-    expect(views).toEqual(["overview", "projects", "tasks", "runs", "reviews", "activity", "worktrees", "workflow", "providers", "settings"]);
+    expect(views).toEqual(["overview", "projects", "tasks", "reviews", "activity", "worktrees", "workflow", "providers", "settings"]);
   });
 
   it("opens on the prompt composer", async () => {

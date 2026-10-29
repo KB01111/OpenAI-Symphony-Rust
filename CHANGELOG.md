@@ -106,11 +106,14 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Changed
 
-- **Quieter shell**: the sidebar lists the day-to-day views (Overview, Projects, Tasks, Agent runs, Pull
+- **Agent runs is now a view of Tasks**: *Board*, *Table* and *Runs* sit side by side on the Tasks page, and
+  the separate *Agent runs* sidebar entry is gone (its running/approval badge moved to *Tasks*). `/runs`
+  still works and opens the Runs view; task threads stay at `/runs/<id>`.
+- **Quieter shell**: the sidebar lists the day-to-day views (Overview, Projects, Tasks, Pull
   requests, Activity) above the setup views (Worktrees, Workflow Studio, Providers, Settings); the top
   bar shows the runtime connection only when it is not healthy (the footer always shows it); the refresh
   button is called *Refresh*; a task that has not run yet offers *Start* without a redundant *Retry*.
-  Agent runs lists only the status tabs that have runs (and hides *Group by* when there are none), a
+  The Runs view lists only the status tabs that have runs (and hides *Group by* when there are none), a
   whole row is a single click to open, a finished thread no longer shows its phase next to an
   identical status badge, the Projects tracker filter appears only when repositories use more than one
   tracker, and the sidebar's view list is tall enough to show every entry without its own scrollbar. The

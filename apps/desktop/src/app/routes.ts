@@ -1,6 +1,5 @@
 import {
   Activity,
-  Bot,
   Home,
   FolderGit2,
   GitBranch,
@@ -17,7 +16,6 @@ export type NavKey =
   | "overview"
   | "projects"
   | "tasks"
-  | "runs"
   | "activity"
   | "worktrees"
   | "reviews"
@@ -38,7 +36,6 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { key: "overview", path: "/overview", icon: LayoutDashboard, group: "work" },
   { key: "projects", path: "/projects", icon: FolderGit2, group: "work" },
   { key: "tasks", path: "/tasks", icon: KanbanSquare, group: "work" },
-  { key: "runs", path: "/runs", icon: Bot, group: "work" },
   { key: "reviews", path: "/reviews", icon: GitPullRequest, group: "work" },
   { key: "activity", path: "/activity", icon: Activity, group: "work" },
   { key: "worktrees", path: "/worktrees", icon: GitBranch, group: "setup" },
@@ -54,7 +51,8 @@ export const paths = {
   projects: () => "/projects",
   project: (id: string) => `/projects/${encodeURIComponent(id)}`,
   tasks: () => "/tasks",
-  runs: () => "/runs",
+  /** The Runs view of the Tasks page (what `/runs` used to be). */
+  runs: () => "/tasks?view=runs",
   run: (taskId: string) => `/runs/${encodeURIComponent(taskId)}`,
   worktrees: () => "/worktrees",
   reviews: () => "/reviews",
