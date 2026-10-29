@@ -15,7 +15,7 @@ Used as ``mini --agent-class mini_durable_agent.DurableAgent`` (the drivers dire
 
 import json
 import os
-import subprocess
+import subprocess  # nosec B404 - only used to run the commit/push script below
 from pathlib import Path
 
 from minisweagent.agents.default import DefaultAgent
@@ -90,7 +90,8 @@ class DurableAgent(DefaultAgent):
 
     def _commit_and_push(self) -> None:
         issue = os.environ.get("SYMPHONY_ISSUE", "task")
-        result = subprocess.run(
+        # A fixed argument list, no shell: only the commit message varies, and git receives it as data.
+        result = subprocess.run(  # nosec B603
             [BASH, AUTOCOMMIT.as_posix(), f"{issue}: step {self.n_calls}"],
             check=False,
             text=True,

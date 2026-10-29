@@ -73,6 +73,19 @@ fn cloud_model_problem(
     }
 }
 
+/// The agent a cloud run uses: the task's own choice, else the application setting (only if it was
+/// ever chosen), else `codesandbox.default_agent` of the workflow, which is mini-swe-agent unless
+/// the workflow says otherwise.
+fn resolve_cloud_agent(
+    task_choice: Option<CloudAgentKind>,
+    settings: &symphony_core::AppSettings,
+    config: &ServiceConfig,
+) -> CloudAgentKind {
+    task_choice
+        .or(settings.default_cloud_agent)
+        .unwrap_or(config.codesandbox.default_agent)
+}
+
 /// Where a CodeSandbox cloud run's pushes are applied locally.
 #[derive(Clone)]
 struct CloudSync {
@@ -2745,11 +2758,25 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 ));
             }
         }
+        // Without a configured GitHub repository there is nothing to compare the origin with, so
+        // say where the token is about to go.
+        if project.github_repo.is_none() {
+            self.emit_event(
+                Some(task.id.clone()),
+                Some(task.issue.identifier.clone()),
+                None,
+                Some(task.provider),
+                "codesandbox/launch",
+                None,
+                format!(
+                    "The cloud agent will use the GitHub token on https://{host}/{path}, the repository's origin (this project has no GitHub repository configured to check it against)"
+                ),
+                None,
+            )
+            .await;
+        }
         let settings = self.storage.get_settings().await.unwrap_or_default();
-        let agent = task
-            .cloud_agent
-            .or(settings.default_cloud_agent)
-            .unwrap_or(config.codesandbox.default_agent);
+        let agent = resolve_cloud_agent(task.cloud_agent, &settings, config);
         let secrets = self.secret_store.all_secret_values();
         // The sandbox clones the task branch, so it has to exist on origin first.
         self.workspaces
@@ -3662,6 +3689,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     ev.usage = Some(usage_before_attempt.plus(&session_usage));
                 }
                 let pushed = ev.event_type == "codesandbox/pushed";
+                // The sandbox exists from here on: remember it now, so an attempt that ends before it
+                // returns (error, timeout, cancel) can still be resumed in it.
+                let started_sandbox = (ev.event_type == "codesandbox/started")
+                    .then(|| ev.thread_id.clone())
+                    .flatten();
                 orch_events
                     .handle_agent_stream_event(
                         &event_task_id,
@@ -3670,6 +3702,15 @@ Please implement the requested changes cleanly in the current Git workspace, run
                         ev,
                     )
                     .await;
+                if let Some(sandbox_id) = started_sandbox {
+                    if let Err(error) = orch_events
+                        .storage
+                        .set_task_thread_id(&event_task_id, &sandbox_id)
+                        .await
+                    {
+                        warn!(task_id = %event_task_id, %error, "Could not record the sandbox of a cloud run");
+                    }
+                }
                 // Every push of the cloud agent lands in the local worktree right away.
                 if let (true, Some(sync)) = (pushed, event_cloud_sync.as_ref()) {
                     orch_events.sync_cloud_worktree(&event_task, sync).await;
@@ -3834,6 +3875,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     // The turn ended without an outcome (timeout, dead process): what the session
                     // reported before that is still real usage.
                     settle_session_usage(&mut task, &mut attempt_record, agent_session.as_ref());
+                    // A cloud run's sandbox outlives its bridge: the retry resumes it.
+                    if task.provider == ProviderKind::CodeSandbox {
+                        if let Some(sandbox_id) = agent_session.thread_id() {
+                            task.current_thread_id = Some(sandbox_id);
+                        }
+                    }
                     let _ = agent_session.stop().await;
                     let phase = match err {
                         SymphonyError::TurnTimeout(_) => RunAttemptPhase::TimedOut,
@@ -6665,6 +6712,37 @@ rl.on('line', (line) => {
             Some(CloudAgentKind::PiDurable)
         );
         assert_eq!(orch.get_task(&plain.id).await.unwrap().cloud_agent, None);
+    }
+
+    #[test]
+    fn the_cloud_agent_comes_from_the_task_then_the_settings_then_the_workflow() {
+        let mut workflow = ServiceConfig::default();
+        let mut settings = symphony_core::AppSettings::default();
+
+        // Nothing chosen anywhere: mini-swe-agent.
+        assert_eq!(settings.default_cloud_agent, None);
+        assert_eq!(
+            resolve_cloud_agent(None, &settings, &workflow),
+            CloudAgentKind::MiniSweAgent
+        );
+        // The workflow's default applies while the application setting was never chosen, which is
+        // the case on a new install.
+        workflow.codesandbox.default_agent = CloudAgentKind::PiDurable;
+        assert_eq!(
+            resolve_cloud_agent(None, &settings, &workflow),
+            CloudAgentKind::PiDurable
+        );
+        // An application setting that was chosen wins over the workflow.
+        settings.default_cloud_agent = Some(CloudAgentKind::Pi);
+        assert_eq!(
+            resolve_cloud_agent(None, &settings, &workflow),
+            CloudAgentKind::Pi
+        );
+        // The task's own choice wins over both.
+        assert_eq!(
+            resolve_cloud_agent(Some(CloudAgentKind::MiniSweAgent), &settings, &workflow),
+            CloudAgentKind::MiniSweAgent
+        );
     }
 
     fn keys(names: &[&str]) -> HashMap<String, String> {

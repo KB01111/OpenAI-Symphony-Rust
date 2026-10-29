@@ -10,12 +10,14 @@ import type {
   AppSettings,
   ApprovalDecision,
   ApprovalRequest,
+  CloudAgentKind,
   CreateProjectRequest,
   CreateTaskRequest,
   ProjectUpdate,
   Task,
   TaskStatus
 } from "@symphony/shared-types";
+import { DEFAULT_CLOUD_AGENT } from "@symphony/shared-types";
 import { useNotify } from "@symphony/ui";
 import { useClient, useRuntime } from "../runtime/RuntimeProvider.js";
 import { qk } from "./queryKeys.js";
@@ -203,6 +205,17 @@ export function useWorktrees() {
 export function useWorkflow() {
   const client = useClient();
   return useQuery({ queryKey: qk.workflow, queryFn: ({ signal }) => client.getWorkflow(signal), staleTime: Infinity });
+}
+
+/**
+ * The agent a CodeSandbox task runs when it picks none: the application setting if one was ever
+ * chosen, else `codesandbox.default_agent` of the active workflow, else mini-swe-agent. Mirrors the
+ * runtime's own order, so the picker marks the agent that would really run.
+ */
+export function useDefaultCloudAgent(): CloudAgentKind {
+  const settings = useSettings();
+  const workflow = useWorkflow();
+  return settings.data?.default_cloud_agent ?? workflow.data?.config?.codesandbox.default_agent ?? DEFAULT_CLOUD_AGENT;
 }
 
 export function useSettings() {

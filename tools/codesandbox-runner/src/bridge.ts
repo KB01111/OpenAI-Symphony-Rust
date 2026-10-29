@@ -42,7 +42,8 @@ export class LineSplitter {
   }
 }
 
-function redactDeep<T>(value: T, secrets: readonly string[]): T {
+/** `value` with every string in it masked (see {@link redact}). */
+export function redactDeep<T>(value: T, secrets: readonly string[]): T {
   if (typeof value === "string") return redact(value, secrets) as T;
   if (Array.isArray(value)) return value.map((v) => redactDeep(v, secrets)) as T;
   if (value && typeof value === "object") {

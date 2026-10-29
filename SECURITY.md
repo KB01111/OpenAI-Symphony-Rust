@@ -36,9 +36,13 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
      provider-key list that is exported to local agent subprocesses. All three reach the bridge only in the
      request on its stdin (never a command line or environment variable), are registered for log redaction,
      and are masked again by the bridge before anything is printed. The GitHub token is sent only when the
-     repository's `origin` is an `https://` URL on a GitHub host and matches the project's repository. In the
-     sandbox it is a git credential of the session; the agent runs as the same user and can read it, so use a
-     token scoped to the repository. See `tools/codesandbox-runner/README.md`.
+     repository's `origin` is an `https://` URL on a GitHub host; when the project has a GitHub repository
+     configured, the origin must match it, and when it has none there is nothing to compare with, so the
+     destination is written to the task's activity log before the branch is published. In the sandbox the
+     token is a git credential of the session, and the model provider key is an environment variable of the
+     agent: the agent runs as the same user, so it, and any command it runs from the checked-out repository,
+     can read both. The sandbox is the isolation boundary, not the credential. Use a GitHub token scoped to
+     the repository and a dedicated, spend-limited model key. See `tools/codesandbox-runner/README.md`.
 2. **Dedicated Secret Vault** (`crates/symphony-platform/src/vault.rs`):
    - Credentials live in `<data_dir>/credentials.vault`, never in SQLite. The file is a versioned JSON
      envelope (format 2) around one encrypted, authenticated blob (key names are encrypted too).

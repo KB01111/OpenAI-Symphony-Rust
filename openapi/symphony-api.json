@@ -2509,13 +2509,13 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/CloudAgentKind",
-                "description": "Agent used for CodeSandbox cloud runs when a task does not pick one. Omit it to keep the\nstored value; settings that never had a value use mini-swe-agent."
+                "description": "Agent used for CodeSandbox cloud runs when a task does not pick one. `None` (never chosen)\ndefers to `codesandbox.default_agent` in `WORKFLOW.md`, which is mini-swe-agent unless the\nworkflow says otherwise. Omit it to keep the stored value."
               },
               {
                 "type": "null"
               }
             ],
-            "default": "mini_swe_agent"
+            "default": null
           },
           "polling_interval_ms": {
             "type": "integer",

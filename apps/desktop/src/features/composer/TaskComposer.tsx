@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowUp, Flag, FolderGit2, GitBranch, Plus, SlidersHorizontal, Tag } from "lucide-react";
 import { errorMessage } from "@symphony/api-client";
-import { DEFAULT_CLOUD_AGENT, formatMessage, type CloudAgentKind, type CreateTaskRequest, type Project, type ProviderKind } from "@symphony/shared-types";
+import { formatMessage, type CloudAgentKind, type CreateTaskRequest, type Project, type ProviderKind } from "@symphony/shared-types";
 import {
   Alert,
   Button,
@@ -21,7 +21,7 @@ import {
 } from "@symphony/ui";
 import { paths } from "../../app/routes.js";
 import { useMessages, useT } from "../../lib/i18n.js";
-import { useCreateTask, useProjects, useProviders, useSettings } from "../../lib/queries.js";
+import { useCreateTask, useDefaultCloudAgent, useProjects, useProviders } from "../../lib/queries.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { workbenchMessages } from "../../layouts/messages.js";
 import { ProviderModelFields } from "../projects/ProviderModelFields.js";
@@ -87,7 +87,7 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
   const setAddProjectOpen = useUiStore((s) => s.setAddProjectOpen);
   const projects = useProjects();
   const providerStatuses = useProviders();
-  const settings = useSettings();
+  const defaultCloudAgent = useDefaultCloudAgent();
   const createTask = useCreateTask();
   const textarea = useRef<HTMLTextAreaElement>(null);
 
@@ -113,7 +113,6 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
   // overridden provider never inherits the project's model for a different provider.
   const placeholderModel = fallbackModel ?? providerStatuses.data?.find((p) => p.provider === provider)?.default_model ?? null;
   const effectiveModel = model.trim() || placeholderModel;
-  const defaultCloudAgent = settings.data?.default_cloud_agent ?? DEFAULT_CLOUD_AGENT;
   const effectiveCloudAgent = provider === "codesandbox" ? (cloudAgent ?? defaultCloudAgent) : null;
 
   useEffect(() => {

@@ -5,9 +5,18 @@ import { createMockRuntime, renderWithProviders } from "../../test/renderWithPro
 import { project, providerStatus, settings, task } from "../../test/fixtures.js";
 import { useUiStore } from "../../store/uiStore.js";
 
-function cloudRuntime(preferred: "codesandbox" | "simulated", defaultAgent: "mini_swe_agent" | "pi" | "pi_durable" = "mini_swe_agent") {
+type Agent = "mini_swe_agent" | "pi" | "pi_durable";
+
+/**
+ * `defaultAgent` is the application setting (`null`: never chosen); `workflowAgent` is
+ * `codesandbox.default_agent` of the active WORKFLOW.md, when the test wants the workflow loaded.
+ */
+function cloudRuntime(preferred: "codesandbox" | "simulated", defaultAgent: Agent | null = "mini_swe_agent", workflowAgent?: Agent) {
   const base = providerStatus();
   return createMockRuntime({
+    ...(workflowAgent
+      ? { "GET /workflow": () => ({ valid: true, raw_markdown: "", config: { codesandbox: { default_agent: workflowAgent } } }) }
+      : {}),
     "GET /projects": () => [project({ id: "p1", name: "Repo", preferred_provider: preferred })],
     "GET /providers": () => [
       providerStatus({
@@ -80,6 +89,28 @@ describe("composer: cloud agent for CodeSandbox tasks", () => {
 
     const body = await submit(dialog, runtime);
     expect(body).toMatchObject({ provider: "codesandbox", cloud_agent: null });
+  });
+
+  it("marks the workflow's default agent when the setting was never chosen, and the setting once it was", async () => {
+    // New install: no application setting, so WORKFLOW.md's codesandbox.default_agent is the default.
+    const fromWorkflow = cloudRuntime("codesandbox", null, "pi_durable");
+    const first = renderWithProviders(<NewTaskDialog />, { runtime: fromWorkflow });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    // Open the picker once; the workflow loads after it, so wait for the label to settle.
+    const select = (await openProviderChip(dialog))!;
+    await waitFor(() => expect(select).toHaveTextContent("Pi Durable (default)"));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    const body = await submit(dialog, fromWorkflow);
+    // Nothing explicit is sent: the runtime applies the same default.
+    expect(body).toMatchObject({ provider: "codesandbox", cloud_agent: null });
+    first.unmount();
+
+    // A setting that was chosen wins over the workflow.
+    useUiStore.setState({ activeProjectId: "p1", newTaskOpen: true });
+    renderWithProviders(<NewTaskDialog />, { runtime: cloudRuntime("codesandbox", "pi", "pi_durable") });
+    const second = await screen.findByRole("dialog", { name: "New task" });
+    const chosen = (await openProviderChip(second))!;
+    await waitFor(() => expect(chosen).toHaveTextContent("Pi coding agent (default)"));
   });
 
   it("choosing the default agent again clears the explicit choice", async () => {

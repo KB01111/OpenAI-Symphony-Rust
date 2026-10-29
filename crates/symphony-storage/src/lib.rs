@@ -404,6 +404,19 @@ impl Storage {
     /// retry time, update time). For the side that stops a worker: its copy of the task was read
     /// before the worker settled usage, and [`upsert_task`](Self::upsert_task) would write that
     /// stale usage back over the settlement.
+    /// Record the provider thread (for a cloud run: the sandbox) of a task right away, without
+    /// touching any other column, so a run that is interrupted before it ends can be resumed in the
+    /// same sandbox instead of starting another one.
+    pub async fn set_task_thread_id(&self, task_id: &str, thread_id: &str) -> SymphonyResult<()> {
+        sqlx::query("UPDATE tasks SET current_thread_id = ?2 WHERE id = ?1")
+            .bind(task_id)
+            .bind(thread_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
     pub async fn update_task_lifecycle(&self, task: &Task) -> SymphonyResult<()> {
         let result = sqlx::query(
             "UPDATE tasks SET

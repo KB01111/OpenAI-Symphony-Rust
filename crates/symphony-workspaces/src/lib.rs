@@ -1239,12 +1239,14 @@ impl WorkspaceManager {
             workspace_path,
             &hooks,
             &[],
-            &["status", "--porcelain", "--untracked-files=no"],
+            // Untracked files count: they are local work too (git would only refuse to overwrite
+            // the ones the incoming commits touch). Ignored files do not.
+            &["status", "--porcelain", "--untracked-files=normal"],
         )
         .await?;
         if !status.trim().is_empty() {
             return Err(SymphonyError::Conflict(
-                "the worktree has uncommitted changes; not updating it from the cloud branch"
+                "the worktree has uncommitted or untracked files; not updating it from the cloud branch"
                     .into(),
             ));
         }
@@ -1945,12 +1947,7 @@ mod tests {
             ],
         );
         git(&other, &["checkout", "-q", "task"]);
-        std::fs::write(
-            other.join(file),
-            "from the cloud
-",
-        )
-        .unwrap();
+        std::fs::write(other.join(file), "from the cloud\n").unwrap();
         git(&other, &["add", "-A"]);
         git(&other, &["commit", "-m", "cloud edit"]);
         git(&other, &["push", "-q", "origin", "task"]);
@@ -1968,12 +1965,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (_repo, wt, origin) = repo_with_origin(dir.path());
         let manager = WorkspaceManager::new();
-        std::fs::write(
-            wt.join("start.txt"),
-            "start
-",
-        )
-        .unwrap();
+        std::fs::write(wt.join("start.txt"), "start\n").unwrap();
         manager
             .commit_changes(&wt, "task", "start")
             .await
@@ -1999,14 +1991,20 @@ mod tests {
         assert_eq!(moved.as_deref(), Some(pushed.as_str()));
         assert!(wt.join("cloud.txt").is_file());
 
-        // Uncommitted local work is never touched.
+        // An untracked local file is local work too: nothing is applied around it.
         let pushed_again = push_from_other_clone(dir.path(), &origin, "cloud2.txt");
-        std::fs::write(
-            wt.join("start.txt"),
-            "edited locally
-",
-        )
-        .unwrap();
+        std::fs::write(wt.join("scratch.txt"), "my notes\n").unwrap();
+        let err = manager
+            .fast_forward_from_origin(&wt, "task", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "conflict", "{err}");
+        assert!(err.to_string().contains("untracked"), "{err}");
+        assert!(!wt.join("cloud2.txt").exists());
+        std::fs::remove_file(wt.join("scratch.txt")).unwrap();
+
+        // Uncommitted local work is never touched.
+        std::fs::write(wt.join("start.txt"), "edited locally\n").unwrap();
         let err = manager
             .fast_forward_from_origin(&wt, "task", None)
             .await
@@ -2015,18 +2013,12 @@ mod tests {
         assert!(!wt.join("cloud2.txt").exists());
         assert_eq!(
             std::fs::read_to_string(wt.join("start.txt")).unwrap(),
-            "edited locally
-"
+            "edited locally\n"
         );
 
         // A diverged branch is refused, not merged or reset.
         git(&wt, &["checkout", "--", "start.txt"]);
-        std::fs::write(
-            wt.join("mine.txt"),
-            "mine
-",
-        )
-        .unwrap();
+        std::fs::write(wt.join("mine.txt"), "mine\n").unwrap();
         let mine = manager
             .commit_changes(&wt, "task", "mine")
             .await

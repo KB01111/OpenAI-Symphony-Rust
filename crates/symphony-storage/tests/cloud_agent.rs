@@ -93,9 +93,10 @@ async fn the_chosen_cloud_agent_round_trips_and_can_be_changed_or_cleared() {
 #[tokio::test]
 async fn the_default_cloud_agent_is_part_of_the_settings() {
     let storage = Storage::connect_in_memory().await.unwrap();
+    // Never chosen: the workflow's `codesandbox.default_agent` decides (mini-swe-agent by default).
     assert_eq!(
         storage.get_settings().await.unwrap().default_cloud_agent,
-        Some(CloudAgentKind::MiniSweAgent)
+        None
     );
     let settings = AppSettings {
         default_cloud_agent: Some(CloudAgentKind::PiDurable),
@@ -148,4 +149,48 @@ async fn a_database_from_before_the_column_gets_it_and_reads_as_default() {
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].cloud_agent, None);
     assert_eq!(tasks[0].provider, ProviderKind::CodeSandbox);
+}
+
+#[tokio::test]
+async fn the_sandbox_of_a_task_can_be_recorded_without_touching_anything_else() {
+    let storage = Storage::connect_in_memory().await.unwrap();
+    storage.upsert_project(&project()).await.unwrap();
+    let mut t = task("SYM-1", Some(CloudAgentKind::Pi));
+    t.total_tokens = 42;
+    t.last_error = Some("earlier failure".into());
+    storage.upsert_task(&t).await.unwrap();
+    assert_eq!(
+        storage
+            .get_task(&t.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_thread_id,
+        None
+    );
+
+    // An interrupted attempt records its sandbox as soon as it exists.
+    storage.set_task_thread_id(&t.id, "sb-123").await.unwrap();
+    let stored = storage.get_task(&t.id).await.unwrap().unwrap();
+    assert_eq!(stored.current_thread_id.as_deref(), Some("sb-123"));
+    assert_eq!(stored.total_tokens, 42);
+    assert_eq!(stored.last_error.as_deref(), Some("earlier failure"));
+    assert_eq!(stored.cloud_agent, Some(CloudAgentKind::Pi));
+
+    // A replaced sandbox (the old one was gone) overwrites it; an unknown task is not an error.
+    storage.set_task_thread_id(&t.id, "sb-456").await.unwrap();
+    assert_eq!(
+        storage
+            .get_task(&t.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_thread_id
+            .as_deref(),
+        Some("sb-456")
+    );
+    storage
+        .set_task_thread_id("no-such-task", "sb-1")
+        .await
+        .unwrap();
 }

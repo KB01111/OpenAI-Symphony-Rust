@@ -286,6 +286,20 @@ mod tests {
     }
 
     #[test]
+    fn the_runner_path_expands_a_home_directory_like_other_workflow_paths() {
+        let raw = "---\ncodesandbox:\n  runner_path: ~/symphony/bridge.mjs\n---\nx";
+        let cfg =
+            ServiceConfig::from_workflow(&WorkflowDefinition::parse(raw, None).unwrap()).unwrap();
+        let path = cfg.codesandbox.runner_path.unwrap();
+        assert!(!path.starts_with('~'), "{path}");
+        assert!(
+            path.replace('\\', "/").ends_with("/symphony/bridge.mjs"),
+            "{path}"
+        );
+        assert!(std::path::Path::new(&path).is_absolute(), "{path}");
+    }
+
+    #[test]
     fn the_codesandbox_section_is_optional_and_validated() {
         let none =
             WorkflowDefinition::parse("---\ntracker:\n  kind: github\n---\nx", None).unwrap();

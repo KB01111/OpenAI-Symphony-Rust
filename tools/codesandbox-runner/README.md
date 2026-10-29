@@ -82,8 +82,15 @@ CodeSandboxSession ──stdin: 1 request──▶ @codesandbox/sdk ────
 - Everything the bridge prints is redacted (the request's own secrets plus GitHub / CodeSandbox / `sk-`
   token shapes), and Symphony registers the same values for its own log redaction.
 - The template runs repository content (the agent runs commands from the repository's context) inside the
-  sandbox, not on your machine, but the sandbox holds the GitHub token you gave it: use a token scoped to the
-  repository. Repository hooks never run (`core.hooksPath=/dev/null`, `--no-verify`), and Pi ignores
+  sandbox, not on your machine, but the sandbox holds the GitHub token you gave it and the model provider
+  key (an environment variable of the agent). Anything the agent runs, including scripts from the
+  checked-out repository, runs as the same user and can read both; hiding the variable from one process
+  would not change that. Use a GitHub token scoped to the repository and a dedicated, spend-limited model key.
+- The GitHub token is only sent to the `origin` of the task's repository (an `https://` GitHub URL). If the
+  project has a GitHub repository configured, the origin must match it; if not, the destination is written to
+  the task's activity log (`codesandbox/launch`) before the branch is published.
+- Default agent order: the task's choice, then *Settings → Default provider* (once you have chosen one there),
+  then `codesandbox.default_agent` in `WORKFLOW.md`, then mini-swe-agent. Repository hooks never run (`core.hooksPath=/dev/null`, `--no-verify`), and Pi ignores
   repository-local Pi configuration (`--no-approve`).
 - A push is never forced: a rejected push is rebased once onto the remote branch and otherwise fails the turn.
 

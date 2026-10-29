@@ -28,8 +28,8 @@ RUN npm install --global --ignore-scripts "@earendil-works/pi-coding-agent@${PI_
 
 # Drivers, and the Pi Durable packages they import.
 COPY drivers/ /opt/symphony/drivers/
-RUN cd /opt/symphony/drivers \
- && npm install --omit=dev --ignore-scripts --no-audit --no-fund \
+WORKDIR /opt/symphony/drivers
+RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund \
  && chmod +x /opt/symphony/drivers/*.sh
 
 # mini-swe-agent asks for a model on first start unless it is told it is configured.

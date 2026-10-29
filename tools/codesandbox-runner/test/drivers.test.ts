@@ -5,7 +5,7 @@
  * touched.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,9 @@ function env(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     ...process.env,
     HOME: posix(home),
     USERPROFILE: home,
+    // Set explicitly: an inherited GIT_CONFIG_GLOBAL would send `git config --global` (run.sh) to the
+    // developer's real configuration instead of the temporary HOME.
+    GIT_CONFIG_GLOBAL: posix(join(home, ".gitconfig")),
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
     GIT_AUTHOR_NAME: "Test",
@@ -153,6 +156,22 @@ describe.skipIf(!haveTools)("autocommit.sh", () => {
     expect(files).toContain("mine.txt");
   });
 
+  it("fails instead of reporting success when git add cannot run", () => {
+    const work = clone("add-fails");
+    const remoteBefore = git(posix(origin), "rev-parse", `refs/heads/${BRANCH}`);
+    // A stale index lock makes `git add` fail, as a concurrent git process would.
+    writeFileSync(join(work, ".git", "index.lock"), "");
+    writeFileSync(join(work, "never-committed.txt"), "x\n");
+
+    const result = autocommit(work, "SYM-1: add fails");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/git add failed/);
+    expect(result.stdout).toBe("");
+    expect(git(posix(origin), "rev-parse", `refs/heads/${BRANCH}`)).toBe(remoteBefore);
+    rmSync(join(work, ".git", "index.lock"));
+  });
+
   it("never forces: a conflicting remote change fails and leaves the remote alone", () => {
     const work = clone("conflict");
     const other = clone("conflict-other");
@@ -203,6 +222,15 @@ describe.skipIf(!haveTools)("run.sh", () => {
     // The branch's content (earlier cases pushed to it), checked out in the sandbox.
     expect(existsSync(join(repo, "README.md"))).toBe(true);
     expect(git(repo, "rev-parse", "HEAD")).toBe(git(posix(origin), "rev-parse", `refs/heads/${BRANCH}`));
+  });
+
+  it("configures git for the sandbox user only (the global config of the home it runs in)", () => {
+    const repo = join(root, "sandbox3", "symphony-repo");
+    const result = runSh(repo, { SYMPHONY_GIT_NAME: "Cloud Bot" });
+    expect(result.status, result.stderr).toBe(10);
+    // These tests point GIT_CONFIG_GLOBAL at a file in the temporary home, so nothing of the
+    // developer's own configuration is read or written.
+    expect(readFileSync(join(home, ".gitconfig"), "utf8")).toContain("Cloud Bot");
   });
 
   it("keeps unpushed commits of a resumed sandbox and pushes them first", () => {

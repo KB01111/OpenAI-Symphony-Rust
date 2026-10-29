@@ -442,7 +442,12 @@ impl ServiceConfig {
             }
             if let Some(Value::String(p)) = csb.get("runner_path") {
                 if !p.trim().is_empty() {
-                    cfg.codesandbox.runner_path = Some(p.trim().to_string());
+                    // Like `workspace.root`: `~`, `$VAR` and paths relative to the workflow file work.
+                    cfg.codesandbox.runner_path = Some(
+                        expand_path_value(p, wf.source_path.as_deref())
+                            .to_string_lossy()
+                            .to_string(),
+                    );
                 }
             }
         }

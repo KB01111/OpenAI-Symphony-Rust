@@ -91,6 +91,18 @@ const reporting = defineExtension({
   ],
 });
 
+/** Input and output tokens the harness has used so far, summed over its models (all turns, persisted). */
+async function tokenTotals(harness: Harness): Promise<{ input: number; output: number }> {
+  const usage = (await harness.usage(ctx)) as { models?: Record<string, { input?: number; output?: number }> };
+  let input = 0;
+  let output = 0;
+  for (const bucket of Object.values(usage.models ?? {})) {
+    input += Number(bucket.input ?? 0);
+    output += Number(bucket.output ?? 0);
+  }
+  return { input, output };
+}
+
 /** Runs the turn; `true` when the model answered. */
 export async function runPiDurableAgent(): Promise<boolean> {
   const prompt = readFileSync(config.promptFile, "utf8");
@@ -127,6 +139,10 @@ export async function runPiDurableAgent(): Promise<boolean> {
         extensions: [CodingTools, reporting],
       },
     });
+    // The harness total covers every turn this sandbox ever ran, but the bridge reports the usage of
+    // this turn only (Symphony adds it to the task's totals), so measure from here. Work an earlier,
+    // interrupted process had already paid for is not counted again; at worst it is not counted at all.
+    const usageAtStart = await tokenTotals(harness);
     // Recover tasks an interruption left unfinished (a model request, a tool call).
     harness.resume();
 
@@ -140,14 +156,12 @@ export async function runPiDurableAgent(): Promise<boolean> {
     }
     const settled = await submission.wait(ctx);
 
-    const usage = (await harness.usage(ctx)) as { models?: Record<string, { input?: number; output?: number }> };
-    let inputTokens = 0;
-    let outputTokens = 0;
-    for (const bucket of Object.values(usage.models ?? {})) {
-      inputTokens += Number(bucket.input ?? 0);
-      outputTokens += Number(bucket.output ?? 0);
-    }
-    emit({ type: "usage", inputTokens, outputTokens });
+    const usageNow = await tokenTotals(harness);
+    emit({
+      type: "usage",
+      inputTokens: Math.max(0, usageNow.input - usageAtStart.input),
+      outputTokens: Math.max(0, usageNow.output - usageAtStart.output),
+    });
 
     return settled.status === "done";
   } finally {

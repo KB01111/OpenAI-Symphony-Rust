@@ -8,7 +8,8 @@ set -uo pipefail
 MESSAGE="${1:-Symphony cloud agent}"
 BRANCH="${SYMPHONY_BRANCH:?}"
 
-git add -A
+# A failed `git add` (an index lock, a permission problem) must not look like "nothing to commit".
+git add -A || { echo "git add failed; nothing was committed" >&2; exit 1; }
 if ! git diff --cached --quiet; then
   # Hooks never run (the repository is not trusted); the message is the only thing taken from the agent.
   git commit --quiet --no-verify -m "$MESSAGE" || exit 1

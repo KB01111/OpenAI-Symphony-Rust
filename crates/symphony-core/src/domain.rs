@@ -1248,8 +1248,9 @@ pub struct AppSettings {
     pub start_background_runtime_on_login: bool,
     pub default_provider: ProviderKind,
     pub default_model: String,
-    /// Agent used for CodeSandbox cloud runs when a task does not pick one. Omit it to keep the
-    /// stored value; settings that never had a value use mini-swe-agent.
+    /// Agent used for CodeSandbox cloud runs when a task does not pick one. `None` (never chosen)
+    /// defers to `codesandbox.default_agent` in `WORKFLOW.md`, which is mini-swe-agent unless the
+    /// workflow says otherwise. Omit it to keep the stored value.
     #[serde(default)]
     pub default_cloud_agent: Option<CloudAgentKind>,
     pub polling_interval_ms: u64,
@@ -1322,7 +1323,7 @@ impl Default for AppSettings {
             // Empty: each provider's own default (what its CLI reports), never a hard-coded id
             // that a CLI release can retire.
             default_model: String::new(),
-            default_cloud_agent: Some(CloudAgentKind::MiniSweAgent),
+            default_cloud_agent: None,
             polling_interval_ms: 30_000,
             resource_policy: ResourcePolicy::default(),
             remote_api_enabled: false,

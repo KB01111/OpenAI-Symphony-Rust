@@ -40,6 +40,8 @@ function env(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     ...process.env,
     HOME: posix(home),
     USERPROFILE: home,
+    // Explicit, so an inherited GIT_CONFIG_GLOBAL cannot send git configuration to the real one.
+    GIT_CONFIG_GLOBAL: posix(join(home, ".gitconfig")),
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_AUTHOR_NAME: "Test",
     GIT_AUTHOR_EMAIL: "test@example.com",
