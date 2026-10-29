@@ -39,9 +39,9 @@ function str(value: JsonValue | undefined): string | null {
   return typeof value === "string" ? value : null;
 }
 
-// CSI sequences (colours, cursor moves) that CLI agents write to their log streams.
+// CSI sequences (colours incl. colon-delimited 24-bit form, cursor moves) that CLI agents write to their log streams.
 // eslint-disable-next-line no-control-regex
-const ANSI_ESCAPE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+const ANSI_ESCAPE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
 const plain = (value: string | null): string | null => (value === null ? null : value.replace(ANSI_ESCAPE, ""));
 

@@ -103,21 +103,24 @@ const AgentRunRow = React.memo(function AgentRunRow({
     <div
       role="group"
       aria-label={`${row.identifier} ${row.title ?? ""}`.trim()}
-      tabIndex={0}
       onClick={() => onOpen(row)}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
-        e.preventDefault();
-        onOpen(row);
-      }}
-      className="flex cursor-pointer items-start gap-3 border-b border-border px-4 py-2 outline-none hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:ring-1 focus-visible:ring-accent"
+      className="flex cursor-pointer items-start gap-3 border-b border-border px-4 py-2 hover:bg-surface-hover focus-within:bg-surface-hover"
     >
       <div className="min-w-0 flex-1 space-y-1">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           <span className="font-mono text-xs text-muted-foreground">{row.identifier}</span>
-          <span className="min-w-0 max-w-[32rem] truncate text-sm font-medium text-foreground" title={row.title ?? undefined}>
+          {/* The title is the keyboard and screen-reader target; clicking elsewhere on the row is a mouse shortcut. */}
+          <button
+            type="button"
+            className="min-w-0 max-w-[32rem] truncate rounded-sm text-start text-sm font-medium text-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent"
+            title={row.title ?? undefined}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen(row);
+            }}
+          >
             {row.title ?? m.row.unknownTitle}
-          </span>
+          </button>
           {row.status ? <TaskStatusBadge status={row.status} /> : null}
           {row.phase && (row.live || !finished) ? <PhaseBadge phase={row.phase} /> : null}
           {row.provider ? <ProviderBadge provider={row.provider} model={row.model} /> : null}

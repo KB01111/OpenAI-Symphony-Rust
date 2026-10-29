@@ -392,6 +392,20 @@ describe("ExecutionPage", () => {
     expect(screen.getAllByText("Cancelled")).toHaveLength(1);
   });
 
+  it("keeps the reason a run ended (timed out) next to the failed status", async () => {
+    renderPage(runtime(task({ status: "failed", current_phase: "timed_out" })));
+    await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getByText("Timed out")).toBeInTheDocument();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+  });
+
+  it("keeps Retry on a ready task that has already run", async () => {
+    // Moved back to ready after a failure: Retry also clears follow-up instructions that Start would reuse.
+    renderPage(runtime(task({ status: "ready", attempt_count: 2 })));
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
+  });
+
   it("offers only Start (no Retry) for a task that has not run yet", async () => {
     renderPage(runtime(task({ status: "ready" })));
     expect(await screen.findByRole("button", { name: "Start" })).toBeInTheDocument();

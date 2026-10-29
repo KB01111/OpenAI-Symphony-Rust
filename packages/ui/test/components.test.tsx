@@ -72,6 +72,9 @@ describe("formatAgentEvent", () => {
       payload: { item: { type: "commandExecution", command: "\u001b[1mcargo test\u001b[0m", aggregatedOutput: "\u001b[32mok\u001b[0m" } }
     });
     expect(cmd).toMatchObject({ command: "cargo test", output: "ok" });
+    // Colon-delimited parameters (24-bit colour) and other CSI finals are removed too.
+    const truecolor = "[38:2:255:0:0mred[0m [1;38;2;1;2;3mbold[0m[2K";
+    expect(formatAgentEvent({ ...baseEvent, event_type: "agent/stderr", message: truecolor }).text).toBe("red bold");
   });
 
   it("classifies provider item events", () => {

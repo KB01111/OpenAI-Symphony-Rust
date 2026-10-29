@@ -33,12 +33,13 @@ export function buildTaskTimeline(
 }
 
 /**
- * Protocol bookkeeping with nothing to read: the agent layer labels notifications it has no text for
- * (`item/started`, `thread/status/changed`, ...) as just "Event: <method>". The concise timeline leaves
- * them out; the technical one keeps every event. Errors always stay.
+ * Protocol bookkeeping with nothing to read: the Codex driver labels notifications it has no text for
+ * (`item/started`, `thread/status/changed`, ...) as exactly "Event: <method>", and uses the method as the
+ * event type. Matching on that keeps other drivers' real text (e.g. an OpenCode "Event: ready") visible.
+ * The concise timeline leaves these out; the technical one keeps every event. Errors always stay.
  */
 export function isProtocolNoise(event: AgentEvent): boolean {
-  return /^Event: \S+$/.test(event.message) && eventKind(event) === "other";
+  return event.message === `Event: ${event.event_type}` && eventKind(event) === "other";
 }
 
 export type KindCounts = Record<AgentEventKind, number>;
