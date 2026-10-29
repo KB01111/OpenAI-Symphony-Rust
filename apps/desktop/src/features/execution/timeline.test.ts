@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@symphony/shared-types";
-import { buildTaskTimeline, countByKind, eventKind, filterByKinds, toggleKind, unseenSince } from "./timeline.js";
+import { buildTaskTimeline, countByKind, eventKind, filterByKinds, isProtocolNoise, toggleKind, unseenSince } from "./timeline.js";
 
 function ev(id: string, second: number, overrides: Partial<AgentEvent> = {}): AgentEvent {
   return {
@@ -20,6 +20,15 @@ function ev(id: string, second: number, overrides: Partial<AgentEvent> = {}): Ag
 
 const command = (id: string, second: number) =>
   ev(id, second, { event_type: "item/commandExecution/completed", payload: { item: { type: "commandExecution", command: "ls", exitCode: 0 } } });
+
+describe("isProtocolNoise", () => {
+  it("flags the bare 'Event: <method>' label but never real content or errors", () => {
+    expect(isProtocolNoise(ev("a", 1, { event_type: "item/started", message: "Event: item/started" }))).toBe(true);
+    expect(isProtocolNoise(ev("b", 1, { event_type: "item/started", message: "Event: item/started with details" }))).toBe(false);
+    expect(isProtocolNoise(ev("c", 1, { event_type: "item/started", message: "Ran the tests" }))).toBe(false);
+    expect(isProtocolNoise(ev("d", 1, { event_type: "error", message: "Event: error" }))).toBe(false);
+  });
+});
 
 describe("execution timeline", () => {
   it("merges newest-first history with live events, oldest first, without duplicates", () => {

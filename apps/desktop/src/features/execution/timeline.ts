@@ -32,6 +32,15 @@ export function buildTaskTimeline(
   return mergeEventHistory(scopedHistory, scopedLive);
 }
 
+/**
+ * Protocol bookkeeping with nothing to read: the agent layer labels notifications it has no text for
+ * (`item/started`, `thread/status/changed`, ...) as just "Event: <method>". The concise timeline leaves
+ * them out; the technical one keeps every event. Errors always stay.
+ */
+export function isProtocolNoise(event: AgentEvent): boolean {
+  return /^Event: \S+$/.test(event.message) && eventKind(event) === "other";
+}
+
 export type KindCounts = Record<AgentEventKind, number>;
 
 export function countByKind(events: ReadonlyArray<AgentEvent>): KindCounts {
