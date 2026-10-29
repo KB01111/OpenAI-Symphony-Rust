@@ -27,7 +27,8 @@ export default function TasksPage() {
   // shows the board or table.
   const [search, setSearch] = useSearchParams();
   const runsOpen = search.get("view") === "runs";
-  const showRuns = (open: boolean) => setSearch(open ? { view: "runs" } : {}, { replace: true });
+  // A history entry each, so Back returns to the view you came from.
+  const showRuns = (open: boolean) => setSearch(open ? { view: "runs" } : {});
   const activeProjectId = useUiStore((s) => s.activeProjectId);
   const filters = useUiStore((s) => s.taskFilters);
   const resetTaskFilters = useUiStore((s) => s.resetTaskFilters);
@@ -96,8 +97,9 @@ export default function TasksPage() {
   );
 
   let content: React.ReactNode;
-  if (projects.isError) {
-    // Runs groups ready tasks by their project's auto-dispatch setting, so it needs the projects too.
+  if (projects.isError && !projects.data) {
+    // Runs groups ready tasks by their project's auto-dispatch setting, so it needs the projects too. A failed
+    // refresh with projects already loaded keeps showing the cached ones.
     content = <ErrorState className="m-4" title={m.page.projectsError} message={errorMessage(projects.error)} onRetry={() => void projects.refetch()} />;
   } else if (runsOpen) {
     // Runs has its own tabs, loading and empty states, so the task filters and lists stay out of the way.

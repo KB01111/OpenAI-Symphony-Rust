@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { useNavigate } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { canRetryTask, getTranslations } from "@symphony/shared-types";
 import NewTaskDialog from "../composer/NewTaskDialog.js";
@@ -174,6 +175,46 @@ describe("task board columns", () => {
     first.unmount();
     renderWithProviders(<TasksPage />, { runtime: boardRuntime([]), route: "/tasks", path: "/tasks" });
     expect(await screen.findByRole("radio", { name: "Board" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("makes Back return to the view you came from when switching to Runs", async () => {
+    useUiStore.getState().setTaskView("board");
+    const Back = () => {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate(-1)}>history-back</button>;
+    };
+    renderWithProviders(
+      <>
+        <TasksPage />
+        <Back />
+      </>,
+      { runtime: boardRuntime([]), route: "/tasks", path: "/tasks" }
+    );
+    fireEvent.click(await screen.findByRole("radio", { name: "Runs" }));
+    expect(await screen.findByText("No agent runs yet")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "history-back" }));
+    expect(await screen.findByRole("radio", { name: "Board" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByText("No agent runs yet")).not.toBeInTheDocument();
+  });
+
+  it("keeps showing Runs from cached projects when a later project refresh fails", async () => {
+    let calls = 0;
+    const rt = createMockRuntime({
+      "GET /settings": () => settings(),
+      "GET /state": () => snapshot(),
+      "GET /projects": () => (++calls === 1 ? [project({ id: "p1" })] : { status: 500, body: { error: { code: "internal", message: "projects unavailable" } } }),
+      "GET /tasks": () => [],
+      "GET /approvals": () => [],
+      "GET /providers": () => []
+    });
+    const { queryClient } = renderWithProviders(<TasksPage />, { runtime: rt, route: "/tasks?view=runs", path: "/tasks" });
+    expect(await screen.findByText("No agent runs yet")).toBeInTheDocument();
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["projects"] });
+    });
+    expect(calls).toBeGreaterThan(1);
+    expect(screen.getByText("No agent runs yet")).toBeInTheDocument();
+    expect(screen.queryByText("Projects could not be loaded")).not.toBeInTheDocument();
   });
 
   it("shows the project-load failure in Runs too instead of a list built without projects", async () => {
