@@ -194,3 +194,42 @@ async fn the_sandbox_of_a_task_can_be_recorded_without_touching_anything_else() 
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn a_stale_lifecycle_write_does_not_erase_a_recorded_sandbox() {
+    let storage = Storage::connect_in_memory().await.unwrap();
+    storage.upsert_project(&project()).await.unwrap();
+    let t = task("SYM-1", Some(CloudAgentKind::Pi));
+    storage.upsert_task(&t).await.unwrap();
+
+    // The stopping side read the task before the sandbox existed...
+    let mut stale = storage.get_task(&t.id).await.unwrap().unwrap();
+    assert_eq!(stale.current_thread_id, None);
+    // ...the worker then recorded the sandbox...
+    storage.set_task_thread_id(&t.id, "sb-123").await.unwrap();
+    // ...and the stale copy is written back as the task's cancelled state.
+    stale.status = symphony_core::TaskStatus::Cancelled;
+    stale.last_error = Some("stopped".into());
+    storage.update_task_lifecycle(&stale).await.unwrap();
+
+    let stored = storage.get_task(&t.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, symphony_core::TaskStatus::Cancelled);
+    assert_eq!(stored.last_error.as_deref(), Some("stopped"));
+    // The retry still resumes that sandbox.
+    assert_eq!(stored.current_thread_id.as_deref(), Some("sb-123"));
+
+    // A newer id from the lifecycle path still replaces it (a replaced sandbox).
+    let mut newer = stored.clone();
+    newer.current_thread_id = Some("sb-456".into());
+    storage.update_task_lifecycle(&newer).await.unwrap();
+    assert_eq!(
+        storage
+            .get_task(&t.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_thread_id
+            .as_deref(),
+        Some("sb-456")
+    );
+}

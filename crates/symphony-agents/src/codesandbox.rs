@@ -438,8 +438,13 @@ impl AgentSession for CodeSandboxSession {
                     event_usage = Some(self.completed_usage.plus(&usage));
                 }
                 "pushed" => {
+                    // Cut by characters, never bytes: the value comes from a process in the sandbox and
+                    // may not be ASCII, and a byte slice inside a character would panic the worker.
                     let sha = event.get("sha").and_then(Value::as_str).unwrap_or("?");
-                    message = Some(format!("Pushed {}", &sha[..sha.len().min(12)]));
+                    message = Some(format!(
+                        "Pushed {}",
+                        sha.chars().take(12).collect::<String>()
+                    ));
                 }
                 "turn_completed" => {
                     completed = Some((

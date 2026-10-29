@@ -77,7 +77,7 @@ describe("execute", () => {
 
     expect(code).toBe(2);
     expect(events).toEqual([{ type: "error", code: "invalid_request", message: expect.stringContaining("agent") }]);
-    expect(JSON.stringify(events)).not.toContain(GIT_TOKEN);
+    for (const secret of [CSB_KEY, GIT_TOKEN, MODEL_KEY]) expect(JSON.stringify(events)).not.toContain(secret);
   });
 
   it("reports a control request that fails instead of crashing", async () => {

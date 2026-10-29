@@ -11,8 +11,6 @@ import {
 
 /** Where the template installs the drivers (see `template/.codesandbox/Dockerfile`). */
 export const DRIVER_DIR = "/opt/symphony/drivers";
-/** Marker in the driver's command line, so `abort` can find it (`[s]` keeps pkill from matching itself). */
-const DRIVER_PROCESS_PATTERN = "[s]ymphony-run-agent";
 const SCRATCH_DIR = "/tmp/symphony";
 
 export interface BridgeOutput {
@@ -180,7 +178,9 @@ export async function runControl(request: ControlRequest, gateway: SandboxGatewa
   if (!handle) return true;
   try {
     if (request.type === "abort") {
-      const kill = await handle.run(`pkill -f '${DRIVER_PROCESS_PATTERN}' || true`, { name: "abort" });
+      // The driver and everything it started (the agent, the commands the agent ran): signalling the
+      // driver alone leaves those running, and pushing.
+      const kill = await handle.run(`bash ${DRIVER_DIR}/abort.sh`, { name: "abort" });
       await kill.wait();
       return true;
     }

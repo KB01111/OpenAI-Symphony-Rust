@@ -200,6 +200,11 @@ export function parseDriverLine(line: string): BridgeEvent {
     try {
       const event = JSON.parse(line.slice(DRIVER_EVENT_PREFIX.length)) as BridgeEvent;
       if (event && typeof event === "object" && ["output", "tool", "usage", "pushed"].includes(event.type)) {
+        // Any process in the sandbox can print a line with this prefix. A `pushed` event makes the host
+        // update the worktree, so it must carry what a push really reports: a hex commit id.
+        if (event.type === "pushed" && !(typeof event.sha === "string" && /^[0-9a-f]{7,64}$/i.test(event.sha))) {
+          return { type: "output", text: line };
+        }
         return event;
       }
     } catch {

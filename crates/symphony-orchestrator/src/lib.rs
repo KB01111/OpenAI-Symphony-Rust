@@ -2753,7 +2753,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .map_err(|e| e.to_string())?;
         let Some((host, path)) = symphony_workspaces::https_remote(&origin) else {
             return Err(
-                "A CodeSandbox run needs the repository's `origin` to be an https:// GitHub URL;                  the sandbox cannot use your local ssh keys or a local path"
+                "A CodeSandbox run needs the repository's `origin` to be an https:// GitHub URL; \
+                 the sandbox cannot use your local ssh keys or a local path"
                     .to_string(),
             );
         };

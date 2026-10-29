@@ -179,8 +179,15 @@ describe("parseRequest", () => {
 
 describe("driver lines and splitting", () => {
   it("turns structured lines into events and anything else into output", () => {
-    expect(parseDriverLine('@@SYMPHONY {"type":"pushed","sha":"abc","branch":"b"}')).toEqual({ type: "pushed", sha: "abc", branch: "b" });
+    expect(parseDriverLine('@@SYMPHONY {"type":"pushed","sha":"deadbeef12","branch":"b"}')).toEqual({ type: "pushed", sha: "deadbeef12", branch: "b" });
     expect(parseDriverLine("just a line")).toEqual({ type: "output", text: "just a line" });
+    // Any process in the sandbox can print this prefix, and a push makes the host update the worktree:
+    // only a hex commit id counts as one.
+    for (const sha of ['"ééééééééééééé"', '"not-a-sha"', '"abc"', "12345", "null", '"deadbeef; rm -rf /"']) {
+      const line = `@@SYMPHONY {"type":"pushed","sha":${sha},"branch":"b"}`;
+      expect(parseDriverLine(line), sha).toEqual({ type: "output", text: line });
+    }
+    expect(parseDriverLine('@@SYMPHONY {"type":"pushed","branch":"b"}')).toMatchObject({ type: "output" });
     // A structured prefix with a body the bridge does not accept stays visible as plain output.
     expect(parseDriverLine('@@SYMPHONY {"type":"turn_completed","succeeded":true}')).toMatchObject({ type: "output" });
     expect(parseDriverLine("@@SYMPHONY {broken")).toMatchObject({ type: "output" });
@@ -352,11 +359,11 @@ describe("runTurn", () => {
 });
 
 describe("controls", () => {
-  it("abort stops the driver process without matching its own command line", async () => {
+  it("abort stops the driver and everything it started, not just the driver", async () => {
     const handle = new FakeHandle(true);
     const ok = await runControl({ type: "abort", csbApiKey: CSB_KEY, sandboxId: "sb-123" }, new FakeGateway(handle));
     expect(ok).toBe(true);
-    expect(handle.runs[0].command).toBe("pkill -f '[s]ymphony-run-agent' || true");
+    expect(handle.runs[0].command).toBe(`bash ${DRIVER_DIR}/abort.sh`);
     expect(handle.disposed).toBe(1);
   });
 

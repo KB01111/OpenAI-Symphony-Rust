@@ -58,7 +58,11 @@ codex:
 #   vm_tier: small                      # pico | nano | micro | small | medium | large | xlarge
 #   hibernation_timeout_secs: 1800
 #   cost_limit_usd: 3                   # mini-swe-agent only; 0 = no limit
-#   runner_path: ~/symphony/tools/codesandbox-runner/dist/bridge.mjs   # only outside a source checkout
+#
+# Optional override, not a default: where the built bridge is. Unset, Symphony finds
+# tools/codesandbox-runner/dist/bridge.mjs of a source checkout (or SYMPHONY_CODESANDBOX_RUNNER). Set it
+# only for an installed app; a path that does not exist makes CodeSandbox runs fail to start.
+#   runner_path: ~/symphony/tools/codesandbox-runner/dist/bridge.mjs
 
 server:
   host: 127.0.0.1

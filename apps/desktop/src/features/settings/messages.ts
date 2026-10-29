@@ -84,7 +84,7 @@ export const settingsMessages = defineMessages({
       model: "Default model",
       modelHint: "Leave empty to use the provider's own default. Any model id is accepted.",
       cloudAgent: "Default cloud agent",
-      cloudAgentHint: "Agent that runs in the sandbox of CodeSandbox tasks that do not pick one. Until you choose here, codesandbox.default_agent in WORKFLOW.md applies (mini-swe-agent unless it says otherwise).",
+      cloudAgentHint: "Agent that runs in the sandbox of CodeSandbox tasks that do not pick one. Until you choose here, codesandbox.default_agent in WORKFLOW.md applies (mini-swe-agent unless it says otherwise); a choice made here replaces it.",
       notInstalled: "not installed",
       manage: "Manage providers"
     },
@@ -316,7 +316,7 @@ export const settingsMessages = defineMessages({
       model: "Standardmodell",
       modelHint: "Lämna tomt för att använda leverantörens egen standard. Alla modell-id:n accepteras.",
       cloudAgent: "Standardmolnagent",
-      cloudAgentHint: "Agent som körs i sandlådan för CodeSandbox-uppgifter som inte väljer en egen. Tills du väljer här gäller codesandbox.default_agent i WORKFLOW.md (mini-swe-agent om inget annat anges).",
+      cloudAgentHint: "Agent som körs i sandlådan för CodeSandbox-uppgifter som inte väljer en egen. Tills du väljer här gäller codesandbox.default_agent i WORKFLOW.md (mini-swe-agent om inget annat anges); ett val här ersätter den.",
       notInstalled: "inte installerad",
       manage: "Hantera leverantörer"
     },

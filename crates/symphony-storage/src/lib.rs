@@ -400,10 +400,6 @@ impl Storage {
         row.map(row_to_task).transpose()
     }
 
-    /// Persist only the lifecycle columns of `task` (status, session/thread/turn ids, phase, error,
-    /// retry time, update time). For the side that stops a worker: its copy of the task was read
-    /// before the worker settled usage, and [`upsert_task`](Self::upsert_task) would write that
-    /// stale usage back over the settlement.
     /// Record the provider thread (for a cloud run: the sandbox) of a task right away, without
     /// touching any other column, so a run that is interrupted before it ends can be resumed in the
     /// same sandbox instead of starting another one.
@@ -417,12 +413,18 @@ impl Storage {
         Ok(())
     }
 
+    /// Persist only the lifecycle columns of `task` (status, session/thread/turn ids, phase, error,
+    /// retry time, update time). For the side that stops a worker: its copy of the task was read
+    /// before the worker settled usage, and [`upsert_task`](Self::upsert_task) would write that
+    /// stale usage back over the settlement. A copy without a thread id never erases one that was
+    /// recorded meanwhile ([`set_task_thread_id`](Self::set_task_thread_id)): a cloud run's sandbox
+    /// id is what lets a retry resume it.
     pub async fn update_task_lifecycle(&self, task: &Task) -> SymphonyResult<()> {
         let result = sqlx::query(
             "UPDATE tasks SET
                 status = ?2,
                 current_session_id = ?3,
-                current_thread_id = ?4,
+                current_thread_id = COALESCE(?4, current_thread_id),
                 current_turn_id = ?5,
                 current_phase = ?6,
                 last_error = ?7,

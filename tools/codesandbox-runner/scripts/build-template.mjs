@@ -11,6 +11,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveCsbBin } from "./csb-bin.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TIERS = ["Pico", "Nano", "Micro", "Small", "Medium", "Large", "XLarge"];
@@ -26,8 +27,8 @@ if (!process.env.CSB_API_KEY) {
 }
 
 const alias = option("alias", "symphony-agents");
-// The CLI is started through a shell on Windows (a .cmd shim), so the alias is restricted to what a
-// template alias can contain instead of being quoted.
+// The CLI is run without a shell (see below), so nothing here could be interpreted as shell syntax;
+// the alias is still restricted to what a template alias can contain.
 if (!/^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/.test(alias)) {
   console.error(`Invalid --alias "${alias}": use letters, digits and . _ @ - (at most 64, starting with a letter or digit).`);
   process.exit(2);
@@ -55,7 +56,9 @@ const args = [
   "--ci"
 ];
 console.log(`> csb ${args.join(" ")}`);
-const result = spawnSync("csb", args, { stdio: "inherit", shell: process.platform === "win32", env: process.env });
+// `node <csb script>`: no shell, so arguments with spaces stay one argument each and nothing in them is
+// interpreted, on Windows (where the npm shim is a .cmd file) as much as elsewhere.
+const result = spawnSync(process.execPath, [resolveCsbBin(), ...args], { stdio: "inherit", env: process.env });
 if (result.status !== 0) process.exit(result.status ?? 1);
 
 console.log(`

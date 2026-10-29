@@ -35,7 +35,8 @@ CodeSandboxSession ──stdin: 1 request──▶ @codesandbox/sdk ────
    Symphony fast-forward the worktree (`WorkspaceManager::fast_forward_from_origin`, which never touches a
    dirty or diverged worktree).
 5. When the run ends the sandbox is hibernated (files and the agent's checkpoint are kept); cancelling
-   kills the agent process in the sandbox first.
+   first stops the driver and everything it started (`abort.sh`: the agent and the commands it ran, children
+   before parents), so nothing keeps working or pushing.
 
 ## Setup
 

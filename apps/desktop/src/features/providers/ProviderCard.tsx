@@ -20,7 +20,9 @@ const INSTALL_HINTS: Partial<Record<ProviderKind, string>> = {
   codex: "npm install -g @openai/codex",
   claude_code: "npm install -g @anthropic-ai/claude-code",
   opencode: "npm install -g opencode-ai",
-  codesandbox: "pnpm --filter @symphony/codesandbox-runner build"
+  // The bridge is not part of the installer: build it in a source checkout, or point
+  // SYMPHONY_CODESANDBOX_RUNNER (or codesandbox.runner_path in WORKFLOW.md) at a built bridge.mjs.
+  codesandbox: "pnpm --filter @symphony/codesandbox-runner build  (source checkout; otherwise set SYMPHONY_CODESANDBOX_RUNNER to a built bridge.mjs)"
 };
 
 type CapabilityKey = keyof (typeof providerMessages)["en"]["capability"];

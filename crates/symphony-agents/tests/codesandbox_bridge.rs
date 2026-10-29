@@ -60,6 +60,12 @@ rl.once("line", (line) => {
     setInterval(() => {}, 1000); // never finishes: the host gives up on it
     return;
   }
+  if (req.prompt.includes("SCENARIO_UNICODE_SHA")) {
+    // Not a hash: a process in the sandbox can print anything, and byte 12 falls inside a character.
+    out({ type: "pushed", sha: "ééééééééééééééé", branch: req.branch });
+    out({ type: "turn_completed", succeeded: true });
+    process.exit(0);
+  }
   if (req.prompt.includes("SCENARIO_LEAK")) out({ type: "output", text: "token " + req.git.token });
   out({ type: "output", text: "working" });
   out({ type: "tool", callId: "c1", name: "bash", kind: "command", status: "started", input: { command: "ls" } });
@@ -562,4 +568,24 @@ async fn detection_honours_the_runner_path_from_the_workflow() {
         .capabilities
         .status_message
         .contains("Bridge not built"));
+}
+
+#[tokio::test]
+async fn a_pushed_event_with_a_non_ascii_commit_id_does_not_panic_the_worker() {
+    if !have_node() {
+        return;
+    }
+    let fx = Fixture::new();
+    let (tx, mut rx) = mpsc::channel(64);
+    let mut session = CodeSandboxSession::new(fx.config(), None);
+
+    let outcome = session.run_turn("SCENARIO_UNICODE_SHA", tx).await.unwrap();
+
+    assert!(outcome.succeeded, "{outcome:?}");
+    let pushed = drain(&mut rx)
+        .into_iter()
+        .find(|e| e.event_type == "codesandbox/pushed")
+        .expect("the push is still reported");
+    // Cut by characters: twelve of them, not twelve bytes.
+    assert_eq!(pushed.message.as_deref(), Some("Pushed éééééééééééé"));
 }

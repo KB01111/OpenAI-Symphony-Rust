@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isSandboxMissing } from "../src/gateway.ts";
+import { resolveCsbBin } from "../scripts/csb-bin.mjs";
 
 describe("isSandboxMissing", () => {
   it("recognises the SDK's 404 for a sandbox that is gone", () => {
@@ -42,6 +44,17 @@ describe("scripts/build-template.mjs", () => {
       expect(result.status, `alias ${JSON.stringify(alias)}`).toBe(2);
       expect(result.stderr).toMatch(/Invalid --alias|CSB_API_KEY/);
     }
+  });
+
+  it("runs the CodeSandbox CLI through node, with no shell between the arguments and the CLI", () => {
+    const bin = resolveCsbBin();
+    expect(existsSync(bin)).toBe(true);
+    // `build --help` needs no network. An argument with spaces (like the template name the script passes)
+    // is one argument to the CLI, which is what a cmd.exe command line would have split.
+    const result = spawnSync(process.execPath, [bin, "build", "--help"], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/Build an efficient memory snapshot/);
+    expect(result.stdout).toMatch(/--alias/);
   });
 
   it("refuses an unknown VM tier", () => {
