@@ -65,9 +65,7 @@ interface RowProps {
   row: AgentRow;
   projectName: string | null;
   capabilities: ProviderCapabilities | undefined;
-  selected: boolean;
   busy: boolean;
-  onSelect: (row: AgentRow) => void;
   onOpen: (row: AgentRow) => void;
   onDispatch: (row: AgentRow) => void;
   onRetry: (row: AgentRow) => void;
@@ -78,9 +76,7 @@ const AgentRunRow = React.memo(function AgentRunRow({
   row,
   projectName,
   capabilities,
-  selected,
   busy,
-  onSelect,
   onOpen,
   onDispatch,
   onRetry,
@@ -107,24 +103,14 @@ const AgentRunRow = React.memo(function AgentRunRow({
     <div
       role="group"
       aria-label={`${row.identifier} ${row.title ?? ""}`.trim()}
-      aria-current={selected ? "true" : undefined}
       tabIndex={0}
-      onClick={() => onSelect(row)}
-      onDoubleClick={() => onOpen(row)}
+      onClick={() => onOpen(row)}
       onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if (e.key === "Enter") {
-          e.preventDefault();
-          onOpen(row);
-        } else if (e.key === " ") {
-          e.preventDefault();
-          onSelect(row);
-        }
+        if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+        e.preventDefault();
+        onOpen(row);
       }}
-      className={cn(
-        "flex cursor-default items-start gap-3 border-b border-border px-4 py-2 outline-none hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:ring-1 focus-visible:ring-accent",
-        selected && "bg-surface-selected"
-      )}
+      className="flex cursor-pointer items-start gap-3 border-b border-border px-4 py-2 outline-none hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:ring-1 focus-visible:ring-accent"
     >
       <div className="min-w-0 flex-1 space-y-1">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -277,9 +263,7 @@ export default function AgentsPage() {
 
   const pendingTaskId =
     (dispatch.isPending && dispatch.variables) || (retry.isPending && retry.variables) || (cancel.isPending && cancel.variables) || null;
-  const selectedTaskId: string | null = null;
 
-  const onSelect = useCallback((row: AgentRow) => navigate(paths.run(row.taskId)), [navigate]);
   const onOpen = useCallback((row: AgentRow) => navigate(paths.run(row.taskId)), [navigate]);
   const onDispatch = useCallback((row: AgentRow) => !dispatch.isPending && dispatch.mutate(row.taskId), [dispatch]);
   const onRetry = useCallback((row: AgentRow) => !retry.isPending && retry.mutate(row.taskId), [retry]);
@@ -354,9 +338,7 @@ export default function AgentsPage() {
               row={item.row}
               projectName={item.row.projectId ? (projectNames.get(item.row.projectId) ?? null) : null}
               capabilities={item.row.provider ? capabilities.get(item.row.provider) : undefined}
-              selected={selectedTaskId === item.row.taskId}
               busy={pendingTaskId === item.row.taskId}
-              onSelect={onSelect}
               onOpen={onOpen}
               onDispatch={onDispatch}
               onRetry={onRetry}
@@ -385,14 +367,15 @@ export default function AgentsPage() {
             <TabsTrigger value="all">
               {m.all} <span className="tabular-nums text-subtle-foreground">{rows.length}</span>
             </TabsTrigger>
-            {AGENT_SEGMENTS.map((s) => (
+            {/* Empty segments are noise; the selected one stays so the filter can be left. */}
+            {AGENT_SEGMENTS.filter((s) => counts[s] > 0 || s === filter).map((s) => (
               <TabsTrigger key={s} value={s}>
                 {m.segments[s]} <span className="tabular-nums text-subtle-foreground">{counts[s]}</span>
               </TabsTrigger>
             ))}
           </TabsList>
         </Tabs>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className={cn("flex items-center gap-2 text-xs text-muted-foreground", rows.length === 0 && "hidden")}>
           <span id="agents-group-by">{m.groupByLabel}</span>
           <Select value={groupBy} onValueChange={(v) => setGroupBy(v as AgentGroupBy)}>
             <SelectTrigger className="w-36" aria-labelledby="agents-group-by">

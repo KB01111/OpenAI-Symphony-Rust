@@ -72,6 +72,8 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Fixed
 
+- Terminal colour codes (`ESC[2m…`) in an agent's log lines showed up as garbled characters in the run
+  timeline and Activity; they are now removed.
 - The *Pending approvals* tile on Overview did nothing since the bottom dock was replaced by the
   Activity view; it now opens Activity on its approvals tab.
 - Project settings: the Provider dropdown no longer overlaps the Model field, the form no longer shows a
@@ -108,6 +110,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   requests, Activity) above the setup views (Worktrees, Workflow Studio, Providers, Settings); the top
   bar shows the runtime connection only when it is not healthy (the footer always shows it); the refresh
   button is called *Refresh*; a task that has not run yet offers *Start* without a redundant *Retry*.
+  Agent runs lists only the status tabs that have runs (and hides *Group by* when there are none), a
+  whole row is a single click to open, a finished thread no longer shows its phase next to an
+  identical status badge, the Projects tracker filter appears only when repositories use more than one
+  tracker, and the sidebar's view list is tall enough to show every entry without its own scrollbar.
 - **One component system on the desktop**: Fluent UI and the OpenAI Apps SDK UI are removed from the
   desktop app and the shared UI package in favour of shadcn/ui (Radix) with Tailwind tokens, so controls,
   dialogs and tabs share one sizing, one set of breakpoints and one CSS layer order. Markdown uses

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { isSymphonyApiError } from "@symphony/api-client";
 import { ArrowLeft, FolderOpen, PanelRight, Play, RotateCcw, Square } from "lucide-react";
-import { canCancel, canDispatch, canRetry, formatMessage, providerActions, type Task } from "@symphony/shared-types";
+import { canCancel, canDispatch, canRetry, formatMessage, isActivePhase, providerActions, type Task } from "@symphony/shared-types";
 import {
   Button,
   ConfirmDialog,
@@ -178,7 +178,8 @@ const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
           meta={
             <span className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
               <TaskStatusBadge status={task.status} />
-              {task.current_phase ? <PhaseBadge phase={task.current_phase} /> : null}
+              {/* Once the run has ended its phase only repeats the status ("Cancelled", "Failed"). */}
+              {task.current_phase && isActivePhase(task.current_phase) ? <PhaseBadge phase={task.current_phase} /> : null}
               <ProviderBadge provider={task.provider} model={session?.model ?? task.model} />
               <span className="text-xs text-muted-foreground" aria-label={session ? m.started : m.totalDuration}>
                 {session ? <Duration since={session.started_at} /> : <Duration seconds={task.duration_seconds} />}

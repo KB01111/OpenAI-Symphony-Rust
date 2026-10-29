@@ -72,6 +72,7 @@ export default function ProjectsPage() {
     () => [...new Set<string>([...TRACKER_KINDS, ...projectList.map((p) => p.tracker_kind)])],
     [projectList]
   );
+  const usedTrackers = useMemo(() => new Set(projectList.map((p) => p.tracker_kind)).size, [projectList]);
   const selected = projectId ? projectList.find((p) => p.id === projectId) : undefined;
 
   // Deep links (/projects/:id) make the project the active one.
@@ -234,21 +235,24 @@ export default function ProjectsPage() {
           <Field label={m.page.search} className="w-72 max-w-full">
             <Input type="search" icon={<Search />} value={search} placeholder={m.page.searchPlaceholder} onChange={(e) => setSearch(e.target.value)} />
           </Field>
-          <Field label={m.page.tracker} className="w-48">
-            <Select value={tracker ?? ANY} onValueChange={(v) => setTracker(v === ANY ? null : v)}>
-              <SelectTrigger>
-                <SelectValue>{tracker ? trackerLabel(m, tracker) : m.page.anyTracker}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ANY}>{m.page.anyTracker}</SelectItem>
-                {trackerKinds.map((kind) => (
-                  <SelectItem key={kind} value={kind}>
-                    {trackerLabel(m, kind)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
+          {/* Only worth a control when the repositories actually use more than one tracker. */}
+          {usedTrackers > 1 || tracker ? (
+            <Field label={m.page.tracker} className="w-48">
+              <Select value={tracker ?? ANY} onValueChange={(v) => setTracker(v === ANY ? null : v)}>
+                <SelectTrigger>
+                  <SelectValue>{tracker ? trackerLabel(m, tracker) : m.page.anyTracker}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>{m.page.anyTracker}</SelectItem>
+                  {trackerKinds.map((kind) => (
+                    <SelectItem key={kind} value={kind}>
+                      {trackerLabel(m, kind)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          ) : null}
           {search || tracker ? (
             <Button size="sm" variant="subtle" onClick={clearFilters}>
               <FilterX />

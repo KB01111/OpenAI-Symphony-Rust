@@ -371,6 +371,12 @@ describe("ExecutionPage", () => {
     await waitFor(() => expect(rt.calls.filter((c) => c.method === "POST" && c.path === "/tasks/t1/retry")).toHaveLength(1));
   });
 
+  it("does not repeat the status as a phase badge once the run has ended", async () => {
+    renderPage(runtime(task({ status: "cancelled", current_phase: "canceled_by_reconciliation" })));
+    await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getAllByText("Cancelled")).toHaveLength(1);
+  });
+
   it("offers only Start (no Retry) for a task that has not run yet", async () => {
     renderPage(runtime(task({ status: "ready" })));
     expect(await screen.findByRole("button", { name: "Start" })).toBeInTheDocument();

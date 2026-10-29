@@ -39,11 +39,23 @@ function str(value: JsonValue | undefined): string | null {
   return typeof value === "string" ? value : null;
 }
 
+// CSI sequences (colours, cursor moves) that CLI agents write to their log streams.
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+
+const plain = (value: string | null): string | null => (value === null ? null : value.replace(ANSI_ESCAPE, ""));
+
 /**
  * Normalize runtime events (orchestrator lifecycle events and provider item events such as Codex
  * App Server `item/*` notifications) into a presentation model. Pure and memoizable per event id.
+ * Terminal colour codes are removed from the free text, as the UI cannot render them.
  */
 export function formatAgentEvent(event: AgentEvent): FormattedAgentEvent {
+  const formatted = normalizeAgentEvent(event);
+  return { ...formatted, text: plain(formatted.text) ?? "", command: plain(formatted.command), output: plain(formatted.output) };
+}
+
+function normalizeAgentEvent(event: AgentEvent): FormattedAgentEvent {
   const type = event.event_type;
   // Codex App Server events carry the raw JSON-RPC notification (`{ method, params: { item } }`);
   // orchestrator and simulated events carry the fields directly or under `item`.

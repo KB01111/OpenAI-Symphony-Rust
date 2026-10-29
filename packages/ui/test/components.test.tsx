@@ -63,6 +63,17 @@ describe("SymphonyDesignProvider", () => {
 });
 
 describe("formatAgentEvent", () => {
+  it("removes terminal colour codes from log text, commands and output", () => {
+    const colored = "\u001b[2m2026-10-29T14:24:15Z\u001b[0m \u001b[31mERROR\u001b[0m worker quit";
+    expect(formatAgentEvent({ ...baseEvent, event_type: "agent/stderr", message: colored }).text).toBe("2026-10-29T14:24:15Z ERROR worker quit");
+    const cmd = formatAgentEvent({
+      ...baseEvent,
+      event_type: "item/commandExecution",
+      payload: { item: { type: "commandExecution", command: "\u001b[1mcargo test\u001b[0m", aggregatedOutput: "\u001b[32mok\u001b[0m" } }
+    });
+    expect(cmd).toMatchObject({ command: "cargo test", output: "ok" });
+  });
+
   it("classifies provider item events", () => {
     expect(formatAgentEvent(baseEvent).kind).toBe("message");
     const cmd = formatAgentEvent({
