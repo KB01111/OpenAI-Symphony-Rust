@@ -63,7 +63,8 @@ export function isSandboxMissing(error: unknown): boolean {
 /** Workspace folder of CodeSandbox sandboxes when the client does not report one. */
 const FALLBACK_WORKSPACE = "/project/sandbox";
 
-class SdkHandle implements SandboxHandle {
+/** The SDK adapter. Exported for the tests, which give it a fake SDK client. */
+export class SdkHandle implements SandboxHandle {
   constructor(
     private readonly sdk: CodeSandbox,
     private readonly sandbox: Sandbox,
@@ -89,42 +90,29 @@ class SdkHandle implements SandboxHandle {
   ): Promise<RunningCommand> {
     const cmd = await this.client.commands.runBackground(command, options);
     let listener: ((chunk: string) => void) | undefined;
-    // Output that arrives before the caller has subscribed is held, not dropped.
+    // Output that arrives before the caller has subscribed is held and handed over, first, when it
+    // does: the caller sees every chunk the SDK delivered, once, in the order it was delivered.
+    // (The SDK's own record of the output, from `waitUntilComplete`, joins chunks with newlines of
+    // its own and keeps only the last thousand, so it cannot be spliced into this stream.)
     let early: string[] = [];
-    // Everything the caller has been given, in order.
-    let delivered = "";
-    const deliver = (chunk: string) => {
-      delivered += chunk;
-      listener?.(chunk);
-    };
     cmd.onOutput((chunk) => {
-      if (listener) deliver(chunk);
+      if (listener) listener(chunk);
       else early.push(chunk);
     });
-    // The SDK only delivers output printed after its own subscription; the full output it returns on
-    // completion also holds what the command printed before it. Hand that over too.
-    const replayMissed = (full: string) => {
-      if (listener && full.length > delivered.length && full.endsWith(delivered)) {
-        listener(full.slice(0, full.length - delivered.length));
-      }
-    };
     return {
       onOutput: (l) => {
         listener = l;
         const held = early;
         early = [];
-        for (const chunk of held) deliver(chunk);
+        for (const chunk of held) l(chunk);
       },
       wait: async () => {
         try {
-          replayMissed(await cmd.waitUntilComplete());
+          await cmd.waitUntilComplete();
           return 0;
         } catch (error) {
-          const failure = error as { exitCode?: unknown; output?: unknown };
-          if (typeof failure.exitCode === "number") {
-            if (typeof failure.output === "string") replayMissed(failure.output);
-            return failure.exitCode;
-          }
+          const exitCode = (error as { exitCode?: unknown }).exitCode;
+          if (typeof exitCode === "number") return exitCode;
           throw error;
         }
       },

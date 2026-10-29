@@ -867,6 +867,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
             Ok(wf) => match ServiceConfig::from_workflow(&wf) {
                 Ok(cfg) => {
                     let mut mem = self.memory.write().await;
+                    if mem.active_config.codesandbox.runner_path != cfg.codesandbox.runner_path {
+                        mem.provider_cache = None;
+                    }
                     mem.active_workflow = wf;
                     mem.active_config = cfg;
                     mem.active_workflow_path = Some(path.to_path_buf());
@@ -2211,7 +2214,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .map_err(|e| with_redacted_message(e, &secrets))?;
         let pushed_commit = self.workspaces.head_commit(&workspace).await?;
         self.workspaces
-            .push_branch(&workspace, &branch, push_token)
+            .push_branch_pinned(&workspace, &branch, push_token, Some(origin.as_str()))
             .await
             .map_err(|e| with_redacted_message(e, &secrets))?;
 
@@ -2656,6 +2659,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let was_watched = {
             let mut mem = self.memory.write().await;
             let was_watched = mem.active_workflow_path.is_some();
+            if mem.active_config.codesandbox.runner_path != cfg.codesandbox.runner_path {
+                mem.provider_cache = None;
+            }
             mem.active_workflow = wf;
             mem.active_config = cfg;
             mem.active_workflow_path = Some(path.clone());
@@ -2792,7 +2798,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let secrets = self.secret_store.all_secret_values();
         // The sandbox clones the task branch, so it has to exist on origin first.
         self.workspaces
-            .push_branch(workspace, branch, Some(git_token.as_str()))
+            .push_branch_pinned(
+                workspace,
+                branch,
+                Some(git_token.as_str()),
+                Some(origin.as_str()),
+            )
             .await
             .map_err(|e| {
                 format!(
@@ -6730,6 +6741,25 @@ rl.on('line', (line) => {
             Some(CloudAgentKind::PiDurable)
         );
         assert_eq!(orch.get_task(&plain.id).await.unwrap().cloud_agent, None);
+    }
+
+    #[tokio::test]
+    async fn a_changed_runner_path_drops_the_cached_provider_status() {
+        let temp = TempDir::new().unwrap();
+        let (orch, _) = single_slot_orchestrator(&temp).await;
+        orch.set_workflow_fallback_path(temp.path().join("WORKFLOW.md"))
+            .await;
+        orch.memory.write().await.provider_cache = Some((Utc::now(), Vec::new()));
+
+        // A workflow that leaves the runner path as it was keeps the cached answer.
+        let plain = "---\ntracker:\n  kind: manual\n---\nWork on {{ issue.identifier }}: {{ issue.title }}\n";
+        orch.save_workflow_document(plain).await.unwrap();
+        assert!(orch.memory.read().await.provider_cache.is_some());
+
+        // A different runner path changes whether CodeSandbox counts as installed: no stale answer.
+        let with_runner = "---\ntracker:\n  kind: manual\ncodesandbox:\n  runner_path: C:/runner/bridge.mjs\n---\nWork on {{ issue.identifier }}: {{ issue.title }}\n";
+        orch.save_workflow_document(with_runner).await.unwrap();
+        assert!(orch.memory.read().await.provider_cache.is_none());
     }
 
     #[test]

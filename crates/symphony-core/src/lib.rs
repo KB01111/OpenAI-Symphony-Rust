@@ -231,18 +231,24 @@ mod tests {
     #[test]
     fn a_codesandbox_token_in_an_added_line_is_found_by_the_credential_scan() {
         // Log redaction is not enough: a committed key must also block publishing the branch.
-        let diff = "+CSB_API_KEY=csb_v1_AbCdEf0123456789AbCdEf0123456789\n context line\n";
-        let findings = detect_secrets_in_added_lines(diff);
+        // The fixture is assembled at run time: written out whole, this very file would trip the scan
+        // whenever a task branch of this repository adds it.
+        let key = format!("csb_v1_{}", "AbCdEf0123456789AbCdEf0123456789");
+        let diff = format!("+CSB_API_KEY={key}\n context line\n");
+        let findings = detect_secrets_in_added_lines(&diff);
         assert!(findings.contains(&"CodeSandbox API token"), "{findings:?}");
         // Removed and unchanged lines are not findings.
-        let removed = "-CSB_API_KEY=csb_v1_AbCdEf0123456789AbCdEf0123456789\n";
-        assert!(detect_secrets_in_added_lines(removed).is_empty());
+        let removed = format!("-CSB_API_KEY={key}\n");
+        assert!(detect_secrets_in_added_lines(&removed).is_empty());
     }
 
     #[test]
     fn codesandbox_secrets_are_redacted() {
-        let text = "key csb_v1_AbCdEf0123456789AbCdEf0123456789 in the log";
-        let redacted = redact_secrets(text, &[]);
+        let text = format!(
+            "key csb_v1_{} in the log",
+            "AbCdEf0123456789AbCdEf0123456789"
+        );
+        let redacted = redact_secrets(&text, &[]);
         assert!(!redacted.contains("csb_v1_"), "{redacted}");
         assert!(redacted.contains("[REDACTED]"));
     }

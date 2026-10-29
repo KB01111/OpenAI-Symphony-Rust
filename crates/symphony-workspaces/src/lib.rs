@@ -1187,13 +1187,28 @@ impl WorkspaceManager {
         branch: &str,
         token: Option<&str>,
     ) -> SymphonyResult<()> {
+        self.push_branch_pinned(workspace_path, branch, token, None)
+            .await
+    }
+
+    /// [`Self::push_branch`] that refuses to contact an `origin` other than `expected_origin`, the URL
+    /// the caller validated before it handed out the token: if `origin` was changed in between, the
+    /// token would otherwise be attached to whatever host it points at now.
+    pub async fn push_branch_pinned(
+        &self,
+        workspace_path: &Path,
+        branch: &str,
+        token: Option<&str>,
+        expected_origin: Option<&str>,
+    ) -> SymphonyResult<()> {
         if branch.is_empty() || branch.starts_with('-') || branch.contains(char::is_whitespace) {
             return Err(SymphonyError::GitWorktreeError(format!(
                 "`{branch}` is not a branch name that can be pushed"
             )));
         }
         let hooks = SafeHooksDir::new()?;
-        let env = Self::origin_auth_env(workspace_path, &hooks, token, true, None).await?;
+        let env =
+            Self::origin_auth_env(workspace_path, &hooks, token, true, expected_origin).await?;
         let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
         let env_refs: Vec<(&str, &str)> =
             env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -2102,15 +2117,70 @@ mod tests {
             &wt,
             &["remote", "set-url", "origin", elsewhere.to_str().unwrap()],
         );
-        let token = "ghp_exampleexampleexample1234";
+        let token = format!("ghp_{}", "exampleexampleexample1234");
         let err = manager
-            .fast_forward_from_origin(&wt, "task", Some(token), Some(&validated))
+            .fast_forward_from_origin(&wt, "task", Some(&token), Some(&validated))
             .await
             .unwrap_err();
         assert_eq!(err.code(), "conflict", "{err}");
         assert!(err.to_string().contains("changed"), "{err}");
-        assert!(!err.to_string().contains(token), "{err}");
+        assert!(!err.to_string().contains(&token), "{err}");
         assert!(!wt.join("cloud2.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn push_branch_pinned_refuses_an_origin_other_than_the_validated_one() {
+        let dir = tempdir().unwrap();
+        let (_repo, wt, origin) = repo_with_origin(dir.path());
+        let manager = WorkspaceManager::new();
+        std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+        let sha = manager
+            .commit_changes(&wt, "task", "a")
+            .await
+            .unwrap()
+            .unwrap();
+        let validated = manager.origin_url(&wt).await.unwrap();
+
+        // `origin` points somewhere else after it was validated: nothing is pushed there, and the
+        // token (assembled at run time so this file does not trip the credential scan) is not echoed.
+        let elsewhere = dir.path().join("elsewhere.git");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        git(&elsewhere, &["init", "--bare", "-b", "main"]);
+        git(
+            &wt,
+            &["remote", "set-url", "origin", elsewhere.to_str().unwrap()],
+        );
+        let token = format!("ghp_{}", "exampleexampleexample1234");
+        let err = manager
+            .push_branch_pinned(&wt, "task", Some(&token), Some(&validated))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "conflict", "{err}");
+        assert!(err.to_string().contains("changed"), "{err}");
+        assert!(!err.to_string().contains(&token), "{err}");
+        assert!(
+            git_stdout(
+                &elsewhere,
+                &["rev-parse", "--verify", "-q", "refs/heads/task"]
+            )
+            .await
+            .is_none(),
+            "the branch was pushed to the other origin"
+        );
+
+        // Back at the validated origin the push goes through.
+        git(
+            &wt,
+            &["remote", "set-url", "origin", origin.to_str().unwrap()],
+        );
+        manager
+            .push_branch_pinned(&wt, "task", None, Some(&validated))
+            .await
+            .unwrap();
+        let pushed = git_stdout(&origin, &["rev-parse", "refs/heads/task"])
+            .await
+            .unwrap();
+        assert_eq!(pushed.trim(), sha);
     }
 
     #[tokio::test]
