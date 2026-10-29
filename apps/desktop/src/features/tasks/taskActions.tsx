@@ -8,7 +8,7 @@ import { useNavigate } from "react-router-dom";
 import {
   canCancel,
   canDispatch,
-  canRetry,
+  canRetryTask,
   formatMessage,
   providerActions,
   type ProviderCapabilities,
@@ -205,7 +205,7 @@ function useTaskMenuModel(task: Task): TaskMenuModel {
         key: "retry",
         label: m.actions.retry,
         icon: <RotateCcw className={icon} aria-hidden />,
-        disabled: busy || !canRetry(task.status),
+        disabled: busy || !canRetryTask(task),
         onSelect: () => actions.retry(task)
       },
       {

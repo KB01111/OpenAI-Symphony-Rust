@@ -190,7 +190,8 @@ export default function SettingsPage() {
                 {formatMessage(m.invalidCount, { count: errorCount })}
               </span>
             ) : null}
-            {dirty ? (
+            {/* Also after a failed save: the error alert stays until Reset (or the next edit) clears it. */}
+            {dirty || save.isError ? (
               <Button disabled={save.isPending} onClick={onReset}>
                 <RotateCcw />
                 {m.reset}
@@ -207,7 +208,23 @@ export default function SettingsPage() {
           </>
         }
       />
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        {/* Below md the section list is a picker, so every section stays reachable in a narrow window. */}
+        <div className="shrink-0 border-b border-border bg-surface p-2 md:hidden">
+          <select
+            aria-label={m.sectionsNav}
+            value={active}
+            onChange={(e) => goTo(e.target.value as SectionId)}
+            className="h-8 w-full rounded-md border border-border bg-surface-sunken px-2 text-sm text-foreground"
+          >
+            {SECTION_IDS.map((id) => (
+              <option key={id} value={id}>
+                {m.sections[id]}
+                {(SECTION_FIELDS[id] ?? []).some((field) => errors[field]) ? ` – ${m.invalidSection}` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
         <nav aria-label={m.sectionsNav} className="hidden w-52 shrink-0 overflow-auto border-e border-border bg-surface p-2 md:block">
           <ul className="space-y-0.5">
             {SECTION_IDS.map((id) => (
@@ -256,7 +273,10 @@ export default function SettingsPage() {
                 {active === "desktop" ? <DesktopSection draft={current} errors={errors} update={update} /> : null}
                 {active === "scheduling" ? <SchedulingSection draft={current} errors={errors} update={update} /> : null}
                 {active === "defaults" ? <DefaultsSection draft={current} errors={errors} update={update} /> : null}
-                {active === "remote" ? <RemoteSection draft={current} errors={errors} update={update} /> : null}
+                {/* Stays mounted (hidden) so a one-time access token that was just issued survives switching sections. */}
+                <div hidden={active !== "remote"}>
+                  <RemoteSection draft={current} errors={errors} update={update} />
+                </div>
                 {active === "integrations" ? <IntegrationsSection /> : null}
                 {active === "backups" ? <BackupsSection draft={current} errors={errors} update={update} /> : null}
                 {active === "diagnostics" ? <DiagnosticsSection /> : null}

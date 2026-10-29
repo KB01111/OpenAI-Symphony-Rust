@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { isSymphonyApiError } from "@symphony/api-client";
 import { ArrowLeft, FolderOpen, PanelRight, Play, RotateCcw, Square } from "lucide-react";
-import { canCancel, canDispatch, canRetry, formatMessage, isActivePhase, providerActions, type RunAttemptPhase, type Task } from "@symphony/shared-types";
+import { canCancel, canDispatch, canRetryTask, formatMessage, isActivePhase, providerActions, type RunAttemptPhase, type Task } from "@symphony/shared-types";
 import {
   Button,
   ConfirmDialog,
@@ -61,9 +61,7 @@ const ExecutionControls: React.FC<{ task: Task }> = ({ task }) => {
           {m.actions.start}
         </Button>
       ) : null}
-      {/* A task that has never run has nothing to retry: Start is the one way forward. A ready task that
-          already ran (moved back from failed or review) keeps Retry, which also drops stored follow-ups. */}
-      {canRetry(task.status) && !(task.status === "ready" && task.attempt_count === 0) ? (
+      {canRetryTask(task) ? (
         <Button size="sm" disabled={busy} onClick={() => retry.mutate(task.id)}>
           <RotateCcw />
           {m.actions.retry}

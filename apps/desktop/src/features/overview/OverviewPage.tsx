@@ -12,8 +12,11 @@ import { useUiStore } from "../../store/uiStore.js";
 import { overviewMessages } from "./messages.js";
 import { computeOverviewMetrics, recentTimeline } from "./overviewLogic.js";
 
-/** Columns that only get room on a wide page: the table shares the row with the approvals panel. */
-const OPTIONAL_COLUMN = "hidden @7xl:table-cell";
+/**
+ * Columns that only get room on a very wide page. The table shares its row with the approvals panel (it
+ * gets two thirds), and all eight columns need about 1000px, so they return at a 98rem page, not sooner.
+ */
+const OPTIONAL_COLUMN = "hidden @min-[98rem]:table-cell";
 
 const LiveSessions: React.FC = () => {
   const m = useMessages(overviewMessages);

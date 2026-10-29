@@ -202,7 +202,13 @@ const AgentRunRow = React.memo(function AgentRunRow({
           </p>
         ) : null}
       </div>
-      <div role="toolbar" aria-label={formatMessage(m.actions.label, { identifier: row.identifier })} className="flex shrink-0 items-center gap-0.5">
+      {/* Clicks here never open the run: a disabled button (pointer-events: none) would otherwise let them fall through to the row. */}
+      <div
+        role="toolbar"
+        aria-label={formatMessage(m.actions.label, { identifier: row.identifier })}
+        className="flex shrink-0 items-center gap-0.5"
+        onClick={(e) => e.stopPropagation()}
+      >
         {allowed.dispatch ? iconButton(m.actions.dispatch, <Play className="size-4" />, () => onDispatch(row), true) : null}
         {allowed.retry ? iconButton(m.actions.retry, <RotateCcw className="size-4" />, () => onRetry(row)) : null}
         {allowed.cancel ? iconButton(m.actions.cancel, <Square className="size-4" />, () => onCancel(row)) : null}

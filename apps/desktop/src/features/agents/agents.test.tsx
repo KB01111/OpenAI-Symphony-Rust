@@ -49,6 +49,23 @@ describe("agent grouping", () => {
 });
 
 describe("AgentsPage", () => {
+  it("opens a run from its title, but not from clicks inside the row's toolbar", async () => {
+    const runtime = createMockRuntime({
+      "GET /state": () => snapshot(),
+      "GET /tasks": () => [task({ id: "t8", status: "queued", identifier: "SYM-8", title: "Queued work" })],
+      "GET /approvals": () => [],
+      "GET /projects": () => [project({ id: "p1" })],
+      "GET /providers": () => [providerStatus({ provider: "simulated", installed: true })]
+    });
+    // Only /runs is routed, so opening a run (/runs/t8) unmounts the page.
+    renderWithProviders(<AgentsPage />, { runtime, route: "/runs", path: "/runs" });
+    const toolbar = await screen.findByRole("toolbar", { name: /SYM-8/ });
+    fireEvent.click(toolbar);
+    expect(screen.getByRole("toolbar", { name: /SYM-8/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Queued work" }));
+    await waitFor(() => expect(screen.queryByRole("toolbar", { name: /SYM-8/ })).not.toBeInTheDocument());
+  });
+
   it("cancels a live run only after confirmation and exactly once", async () => {
     const runtime = createMockRuntime({
       "GET /state": () => snapshot({ running: [session()], counts: { running: 1, retrying: 0, queued: 0, blocked: 0, human_review: 0, completed: 0, failed: 0 } }),

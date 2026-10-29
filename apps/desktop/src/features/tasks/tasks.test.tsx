@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { getTranslations } from "@symphony/shared-types";
+import { canRetryTask, getTranslations } from "@symphony/shared-types";
 import NewTaskDialog from "../composer/NewTaskDialog.js";
 import TasksPage from "./TasksPage.js";
 import { deriveTitle } from "../composer/TaskComposer.js";
@@ -33,6 +33,13 @@ describe("board state machine", () => {
     expect(move).toHaveBeenCalledTimes(1);
     expect(move).toHaveBeenCalledWith("t1", "blocked");
     expect(resolveDrop({ id: "t1", status: "ready" }, "ready", new Set())).toEqual({ kind: "noop" });
+  });
+
+  it("offers Retry on a ready task only once it has run", () => {
+    expect(canRetryTask({ status: "ready", attempt_count: 0 })).toBe(false);
+    expect(canRetryTask({ status: "ready", attempt_count: 2 })).toBe(true);
+    expect(canRetryTask({ status: "failed", attempt_count: 0 })).toBe(true);
+    expect(canRetryTask({ status: "running", attempt_count: 1 })).toBe(false);
   });
 
   it("parses comma separated labels", () => {

@@ -279,6 +279,23 @@ describe("SettingsPage", () => {
     expect(screen.queryByRole("heading", { name: "Appearance" })).not.toBeInTheDocument();
   });
 
+  it("keeps every section reachable below the md width through a picker", async () => {
+    renderPage();
+    const picker = await screen.findByRole("combobox", { name: "Settings sections" });
+    fireEvent.change(picker, { target: { value: "backups" } });
+    expect(await screen.findByRole("heading", { name: "Backups" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Appearance" })).not.toBeInTheDocument();
+  });
+
+  it("keeps Remote access mounted while hidden, so an issued one-time token is not lost", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "Appearance" });
+    const hiddenHeading = screen.getByRole("heading", { name: "Remote access", hidden: true });
+    expect(hiddenHeading.closest("[hidden]")).not.toBeNull();
+    openSection("Remote access");
+    expect(screen.getByRole("heading", { name: "Remote access" }).closest("[hidden]")).toBeNull();
+  });
+
   it("offers Reset only once something has been edited", async () => {
     renderPage();
     await screen.findByRole("heading", { name: "Appearance" });

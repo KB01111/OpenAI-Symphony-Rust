@@ -1,5 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { Route, Routes } from "react-router-dom";
+import ActivityPage from "../activity/ActivityPage.js";
 import OverviewPage from "./OverviewPage.js";
 import { computeOverviewMetrics, recentTimeline } from "./overviewLogic.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
@@ -91,15 +93,22 @@ describe("OverviewPage", () => {
       "GET /events/recent": () => []
     });
     useUiStore.getState().setDrawerTab("events");
-    // Only /overview is routed, so leaving it for /activity unmounts the page.
-    renderWithProviders(<OverviewPage />, { runtime, route: "/overview", path: "/overview" });
+    renderWithProviders(
+      <Routes>
+        <Route path="/overview" element={<OverviewPage />} />
+        <Route path="/activity" element={<ActivityPage />} />
+      </Routes>,
+      { runtime, route: "/overview" }
+    );
     // The label also titles the approvals panel; the tile is the one inside a button.
     await screen.findByText("Active agents");
     const tile = screen.getAllByText("Pending approvals").map((el) => el.closest("button")).find(Boolean);
     expect(tile).toBeTruthy();
     fireEvent.click(tile!);
-    expect(useUiStore.getState().drawerTab).toBe("approvals");
-    await waitFor(() => expect(screen.queryByText("Active agents")).not.toBeInTheDocument());
+    // It lands on the Activity page with its approvals tab selected, not just anywhere but Overview.
+    expect(await screen.findByRole("heading", { name: "Activity" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Approvals/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("Active agents")).not.toBeInTheDocument();
   });
 
   it("invites registering a repository when none exist", async () => {

@@ -57,7 +57,7 @@ export const Sidebar: React.FC = () => {
             end={item.key === "runs"}
             className={({ isActive }) =>
               cn(
-                "relative flex h-8 items-center gap-2.5 rounded-lg px-2 text-sm text-muted-foreground outline-none transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60",
+                "relative flex h-8 items-center gap-2.5 rounded-lg px-2 text-sm [@media(max-height:760px)]:h-7 text-muted-foreground outline-none transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60",
                 isActive && "bg-surface-selected font-medium text-foreground"
               )
             }
@@ -132,7 +132,7 @@ export const Sidebar: React.FC = () => {
               <ChevronDown className={cn("size-3.5 transition-transform", !manageOpen && "-rotate-90")} aria-hidden />
               {w.sidebar.manage}
             </button>
-            {manageOpen ? <div className="max-h-[min(56vh,calc(100vh_-_24rem))] overflow-y-auto">{items}</div> : null}
+            {manageOpen ? <div className="max-h-[min(56vh,calc(100vh_-_18rem))] overflow-y-auto">{items}</div> : null}
           </div>
         </>
       )}
