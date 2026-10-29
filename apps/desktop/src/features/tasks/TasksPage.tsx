@@ -60,7 +60,8 @@ export default function TasksPage() {
       value={runsOpen ? "runs" : taskView}
       onValueChange={(next) => {
         if (!next) return;
-        showRuns(next === "runs");
+        // Board and Table are a saved preference and need no new address; only entering or leaving Runs does.
+        if ((next === "runs") !== runsOpen) showRuns(next === "runs");
         if (next !== "runs") setTaskView(next as TaskView);
       }}
     >

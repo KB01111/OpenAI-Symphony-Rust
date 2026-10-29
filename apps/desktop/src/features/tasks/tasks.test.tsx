@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { canRetryTask, getTranslations } from "@symphony/shared-types";
 import NewTaskDialog from "../composer/NewTaskDialog.js";
@@ -195,6 +195,29 @@ describe("task board columns", () => {
     fireEvent.click(screen.getByRole("button", { name: "history-back" }));
     expect(await screen.findByRole("radio", { name: "Board" })).toHaveAttribute("aria-checked", "true");
     expect(screen.queryByText("No agent runs yet")).not.toBeInTheDocument();
+  });
+
+  it("adds a history entry only when entering or leaving Runs, not when switching Board and Table", async () => {
+    useUiStore.getState().setTaskView("board");
+    const Entry = () => <output data-testid="entry">{useLocation().key}</output>;
+    renderWithProviders(
+      <>
+        <TasksPage />
+        <Entry />
+      </>,
+      { runtime: boardRuntime([task({ id: "a", project_id: "p1", status: "ready" })]), route: "/tasks", path: "/tasks" }
+    );
+    const entry = () => screen.getByTestId("entry").textContent;
+    fireEvent.click(await screen.findByRole("radio", { name: "Table" }));
+    expect(useUiStore.getState().taskView).toBe("table");
+    const afterTable = entry();
+    fireEvent.click(screen.getByRole("radio", { name: "Board" }));
+    expect(useUiStore.getState().taskView).toBe("board");
+    // Board and Table are a preference: the history entry does not change.
+    expect(entry()).toBe(afterTable);
+    fireEvent.click(screen.getByRole("radio", { name: "Runs" }));
+    await waitFor(() => expect(entry()).not.toBe(afterTable));
+    useUiStore.getState().setTaskView("board");
   });
 
   it("keeps showing Runs from cached projects when a later project refresh fails", async () => {
