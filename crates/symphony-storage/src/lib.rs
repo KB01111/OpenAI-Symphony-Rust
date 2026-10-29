@@ -9,9 +9,9 @@ use std::str::FromStr;
 use std::time::Duration;
 use symphony_core::{
     redact_secrets, AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, ApprovalStatus,
-    Issue, Project, ProviderKind, ProviderProfile, PullRequestReview, RunAttempt, RunAttemptPhase,
-    SymphonyError, SymphonyResult, Task, TaskStatus, ThreadUsageMark, TokenUsage, ToolCallKind,
-    ToolCallRecord, ToolCallStatus, ValidationResult,
+    CloudAgentKind, Issue, Project, ProviderKind, ProviderProfile, PullRequestReview, RunAttempt,
+    RunAttemptPhase, SymphonyError, SymphonyResult, Task, TaskStatus, ThreadUsageMark, TokenUsage,
+    ToolCallKind, ToolCallRecord, ToolCallStatus, ValidationResult,
 };
 
 pub mod backup;
@@ -54,10 +54,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "tool_calls",
         sql: include_str!("../migrations/0004_tool_calls.sql"),
     },
+    Migration {
+        version: 5,
+        name: "cloud_agent",
+        sql: include_str!("../migrations/0005_cloud_agent.sql"),
+    },
 ];
 
 /// The schema version this build reads and writes.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticBundle {
@@ -276,11 +281,11 @@ impl Storage {
                 estimated_cost_usd, duration_seconds, last_error, next_retry_at,
                 created_at, updated_at, started_at, completed_at,
                 thread_usage_thread_id, thread_usage_input_tokens, thread_usage_output_tokens,
-                thread_usage_total_tokens, usage_estimated
+                thread_usage_total_tokens, usage_estimated, cloud_agent
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
                 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
-                ?29, ?30, ?31, ?32, ?33
+                ?29, ?30, ?31, ?32, ?33, ?34
             )
             ON CONFLICT(id) DO UPDATE SET
                 issue_id = excluded.issue_id,
@@ -312,7 +317,8 @@ impl Storage {
                 thread_usage_input_tokens = excluded.thread_usage_input_tokens,
                 thread_usage_output_tokens = excluded.thread_usage_output_tokens,
                 thread_usage_total_tokens = excluded.thread_usage_total_tokens,
-                usage_estimated = excluded.usage_estimated
+                usage_estimated = excluded.usage_estimated,
+                cloud_agent = excluded.cloud_agent
             "#,
         )
         .bind(&task.id)
@@ -360,6 +366,7 @@ impl Storage {
                 .map(|m| m.usage.total_tokens as i64),
         )
         .bind(task.usage_estimated as i64)
+        .bind(task.cloud_agent.map(|a| a.as_str()))
         .execute(&self.pool)
         .await
         .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
@@ -1452,6 +1459,9 @@ fn row_to_task(r: sqlx::sqlite::SqliteRow) -> SymphonyResult<Task> {
         status: TaskStatus::from_str(&status_str).unwrap_or(TaskStatus::Ready),
         provider: ProviderKind::from_str(&prov_str).unwrap_or(ProviderKind::Codex),
         model: r.get("model"),
+        cloud_agent: r
+            .get::<Option<String>, _>("cloud_agent")
+            .and_then(|a| CloudAgentKind::from_str(&a).ok()),
         workspace_path: r.get("workspace_path"),
         branch_name: r.get("branch_name"),
         attempt_count: r.get::<i64, _>("attempt_count") as u32,

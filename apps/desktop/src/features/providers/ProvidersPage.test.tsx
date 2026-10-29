@@ -141,3 +141,46 @@ describe("ProvidersPage", () => {
     expect(document.body.textContent).not.toContain("sk-test-secret");
   });
 });
+
+describe("ProvidersPage: CodeSandbox cloud agents", () => {
+  function cloudRuntime(configured: string[]) {
+    const base = providerStatus();
+    return createMockRuntime({
+      "GET /providers": () => [
+        providerStatus({
+          provider: "codesandbox",
+          display_name: "CodeSandbox Cloud Agent",
+          installed: true,
+          binary_path: "C:\Program Files\nodejs\node.exe",
+          version: "v24.15.0",
+          auth_state: configured.includes("CSB_API_KEY") ? "authenticated" : "unauthenticated",
+          auth_detail: configured.includes("CSB_API_KEY") ? "CSB_API_KEY in Symphony credential vault" : null,
+          capabilities: { ...base.capabilities, provider: "codesandbox", supports_approvals: false, models: ["anthropic/claude-sonnet-5-5"] }
+        })
+      ],
+      "GET /settings": () => settings(),
+      "GET /credentials": () => ({ configured, allowed: ["GITHUB_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CSB_API_KEY"] })
+    });
+  }
+
+  it("asks for the CodeSandbox token on the card and explains what a cloud run needs", async () => {
+    renderWithProviders(<ProvidersPage />, { runtime: cloudRuntime([]), route: "/providers", path: "/providers" });
+    const card = await screen.findByRole("region", { name: "CodeSandbox Cloud Agent" });
+    expect(within(card).getByText("CSB_API_KEY")).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: /Set key/ })).toBeInTheDocument();
+    expect(within(card).getByText("Not signed in")).toBeInTheDocument();
+    // What else a cloud run depends on, and how to build the sandbox template.
+    expect(within(card).getByText("Cloud agents")).toBeInTheDocument();
+    expect(within(card).getByText(/GitHub token/)).toBeInTheDocument();
+    expect(within(card).getByText(/build:template/)).toBeInTheDocument();
+    // Other providers' cards do not get the cloud section.
+    expect(screen.queryAllByText("Cloud agents")).toHaveLength(1);
+  });
+
+  it("shows the token as configured once it is stored", async () => {
+    renderWithProviders(<ProvidersPage />, { runtime: cloudRuntime(["CSB_API_KEY"]), route: "/providers", path: "/providers" });
+    const card = await screen.findByRole("region", { name: "CodeSandbox Cloud Agent" });
+    expect(within(card).getByText("Configured")).toBeInTheDocument();
+    expect(within(card).getByText("Authenticated")).toBeInTheDocument();
+  });
+});

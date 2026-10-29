@@ -49,11 +49,12 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use symphony_core::{
     domain::{
-        AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, LocalePreference,
-        OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus, PullRequestReview,
-        RepositoryValidation, RunAttempt, RuntimeInfo, Task, TaskDiff, TaskStatus, ThemePreference,
-        ValidationResult, WorktreeInfo, MAX_BACKUP_INTERVAL_HOURS, MAX_BACKUP_KEEP,
-        MAX_EVENT_RETENTION_DAYS, MAX_PR_REFRESH_INTERVAL_MINUTES, MIN_PR_REFRESH_INTERVAL_MINUTES,
+        AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, CloudAgentKind,
+        LocalePreference, OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus,
+        PullRequestReview, RepositoryValidation, RunAttempt, RuntimeInfo, Task, TaskDiff,
+        TaskStatus, ThemePreference, ValidationResult, WorktreeInfo, MAX_BACKUP_INTERVAL_HOURS,
+        MAX_BACKUP_KEEP, MAX_EVENT_RETENTION_DAYS, MAX_PR_REFRESH_INTERVAL_MINUTES,
+        MIN_PR_REFRESH_INTERVAL_MINUTES,
     },
     error::{Result, SymphonyError},
     ToolCallRecord,
@@ -75,6 +76,9 @@ pub const ALLOWED_CREDENTIAL_KEYS: &[&str] = &[
     "LINEAR_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    // CodeSandbox API token for cloud agents. Only the CodeSandbox bridge receives it (never an
+    // agent subprocess), so it is deliberately not in `PROVIDER_ENV_CREDENTIALS`.
+    "CSB_API_KEY",
 ];
 
 /// Provider API keys that are exported into the runtime environment so agent subprocesses can
@@ -232,6 +236,10 @@ pub struct CreateTaskRequest {
     pub priority: Option<i32>,
     pub provider: Option<ProviderKind>,
     pub model: Option<String>,
+    /// Agent that runs in the sandbox for a `codesandbox` task (`mini_swe_agent`, `pi` or
+    /// `pi_durable`); omit it to use the default from settings.
+    #[serde(default)]
+    pub cloud_agent: Option<CloudAgentKind>,
     pub labels: Option<Vec<String>>,
     /// Dispatch the task to an agent immediately after creation.
     /// `dispatch_immediately` is accepted as an alias for older clients.
@@ -1236,7 +1244,7 @@ async fn create_task_handler(
     }
     match state
         .orchestrator
-        .create_manual_task(
+        .create_manual_task_with_agent(
             req.project_id,
             req.identifier,
             req.title.trim().to_string(),
@@ -1244,6 +1252,7 @@ async fn create_task_handler(
             req.priority,
             req.provider,
             req.model.filter(|m| !m.trim().is_empty()),
+            req.cloud_agent,
             req.labels.unwrap_or_default(),
             req.auto_start.unwrap_or(false),
         )
@@ -1769,6 +1778,7 @@ async fn put_settings_handler(
         || settings.backup_interval_hours.is_none()
         || settings.backup_keep.is_none()
         || settings.pr_refresh_interval_minutes.is_none()
+        || settings.default_cloud_agent.is_none()
     {
         let stored = match state.orchestrator.storage().get_settings().await {
             Ok(stored) => stored,
@@ -1784,6 +1794,7 @@ async fn put_settings_handler(
         settings.pr_refresh_interval_minutes = settings
             .pr_refresh_interval_minutes
             .or(stored.pr_refresh_interval_minutes);
+        settings.default_cloud_agent = settings.default_cloud_agent.or(stored.default_cloud_agent);
     }
     match state.orchestrator.storage().save_settings(&settings).await {
         Ok(()) => {

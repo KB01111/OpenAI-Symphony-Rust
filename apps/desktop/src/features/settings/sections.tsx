@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { DatabaseBackup, Download, FileJson, FolderOpen, Keyboard, KeyRound, LogOut, RefreshCw, ShieldOff } from "lucide-react";
 import { SymphonyApiError, errorMessage, isTauri, nativeHost } from "@symphony/api-client";
-import { ALL_PROVIDERS, formatMessage, type AppSettings, type Locale, type ProviderKind } from "@symphony/shared-types";
+import { ALL_CLOUD_AGENTS, ALL_PROVIDERS, formatMessage, type AppSettings, type CloudAgentKind, type Locale, type ProviderKind } from "@symphony/shared-types";
 import {
   Alert,
   Badge,
@@ -368,6 +368,23 @@ export const DefaultsSection: React.FC<FormSectionProps> = ({ draft, update }) =
             placeholder={status?.default_model ?? undefined}
             onValueChange={(value) => update((s) => ({ ...s, default_model: value }))}
           />
+        </Field>
+        <Field label={m.defaults.cloudAgent} hint={m.defaults.cloudAgentHint}>
+          <Select
+            value={draft.default_cloud_agent ?? "mini_swe_agent"}
+            onValueChange={(value) => update((s) => ({ ...s, default_cloud_agent: value as CloudAgentKind }))}
+          >
+            <SelectTrigger>
+              <SelectValue>{t.cloudAgent[draft.default_cloud_agent ?? "mini_swe_agent"]}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {ALL_CLOUD_AGENTS.map((agent) => (
+                <SelectItem key={agent} value={agent}>
+                  {t.cloudAgent[agent]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Field>
       </div>
       <Link to={paths.providers()} className="text-sm text-accent hover:underline">

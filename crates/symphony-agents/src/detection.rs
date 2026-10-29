@@ -37,6 +37,8 @@ pub fn provider_binary_name(kind: ProviderKind) -> Option<&'static str> {
         ProviderKind::Codex => Some("codex"),
         ProviderKind::ClaudeCode => Some("claude"),
         ProviderKind::OpenCode => Some("opencode"),
+        // The bridge runs on Node; the bundle itself is checked in `detect_provider_status`.
+        ProviderKind::CodeSandbox => Some("node"),
         ProviderKind::Simulated => None,
     }
 }
@@ -114,6 +116,26 @@ pub fn detect_auth(
     let home = home_dir();
     match kind {
         ProviderKind::Simulated => (ProviderAuthState::NotRequired, None),
+        ProviderKind::CodeSandbox => {
+            if in_vault("CSB_API_KEY") {
+                (
+                    ProviderAuthState::Authenticated,
+                    Some("CSB_API_KEY in Symphony credential vault".into()),
+                )
+            } else if env_present("CSB_API_KEY") {
+                (
+                    ProviderAuthState::Authenticated,
+                    Some("CSB_API_KEY environment variable".into()),
+                )
+            } else {
+                (
+                    ProviderAuthState::Unauthenticated,
+                    Some(
+                        "Add a CodeSandbox API token (codesandbox.io/t/api) as CSB_API_KEY".into(),
+                    ),
+                )
+            }
+        }
         ProviderKind::Codex => {
             if env_present("OPENAI_API_KEY") {
                 return (
@@ -438,7 +460,7 @@ async fn discover_models(
         ProviderKind::Codex => discover_codex_models(binary).await,
         ProviderKind::OpenCode => discover_opencode_models(binary).await,
         // Claude Code has no model listing; its aliases (`opus`, `sonnet`, …) never go stale.
-        ProviderKind::ClaudeCode | ProviderKind::Simulated => None,
+        ProviderKind::ClaudeCode | ProviderKind::CodeSandbox | ProviderKind::Simulated => None,
     };
     if let Ok(mut cache) = model_cache().lock() {
         // Cleared while probing (credentials changed): the answer may describe the old account.
@@ -546,6 +568,18 @@ pub async fn detect_provider_status(
             None => (false, None, None),
         },
     };
+    // The cloud provider also needs the compiled bridge next to Node.
+    let bridge_missing = kind == ProviderKind::CodeSandbox
+        && installed
+        && crate::codesandbox::find_runner_bundle(None).is_none();
+    if bridge_missing {
+        capabilities.status_message = format!(
+            "{} · Bridge not built: run `pnpm --filter @symphony/codesandbox-runner build` or set {}",
+            capabilities.status_message,
+            crate::codesandbox::RUNNER_ENV
+        );
+    }
+    let installed = installed && !bridge_missing;
     capabilities.available = installed;
     capabilities.binary_path = binary_path.clone();
     capabilities.version = version.clone();
@@ -582,6 +616,7 @@ pub async fn detect_provider_statuses(
         ProviderKind::Codex,
         ProviderKind::ClaudeCode,
         ProviderKind::OpenCode,
+        ProviderKind::CodeSandbox,
         ProviderKind::Simulated,
     ];
     let futures = kinds.iter().map(|kind| {

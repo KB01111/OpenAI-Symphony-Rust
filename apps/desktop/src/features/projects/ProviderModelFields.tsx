@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { ALL_PROVIDERS, formatMessage, type ProviderKind } from "@symphony/shared-types";
+import { ALL_CLOUD_AGENTS, ALL_PROVIDERS, DEFAULT_CLOUD_AGENT, formatMessage, type CloudAgentKind, type ProviderKind } from "@symphony/shared-types";
 import { Combobox, Field, FieldGrid, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, StatusDot, cn } from "@symphony/ui";
 import { useMessages, useT } from "../../lib/i18n.js";
 import { useProviders } from "../../lib/queries.js";
@@ -14,6 +14,13 @@ export interface ProviderModelFieldsProps {
   fallbackModel?: string | null;
   providerLabel?: string;
   modelLabel?: string;
+  /**
+   * Cloud agent select, shown when the provider is CodeSandbox and a change handler is given.
+   * `null` means "use the configured default" (`defaultCloudAgent`).
+   */
+  cloudAgent?: CloudAgentKind | null;
+  onCloudAgentChange?: (agent: CloudAgentKind | null) => void;
+  defaultCloudAgent?: CloudAgentKind | null;
   disabled?: boolean;
   /** `stacked` always uses one column (popovers); the default follows the container width. */
   layout?: "responsive" | "stacked";
@@ -33,6 +40,9 @@ export const ProviderModelFields: React.FC<ProviderModelFieldsProps> = ({
   fallbackModel,
   providerLabel,
   modelLabel,
+  cloudAgent,
+  onCloudAgentChange,
+  defaultCloudAgent,
   disabled,
   layout = "responsive",
   className
@@ -44,6 +54,9 @@ export const ProviderModelFields: React.FC<ProviderModelFieldsProps> = ({
   const current = statusByProvider.get(provider);
   const models = current?.capabilities.models ?? [];
   const defaultModel = fallbackModel ?? current?.default_model ?? null;
+  const defaultAgent: CloudAgentKind = defaultCloudAgent ?? DEFAULT_CLOUD_AGENT;
+  const agentLabel = (agent: CloudAgentKind) =>
+    agent === defaultAgent ? formatMessage(m.form.cloudAgentDefault, { agent: t.cloudAgent[agent] }) : t.cloudAgent[agent];
 
   const installLabel = (kind: ProviderKind): string | null => {
     const status = statusByProvider.get(kind);
@@ -84,6 +97,26 @@ export const ProviderModelFields: React.FC<ProviderModelFieldsProps> = ({
           placeholder={defaultModel ? formatMessage(m.form.modelDefault, { model: defaultModel }) : m.form.modelPlaceholder}
         />
       </Field>
+      {provider === "codesandbox" && onCloudAgentChange ? (
+        <Field label={m.form.cloudAgent} hint={m.form.cloudAgentHint}>
+          <Select
+            value={cloudAgent ?? defaultAgent}
+            disabled={disabled}
+            onValueChange={(next) => onCloudAgentChange(next === defaultAgent ? null : (next as CloudAgentKind))}
+          >
+            <SelectTrigger aria-label={m.form.cloudAgent}>
+              <SelectValue>{agentLabel(cloudAgent ?? defaultAgent)}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {ALL_CLOUD_AGENTS.map((agent) => (
+                <SelectItem key={agent} value={agent} textValue={t.cloudAgent[agent]}>
+                  {agentLabel(agent)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
     </>
   );
 

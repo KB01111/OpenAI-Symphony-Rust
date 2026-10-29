@@ -10,6 +10,19 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Added
 
+- **CodeSandbox cloud agents**: a new *CodeSandbox Cloud Agent* provider runs a task's agent in a
+  [CodeSandbox](https://codesandbox.io) microVM built from an SDK template, using a CodeSandbox API token
+  stored under *Providers* (`CSB_API_KEY`). The agent is chosen per task in the composer and defaults to
+  **mini-swe-agent** (configurable in *Settings → Default provider* and `codesandbox.default_agent` in
+  `WORKFLOW.md`); the **Pi coding agent** and **Pi Durable** are the alternatives. mini-swe-agent runs as a
+  checkpointing agent class that reloads its progress after an interruption. Whatever the agent, it commits
+  and pushes to the task branch after every edit, and Symphony fast-forwards the local worktree after each
+  push (it never touches a dirty or diverged worktree). A retry or follow-up resumes the same sandbox.
+  Needs Node.js ≥ 22, a GitHub token and an `https://github.com` origin; see
+  `tools/codesandbox-runner/README.md`. New: `ProviderKind::CodeSandbox`, `CloudAgentKind`,
+  `Task.cloud_agent` (migration 0005), `AppSettings.default_cloud_agent`, `CreateTaskRequest.cloud_agent`,
+  the `codesandbox:` section of `WORKFLOW.md`, and `WorkspaceManager::fast_forward_from_origin`.
+
 - **Thread-first desktop UI (Codex-style)**: the app opens on a prompt composer. One prompt box plus chips
   for repository (with its base branch), provider and model (with install state), priority, labels and
   *Run now* / *Add to queue* creates a task; the first line becomes the title and the whole prompt the

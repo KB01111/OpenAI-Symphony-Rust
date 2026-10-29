@@ -17,6 +17,14 @@ export const providerMessages = defineMessages({
     binaryPath: "Binary",
     version: "Version",
     installHint: "Install hint",
+    cloud: {
+      title: "Cloud agents",
+      body: "Tasks run in a CodeSandbox microVM with mini-swe-agent (default), the Pi coding agent or Pi Durable. The agent commits and pushes to the task branch after every edit, and the worktree here follows.",
+      needToken: "A CodeSandbox API token (store it above as CSB_API_KEY).",
+      needGithub: "A GitHub token under Settings → Integrations, and a repository whose origin is an https://github.com URL.",
+      needTemplate: "The sandbox template, built once from this repository; set codesandbox.template_id in WORKFLOW.md to its id.",
+      templateHint: "Build the template"
+    },
     builtin: "Built into the runtime",
     authentication: "Authentication",
     authUnknownHelp:
@@ -89,6 +97,14 @@ export const providerMessages = defineMessages({
     binaryPath: "Binärfil",
     version: "Version",
     installHint: "Installationstips",
+    cloud: {
+      title: "Molnagenter",
+      body: "Uppgifter körs i en CodeSandbox-mikroVM med mini-swe-agent (standard), kodagenten Pi eller Pi Durable. Agenten committar och pushar till uppgiftens gren efter varje ändring, och arbetsträdet här följer med.",
+      needToken: "En CodeSandbox API-token (spara den ovan som CSB_API_KEY).",
+      needGithub: "En GitHub-token under Inställningar → Integrationer och ett förråd vars origin är en https://github.com-adress.",
+      needTemplate: "Sandlådemallen, byggd en gång från det här förrådet; ange dess id som codesandbox.template_id i WORKFLOW.md.",
+      templateHint: "Bygg mallen"
+    },
     builtin: "Inbyggd i körtiden",
     authentication: "Autentisering",
     authUnknownHelp:

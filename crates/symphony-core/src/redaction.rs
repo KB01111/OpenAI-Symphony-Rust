@@ -180,6 +180,7 @@ pub fn redact_secrets(input: &str, extra_secrets: &[String]) -> String {
             Regex::new(r"github_pat_[A-Za-z0-9_]{16,255}").expect("valid regex"),
             Regex::new(r"sk-[A-Za-z0-9_-]{16,255}").expect("valid regex"),
             Regex::new(r"lin_api_[A-Za-z0-9_]{16,255}").expect("valid regex"),
+            Regex::new(r"csb_v\d+_[A-Za-z0-9_-]{16,255}").expect("valid regex"),
             Regex::new(r"(?i)Bearer\s+[A-Za-z0-9._\-]{16,512}").expect("valid regex"),
         ]
     });

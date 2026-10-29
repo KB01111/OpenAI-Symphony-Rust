@@ -1,0 +1,26 @@
+{
+  "name": "@symphony/codesandbox-runner",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Node bridge that runs Symphony cloud agents (mini-swe-agent, Pi, Pi Durable) in CodeSandbox sandboxes, plus the sandbox template they run in.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:template": "node scripts/build-template.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@codesandbox/sdk": "2.4.2"
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
+    "@types/node": "^22.20.5",
+    "esbuild": "0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

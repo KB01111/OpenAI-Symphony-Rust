@@ -10,14 +10,17 @@ import { providerMessages } from "./messages.js";
 /** Vault key each provider CLI reads, when it supports API-key authentication. */
 export const PROVIDER_CREDENTIAL_KEYS: Partial<Record<ProviderKind, string>> = {
   codex: "OPENAI_API_KEY",
-  claude_code: "ANTHROPIC_API_KEY"
+  claude_code: "ANTHROPIC_API_KEY",
+  // Token of the CodeSandbox account that hosts the cloud sandboxes (codesandbox.io/t/api).
+  codesandbox: "CSB_API_KEY"
 };
 
 /** Install commands shown when a CLI is not on PATH (commands, not prose; not translated). */
 const INSTALL_HINTS: Partial<Record<ProviderKind, string>> = {
   codex: "npm install -g @openai/codex",
   claude_code: "npm install -g @anthropic-ai/claude-code",
-  opencode: "npm install -g opencode-ai"
+  opencode: "npm install -g opencode-ai",
+  codesandbox: "pnpm --filter @symphony/codesandbox-runner build"
 };
 
 type CapabilityKey = keyof (typeof providerMessages)["en"]["capability"];
@@ -176,6 +179,23 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
           </div>
         ) : null}
       </Section>
+
+      {kind === "codesandbox" ? (
+        <Section title={m.cloud.title} className="@2xl:col-span-2">
+          <p className="text-sm text-muted-foreground">{m.cloud.body}</p>
+          <ul className="list-disc space-y-0.5 ps-5 text-xs text-muted-foreground">
+            <li>{m.cloud.needToken}</li>
+            <li>{m.cloud.needGithub}</li>
+            <li>{m.cloud.needTemplate}</li>
+          </ul>
+          <p className="text-xs text-muted-foreground">
+            {m.cloud.templateHint}:{" "}
+            <code className="rounded bg-code px-1 py-0.5 font-mono text-foreground">
+              CSB_API_KEY=… pnpm --filter @symphony/codesandbox-runner build:template
+            </code>
+          </p>
+        </Section>
+      ) : null}
 
       {/* Reference detail: one click away instead of two more sections on every card. */}
       <details className="rounded-md border border-border @2xl:col-span-2">

@@ -49,6 +49,17 @@ codex:
   read_timeout_ms: 5000
   stall_timeout_ms: 300000
 
+# Cloud agents (provider `codesandbox`): the agent runs in a CodeSandbox microVM built from a template
+# (`pnpm --filter @symphony/codesandbox-runner build:template`) and pushes to the task branch after every
+# edit. These are the defaults; uncomment and edit to change them. See tools/codesandbox-runner/README.md.
+# codesandbox:
+#   template_id: symphony-agents        # the id printed by build:template
+#   default_agent: mini_swe_agent       # mini_swe_agent | pi | pi_durable
+#   vm_tier: small                      # pico | nano | micro | small | medium | large | xlarge
+#   hibernation_timeout_secs: 1800
+#   cost_limit_usd: 3                   # mini-swe-agent only; 0 = no limit
+#   runner_path: ~/symphony/tools/codesandbox-runner/dist/bridge.mjs   # only outside a source checkout
+
 server:
   host: 127.0.0.1
   # The CLI's default API port, so this example agrees with the documentation. The desktop app

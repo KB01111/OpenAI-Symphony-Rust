@@ -30,6 +30,7 @@ fn config(provider: ProviderKind, command: String, workspace: &Path) -> AgentLau
         dynamic_tools: Vec::new(),
         require_human_approval_for_requests: false,
         resume_usage_baseline: None,
+        cloud: None,
     }
 }
 

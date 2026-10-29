@@ -30,6 +30,15 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
      - `LINEAR_API_KEY`
      - `SYMPHONY_REMOTE_TOKEN`
    - Coding agents cannot read raw tracker tokens from their environment. Tracker mutations happen exclusively through host-side, permission-controlled dynamic tools (`github_api`, `linear_graphql`).
+   - **CodeSandbox cloud agents** are the one place credentials leave the machine on purpose: the CodeSandbox
+     token (`CSB_API_KEY`) is used only by the Node bridge, and the GitHub token and the model provider keys
+     are sent to the sandbox so the agent can push and call its model. `CSB_API_KEY` is deliberately not in the
+     provider-key list that is exported to local agent subprocesses. All three reach the bridge only in the
+     request on its stdin (never a command line or environment variable), are registered for log redaction,
+     and are masked again by the bridge before anything is printed. The GitHub token is sent only when the
+     repository's `origin` is an `https://` URL on a GitHub host and matches the project's repository. In the
+     sandbox it is a git credential of the session; the agent runs as the same user and can read it, so use a
+     token scoped to the repository. See `tools/codesandbox-runner/README.md`.
 2. **Dedicated Secret Vault** (`crates/symphony-platform/src/vault.rs`):
    - Credentials live in `<data_dir>/credentials.vault`, never in SQLite. The file is a versioned JSON
      envelope (format 2) around one encrypted, authenticated blob (key names are encrypted too).

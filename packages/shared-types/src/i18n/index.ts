@@ -1,6 +1,7 @@
 import type {
   ApprovalDecision,
   ApprovalStatus,
+  CloudAgentKind,
   ProviderAuthState,
   ProviderKind,
   RunAttemptPhase,
@@ -119,8 +120,14 @@ const en = {
     codex: "OpenAI Codex",
     claude_code: "Claude Code",
     opencode: "OpenCode",
+    codesandbox: "CodeSandbox cloud agent",
     simulated: "Simulated agent"
   } satisfies Record<ProviderKind, string>,
+  cloudAgent: {
+    mini_swe_agent: "mini-swe-agent",
+    pi: "Pi coding agent",
+    pi_durable: "Pi Durable"
+  } satisfies Record<CloudAgentKind, string>,
   authState: {
     authenticated: "Authenticated",
     unauthenticated: "Not signed in",
@@ -264,7 +271,13 @@ const sv: TranslationDictionary = {
     codex: "OpenAI Codex",
     claude_code: "Claude Code",
     opencode: "OpenCode",
+    codesandbox: "CodeSandbox-molnagent",
     simulated: "Simulerad agent"
+  },
+  cloudAgent: {
+    mini_swe_agent: "mini-swe-agent",
+    pi: "Pi-kodagent",
+    pi_durable: "Pi Durable"
   },
   authState: {
     authenticated: "Autentiserad",

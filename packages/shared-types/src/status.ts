@@ -1,12 +1,17 @@
-import type { ProviderCapabilities, ProviderKind, RunAttemptPhase, TaskStatus } from "./generated/openapi/types.gen.js";
+import type { CloudAgentKind, ProviderCapabilities, ProviderKind, RunAttemptPhase, TaskStatus } from "./generated/openapi/types.gen.js";
 import { TASK_STATUS_TRANSITIONS } from "./generated/stateMachine.js";
 
 export const ALL_PROVIDERS: ReadonlyArray<ProviderKind> = [
   "codex",
   "claude_code",
   "opencode",
+  "codesandbox",
   "simulated"
 ];
+
+/** Agents a CodeSandbox cloud task can run in its sandbox; the first is the default. */
+export const ALL_CLOUD_AGENTS: ReadonlyArray<CloudAgentKind> = ["mini_swe_agent", "pi", "pi_durable"];
+export const DEFAULT_CLOUD_AGENT: CloudAgentKind = "mini_swe_agent";
 
 /** Mirrors `TaskStatus::can_transition_to` using the generated Rust transition table. */
 export function canTransitionTaskStatus(from: TaskStatus, to: TaskStatus): boolean {

@@ -83,6 +83,8 @@ export const settingsMessages = defineMessages({
       provider: "Default provider",
       model: "Default model",
       modelHint: "Leave empty to use the provider's own default. Any model id is accepted.",
+      cloudAgent: "Default cloud agent",
+      cloudAgentHint: "Agent that runs in the sandbox of CodeSandbox tasks that do not pick one.",
       notInstalled: "not installed",
       manage: "Manage providers"
     },
@@ -313,6 +315,8 @@ export const settingsMessages = defineMessages({
       provider: "Standardleverantör",
       model: "Standardmodell",
       modelHint: "Lämna tomt för att använda leverantörens egen standard. Alla modell-id:n accepteras.",
+      cloudAgent: "Standardmolnagent",
+      cloudAgentHint: "Agent som körs i sandlådan för CodeSandbox-uppgifter som inte väljer en egen.",
       notInstalled: "inte installerad",
       manage: "Hantera leverantörer"
     },

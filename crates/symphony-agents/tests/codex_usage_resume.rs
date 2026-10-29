@@ -105,6 +105,7 @@ async fn run(scenario: Scenario<'_>) -> Run {
         dynamic_tools: Vec::new(),
         require_human_approval_for_requests: false,
         resume_usage_baseline: scenario.baseline,
+        cloud: None,
     };
     let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(256);
     let mut session = start_agent_session(

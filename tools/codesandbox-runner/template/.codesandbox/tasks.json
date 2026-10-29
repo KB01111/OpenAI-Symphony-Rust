@@ -1,0 +1,6 @@
+{
+  "setupTasks": [
+    "mini --help > /dev/null && pi --version && node --version"
+  ],
+  "tasks": {}
+}

@@ -2468,6 +2468,7 @@
           "start_background_runtime_on_login",
           "default_provider",
           "default_model",
+          "default_cloud_agent",
           "polling_interval_ms",
           "resource_policy",
           "remote_api_enabled",
@@ -2503,6 +2504,18 @@
           "default_model": {
             "type": "string",
             "default": ""
+          },
+          "default_cloud_agent": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CloudAgentKind",
+                "description": "Agent used for CodeSandbox cloud runs when a task does not pick one. Omit it to keep the\nstored value; settings that never had a value use mini-swe-agent."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "mini_swe_agent"
           },
           "polling_interval_ms": {
             "type": "integer",
@@ -2570,6 +2583,7 @@
                 "codex",
                 "claude_code",
                 "opencode",
+                "codesandbox",
                 "simulated"
               ]
             }
@@ -2867,6 +2881,59 @@
           }
         }
       },
+      "CloudAgentKind": {
+        "type": "string",
+        "description": "Which agent runs inside a CodeSandbox cloud sandbox (`ProviderKind::CodeSandbox`).",
+        "enum": [
+          "mini_swe_agent",
+          "pi",
+          "pi_durable"
+        ]
+      },
+      "CodeSandboxConfig": {
+        "type": "object",
+        "description": "Settings for cloud agents that run in CodeSandbox microVMs.",
+        "required": [
+          "template_id",
+          "default_agent",
+          "vm_tier",
+          "hibernation_timeout_secs",
+          "cost_limit_usd",
+          "runner_path"
+        ],
+        "properties": {
+          "template_id": {
+            "type": "string",
+            "description": "Template id or alias built with `tools/codesandbox-runner/scripts/build-template.mjs`."
+          },
+          "default_agent": {
+            "$ref": "#/components/schemas/CloudAgentKind",
+            "description": "`mini_swe_agent` (default), `pi` or `pi_durable`."
+          },
+          "vm_tier": {
+            "type": "string",
+            "description": "`pico` | `nano` | `micro` | `small` | `medium` | `large` | `xlarge`."
+          },
+          "hibernation_timeout_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds of inactivity before the sandbox hibernates.",
+            "minimum": 0
+          },
+          "cost_limit_usd": {
+            "type": "number",
+            "format": "double",
+            "description": "Spend limit for one mini-swe-agent run in USD; `0` disables the limit."
+          },
+          "runner_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Path of the compiled bridge (`dist/bridge.mjs`); `None` finds the bundled one."
+          }
+        }
+      },
       "CodexConfig": {
         "type": "object",
         "required": [
@@ -3097,6 +3164,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "cloud_agent": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CloudAgentKind",
+                "description": "Agent that runs in the sandbox for a `codesandbox` task (`mini_swe_agent`, `pi` or\n`pi_durable`); omit it to use the default from settings."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "labels": {
@@ -4073,6 +4151,7 @@
           "codex",
           "claude_code",
           "opencode",
+          "codesandbox",
           "simulated"
         ]
       },
@@ -4806,6 +4885,7 @@
           "hooks",
           "agent",
           "codex",
+          "codesandbox",
           "server_port"
         ],
         "properties": {
@@ -4849,6 +4929,10 @@
           },
           "codex": {
             "$ref": "#/components/schemas/CodexConfig"
+          },
+          "codesandbox": {
+            "$ref": "#/components/schemas/CodeSandboxConfig",
+            "description": "CodeSandbox cloud agent settings (`codesandbox:` front matter section)."
           },
           "server_port": {
             "type": [
@@ -4953,6 +5037,7 @@
           "status",
           "provider",
           "model",
+          "cloud_agent",
           "workspace_path",
           "branch_name",
           "attempt_count",
@@ -4996,6 +5081,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "cloud_agent": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CloudAgentKind",
+                "description": "Agent that runs in the sandbox when `provider` is `codesandbox`; `None` uses the default\nfrom settings / `WORKFLOW.md` (mini-swe-agent)."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "workspace_path": {
