@@ -1,17 +1,19 @@
 name: Release (Windows)
 
-# Builds a release from a version tag (`v2.1.0`) and publishes it as a DRAFT GitHub release, so a
-# maintainer reviews the notes and assets before anything is public. Re-run it for an existing tag
-# with "Run workflow".
+# Builds a release from a version tag (`v2.1.0`) and publishes it as a GitHub release. Three ways in:
 #
-# To publish straight from CI instead of clicking "Publish" on the draft, run the workflow manually
-# with `publish` ticked. Signed builds are published as a normal release (marked "latest").
-# Unsigned builds are refused unless `allow_unsigned` is ticked as well; they are then published as
-# a PRE-RELEASE with the SmartScreen warning kept in the notes.
+# - Automatic (`auto-release.yml`): every pull request merged into main gets the next version, its
+#   tag, and a published release. It calls this workflow (`workflow_call`) with `publish`,
+#   `allow_unsigned` and `generated_notes` set.
+# - A pushed version tag: builds a DRAFT release, so a maintainer reviews the notes and assets before
+#   anything is public. Re-run it for an existing tag with "Run workflow".
+# - "Run workflow" with an existing tag: to publish straight from CI instead of clicking "Publish" on
+#   the draft, tick `publish`. Unsigned assets are refused unless `allow_unsigned` is ticked as well.
 #
 # Optional Authenticode signing: set the repository secrets WINDOWS_CERTIFICATE (base64 of a .pfx)
 # and WINDOWS_CERTIFICATE_PASSWORD. Without them the assets are built, tested and attached with
-# "UNSIGNED" in their names; unsigned builds trigger SmartScreen and are for verification only.
+# "UNSIGNED" in their names; unsigned installers trigger Windows SmartScreen, which is the only thing
+# a missing certificate costs: in-app updates are verified with the update key below, not Authenticode.
 #
 # Optional in-app updates: set the repository secrets TAURI_SIGNING_PRIVATE_KEY (the contents of
 # the private key made by `pnpm tauri signer generate`) and TAURI_SIGNING_PRIVATE_KEY_PASSWORD. The
@@ -33,7 +35,25 @@ on:
         type: boolean
         default: false
       allow_unsigned:
-        description: Allow publishing UNSIGNED assets, as a pre-release (only with publish)
+        description: Allow publishing UNSIGNED assets (SmartScreen warns; only with publish)
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build (v<version>); it must already exist
+        type: string
+        required: true
+      publish:
+        description: Publish the release when the build succeeds (otherwise it stays a draft)
+        type: boolean
+        default: false
+      allow_unsigned:
+        description: Allow publishing UNSIGNED assets (SmartScreen warns; only with publish)
+        type: boolean
+        default: false
+      generated_notes:
+        description: Write the release notes from the merged pull requests instead of CHANGELOG.md
         type: boolean
         default: false
 
@@ -41,7 +61,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -49,7 +69,7 @@ env:
   # Line tables for release builds: on Windows they go into the PDB (the .exe is unchanged), which
   # symbolizes panic backtraces from user log files.
   CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
-  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   windows-release:
@@ -79,11 +99,31 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Check the tag, the manifests and the dated CHANGELOG section agree
+        if: ${{ !inputs.generated_notes }}
         shell: pwsh
         run: |
           $version = node scripts/release-version.mjs --tag $env:RELEASE_TAG --notes "$env:RUNNER_TEMP/release-notes.md"
           if ($LASTEXITCODE -ne 0) { exit 1 }
           "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+
+      # Automatic releases have no hand-written CHANGELOG section: their notes come from GitHub instead.
+      - name: Check the tag and the manifests agree (automatic releases)
+        if: ${{ inputs.generated_notes }}
+        shell: pwsh
+        run: |
+          $version = node scripts/release-version.mjs --tag $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Write the release notes from the merged pull requests (automatic releases)
+        if: ${{ inputs.generated_notes }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $body = gh api "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" -f "tag_name=$env:RELEASE_TAG" --jq .body
+          if ($LASTEXITCODE -ne 0) { throw 'could not generate the release notes' }
+          Set-Content -Path "$env:RUNNER_TEMP/release-notes.md" -Value $body -Encoding utf8
 
       - name: Rust tests (including Windows-only native tests)
         run: cargo test --workspace --locked
@@ -143,10 +183,10 @@ jobs:
       # Fail before anything is built or uploaded: a refused publish must never touch an existing
       # (possibly signed) draft release.
       - name: Refuse to publish unsigned assets without allow_unsigned
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && steps.signing.outputs.signed != 'true' && github.event.inputs.allow_unsigned != 'true'
+        if: inputs.publish && steps.signing.outputs.signed != 'true' && !inputs.allow_unsigned
         shell: pwsh
         run: |
-          throw 'Refusing to publish UNSIGNED assets. Tick allow_unsigned to publish them as a pre-release, or add the signing secrets.'
+          throw 'Refusing to publish UNSIGNED assets. Tick allow_unsigned to publish them anyway (Windows SmartScreen warns about them), or add the signing secrets.'
 
       # Step outputs reach scripts through the environment, never through template expansion.
       - name: Build the desktop app and NSIS installer
@@ -213,8 +253,8 @@ jobs:
         env:
           SIGNED: ${{ steps.signing.outputs.signed }}
           UPDATER: ${{ steps.updater.outputs.enabled }}
-          # Set only on a manual run that publishes unsigned assets on purpose (see below).
-          PUBLISH_UNSIGNED: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && github.event.inputs.allow_unsigned == 'true' }}
+          # Set only on a run that publishes unsigned assets on purpose (see below).
+          PUBLISH_UNSIGNED: ${{ inputs.publish && inputs.allow_unsigned }}
         run: |
           $signed = $env:SIGNED -eq 'true'
           $suffix = if ($signed) { '' } else { '-UNSIGNED' }
@@ -266,7 +306,7 @@ jobs:
           if (-not $signed) {
             $notes = Get-Content "$env:RUNNER_TEMP/release-notes.md" -Raw
             $warning = if ($env:PUBLISH_UNSIGNED -eq 'true') {
-              "> **Unsigned pre-release.** These assets are not Authenticode-signed, so Windows SmartScreen warns about them. Use them for testing; verify the download against ``SHA256SUMS.txt``.`n`n"
+              "> **Unsigned release.** These assets are not Authenticode-signed, so Windows SmartScreen warns when the installer runs. Verify the download against ``SHA256SUMS.txt``; in-app updates are checked with the update key, not Authenticode.`n`n"
             } else {
               "> **Unsigned build.** These assets are not Authenticode-signed and trigger SmartScreen. Do not publish this draft; configure signing and re-run the release workflow.`n`n"
             }
@@ -321,17 +361,17 @@ jobs:
               --notes-file "$env:RUNNER_TEMP/release-notes.md" --repo $env:GITHUB_REPOSITORY
           }
 
-      - name: Publish the release (manual runs with "publish" only)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true'
+      - name: Publish the release (automatic releases and runs with "publish")
+        if: inputs.publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          SIGNED: ${{ steps.signing.outputs.signed }}
         run: |
-          # Unsigned assets without allow_unsigned were refused before the build started.
-          $signed = $env:SIGNED -eq 'true'
+          # Unsigned assets without allow_unsigned were refused before the build started. A stable
+          # version is published as the latest release, signed or not (SmartScreen warnings are in the
+          # notes); only a pre-release version is marked as a pre-release.
           $ghArgs = @('release', 'edit', $env:RELEASE_TAG, '--draft=false', '--repo', $env:GITHUB_REPOSITORY)
-          if ($signed -and $env:RELEASE_VERSION -notmatch '-') {
+          if ($env:RELEASE_VERSION -notmatch '-') {
             $ghArgs += '--prerelease=false'
             # Re-publishing an older stable tag must not move the "Latest" badge backwards.
             $latest = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>&1
