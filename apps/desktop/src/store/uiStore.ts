@@ -140,6 +140,12 @@ export const useUiStore = create<UiState>()(
       name: "symphony.ui.v2",
       version: 1,
       storage: safeJSONStorage,
+      // Saved state is untrusted: an earlier build could save Runs as the task view, which is not a
+      // board/table view any more, so anything but "table" falls back to the board.
+      merge: (persisted, current) => {
+        const saved = (persisted ?? {}) as Partial<UiState>;
+        return { ...current, ...saved, taskView: saved.taskView === "table" ? "table" : "board" };
+      },
       partialize: (s) => ({
         sidebarCollapsed: s.sidebarCollapsed,
         activeProjectId: s.activeProjectId,
