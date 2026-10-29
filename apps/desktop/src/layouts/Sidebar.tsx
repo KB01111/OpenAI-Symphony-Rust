@@ -132,7 +132,7 @@ export const Sidebar: React.FC = () => {
               <ChevronDown className={cn("size-3.5 transition-transform", !manageOpen && "-rotate-90")} aria-hidden />
               {w.sidebar.manage}
             </button>
-            {manageOpen ? <div className="max-h-[56vh] overflow-y-auto">{items}</div> : null}
+            {manageOpen ? <div className="max-h-[min(56vh,calc(100vh_-_24rem))] overflow-y-auto">{items}</div> : null}
           </div>
         </>
       )}
