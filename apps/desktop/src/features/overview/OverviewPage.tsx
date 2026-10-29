@@ -160,6 +160,7 @@ export default function OverviewPage() {
   const approvals = useApprovals(true);
   const setAddProjectOpen = useUiStore((s) => s.setAddProjectOpen);
   const setTaskFilters = useUiStore((s) => s.setTaskFilters);
+  const setActivityTab = useUiStore((s) => s.setDrawerTab);
 
   const metrics = useMemo(
     () => (state.data ? computeOverviewMetrics(state.data, tasks.data ?? [], streamStatus === "open") : null),
@@ -213,7 +214,10 @@ export default function OverviewPage() {
               icon={<ShieldQuestion className="size-3.5" aria-hidden />}
               value={approvals.data ? approvals.data.length : "—"}
               tone={(approvals.data?.length ?? 0) > 0 ? "warning" : "neutral"}
-              onClick={() => useUiStore.getState().setDrawerTab("approvals")}
+              onClick={() => {
+                setActivityTab("approvals");
+                navigate(paths.activity());
+              }}
             />
             <MetricTile
               label={m.metrics.failed}

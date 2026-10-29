@@ -27,6 +27,16 @@ describe("Desktop shell", () => {
     expect(screen.getByText("2 queued")).toBeInTheDocument();
   });
 
+  it("lists the day-to-day views before the setup views", async () => {
+    renderWithProviders(<AppRoutes />, { runtime: runtime(), route: "/settings" });
+    const nav = await screen.findByRole("navigation", { name: "Primary navigation" });
+    const views = within(nav)
+      .getAllByRole("link")
+      .map((link) => link.getAttribute("href")?.replace(/^#?\//, ""))
+      .filter((view) => view && !view.startsWith("runs/"));
+    expect(views).toEqual(["overview", "projects", "tasks", "runs", "reviews", "activity", "worktrees", "workflow", "providers", "settings"]);
+  });
+
   it("opens on the prompt composer", async () => {
     renderWithProviders(<AppRoutes />, { runtime: runtime(), route: "/" });
     expect(await screen.findByRole("heading", { level: 1, name: "What should Symphony work on?" })).toBeInTheDocument();

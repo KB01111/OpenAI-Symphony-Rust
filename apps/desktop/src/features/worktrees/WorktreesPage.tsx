@@ -154,7 +154,6 @@ export default function WorktreesPage() {
     [all, projectId, dirtyOnly]
   );
   const dirtyCount = useMemo(() => all.filter((w) => w.exists && w.dirty).length, [all]);
-  const selectedId: string | null = null;
   const filtersActive = projectId !== null || dirtyOnly;
 
   const columns = useMemo<ColumnDef<WorktreeInfo, unknown>[]>(() => {
@@ -291,7 +290,6 @@ export default function WorktreesPage() {
         data={visible}
         columns={columns}
         getRowId={(w) => w.task_id}
-        selectedId={selectedId}
         onRowActivate={(w) => navigate(paths.run(w.task_id))}
         initialSorting={[{ id: "lastModified", desc: true }]}
         ariaLabel={m.tableLabel}

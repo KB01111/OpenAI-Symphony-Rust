@@ -60,12 +60,15 @@ export const TopBar: React.FC<{ children?: React.ReactNode }> = ({ children }) =
       </button>
 
       <div className="flex shrink-0 items-center justify-end gap-0.5">
-        <Hint label={connection.label}>
-          <span className="inline-flex items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground">
-            <StatusDot tone={connection.tone} pulse={connection.tone === "warning"} label={connection.label} />
-            <span className="hidden xl:inline">{connection.short}</span>
-          </span>
-        </Hint>
+        {/* The footer always shows the connection; up here it only speaks up when something is wrong. */}
+        {connection.tone !== "success" ? (
+          <Hint label={connection.label}>
+            <span className="inline-flex items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground">
+              <StatusDot tone={connection.tone} pulse={connection.tone === "warning"} label={connection.label} />
+              <span className="hidden xl:inline">{connection.short}</span>
+            </span>
+          </Hint>
+        ) : null}
         <Hint label={paused ? m.commandBar.resume : m.commandBar.pause}>
           <Button
             variant="subtle"

@@ -58,7 +58,8 @@ const ExecutionControls: React.FC<{ task: Task }> = ({ task }) => {
           {m.actions.start}
         </Button>
       ) : null}
-      {canRetry(task.status) ? (
+      {/* A task that has not run yet has nothing to retry: Start is the one way forward. */}
+      {canRetry(task.status) && task.status !== "ready" ? (
         <Button size="sm" disabled={busy} onClick={() => retry.mutate(task.id)}>
           <RotateCcw />
           {m.actions.retry}

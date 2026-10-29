@@ -370,4 +370,10 @@ describe("ExecutionPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(rt.calls.filter((c) => c.method === "POST" && c.path === "/tasks/t1/retry")).toHaveLength(1));
   });
+
+  it("offers only Start (no Retry) for a task that has not run yet", async () => {
+    renderPage(runtime(task({ status: "ready" })));
+    expect(await screen.findByRole("button", { name: "Start" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
 });

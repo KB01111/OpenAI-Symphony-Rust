@@ -27,7 +27,7 @@ export const shellMessages = defineMessages({
     commandBar: {
       search: "Search or run a command…",
       newTask: "New task",
-      refresh: "Poll & reconcile",
+      refresh: "Refresh",
       pause: "Pause dispatching",
       resume: "Resume dispatching",
       approvals: "{count, plural, one {# pending approval} other {# pending approvals}}",
@@ -184,7 +184,7 @@ export const shellMessages = defineMessages({
     commandBar: {
       search: "Sök eller kör ett kommando…",
       newTask: "Ny uppgift",
-      refresh: "Avsök och stäm av",
+      refresh: "Uppdatera",
       pause: "Pausa utskick",
       resume: "Återuppta utskick",
       approvals: "{count, plural, one {# väntande godkännande} other {# väntande godkännanden}}",

@@ -146,11 +146,13 @@ loaded chunk; the CodeMirror editor is a separate lazy chunk loaded only by Work
 ## 6. Shell
 
 - **Sidebar** (collapsible, persisted): *New task*, a search field, tasks grouped by project as **threads**
-  (status dot, approval mark, relative time, collapsible groups) and a *Manage* group with the other views.
-  Collapsed it is an icon rail with tooltips.
+  (status dot, approval mark, relative time, collapsible groups) and a *Manage* group with the other views:
+  the day-to-day ones (Overview, Projects, Tasks, Agent runs, Pull requests, Activity) above a divider, then
+  the setup ones (Worktrees, Workflow Studio, Providers, Settings). Collapsed it is an icon rail with tooltips.
 - **Top bar** (below the native title bar - native decorations are kept for reliable drag, snap, maximize and
   system controls): current view, palette launcher, runtime connection status (derived from the real
-  stream/state), pause/resume dispatching, refresh, approvals popover, theme.
+  stream/state; shown only when it is not healthy, the status bar always shows it), pause/resume
+  dispatching, refresh, approvals popover, theme.
 - **Status bar**: connection, scheduler, counts, tokens/cost and hardware telemetry from the runtime
   snapshot (refreshed by events and every 15 s while visible; it never probes the GPU).
 - There are no nested resizable panel groups at shell level; each view owns its layout (resizable panes only

@@ -68,8 +68,9 @@ export const Sidebar: React.FC = () => {
             {badge > 0 ? <Count count={badge} important={badges[item.key]?.important ?? false} floating={collapsed} /> : null}
           </NavLink>
         );
+        const startsSetup = item.group === "setup" && NAV_ITEMS[NAV_ITEMS.indexOf(item) - 1]?.group === "work";
         return (
-          <li key={item.key}>
+          <li key={item.key} className={cn(startsSetup && "mt-1 border-t border-border pt-1")}>
             {collapsed ? (
               <Hint label={label} side="right">
                 {link}

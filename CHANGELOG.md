@@ -72,6 +72,8 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Fixed
 
+- The *Pending approvals* tile on Overview did nothing since the bottom dock was replaced by the
+  Activity view; it now opens Activity on its approvals tab.
 - Project settings: the Provider dropdown no longer overlaps the Model field, the form no longer shows a
   stray horizontal scrollbar, and the project table is no longer clipped next to the detail pane
   (`min-width: 250px` controls in a viewport-breakpoint grid, nested scrollers, fixed-width detail pane).
@@ -102,6 +104,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Changed
 
+- **Quieter shell**: the sidebar lists the day-to-day views (Overview, Projects, Tasks, Agent runs, Pull
+  requests, Activity) above the setup views (Worktrees, Workflow Studio, Providers, Settings); the top
+  bar shows the runtime connection only when it is not healthy (the footer always shows it); the refresh
+  button is called *Refresh*; a task that has not run yet offers *Start* without a redundant *Retry*.
 - **One component system on the desktop**: Fluent UI and the OpenAI Apps SDK UI are removed from the
   desktop app and the shared UI package in favour of shadcn/ui (Radix) with Tailwind tokens, so controls,
   dialogs and tabs share one sizing, one set of breakpoints and one CSS layer order. Markdown uses
