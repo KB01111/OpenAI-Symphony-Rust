@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { driverEnv, LineSplitter, runControl, runRequest, runTurn, DRIVER_DIR } from "../src/bridge.ts";
+import { ABORT_FALLBACK, driverEnv, LineSplitter, runControl, runRequest, runTurn, DRIVER_DIR } from "../src/bridge.ts";
 import type { OpenOptions, RunningCommand, SandboxGateway, SandboxHandle } from "../src/gateway.ts";
 import { parseDriverLine, parseRequest, redact, type BridgeEvent, type TurnRequest } from "../src/protocol.ts";
 
@@ -364,6 +364,26 @@ describe("controls", () => {
     const ok = await runControl({ type: "abort", csbApiKey: CSB_KEY, sandboxId: "sb-123" }, new FakeGateway(handle));
     expect(ok).toBe(true);
     expect(handle.runs[0].command).toBe(`bash ${DRIVER_DIR}/abort.sh`);
+    expect(handle.disposed).toBe(1);
+  });
+
+  it("falls back to a simpler kill when the sandbox's template has no abort.sh", async () => {
+    const handle = new FakeHandle(true);
+    // bash: No such file or directory.
+    handle.script = (call) => call.handle.exit(call.command.includes("abort.sh") ? 127 : 0);
+    const ok = await runControl({ type: "abort", csbApiKey: CSB_KEY, sandboxId: "sb-123" }, new FakeGateway(handle));
+    expect(ok).toBe(true);
+    expect(handle.runs.map((run) => run.command)).toEqual([`bash ${DRIVER_DIR}/abort.sh`, ABORT_FALLBACK]);
+    expect(handle.disposed).toBe(1);
+  });
+
+  it("does not report an abort as done when neither way of stopping the run worked", async () => {
+    const handle = new FakeHandle(true);
+    handle.script = (call) => call.handle.exit(127);
+    const { events, out } = collect();
+    const ok = await runRequest({ type: "abort", csbApiKey: CSB_KEY, sandboxId: "sb-123" }, new FakeGateway(handle), out, { hostGone: never });
+    expect(ok).toBe(false);
+    expect(events).toEqual([{ type: "error", code: "abort_failed", message: expect.stringContaining("exit code 127") }]);
     expect(handle.disposed).toBe(1);
   });
 

@@ -20,9 +20,9 @@ const INSTALL_HINTS: Partial<Record<ProviderKind, string>> = {
   codex: "npm install -g @openai/codex",
   claude_code: "npm install -g @anthropic-ai/claude-code",
   opencode: "npm install -g opencode-ai",
-  // The bridge is not part of the installer: build it in a source checkout, or point
-  // SYMPHONY_CODESANDBOX_RUNNER (or codesandbox.runner_path in WORKFLOW.md) at a built bridge.mjs.
-  codesandbox: "pnpm --filter @symphony/codesandbox-runner build  (source checkout; otherwise set SYMPHONY_CODESANDBOX_RUNNER to a built bridge.mjs)"
+  // The bridge is not part of the installer: this builds it in a source checkout. The other way to get one
+  // (a built bridge.mjs named by SYMPHONY_CODESANDBOX_RUNNER) is explained in `cloud.runnerHint`.
+  codesandbox: "pnpm --filter @symphony/codesandbox-runner build"
 };
 
 type CapabilityKey = keyof (typeof providerMessages)["en"]["capability"];
@@ -159,6 +159,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
                 <code className="rounded bg-code px-1 py-0.5 font-mono text-foreground">{INSTALL_HINTS[kind]}</code>
               </p>
             ) : null}
+            {kind === "codesandbox" ? <p className="text-xs text-muted-foreground">{m.cloud.runnerHint}</p> : null}
           </div>
         )}
         {provider.capabilities.status_message ? (

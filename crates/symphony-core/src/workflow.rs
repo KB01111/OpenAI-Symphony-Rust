@@ -441,10 +441,12 @@ impl ServiceConfig {
                 }
             }
             if let Some(Value::String(p)) = csb.get("runner_path") {
-                if !p.trim().is_empty() {
+                // Resolve `$VAR` first: an unset variable is "no override", not a path.
+                let resolved = resolve_env_token(p);
+                if !resolved.trim().is_empty() {
                     // Like `workspace.root`: `~`, `$VAR` and paths relative to the workflow file work.
                     cfg.codesandbox.runner_path = Some(
-                        expand_path_value(p, wf.source_path.as_deref())
+                        expand_path_value(&resolved, wf.source_path.as_deref())
                             .to_string_lossy()
                             .to_string(),
                     );

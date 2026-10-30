@@ -23,7 +23,9 @@ export const providerMessages = defineMessages({
       needToken: "A CodeSandbox API token (store it above as CSB_API_KEY).",
       needGithub: "A GitHub token under Settings → Integrations, and a repository whose origin is an https://github.com URL.",
       needTemplate: "The sandbox template, built once from this repository; set codesandbox.template_id in WORKFLOW.md to its id.",
-      templateHint: "Build the template"
+      templateHint: "Build the template",
+      runnerHint:
+        "The bridge is not part of the installer. Run the command in a source checkout, or set SYMPHONY_CODESANDBOX_RUNNER (or codesandbox.runner_path in WORKFLOW.md) to a built bridge.mjs."
     },
     builtin: "Built into the runtime",
     authentication: "Authentication",
@@ -103,7 +105,9 @@ export const providerMessages = defineMessages({
       needToken: "En CodeSandbox API-token (spara den ovan som CSB_API_KEY).",
       needGithub: "En GitHub-token under Inställningar → Integrationer och ett förråd vars origin är en https://github.com-adress.",
       needTemplate: "Sandlådemallen, byggd en gång från det här förrådet; ange dess id som codesandbox.template_id i WORKFLOW.md.",
-      templateHint: "Bygg mallen"
+      templateHint: "Bygg mallen",
+      runnerHint:
+        "Bryggan ingår inte i installationsprogrammet. Kör kommandot i en källkodskopia, eller ange en byggd bridge.mjs i SYMPHONY_CODESANDBOX_RUNNER (eller codesandbox.runner_path i WORKFLOW.md)."
     },
     builtin: "Inbyggd i körtiden",
     authentication: "Autentisering",

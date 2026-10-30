@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -55,6 +56,47 @@ describe("scripts/build-template.mjs", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toMatch(/Build an efficient memory snapshot/);
     expect(result.stdout).toMatch(/--alias/);
+  });
+
+  it("hands the template name to the CLI as one argument, and passes its exit code on", () => {
+    const dir = mkdtempSync(join(tmpdir(), "symphony-csb-"));
+    try {
+      const out = join(dir, "argv.json");
+      const fake = join(dir, "fake-csb.mjs");
+      // Records the arguments it was started with, then exits with the code the test asks for.
+      writeFileSync(
+        fake,
+        [
+          'import { writeFileSync } from "node:fs";',
+          "writeFileSync(process.env.FAKE_ARGV_OUT, JSON.stringify(process.argv.slice(2)));",
+          "process.exit(Number(process.env.FAKE_EXIT ?? 0));",
+          "",
+        ].join("\n"),
+      );
+      const env = { ...process.env, CSB_API_KEY: "csb_v1_exampleexampleexample12345678", SYMPHONY_CSB_BIN: fake, FAKE_ARGV_OUT: out };
+      const ok = spawnSync(process.execPath, [script, "--alias", "my-agents", "--vm-tier", "Micro"], { encoding: "utf8", env });
+      expect(ok.status, ok.stderr).toBe(0);
+      const argv: string[] = JSON.parse(readFileSync(out, "utf8"));
+      // A shell would have split these on the spaces.
+      expect(argv[0]).toBe("build");
+      expect(argv[1]).toMatch(/template$/);
+      expect(argv.slice(2)).toEqual([
+        "--name",
+        "Symphony cloud agents",
+        "--alias",
+        "my-agents",
+        "--vm-tier",
+        "Micro",
+        "--vm-build-tier",
+        "Medium",
+        "--ci",
+      ]);
+
+      const failed = spawnSync(process.execPath, [script], { encoding: "utf8", env: { ...env, FAKE_EXIT: "7" } });
+      expect(failed.status).toBe(7);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("refuses an unknown VM tier", () => {

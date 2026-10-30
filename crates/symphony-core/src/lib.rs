@@ -317,6 +317,17 @@ mod tests {
     }
 
     #[test]
+    fn an_unset_runner_path_variable_means_no_override() {
+        // Resolved before the empty check: it must not become an explicit path (the temp-dir fallback of
+        // `expand_path_value`) that the launch would then treat as authoritative.
+        let raw =
+            "---\ncodesandbox:\n  runner_path: $SYMPHONY_TEST_RUNNER_PATH_SURELY_UNSET\n---\nx";
+        let cfg =
+            ServiceConfig::from_workflow(&WorkflowDefinition::parse(raw, None).unwrap()).unwrap();
+        assert_eq!(cfg.codesandbox.runner_path, None);
+    }
+
+    #[test]
     fn the_codesandbox_section_is_optional_and_validated() {
         let none =
             WorkflowDefinition::parse("---\ntracker:\n  kind: github\n---\nx", None).unwrap();

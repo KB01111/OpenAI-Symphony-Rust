@@ -60,6 +60,30 @@ describe.skipIf(!unix)("abort.sh", () => {
     expect(pids("symphony-run-agent-fake")).toEqual([]);
   });
 
+  it("also stops a run that keeps starting new processes while it is being stopped", async () => {
+    const id = String(30000 + Math.floor(Math.random() * 9000));
+    const driver = join(dir, "symphony-run-agent-spawner.sh");
+    // A busy driver: every few milliseconds it starts another long-running command.
+    writeFileSync(
+      driver,
+      ["#!/bin/bash", "while true; do", `  sleep ${id}4 &`, "  sleep 0.01", "done", ""].join("\n"),
+      { mode: 0o755 },
+    );
+    const child = spawn("bash", [driver], { detached: true, stdio: "ignore" });
+    child.unref();
+
+    const sleepers = () => pids(`sleep ${id}4`);
+    for (let i = 0; i < 50 && sleepers().length < 5; i += 1) await sleep(100);
+    expect(sleepers().length).toBeGreaterThanOrEqual(5);
+
+    const result = spawnSync("bash", [abortScript], { encoding: "utf8", timeout: 30_000 });
+
+    expect(result.status, result.stderr).toBe(0);
+    // Nothing started between the scan and the signal got away.
+    expect(sleepers()).toEqual([]);
+    expect(pids("symphony-run-agent-spawner")).toEqual([]);
+  });
+
   it("succeeds without doing anything when no run is active", () => {
     const result = spawnSync("bash", [abortScript], { encoding: "utf8", timeout: 30_000 });
     expect(result.status, result.stderr).toBe(0);

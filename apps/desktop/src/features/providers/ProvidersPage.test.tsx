@@ -177,6 +177,26 @@ describe("ProvidersPage: CodeSandbox cloud agents", () => {
     expect(screen.queryAllByText("Cloud agents")).toHaveLength(1);
   });
 
+  it("shows the bridge install command on its own, with the alternative explained in prose", async () => {
+    const rt = cloudRuntime([]);
+    rt.on("GET /providers", () => [
+      providerStatus({
+        provider: "codesandbox",
+        display_name: "CodeSandbox Cloud Agent",
+        installed: false,
+        binary_path: null,
+        version: null,
+        auth_state: "unauthenticated",
+        auth_detail: null
+      })
+    ]);
+    renderWithProviders(<ProvidersPage />, { runtime: rt, route: "/providers", path: "/providers" });
+    const card = await screen.findByRole("region", { name: "CodeSandbox Cloud Agent" });
+    // The code element holds only the command, so copying it gives something that runs.
+    expect(within(card).getByText("pnpm --filter @symphony/codesandbox-runner build")).toBeInTheDocument();
+    expect(within(card).getByText(/set SYMPHONY_CODESANDBOX_RUNNER/)).toBeInTheDocument();
+  });
+
   it("shows the token as configured once it is stored", async () => {
     renderWithProviders(<ProvidersPage />, { runtime: cloudRuntime(["CSB_API_KEY"]), route: "/providers", path: "/providers" });
     const card = await screen.findByRole("region", { name: "CodeSandbox Cloud Agent" });

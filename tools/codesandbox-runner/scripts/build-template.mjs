@@ -58,7 +58,10 @@ const args = [
 console.log(`> csb ${args.join(" ")}`);
 // `node <csb script>`: no shell, so arguments with spaces stay one argument each and nothing in them is
 // interpreted, on Windows (where the npm shim is a .cmd file) as much as elsewhere.
-const result = spawnSync(process.execPath, [resolveCsbBin(), ...args], { stdio: "inherit", env: process.env });
+// SYMPHONY_CSB_BIN names another script to run in its place; the tests use it to see the arguments
+// the CLI receives without a network call.
+const csbBin = process.env.SYMPHONY_CSB_BIN || resolveCsbBin();
+const result = spawnSync(process.execPath, [csbBin, ...args], { stdio: "inherit", env: process.env });
 if (result.status !== 0) process.exit(result.status ?? 1);
 
 console.log(`
