@@ -114,7 +114,15 @@ fn codex_analysis_command(configured: &str) -> SymphonyResult<String> {
     let program = program.rsplit(['/', '\\']).next().unwrap_or(program);
     let program = program.trim_end_matches(".cmd").trim_end_matches(".exe");
     if program.eq_ignore_ascii_case("codex") && rest.split_whitespace().any(|w| w == "app-server") {
-        Ok(format!("{trimmed} {}", CODEX_ANALYSIS_FLAGS.join(" ")))
+        let command = format!("{trimmed} {}", CODEX_ANALYSIS_FLAGS.join(" "));
+        // The Windows launcher hands the command to PowerShell, which takes a quoted path for a
+        // string unless the call operator is there; bash would not understand the operator.
+        let quoted = matches!(trimmed.chars().next(), Some('"' | '\''));
+        Ok(if cfg!(windows) && quoted {
+            format!("& {command}")
+        } else {
+            command
+        })
     } else {
         Err(SymphonyError::Conflict(format!(
             "AI analysis with Codex needs the command to be `codex app-server` (it switches off Codex's own tools); `{trimmed}` is something else. Use another provider for this project, or set the Codex command back to `codex app-server`."
@@ -368,6 +376,26 @@ mod tests {
                 .unwrap()
                 .contains("shell_tool=false"));
         }
+    }
+
+    #[test]
+    fn a_quoted_codex_path_is_made_invokable_for_powershell_only_where_that_is_the_shell() {
+        let quoted = r#""C:\Program Files\nodejs\codex.cmd" app-server"#;
+        let command = codex_analysis_command(quoted).unwrap();
+        if cfg!(windows) {
+            // PowerShell would otherwise read the quoted path as a string and not run it.
+            assert!(command.starts_with("& \"C:"), "{command}");
+        } else {
+            assert!(command.starts_with("\"C:"), "{command}");
+        }
+        // Already written with the operator: not doubled.
+        let with_operator = codex_analysis_command(&format!("& {quoted}")).unwrap();
+        assert!(with_operator.starts_with("& \"C:"), "{with_operator}");
+        assert!(!with_operator.starts_with("& &"), "{with_operator}");
+        // An unquoted command is left as it is.
+        assert!(codex_analysis_command("codex app-server")
+            .unwrap()
+            .starts_with("codex app-server "));
     }
 
     #[test]
