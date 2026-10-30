@@ -1095,7 +1095,9 @@ impl KnowledgeService {
         sha: &str,
     ) -> SymphonyResult<Option<CommitAnalysis>> {
         let full = GitRepo::new(&project.repo_path).resolve_commit(sha).await?;
-        self.store.latest_analysis(&project.id, &full).await
+        self.store
+            .latest_analysis(&project.id, &full, ANALYSIS_PROMPT_VERSION)
+            .await
     }
 
     /// Start (or return the cached / running) AI analysis of a commit.
@@ -1128,7 +1130,7 @@ impl KnowledgeService {
         if !self.claim(key.clone()) {
             return self
                 .store
-                .latest_analysis(&project.id, &full)
+                .latest_analysis(&project.id, &full, ANALYSIS_PROMPT_VERSION)
                 .await?
                 .ok_or_else(|| {
                     SymphonyError::Conflict("an analysis of this commit is already running".into())
@@ -1178,7 +1180,7 @@ impl KnowledgeService {
             );
         });
         self.store
-            .latest_analysis(&project.id, &full)
+            .latest_analysis(&project.id, &full, ANALYSIS_PROMPT_VERSION)
             .await?
             .ok_or_else(|| SymphonyError::StorageError("the analysis record disappeared".into()))
     }

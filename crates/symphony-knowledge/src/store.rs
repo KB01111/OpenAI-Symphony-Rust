@@ -612,17 +612,21 @@ impl KnowledgeStore {
         Ok(())
     }
 
-    /// The newest analysis of a commit (any status).
+    /// The newest analysis of a commit made with prompt version `prompt_version` (any status). One
+    /// made with an older prompt is not the current answer and is not shown as one.
     pub async fn latest_analysis(
         &self,
         project_id: &str,
         sha: &str,
+        prompt_version: u32,
     ) -> SymphonyResult<Option<CommitAnalysis>> {
         let row = sqlx::query(
-            "SELECT * FROM kb_analyses WHERE project_id = ?1 AND sha = ?2 ORDER BY id DESC LIMIT 1",
+            "SELECT * FROM kb_analyses WHERE project_id = ?1 AND sha = ?2 AND prompt_version = ?3
+             ORDER BY id DESC LIMIT 1",
         )
         .bind(project_id)
         .bind(sha)
+        .bind(i64::from(prompt_version))
         .fetch_optional(&self.pool)
         .await
         .map_err(db_err)?;
@@ -1008,6 +1012,20 @@ mod tests {
         assert_eq!(cached.output_tokens, 20);
         assert!(store
             .cached_analysis("p1", &sha, ProviderKind::Codex, Some("m"), 2)
+            .await
+            .unwrap()
+            .is_none());
+        // An analysis made with an older prompt is not shown as the current one.
+        assert_eq!(
+            store
+                .latest_analysis("p1", &sha, 1)
+                .await
+                .unwrap()
+                .map(|a| a.id),
+            Some(id)
+        );
+        assert!(store
+            .latest_analysis("p1", &sha, 2)
             .await
             .unwrap()
             .is_none());
