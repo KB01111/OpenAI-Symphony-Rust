@@ -24,6 +24,8 @@ export const providerMessages = defineMessages({
       needGithub: "A GitHub token under Settings → Integrations, and a repository whose origin is an https://github.com URL.",
       needTemplate: "The sandbox template, built once from this repository; set codesandbox.template_id in WORKFLOW.md to its id.",
       templateHint: "Build the template",
+      templateEnv:
+        "Set the token in the same terminal first. PowerShell: $env:CSB_API_KEY = \"…\"  ·  cmd.exe: set CSB_API_KEY=…  ·  macOS and Linux: export CSB_API_KEY=…",
       runnerHint:
         "The bridge is not part of the installer. Run the command in a source checkout, or set SYMPHONY_CODESANDBOX_RUNNER (or codesandbox.runner_path in WORKFLOW.md) to a built bridge.mjs."
     },
@@ -106,6 +108,8 @@ export const providerMessages = defineMessages({
       needGithub: "En GitHub-token under Inställningar → Integrationer och ett förråd vars origin är en https://github.com-adress.",
       needTemplate: "Sandlådemallen, byggd en gång från det här förrådet; ange dess id som codesandbox.template_id i WORKFLOW.md.",
       templateHint: "Bygg mallen",
+      templateEnv:
+        "Ange först token i samma terminal. PowerShell: $env:CSB_API_KEY = \"…\"  ·  cmd.exe: set CSB_API_KEY=…  ·  macOS och Linux: export CSB_API_KEY=…",
       runnerHint:
         "Bryggan ingår inte i installationsprogrammet. Kör kommandot i en källkodskopia, eller ange en byggd bridge.mjs i SYMPHONY_CODESANDBOX_RUNNER (eller codesandbox.runner_path i WORKFLOW.md)."
     },

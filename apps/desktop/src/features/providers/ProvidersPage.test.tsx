@@ -173,6 +173,10 @@ describe("ProvidersPage: CodeSandbox cloud agents", () => {
     expect(within(card).getByText("Cloud agents")).toBeInTheDocument();
     expect(within(card).getByText(/GitHub token/)).toBeInTheDocument();
     expect(within(card).getByText(/build:template/)).toBeInTheDocument();
+    // The build command stands alone; how to set the token is spelled out for each shell, since
+    // `NAME=value command` is not valid in PowerShell or cmd.exe.
+    expect(within(card).getByText("pnpm --filter @symphony/codesandbox-runner build:template")).toBeInTheDocument();
+    expect(within(card).getByText(/\$env:CSB_API_KEY.*set CSB_API_KEY=.*export CSB_API_KEY=/)).toBeInTheDocument();
     // Other providers' cards do not get the cloud section.
     expect(screen.queryAllByText("Cloud agents")).toHaveLength(1);
   });

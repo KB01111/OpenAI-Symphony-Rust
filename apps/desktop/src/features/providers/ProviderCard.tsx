@@ -194,9 +194,10 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
           <p className="text-xs text-muted-foreground">
             {m.cloud.templateHint}:{" "}
             <code className="rounded bg-code px-1 py-0.5 font-mono text-foreground">
-              CSB_API_KEY=… pnpm --filter @symphony/codesandbox-runner build:template
+              pnpm --filter @symphony/codesandbox-runner build:template
             </code>
           </p>
+          <p className="text-xs text-muted-foreground">{m.cloud.templateEnv}</p>
         </Section>
       ) : null}
 
