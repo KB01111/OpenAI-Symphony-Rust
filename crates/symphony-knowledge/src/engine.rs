@@ -429,8 +429,13 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Directories that belong to the package of a manifest at the repository root.
+const ROOT_PACKAGE_DIRS: &[&str] = &["src", "lib", "app", "tests", "test", "benches", "examples"];
+
 /// The module a file belongs to: the nearest directory with a package manifest, else the first
-/// path component, else the repository root.
+/// path component, else the repository root. A manifest at the root is the empty directory in
+/// `manifest_dirs`: it makes the root the package of the files beside it and under `src/` and the
+/// like (a monorepo's other directories keep their own names).
 pub fn module_of(file: &str, manifest_dirs: &HashSet<String>) -> String {
     let mut dir = file.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
     loop {
@@ -443,6 +448,9 @@ pub fn module_of(file: &str, manifest_dirs: &HashSet<String>) -> String {
         }
     }
     match file.split_once('/') {
+        Some((first, _)) if manifest_dirs.contains("") && ROOT_PACKAGE_DIRS.contains(&first) => {
+            ".".to_string()
+        }
         Some((first, _)) => first.to_string(),
         None => ".".to_string(),
     }
@@ -480,7 +488,7 @@ pub fn import_graph(json: &[u8], known_files: &HashSet<String>) -> SymphonyResul
     let manifest_dirs: HashSet<String> = known_files
         .iter()
         .filter(|f| matches!(file_name(f), "Cargo.toml" | "package.json"))
-        .filter_map(|f| f.rsplit_once('/').map(|(d, _)| d.to_string()))
+        .map(|f| f.rsplit_once('/').map(|(d, _)| d).unwrap_or("").to_string())
         .collect();
 
     // Pass 1: which nodes are methods / enum cases, from the structural edges.
@@ -745,6 +753,17 @@ mod tests {
         );
         assert_eq!(module_of("docs/guide.md", &manifests), "docs");
         assert_eq!(module_of("README.md", &manifests), ".");
+        // Without a root manifest `src/` is just a directory.
+        assert_eq!(module_of("src/main.rs", &manifests), "src");
+    }
+
+    #[test]
+    fn a_manifest_at_the_root_makes_the_root_the_package_of_its_source_directories() {
+        let manifests: HashSet<String> = ["", "crates/a"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(module_of("src/main.rs", &manifests), ".");
+        assert_eq!(module_of("tests/it.rs", &manifests), ".");
+        assert_eq!(module_of("crates/a/src/lib.rs", &manifests), "crates/a");
+        assert_eq!(module_of("docs/guide.md", &manifests), "docs");
     }
 
     #[test]

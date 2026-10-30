@@ -60,7 +60,8 @@ export const CommitPanel: React.FC<{ sha: string }> = ({ sha }) => {
   if (commit.isPending) return <LoadingRows className="p-3" rows={6} />;
   if (commit.isError) return <ErrorState title={m.commits.loadFailed} message={commit.error.message} onRetry={() => void commit.refetch()} />;
   const { commit: summary, body, files } = commit.data;
-  const testFiles = files.map((f) => f.path).filter(isTestFile);
+  // A rename counts when either side is a test file (a test moved out of a test directory).
+  const testFiles = files.filter((f) => isTestFile(f.path) || (f.old_path != null && isTestFile(f.old_path))).map((f) => f.path);
 
   return (
     <div className="flex h-full min-h-0 flex-col">

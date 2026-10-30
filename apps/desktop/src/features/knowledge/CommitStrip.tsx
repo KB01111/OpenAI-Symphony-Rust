@@ -12,7 +12,8 @@ const STRIP_COMMITS = 14;
 
 /**
  * The newest commits across all worktrees, always visible under the tabs. Choosing one selects it
- * everywhere: the graph highlights what it changed and the commit panel opens on it.
+ * everywhere: on the Graph and Commits tabs it stays where it is (the graph highlights what the
+ * commit changed, the Commits tab shows its panel); from any other tab it opens the commit panel.
  */
 export const CommitStrip: React.FC = () => {
   const m = useMessages(knowledgeMessages);
@@ -39,7 +40,7 @@ export const CommitStrip: React.FC = () => {
                 <li key={commit.sha} className="shrink-0">
                   <button
                     type="button"
-                    onClick={() => selection.selectCommit(selected ? null : commit.sha)}
+                    onClick={() => selection.selectCommit(selected ? null : commit.sha, selected || selection.tab === "graph" || selection.tab === "commits" ? undefined : "commits")}
                     aria-pressed={selected}
                     className={cn(
                       "flex w-60 flex-col gap-1 rounded-md border px-2.5 py-1.5 text-start outline-none transition-colors hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/60",
@@ -54,7 +55,7 @@ export const CommitStrip: React.FC = () => {
                       <TimeAgo iso={commit.committed_at} />
                       {commit.worktrees.slice(0, 2).map((wt) => (
                         <Badge key={wt.worktree_id} tone="neutral" className="max-w-24 truncate">
-                          {wt.branch ?? "detached"}
+                          {wt.branch ?? m.commits.badges.detached}
                         </Badge>
                       ))}
                       {commit.unpushed ? <Badge tone="warning">{m.commits.badges.unpushed}</Badge> : null}

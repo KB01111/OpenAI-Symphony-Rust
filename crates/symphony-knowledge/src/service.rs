@@ -78,6 +78,19 @@ fn safe_component(id: &str) -> String {
     }
 }
 
+/// The Knowledge Base holds copies of repository source, so its directory is closed to other local
+/// users where the platform has modes (the data directory it lives in already is; this does not
+/// rely on that). Best effort: a failure leaves the directory as it was.
+fn restrict_to_owner(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
 impl KnowledgePaths {
     pub fn new(data_dir: &Path) -> Self {
         Self {
@@ -135,6 +148,8 @@ pub struct KnowledgeService {
     events: RwLock<Option<Arc<dyn EventSink>>>,
     /// `(project, sha)` analyses and project chats being produced right now.
     in_flight: Mutex<HashSet<String>>,
+    /// Projects removed while an index run was still going; that run purges them when it ends.
+    forgotten: Mutex<HashSet<String>>,
     /// Projects whose repository is being watched for live updates.
     pub(crate) watchers: Mutex<HashMap<String, Arc<crate::watch::WatchState>>>,
     /// Running Serena sessions by project; idle ones are closed by [`Self::reap_idle_navigators`].
@@ -156,6 +171,7 @@ impl KnowledgeService {
     pub async fn open(data_dir: &Path, config: EngineConfig) -> SymphonyResult<Arc<Self>> {
         let paths = KnowledgePaths::new(data_dir);
         std::fs::create_dir_all(paths.root())?;
+        restrict_to_owner(paths.root());
         // Scratch and per-commit work directories only exist while a job runs.
         for dir in [paths.work_root(), paths.scratch_root()] {
             let _ = std::fs::remove_dir_all(&dir);
@@ -172,6 +188,7 @@ impl KnowledgeService {
             runner: RwLock::new(None),
             events: RwLock::new(None),
             in_flight: Mutex::new(HashSet::new()),
+            forgotten: Mutex::new(HashSet::new()),
             watchers: Mutex::new(HashMap::new()),
             navigators: Mutex::new(HashMap::new()),
         });
@@ -270,8 +287,37 @@ impl KnowledgeService {
     }
 
     /// Drop everything stored for a project that was removed: the index, analyses, chat and the
-    /// snapshot and engine caches on disk.
+    /// snapshot and engine caches on disk. An index run that is still going cannot be stopped from
+    /// here, so the project is marked and the run cleans up after itself when it ends (otherwise it
+    /// would write the snapshot back after the removal).
     pub async fn forget_project(&self, project_id: &str) {
+        self.forgotten
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(project_id.to_string());
+        let idle = self.project_lock(project_id).try_lock_owned().is_ok();
+        if idle {
+            self.forgotten
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(project_id);
+        }
+        self.purge_project(project_id).await;
+    }
+
+    /// Run by an index task that finishes after its project was removed.
+    async fn purge_if_forgotten(&self, project_id: &str) {
+        let forgotten = self
+            .forgotten
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(project_id);
+        if forgotten {
+            self.purge_project(project_id).await;
+        }
+    }
+
+    async fn purge_project(&self, project_id: &str) {
         if let Err(error) = self.store.delete_project(project_id).await {
             tracing::warn!(project = %project_id, %error, "could not remove the knowledge index of a deleted project");
         }
@@ -652,6 +698,7 @@ impl KnowledgeService {
         tokio::spawn(async move {
             let outcome = this.run_index(&project, &repo, &engine, run_id, &sha).await;
             drop(guard);
+            this.purge_if_forgotten(&project.id).await;
             match outcome {
                 Ok(()) => {
                     if let Ok(Some(run)) = this.store.run(run_id).await {
@@ -690,7 +737,16 @@ impl KnowledgeService {
         };
         progress("snapshot");
         let snapshot_dir = self.paths.snapshot_dir(&project.id);
-        let report = materialize(repo, sha, &snapshot_dir, SnapshotLimits::default()).await?;
+        let limits = SnapshotLimits::default();
+        let report = materialize(repo, sha, &snapshot_dir, limits).await?;
+        if report.truncated {
+            // A graph of part of the repository would show up as complete and miss dependents.
+            return Err(SymphonyError::InvalidConfig(format!(
+                "this repository is larger than the Knowledge Base indexes ({} files or {} MiB of source), so nothing was indexed",
+                limits.max_files,
+                limits.max_total_bytes / (1024 * 1024)
+            )));
+        }
         let known: HashSet<String> = report.files.iter().cloned().collect();
 
         progress("extract");
@@ -747,8 +803,12 @@ impl KnowledgeService {
     ) -> SymphonyResult<GraphView> {
         let (graph, _) = self.graph_for(&project.id).await?.ok_or_else(not_indexed)?;
         match query.level {
-            GraphLevel::Modules => Ok(graph.module_view(query.include_external)),
-            GraphLevel::Files => Ok(graph.file_view(query.module.as_deref())),
+            GraphLevel::Modules => {
+                Ok(graph.module_view(query.include_external, query.include_inferred))
+            }
+            GraphLevel::Files => {
+                Ok(graph.file_view(query.module.as_deref(), query.include_inferred))
+            }
             GraphLevel::Symbols => {
                 let focus = query.focus.as_deref().ok_or_else(|| {
                     SymphonyError::InvalidConfig("the symbol level needs a `focus` node".into())
@@ -865,23 +925,34 @@ impl KnowledgeService {
             );
         }
         let mut index_stale = false;
-        if let (Some(run), Some(tip)) = (index.as_ref(), default_tip.as_ref()) {
-            if run.ref_name == project.default_branch && &run.commit_sha != tip {
+        if let Some(run) = index.as_ref() {
+            // The branch the index was built from: the default branch, or the branch of the
+            // worktree it was started on. A detached index stays at its commit and is never stale.
+            let branch = if run.ref_name == project.default_branch {
+                default_tip
+                    .clone()
+                    .map(|tip| (project.default_branch.clone(), tip))
+            } else if run.ref_name.starts_with("detached ") {
+                None
+            } else {
+                repo.branch_tip(&run.ref_name)
+                    .await
+                    .map(|tip| (run.ref_name.clone(), tip))
+            };
+            if let Some((branch, tip)) = branch.filter(|(_, tip)| tip != &run.commit_sha) {
                 index_stale = true;
-                let behind = repo.ahead_count(tip, &run.commit_sha).await;
+                let behind = repo.ahead_count(&tip, &run.commit_sha).await;
                 signal(
                     "index_stale",
                     HealthSeverity::Info,
                     match behind {
                         Some(n) if n > 0 => format!(
-                            "The index was built from {}; `{}` is {n} commit(s) ahead.",
+                            "The index was built from {}; `{branch}` is {n} commit(s) ahead.",
                             short_sha(&run.commit_sha),
-                            project.default_branch
                         ),
                         _ => format!(
-                            "The index was built from {}, which is not on `{}` any more.",
+                            "The index was built from {}, which is not on `{branch}` any more.",
                             short_sha(&run.commit_sha),
-                            project.default_branch
                         ),
                     },
                 );
@@ -999,6 +1070,7 @@ impl KnowledgeService {
                 files: &raw.files,
                 depth,
                 include_inferred,
+                patch_truncated: raw.patch_truncated,
             },
             context,
             support,
@@ -1380,7 +1452,7 @@ impl KnowledgeService {
                 let db = graph.node(b.0).map(|n| n.degree).unwrap_or(0);
                 b.1.cmp(a.1).then(db.cmp(&da)).then_with(|| a.0.cmp(b.0))
             });
-            let snapshot = self.paths.snapshot_dir(&project.id);
+            let repo = GitRepo::new(&project.repo_path);
             for (rank, (id, _)) in ranked.into_iter().take(10).enumerate() {
                 let Some(detail) = graph.detail(id) else {
                     continue;
@@ -1408,7 +1480,9 @@ impl KnowledgeService {
                 }
                 if rank < 4 {
                     if let (Some(file), Some(line)) = (node.file.as_deref(), node.line) {
-                        if let Some(snippet) = read_snippet(&snapshot, file, line) {
+                        if let Some(snippet) =
+                            read_snippet(&repo, &run.commit_sha, file, line).await
+                        {
                             text.push_str(&format!("\n  code:\n{snippet}"));
                         }
                     }
@@ -1502,13 +1576,16 @@ pub fn question_terms(question: &str) -> Vec<String> {
     terms
 }
 
-/// A few lines of a snapshot file starting at `line`, numbered. The path was produced by the
-/// indexer; it is still checked to stay inside the snapshot.
-fn read_snippet(snapshot: &Path, file: &str, line: u32) -> Option<String> {
+/// A few lines of a file as it is in the indexed commit, starting at `line`, numbered. Read from
+/// git at that commit (not from the shared snapshot directory, which a newer index run may be
+/// rewriting), so the code always matches the graph that selected it. The path was produced by the
+/// indexer; it is still checked.
+async fn read_snippet(repo: &GitRepo, sha: &str, file: &str, line: u32) -> Option<String> {
     if !crate::snapshot::is_safe_relative_path(file) {
         return None;
     }
-    let text = std::fs::read_to_string(snapshot.join(file)).ok()?;
+    let bytes = repo.blob(sha, file, 1024 * 1024).await.ok()??;
+    let text = String::from_utf8(bytes).ok()?;
     let start = (line as usize).saturating_sub(1);
     let snippet = text
         .lines()
@@ -1556,18 +1633,38 @@ mod tests {
         assert!(question_terms("what is it").is_empty());
     }
 
-    #[test]
-    fn snippets_are_numbered_and_stay_inside_the_snapshot() {
+    #[tokio::test]
+    async fn snippets_come_from_the_indexed_commit_and_are_numbered() {
+        use crate::timeline::tests::{commit_file, init_repo};
         let temp = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(temp.path().join("src")).unwrap();
-        std::fs::write(temp.path().join("src").join("a.rs"), "one\ntwo\nthree\n").unwrap();
-        let snippet = read_snippet(temp.path(), "src/a.rs", 2).unwrap();
+        init_repo(temp.path());
+        let sha = commit_file(
+            temp.path(),
+            "a.rs",
+            "one
+two
+three
+",
+            "add a",
+        );
+        // The working tree moves on; the snippet still shows the commit the graph was built from.
+        std::fs::write(
+            temp.path().join("a.rs"),
+            "changed
+",
+        )
+        .unwrap();
+        let repo = GitRepo::new(temp.path());
+        let snippet = read_snippet(&repo, &sha, "a.rs", 2).await.unwrap();
         assert!(
             snippet.contains("    2 | two")
                 && snippet.contains("    3 | three")
                 && !snippet.contains("one")
+                && !snippet.contains("changed")
         );
-        assert!(read_snippet(temp.path(), "../outside.rs", 1).is_none());
-        assert!(read_snippet(temp.path(), "src/missing.rs", 1).is_none());
+        assert!(read_snippet(&repo, &sha, "../outside.rs", 1)
+            .await
+            .is_none());
+        assert!(read_snippet(&repo, &sha, "missing.rs", 1).await.is_none());
     }
 }

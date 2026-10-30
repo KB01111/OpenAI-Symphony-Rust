@@ -69,8 +69,11 @@ export function keysToInvalidate(batch: AgentEvent[]): QueryKey[] {
         add([...scope, "analysis"]);
       } else if (type === "knowledge/chat_completed") {
         add([...scope, "chat"]);
+      } else if (type === "knowledge/index_progress") {
+        // Nothing in the index has changed yet, only the status line: not every open graph view.
+        add([...scope, "overview"]);
       } else {
-        // Index progress and completion: the overview, and after a finished run every graph view.
+        // A finished (or failed) run: the overview and every graph view.
         add(scope);
       }
     }

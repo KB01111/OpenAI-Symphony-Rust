@@ -160,9 +160,11 @@ const KnowledgePage: React.FC = () => {
   // The app-wide active project when it exists, else the first repository.
   const projectId = list.find((p) => p.id === activeProjectId)?.id ?? list[0]?.id ?? null;
 
+  // Settle on the fallback only once the list is current: right after a repository is added the
+  // list is refetched, and its stale copy would overwrite the new selection with the first entry.
   useEffect(() => {
-    if (projectId && projectId !== activeProjectId) setActiveProject(projectId);
-  }, [projectId, activeProjectId, setActiveProject]);
+    if (projectId && projectId !== activeProjectId && !projects.isFetching) setActiveProject(projectId);
+  }, [projectId, activeProjectId, projects.isFetching, setActiveProject]);
 
   if (projects.isPending) return <LoadingRows className="p-4" rows={6} />;
   if (list.length === 0) {

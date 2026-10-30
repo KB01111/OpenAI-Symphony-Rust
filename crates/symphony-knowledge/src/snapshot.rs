@@ -92,10 +92,21 @@ pub fn is_safe_relative_path(path: &str) -> bool {
             && part != "."
             && part != ".."
             && !part.contains(':')
+            // Characters Windows cannot have in a file name (a repository written on another OS
+            // may contain them); such a file is skipped instead of failing the whole snapshot.
+            && !part.contains(['<', '>', '"', '|', '?', '*'])
+            && !part.chars().any(char::is_control)
             && !part.ends_with('.')
             && !part.ends_with(' ')
             && !is_reserved_windows_name(part)
     })
+}
+
+/// Whether a path is engine configuration or output. Compared without regard to case: on Windows
+/// and macOS `.SERENA/project.yml` is the same file as `.serena/project.yml`.
+fn is_excluded_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    EXCLUDED_PREFIXES.iter().any(|p| lower.starts_with(p))
 }
 
 fn extension_skipped(path: &str) -> bool {
@@ -163,7 +174,38 @@ async fn read_blobs(repo: &GitRepo, objects: &[String]) -> SymphonyResult<Vec<Ve
         let _ = stdin.shutdown().await;
     });
 
-    let mut reader = BufReader::new(stdout);
+    // A stalled git must not hold the indexing lock for good; the tree is killed with the guard.
+    let read = tokio::time::timeout(
+        READ_TIMEOUT,
+        read_responses(BufReader::new(stdout), objects, &mut tree),
+    )
+    .await;
+    let blobs = match read {
+        Ok(result) => result?,
+        Err(_) => {
+            tree.kill();
+            return Err(SymphonyError::GitWorktreeError(
+                "git cat-file did not answer in time".into(),
+            ));
+        }
+    };
+    let _ = writer.await;
+    tree.kill();
+    let _ = child.wait().await;
+    Ok(blobs)
+}
+
+/// How long one `git cat-file --batch` exchange may take.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// The most blob content held in memory at once while a snapshot is written.
+const BATCH_BYTES: u64 = 64 * 1024 * 1024;
+
+async fn read_responses(
+    mut reader: BufReader<tokio::process::ChildStdout>,
+    objects: &[String],
+    tree: &mut ProcessTree,
+) -> SymphonyResult<Vec<Vec<u8>>> {
     let mut blobs = Vec::with_capacity(objects.len());
     let mut header = String::new();
     for object in objects {
@@ -205,9 +247,6 @@ async fn read_blobs(repo: &GitRepo, objects: &[String]) -> SymphonyResult<Vec<Ve
         let _ = reader.read_exact(&mut newline).await;
         blobs.push(content);
     }
-    let _ = writer.await;
-    tree.kill();
-    let _ = child.wait().await;
     Ok(blobs)
 }
 
@@ -251,6 +290,7 @@ pub async fn materialize(
     let mut report = SnapshotReport::default();
 
     let mut wanted: BTreeMap<String, String> = BTreeMap::new();
+    let mut sizes: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     let mut total_bytes = 0u64;
     for entry in entries {
         // Regular files only: symlinks (120000) could point out of the snapshot, submodules
@@ -263,9 +303,7 @@ pub async fn materialize(
             report.skipped_unsafe += 1;
             continue;
         }
-        if EXCLUDED_PREFIXES.iter().any(|p| entry.path.starts_with(p))
-            || extension_skipped(&entry.path)
-        {
+        if is_excluded_path(&entry.path) || extension_skipped(&entry.path) {
             report.skipped_other += 1;
             continue;
         }
@@ -279,6 +317,7 @@ pub async fn materialize(
             break;
         }
         total_bytes += size;
+        sizes.insert(entry.object.clone(), size);
         wanted.insert(entry.path, entry.object);
     }
 
@@ -307,38 +346,46 @@ pub async fn materialize(
             to_fetch.push((path.clone(), object.clone()));
         }
     }
-    // Unique objects once; identical files share a blob.
-    let unique: Vec<String> = {
-        let mut seen = HashSet::new();
-        to_fetch
-            .iter()
-            .filter(|(_, o)| seen.insert(o.clone()))
-            .map(|(_, o)| o.clone())
-            .collect()
-    };
-    let blobs = if unique.is_empty() {
-        Vec::new()
-    } else {
-        read_blobs(repo, &unique).await?
-    };
-    let by_object: std::collections::HashMap<&str, &Vec<u8>> = unique
-        .iter()
-        .map(String::as_str)
-        .zip(blobs.iter())
-        .collect();
+    // Unique objects once; identical files share a blob. They are fetched in batches so a large
+    // repository is never held in memory whole.
+    let mut targets: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    let mut unique: Vec<&str> = Vec::new();
     for (path, object) in &to_fetch {
-        let Some(target) = target_inside(dir, path) else {
-            report.skipped_unsafe += 1;
-            continue;
-        };
-        let Some(content) = by_object.get(object.as_str()) else {
-            continue;
-        };
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
+        let slot = targets.entry(object.as_str()).or_default();
+        if slot.is_empty() {
+            unique.push(object.as_str());
         }
-        std::fs::write(&target, content)?;
-        report.written += 1;
+        slot.push(path.as_str());
+    }
+    let mut batches: Vec<Vec<String>> = Vec::new();
+    let (mut batch, mut batch_bytes) = (Vec::new(), 0u64);
+    for object in unique {
+        let size = sizes.get(object).copied().unwrap_or(0);
+        if !batch.is_empty() && batch_bytes + size > BATCH_BYTES {
+            batches.push(std::mem::take(&mut batch));
+            batch_bytes = 0;
+        }
+        batch_bytes += size;
+        batch.push(object.to_string());
+    }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
+    for objects in batches {
+        let blobs = read_blobs(repo, &objects).await?;
+        for (object, content) in objects.iter().zip(&blobs) {
+            for path in targets.get(object.as_str()).into_iter().flatten() {
+                let Some(target) = target_inside(dir, path) else {
+                    report.skipped_unsafe += 1;
+                    continue;
+                };
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&target, content)?;
+                report.written += 1;
+            }
+        }
     }
 
     report.files = wanted.keys().cloned().collect();
@@ -412,9 +459,26 @@ mod tests {
             "dir/trailing.",
             "dir/trailing ",
             "./x",
+            // Fine on Linux, impossible to create on Windows: skipped, not a failed snapshot.
+            "tests/fixtures/what?.txt",
+            "a/b<c>.txt",
+            "a/\"quoted\".txt",
+            "a/pipe|name",
+            "a/star*",
+            "a/bell\u{7}.txt",
         ] {
             assert!(!is_safe_relative_path(bad), "{bad:?} must be rejected");
         }
+        // Engine configuration is excluded whatever the case of its directory (Windows, macOS).
+        for excluded in [
+            ".serena/project.yml",
+            ".SERENA/project.yml",
+            "Graphify-Out/graph.json",
+            ".Git/config",
+        ] {
+            assert!(is_excluded_path(excluded), "{excluded:?} must be excluded");
+        }
+        assert!(!is_excluded_path("serena/readme.md"));
         for good in [
             "a.rs",
             "src/lib.rs",

@@ -636,7 +636,7 @@ impl GitRepo {
             ],
         )
         .await?;
-        let (patch, _) = run_git_bounded(
+        let (patch, patch_truncated) = run_git_bounded(
             &self.root,
             &[
                 "diff",
@@ -683,6 +683,7 @@ impl GitRepo {
             additions,
             deletions,
             files_truncated,
+            patch_truncated,
             diff_base,
         })
     }
@@ -767,6 +768,8 @@ pub struct RawDetail {
     pub additions: u32,
     pub deletions: u32,
     pub files_truncated: bool,
+    /// The hunk data was cut at its size limit: files late in the commit have no hunks.
+    pub patch_truncated: bool,
     pub diff_base: Option<String>,
 }
 

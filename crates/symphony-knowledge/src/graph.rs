@@ -131,7 +131,7 @@ impl LoadedGraph {
     // -- module level -----------------------------------------------------------------------
 
     /// One node per package / directory module with aggregated dependency edges between them.
-    pub fn module_view(&self, include_external: bool) -> GraphView {
+    pub fn module_view(&self, include_external: bool, include_inferred: bool) -> GraphView {
         struct Module {
             label: String,
             package: bool,
@@ -164,7 +164,9 @@ impl LoadedGraph {
 
         let mut weights: BTreeMap<(String, String), (u32, Confidence)> = BTreeMap::new();
         let mut external: BTreeMap<(String, String), (u32, Confidence)> = BTreeMap::new();
-        for edge in self.edges.iter().filter(|e| dependency_edge(e)) {
+        for edge in self.edges.iter().filter(|e| {
+            dependency_edge(e) && (include_inferred || e.confidence == Confidence::Extracted)
+        }) {
             let (Some(&s), Some(&t)) = (self.index.get(&edge.source), self.index.get(&edge.target))
             else {
                 continue;
@@ -270,6 +272,9 @@ impl LoadedGraph {
             let keep: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
             edges.retain(|e| keep.contains(e.source.as_str()) && keep.contains(e.target.as_str()));
         }
+        // Fewer modules can still carry more links than the response allows.
+        edges.sort_by_key(|e| std::cmp::Reverse(e.weight));
+        edges.truncate(MAX_VIEW_EDGES);
         self.view(
             GraphLevel::Modules,
             None,
@@ -284,7 +289,7 @@ impl LoadedGraph {
 
     /// Files and the dependencies between them, lifted from the symbol-level edges. With
     /// `module`, the files of that module plus the files they directly depend on or are used by.
-    pub fn file_view(&self, module: Option<&str>) -> GraphView {
+    pub fn file_view(&self, module: Option<&str>, include_inferred: bool) -> GraphView {
         let file_of = |i: usize| self.nodes[i].file.as_deref();
         let in_module = |file: &str| -> bool {
             match module {
@@ -297,7 +302,9 @@ impl LoadedGraph {
             }
         };
         let mut weights: BTreeMap<(String, String), (u32, Confidence)> = BTreeMap::new();
-        for edge in self.edges.iter().filter(|e| dependency_edge(e)) {
+        for edge in self.edges.iter().filter(|e| {
+            dependency_edge(e) && (include_inferred || e.confidence == Confidence::Extracted)
+        }) {
             let (Some(&s), Some(&t)) = (self.index.get(&edge.source), self.index.get(&edge.target))
             else {
                 continue;
@@ -410,9 +417,13 @@ impl LoadedGraph {
                 seeds.extend(self.symbols_by_file.get(file).cloned().unwrap_or_default());
             }
         }
+        // A file with thousands of symbols must not start above the node cap.
+        seeds.truncate(MAX_VIEW_NODES);
         let mut seen: HashSet<usize> = seeds.iter().copied().collect();
         let mut frontier: VecDeque<(usize, u32)> = seeds.iter().map(|&i| (i, 0)).collect();
         let mut kept_edges: Vec<usize> = Vec::new();
+        // An edge is reached from both of its ends; it counts once.
+        let mut counted: HashSet<usize> = HashSet::new();
         let mut total_edges = 0usize;
         while let Some((node, hops)) = frontier.pop_front() {
             if hops >= depth.clamp(1, 3) {
@@ -423,7 +434,9 @@ impl LoadedGraph {
                 if !include_inferred && edge.confidence != Confidence::Extracted {
                     continue;
                 }
-                total_edges += 1;
+                if counted.insert(e) {
+                    total_edges += 1;
+                }
                 let other = if edge.source == self.nodes[node].id {
                     &edge.target
                 } else {
@@ -562,7 +575,7 @@ impl LoadedGraph {
                 entry.symbols += 1;
             }
         }
-        for edge in self.module_view(false).edges {
+        for edge in self.module_view(false, true).edges {
             if let Some(m) = stats.get_mut(&edge.source) {
                 m.outgoing += edge.weight;
             }
@@ -587,13 +600,31 @@ impl LoadedGraph {
 
     /// The most depended-upon files and symbols.
     pub fn hubs(&self, limit: usize) -> Vec<GraphNode> {
-        let mut list: Vec<&GraphNode> = self
+        // Ranked by what depends on a node (incoming dependency edges): a node that only calls
+        // many others has a high degree but is not depended upon.
+        let mut list: Vec<(usize, &GraphNode)> = self
             .nodes
             .iter()
-            .filter(|n| n.kind.is_symbol() || n.kind == NodeKind::File)
+            .enumerate()
+            .filter(|(_, n)| n.kind.is_symbol() || n.kind == NodeKind::File)
+            .map(|(i, n)| {
+                let dependents = self.incoming[i]
+                    .iter()
+                    .filter(|&&e| dependency_edge(&self.edges[e]))
+                    .count();
+                (dependents, n)
+            })
+            .filter(|(dependents, _)| *dependents > 0)
             .collect();
-        list.sort_by(|a, b| b.degree.cmp(&a.degree).then_with(|| a.id.cmp(&b.id)));
-        list.into_iter().take(limit).cloned().collect()
+        list.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.degree.cmp(&a.1.degree))
+                .then_with(|| a.1.id.cmp(&b.1.id))
+        });
+        list.into_iter()
+            .take(limit)
+            .map(|(_, node)| node.clone())
+            .collect()
     }
 
     /// Share of dependency edges that were inferred rather than read from source, with the totals.
@@ -791,7 +822,7 @@ mod tests {
     #[test]
     fn module_view_aggregates_edges_between_modules() {
         let graph = sample();
-        let view = graph.module_view(false);
+        let view = graph.module_view(false, true);
         assert_eq!(view.nodes.len(), 3);
         let edge = |a: &str, b: &str| view.edges.iter().find(|e| e.source == a && e.target == b);
         assert_eq!(edge("server", "core").unwrap().weight, 1);
@@ -801,7 +832,7 @@ mod tests {
         );
         assert!(view.edges.iter().all(|e| e.source != e.target));
         assert!(!view.nodes.iter().any(|n| n.id == "serde"));
-        let with_external = graph.module_view(true);
+        let with_external = graph.module_view(true, true);
         assert!(with_external.nodes.iter().any(|n| n.id == "serde"));
         assert!(with_external
             .edges
@@ -814,7 +845,7 @@ mod tests {
     #[test]
     fn file_view_lifts_symbol_edges_to_files() {
         let graph = sample();
-        let view = graph.file_view(None);
+        let view = graph.file_view(None, true);
         assert_eq!(view.nodes.len(), 3);
         let edge = view
             .edges
@@ -822,10 +853,90 @@ mod tests {
             .find(|e| e.source == "file_b" && e.target == "file_a")
             .unwrap();
         assert_eq!(edge.weight, 1);
-        let scoped = graph.file_view(Some("core"));
+        let scoped = graph.file_view(Some("core"), true);
         // core's own file plus the file that uses it; cli is two hops away.
         let ids: HashSet<_> = scoped.nodes.iter().map(|n| n.id.as_str()).collect();
         assert!(ids.contains("file_a") && ids.contains("file_b") && !ids.contains("file_c"));
+    }
+
+    #[test]
+    fn the_coarse_levels_follow_the_inferred_link_switch() {
+        // x::a.rs --calls (inferred)--> y::b.rs
+        let nodes = vec![
+            n("file_a", NodeKind::File, "x/a.rs", "x", 1),
+            n("fn_a", NodeKind::Function, "x/a.rs", "x", 2),
+            n("file_b", NodeKind::File, "y/b.rs", "y", 1),
+            n("fn_b", NodeKind::Function, "y/b.rs", "y", 2),
+        ];
+        let edges = vec![e("fn_a", "fn_b", "calls", Confidence::Inferred)];
+        let graph = LoadedGraph::new(1, nodes, edges);
+        assert_eq!(graph.module_view(false, true).edges.len(), 1);
+        assert!(graph.module_view(false, false).edges.is_empty());
+        assert_eq!(graph.file_view(None, true).edges.len(), 1);
+        assert!(graph.file_view(None, false).edges.is_empty());
+    }
+
+    #[test]
+    fn hubs_are_ranked_by_what_depends_on_them() {
+        // `busy` calls three functions (degree 3) but nothing calls it; `shared` is called twice.
+        let mut nodes = vec![
+            n("busy", NodeKind::Function, "a.rs", "m", 1),
+            n("shared", NodeKind::Function, "a.rs", "m", 5),
+            n("one", NodeKind::Function, "a.rs", "m", 9),
+            n("two", NodeKind::Function, "a.rs", "m", 13),
+            n("three", NodeKind::Function, "a.rs", "m", 17),
+        ];
+        let edges = vec![
+            e("busy", "one", "calls", Confidence::Extracted),
+            e("busy", "two", "calls", Confidence::Extracted),
+            e("busy", "three", "calls", Confidence::Extracted),
+            e("one", "shared", "calls", Confidence::Extracted),
+            e("two", "shared", "calls", Confidence::Extracted),
+        ];
+        for node in &mut nodes {
+            node.degree = edges
+                .iter()
+                .filter(|edge| edge.source == node.id || edge.target == node.id)
+                .count() as u32;
+        }
+        let graph = LoadedGraph::new(1, nodes, edges);
+        let hubs = graph.hubs(2);
+        assert_eq!(hubs[0].id, "shared");
+        assert!(!hubs.iter().any(|h| h.id == "busy"));
+    }
+
+    #[test]
+    fn a_file_with_more_symbols_than_the_cap_stays_within_it() {
+        let mut nodes = vec![n("file_big", NodeKind::File, "big.rs", "m", 1)];
+        for i in 0..(MAX_VIEW_NODES + 50) {
+            nodes.push(n(
+                &format!("sym{i}"),
+                NodeKind::Function,
+                "big.rs",
+                "m",
+                i as u32 + 2,
+            ));
+        }
+        let graph = LoadedGraph::new(1, nodes, Vec::new());
+        let view = graph.neighborhood("file_big", 1, true).unwrap();
+        assert!(view.nodes.len() <= MAX_VIEW_NODES);
+    }
+
+    #[test]
+    fn an_edge_reached_from_both_ends_counts_once() {
+        let nodes = vec![
+            n("a", NodeKind::Function, "f.rs", "m", 1),
+            n("b", NodeKind::Function, "f.rs", "m", 5),
+            n("c", NodeKind::Function, "f.rs", "m", 9),
+        ];
+        let edges = vec![
+            e("a", "b", "calls", Confidence::Extracted),
+            e("b", "c", "calls", Confidence::Extracted),
+        ];
+        let graph = LoadedGraph::new(1, nodes, edges);
+        let view = graph.neighborhood("b", 3, true).unwrap();
+        assert_eq!(view.total_edges, 2);
+        assert!(!view.truncated);
     }
 
     #[test]

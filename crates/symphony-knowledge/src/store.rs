@@ -225,7 +225,7 @@ impl KnowledgeStore {
         }
         for chunk in nodes
             .iter()
-            .filter(|n| n.kind != NodeKind::Dependency || n.file.is_none())
+            .filter(|n| n.kind != NodeKind::Dependency)
             .collect::<Vec<_>>()
             .chunks(INSERT_CHUNK)
         {
@@ -760,12 +760,19 @@ impl KnowledgeStore {
         Ok(count > 0)
     }
 
+    /// Clear the conversation. An answer that is still being written is kept together with the
+    /// question stored just before it, so it does not reappear alone when it finishes.
     pub async fn clear_messages(&self, project_id: &str) -> SymphonyResult<()> {
-        sqlx::query("DELETE FROM kb_chat_messages WHERE project_id = ?1 AND status != 'running'")
-            .bind(project_id)
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
+        sqlx::query(
+            "DELETE FROM kb_chat_messages WHERE project_id = ?1 AND status != 'running'
+             AND id < COALESCE(
+                 (SELECT MIN(id) - 1 FROM kb_chat_messages WHERE project_id = ?1 AND status = 'running'),
+                 9223372036854775807)",
+        )
+        .bind(project_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
         Ok(())
     }
 
@@ -1030,6 +1037,18 @@ mod tests {
             .await
             .unwrap();
         assert!(store.has_running_message("p1").await.unwrap());
+        // Clearing while the answer is being written keeps it with its question.
+        store.clear_messages("p1").await.unwrap();
+        assert_eq!(
+            store
+                .messages("p1", 10)
+                .await
+                .unwrap()
+                .iter()
+                .map(|m| m.id)
+                .collect::<Vec<_>>(),
+            vec![q, a]
+        );
         store
             .finish_message(a, "because", &[], JobStatus::Completed, None)
             .await
@@ -1040,6 +1059,8 @@ mod tests {
             vec![q, a]
         );
         assert_eq!(messages[1].content, "because");
+        store.clear_messages("p1").await.unwrap();
+        assert!(store.messages("p1", 10).await.unwrap().is_empty());
         store.delete_project("p1").await.unwrap();
         assert!(store.messages("p1", 10).await.unwrap().is_empty());
     }

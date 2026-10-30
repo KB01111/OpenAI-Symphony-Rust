@@ -118,6 +118,14 @@ export const GraphTab: React.FC = () => {
   };
 
   if (overview.isPending) return <LoadingRows className="p-4" rows={6} />;
+  // A failed request is not "not indexed": say so and let the user retry.
+  if (overview.isError && !overview.data) {
+    return (
+      <div className="p-4">
+        <ErrorState title={m.unavailable.title} message={overview.error.message} onRetry={() => void overview.refetch()} retryLabel={m.unavailable.retry} />
+      </div>
+    );
+  }
   if (!indexed) {
     return (
       <div className="p-4">
@@ -171,11 +179,21 @@ export const GraphTab: React.FC = () => {
           <div role="status" className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-accent-subtle px-2.5 py-1.5 text-sm">
             <ShaChip sha={sha} />
             <span className="min-w-0 flex-1">
-              {impact.isPending
-                ? <Spinner className="inline size-3.5" />
-                : formatMessage(m.graph.commitBanner, { sha: sha.slice(0, 8), changed, affected })}
+              {impact.isPending ? (
+                <Spinner className="inline size-3.5" />
+              ) : impact.isError ? (
+                // Not a result of zero: the impact of this commit is unknown.
+                <span className="text-destructive">{impact.error.message}</span>
+              ) : (
+                formatMessage(m.graph.commitBanner, { sha: sha.slice(0, 8), changed, affected })
+              )}
               {impact.data?.unavailable_reason ? <span className="ms-2 text-xs text-muted-foreground">{m.graph.commitNoSymbols}</span> : null}
             </span>
+            {impact.isError ? (
+              <Button size="sm" variant="subtle" onClick={() => void impact.refetch()}>
+                {m.unavailable.retry}
+              </Button>
+            ) : null}
             <Button size="sm" variant="subtle" onClick={() => selection.selectCommit(null)}>
               <X className="size-4" />
               {m.graph.clearCommit}

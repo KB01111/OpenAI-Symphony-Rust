@@ -126,12 +126,14 @@ the cached AI analyses.
   share an object database, so **each SHA appears once**. The listing is a prefix of a topological order, so
   following parent links from each HEAD *inside the listed commits* gives exactly the worktrees that contain
   each commit; a commit in two worktrees is one row with two chips. A worktree HEAD older than the window is
-  added so it is never missing. `unpushed` means no remote-tracking ref contains the commit, and is `null`
+  added so it is never missing; the commits between it and the window are not listed, so for that one row
+  the worktrees containing it and its default-branch status are asked of git directly
+  (`merge-base --is-ancestor`) instead of read from parent links. `unpushed` means no remote-tracking ref contains the commit, and is `null`
   (not `true`) when the repository has no remote refs at all. Uncommitted work is a separate row without a SHA.
 * Live: a filesystem watcher on the git directory (`refs/`, `packed-refs`, `HEAD`, `index`, each worktree's
   `HEAD` and `index`; objects, logs and lock files ignored), debounced 500 ms, plus a 30 s reconcile of every
-  worktree's HEAD and uncommitted-file count, because edits in a working tree never touch the git directory
-  until staged. Watching starts when the page asks and stops after 10 idle minutes. Events:
+  worktree's HEAD and uncommitted files, because edits in a working tree never touch the git directory
+  until staged (the paths of the uncommitted files are compared, not just their number). Watching starts when the page asks and stops after 10 idle minutes. Events:
   `knowledge/repo_changed`.
 * Hardening of every git call: `core.fsmonitor=false`, `--no-ext-diff --no-textconv`, no secret variables,
   revisions validated as 7-64 lowercase hex digits, paths after `--`.
@@ -220,5 +222,13 @@ Events on the normal stream: `knowledge/index_progress`, `index_completed`, `ind
 * The graph reflects the indexed commit. A commit far from it still gets its changed symbols at its own
   tree, but its dependents are those of the indexed graph.
 * `calls` edges are resolved by name by Graphify and some are `INFERRED`; they are drawn lighter and can be
-  hidden.
+  hidden (at the module and file levels too).
+* A repository is indexed whole or not at all: above 60,000 source files or 1 GiB of source (files over 1 MiB,
+  binaries and symlinks are skipped individually and do not count) the run fails with that message rather
+  than showing a partial graph as complete.
+* For a commit whose diff is larger than 8 MiB, the files after the cut have no hunks; they are listed but
+  counted as "not examined symbol by symbol" instead of being attributed to symbols.
+* If Graphify cannot read a commit's files (a timeout, an unusual file), the impact falls back to the file list
+  and says why, the same as when no engine is installed.
+* The AI prompts list at most 100 files and 80 changed symbols of a commit and say how many were left out.
 * No telemetry, no network access beyond what the user's own provider does for AI analysis.

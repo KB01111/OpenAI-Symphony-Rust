@@ -79,7 +79,11 @@ describe("Knowledge Base events", () => {
 
   it("index events refresh everything cached for the project; analysis and chat events only their own", () => {
     expect(has(keysToInvalidate([knowledgeEvent("knowledge/index_completed", "p1")]), qk.knowledge("p1"))).toBe(true);
-    expect(has(keysToInvalidate([knowledgeEvent("knowledge/index_progress", "p1")]), qk.knowledge("p1"))).toBe(true);
+    // Progress only moves the status line; it does not refetch every open graph view.
+    const progress = keysToInvalidate([knowledgeEvent("knowledge/index_progress", "p1")]);
+    expect(has(progress, [...qk.knowledge("p1"), "overview"])).toBe(true);
+    expect(has(progress, qk.knowledge("p1"))).toBe(false);
+    expect(has(keysToInvalidate([knowledgeEvent("knowledge/index_failed", "p1")]), qk.knowledge("p1"))).toBe(true);
     const analysis = keysToInvalidate([knowledgeEvent("knowledge/analysis_completed", "p1")]);
     expect(has(analysis, [...qk.knowledge("p1"), "analysis"])).toBe(true);
     expect(has(analysis, qk.knowledge("p1"))).toBe(false);

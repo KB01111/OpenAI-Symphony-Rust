@@ -150,7 +150,7 @@ export const ImpactView: React.FC<{ sha: string }> = ({ sha }) => {
         )}
         {data.indexed_sha ? (
           <p className="flex items-center gap-1.5 text-xs text-subtle-foreground">
-            {formatMessage(m.impact.indexedAt, { sha: "" })}
+            {m.impact.indexedAt}
             <ShaChip sha={data.indexed_sha} />
           </p>
         ) : null}

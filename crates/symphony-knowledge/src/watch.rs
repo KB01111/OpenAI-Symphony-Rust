@@ -77,24 +77,31 @@ pub fn is_relevant(common_dir: &Path, path: &Path) -> bool {
     }
 }
 
-/// A cheap description of "what a viewer would see": each worktree's HEAD and how many files
-/// it has uncommitted.
+/// A cheap description of "what a viewer would see": each worktree's HEAD and which files it has
+/// uncommitted (the paths, not their number: swapping one dirty file for another changes the list
+/// a viewer sees).
 async fn fingerprint(repo: &GitRepo) -> String {
+    use std::hash::{Hash, Hasher};
     let Ok(worktrees) = repo.worktrees().await else {
         return String::new();
     };
     let mut parts = Vec::with_capacity(worktrees.len());
     for wt in worktrees.iter().filter(|w| !w.bare) {
-        let changed = if Path::new(&wt.path).is_dir() {
-            GitRepo::status_paths(Path::new(&wt.path)).await.len()
+        let mut changed = if Path::new(&wt.path).is_dir() {
+            GitRepo::status_paths(Path::new(&wt.path)).await
         } else {
-            0
+            Vec::new()
         };
+        changed.sort();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        changed.hash(&mut hasher);
         parts.push(format!(
-            "{}|{}|{}|{changed}",
+            "{}|{}|{}|{}:{:x}",
             wt.path,
             wt.head.as_deref().unwrap_or(""),
-            wt.branch.as_deref().unwrap_or("")
+            wt.branch.as_deref().unwrap_or(""),
+            changed.len(),
+            hasher.finish()
         ));
     }
     parts.join("\n")
@@ -152,7 +159,15 @@ pub async fn run(service: Arc<KnowledgeService>, project: ProjectRef, state: Arc
             }
             _ = tick.tick() => {
                 if state.idle() {
-                    break;
+                    // Decide under the table lock: `watch_project` touches while holding it, so a
+                    // request that arrives after this check cannot be left without a watcher.
+                    let mut watchers = service.watchers.lock().unwrap_or_else(|e| e.into_inner());
+                    if state.idle() {
+                        if watchers.get(&project.id).is_some_and(|s| Arc::ptr_eq(s, &state)) {
+                            watchers.remove(&project.id);
+                        }
+                        break;
+                    }
                 }
                 let now = fingerprint(&repo).await;
                 if now != last {

@@ -74,7 +74,7 @@ export const AnalysisView: React.FC<{ sha: string; section?: "review" | "tests" 
     </Button>
   );
 
-  if (!analysis || (analysis.status === "failed" && section === "tests")) {
+  if (!analysis) {
     return section === "tests" ? (
       <p className="text-sm text-muted-foreground">{m.tests.runFirst}</p>
     ) : (

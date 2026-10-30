@@ -144,11 +144,12 @@ describe("timeline helpers", () => {
   it("labels worktrees and recognises test files", () => {
     expect(worktreeLabel({ branch: "feat/x", head_short_sha: "abc", path: "/r/wt" })).toBe("feat/x");
     expect(worktreeLabel({ branch: null, head_short_sha: "abc12345", path: "/r/wt" })).toBe("detached abc12345");
+    expect(worktreeLabel({ branch: null, head_short_sha: "abc12345", path: "/r/wt" }, "fristående")).toBe("fristående abc12345");
     expect(worktreeLabel({ branch: null, head_short_sha: null, path: "C:\\repo\\wt-a" })).toBe("wt-a");
-    for (const yes of ["src/a.test.ts", "tests/api.rs", "crates/x/tests/it.rs", "pkg/foo_test.go", "e2e/flows.spec.ts", "a/__tests__/b.js"]) {
+    for (const yes of ["src/a.test.ts", "tests/api.rs", "crates/x/tests/it.rs", "pkg/foo_test.go", "e2e/flows.spec.ts", "a/__tests__/b.js", "test_foo.py", "pkg/test_bar.py"]) {
       expect(isTestFile(yes), yes).toBe(true);
     }
-    for (const no of ["src/latest.ts", "src/contest/a.rs", "README.md"]) expect(isTestFile(no), no).toBe(false);
+    for (const no of ["src/latest.ts", "src/contest/a.rs", "README.md", "src/attest_foo.py"]) expect(isTestFile(no), no).toBe(false);
     expect(shortSubject("a".repeat(120), 20)).toHaveLength(20);
     expect(shortSubject("first\nsecond")).toBe("first");
   });

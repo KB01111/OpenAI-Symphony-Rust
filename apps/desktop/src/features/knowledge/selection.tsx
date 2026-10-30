@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useMemo } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { GraphLevel } from "@symphony/shared-types";
 
@@ -48,12 +48,16 @@ export const KnowledgeSelectionProvider: React.FC<{ projectId: string | null; ch
   const [params, setParams] = useSearchParams();
   const rawTab = params.get("tab");
   const tab: KnowledgeTab = KNOWLEDGE_TABS.includes(rawTab as KnowledgeTab) ? (rawTab as KnowledgeTab) : "overview";
-  const sha = params.get("commit");
-  const nodeId = params.get("node");
-  const worktreeId = params.get("worktree");
-  const rawLevel = params.get("level");
+  // A commit, node, module or worktree id belongs to one repository: after the repository changes
+  // they are ignored (and removed from the URL) so the new one is not asked for the old one's ids.
+  const [scopeProject, setScopeProject] = useState(projectId);
+  const stale = scopeProject !== projectId;
+  const sha = stale ? null : params.get("commit");
+  const nodeId = stale ? null : params.get("node");
+  const worktreeId = stale ? null : params.get("worktree");
+  const rawLevel = stale ? null : params.get("level");
   const level: GraphLevel = rawLevel === "files" || rawLevel === "symbols" ? rawLevel : "modules";
-  const module = params.get("module");
+  const module = stale ? null : params.get("module");
 
   const update = useCallback(
     (changes: Record<string, string | null>) => {
@@ -71,6 +75,12 @@ export const KnowledgeSelectionProvider: React.FC<{ projectId: string | null; ch
     },
     [setParams]
   );
+
+  useEffect(() => {
+    if (!stale) return;
+    update({ commit: null, node: null, worktree: null, module: null, level: null });
+    setScopeProject(projectId);
+  }, [stale, projectId, update]);
 
   const value = useMemo<KnowledgeSelection>(
     () => ({

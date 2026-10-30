@@ -227,7 +227,7 @@ pub(crate) async fn search_handler(
         Ok(found) => found,
         Err(error) => return error_response(error),
     };
-    if q.q.trim().is_empty() || q.q.len() > 200 {
+    if q.q.trim().is_empty() || q.q.chars().count() > 200 {
         return bad_request("`q` must be 1 to 200 characters");
     }
     respond(
@@ -362,13 +362,15 @@ pub(crate) async fn commit_diff_handler(
         Ok(found) => found,
         Err(error) => return error_response(error),
     };
+    // Like a task diff: patterns plus the exact values stored in the vault.
+    let secrets = state.orchestrator.secret_store().all_secret_values();
     respond(
         knowledge
             .commit_diff(&project, &sha)
             .await
             .map(|(diff, truncated)| CommitDiffResponse {
                 sha,
-                diff: redact_secrets(&diff, &[]),
+                diff: redact_secrets(&diff, &secrets),
                 truncated,
             }),
     )

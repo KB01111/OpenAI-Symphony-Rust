@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphEdge, GraphNode } from "@symphony/shared-types";
 import KnowledgePage from "./KnowledgePage.js";
@@ -445,6 +445,22 @@ describe("Repository Knowledge Base", () => {
     open("/knowledge", runtime({ "GET /projects/:id/knowledge": () => overview({ engines: missing }) }));
     const sync = await screen.findByRole("button", { name: "Sync" });
     await waitFor(() => expect(sync).toBeDisabled());
+  });
+
+  it("switching repository drops the selected commit instead of asking the new one for it", async () => {
+    const rt = runtime({ "GET /projects": () => [project({ id: "p1", name: "Demo repo" }), project({ id: "p2", name: "Other repo" })] });
+    open(`/knowledge?tab=commits&commit=${SHA}`, rt);
+    await waitFor(() => expect(rt.calls.some((c) => c.path.includes("/projects/p1/") && c.path.endsWith(`/commits/${SHA}`))).toBe(true));
+    act(() => useUiStore.setState({ activeProjectId: "p2" }));
+    expect(await screen.findByText("Select a commit to see what it changed and what could break.")).toBeInTheDocument();
+    expect(rt.calls.some((c) => c.path.includes("/projects/p2/") && c.path.includes(SHA))).toBe(false);
+  });
+
+  it("a commit chosen on the strip from another tab opens its panel on the Commits tab", async () => {
+    open("/knowledge");
+    const strip = await screen.findByRole("region", { name: "Commits across all worktrees" });
+    fireEvent.click(await within(strip).findByText("Fix agent lifecycle"));
+    expect(await screen.findByRole("tab", { name: "Commits", selected: true })).toBeInTheDocument();
   });
 
   it("asks for a repository when none is registered", async () => {

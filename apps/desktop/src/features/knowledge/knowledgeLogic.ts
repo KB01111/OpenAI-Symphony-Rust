@@ -110,13 +110,13 @@ export function filterCommits(commits: ReadonlyArray<CommitSummary>, filter: Com
 }
 
 /** A short label for a worktree: its branch, or `detached <sha>`. */
-export function worktreeLabel(worktree: Pick<KnowledgeWorktree, "branch" | "head_short_sha" | "path">): string {
+export function worktreeLabel(worktree: Pick<KnowledgeWorktree, "branch" | "head_short_sha" | "path">, detached = "detached"): string {
   if (worktree.branch) return worktree.branch;
-  if (worktree.head_short_sha) return `detached ${worktree.head_short_sha}`;
+  if (worktree.head_short_sha) return `${detached} ${worktree.head_short_sha}`;
   return worktree.path.split(/[\\/]/).filter(Boolean).pop() ?? worktree.path;
 }
 
-const TEST_PATH = /(^|\/)(tests?|__tests__|e2e|spec)(\/|$)|(\.|_)(test|spec)\.[a-z0-9]+$|_test\.(go|py|rs)$/i;
+const TEST_PATH = /(^|\/)(tests?|__tests__|e2e|spec)(\/|$)|(\.|_)(test|spec)\.[a-z0-9]+$|_test\.(go|py|rs)$|(^|\/)test_[^/]+\.py$/i;
 
 /** Whether a repository path is a test file by common naming conventions. */
 export function isTestFile(path: string): boolean {

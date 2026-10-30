@@ -135,7 +135,10 @@ impl AnalysisRunner for KnowledgeRunner {
         let mut session =
             start_agent_session(launch, None, None, Arc::new(DenyAllGate), stream_tx.clone())
                 .await?;
-        let outcome = session.run_turn(&request.prompt, stream_tx.clone()).await;
+        // The prompt was already pattern-redacted; here the exact values stored in the vault are
+        // removed from it as well, whatever shape they have.
+        let prompt = redact_secrets(&request.prompt, &self.orch.secret_store.all_secret_values());
+        let outcome = session.run_turn(&prompt, stream_tx.clone()).await;
         let _ = session.stop().await;
         drop(stream_tx);
         let _ = drain.await;

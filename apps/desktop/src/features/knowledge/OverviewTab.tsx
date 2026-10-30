@@ -202,7 +202,7 @@ export const OverviewTab: React.FC = () => {
                 <li key={hub.id}>
                   <button
                     type="button"
-                    onClick={() => selection.selectNode(hub.id, "graph")}
+                    onClick={() => selection.focusNode(hub.id)}
                     className="flex w-full min-w-0 items-center gap-2 rounded px-1.5 py-1 text-start text-sm outline-none transition-colors hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/60"
                   >
                     <KindIcon kind={hub.kind} />

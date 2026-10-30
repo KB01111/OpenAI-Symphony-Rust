@@ -155,7 +155,10 @@ pub fn extents(symbols: &[FileSymbol]) -> Vec<Extent> {
     sorted
         .iter()
         .map(|symbol| {
-            let next = lines.iter().copied().find(|&l| l > symbol.line);
+            // `lines` is sorted: the first line after this symbol's is a binary search away.
+            let next = lines
+                .get(lines.partition_point(|&l| l <= symbol.line))
+                .copied();
             Extent {
                 symbol: (*symbol).clone(),
                 first: symbol.line,
@@ -292,6 +295,8 @@ pub struct ImpactRequest<'a> {
     pub files: &'a [ChangedFile],
     pub depth: u32,
     pub include_inferred: bool,
+    /// The commit's hunk data was cut short, so files late in it have none.
+    pub patch_truncated: bool,
 }
 
 /// Why the symbol-level part is missing, for the UI.
@@ -307,6 +312,17 @@ pub async fn build_impact(
     support: SymbolSupport<'_>,
 ) -> SymphonyResult<CommitImpact> {
     let depth = request.depth.clamp(1, MAX_IMPACT_DEPTH);
+    // Added and deleted files are mapped without hunks; a modified file with none, in a patch
+    // that was cut short, cannot be attributed to symbols and is counted as not analysed.
+    let hunks_missing = |f: &ChangedFile| {
+        request.patch_truncated
+            && !f.binary
+            && f.hunks.is_empty()
+            && !matches!(
+                f.status,
+                FileChangeStatus::Added | FileChangeStatus::Deleted
+            )
+    };
     let source_files: Vec<&ChangedFile> = request
         .files
         .iter()
@@ -314,12 +330,14 @@ pub async fn build_impact(
             is_source_file(&f.path) || f.old_path.as_deref().map(is_source_file).unwrap_or(false)
         })
         .collect();
+    let (cut_short, source_files): (Vec<&ChangedFile>, Vec<&ChangedFile>) =
+        source_files.into_iter().partition(|f| hunks_missing(f));
     let analysed: Vec<&ChangedFile> = source_files
         .iter()
         .copied()
         .take(MAX_SYMBOL_FILES)
         .collect();
-    let symbol_files_skipped = (source_files.len() - analysed.len()) as u32;
+    let symbol_files_skipped = (source_files.len() - analysed.len() + cut_short.len()) as u32;
 
     let mut unavailable_reason = None;
     let mut pre: HashMap<String, Vec<FileSymbol>> = HashMap::new();
@@ -346,8 +364,19 @@ pub async fn build_impact(
                     }
                 }
             );
-            post = after?;
-            pre = before?;
+            // A file Graphify cannot read, or a timeout, must not take the file list with it:
+            // fall back to the file-level answer, the same as when no engine is installed.
+            match (after, before) {
+                (Ok(after), Ok(before)) => {
+                    post = after;
+                    pre = before;
+                }
+                (Err(error), _) | (_, Err(error)) => {
+                    unavailable_reason = Some(format!(
+                        "Symbols could not be read for this commit ({error}), so changed code is listed by file only."
+                    ));
+                }
+            }
         }
     }
 
@@ -664,6 +693,7 @@ mod tests {
                 files: &files,
                 depth: 2,
                 include_inferred: true,
+                patch_truncated: false,
             },
             Some(IndexContext {
                 graph: &graph,
@@ -711,6 +741,7 @@ mod tests {
                 files: &files,
                 depth: 2,
                 include_inferred: true,
+                patch_truncated: false,
             },
             None,
             SymbolSupport::Unavailable("Graphify is not installed".into()),
@@ -724,5 +755,76 @@ mod tests {
         assert_eq!(impact.files.len(), 1);
         assert!(impact.files[0].symbols.is_empty() && impact.affected.is_empty());
         assert_eq!(impact.run_id, None);
+    }
+
+    struct FailingExtractor;
+
+    #[async_trait]
+    impl SymbolExtractor for FailingExtractor {
+        async fn symbols_at(
+            &self,
+            _repo: &GitRepo,
+            _sha: &str,
+            _paths: &[String],
+        ) -> SymphonyResult<HashMap<String, Vec<FileSymbol>>> {
+            Err(symphony_core::SymphonyError::IoError(
+                "graphify timed out".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_symbol_extraction_falls_back_to_the_file_list() {
+        let files = vec![file(FileChangeStatus::Modified, vec![hunk(1, 1)])];
+        let repo = GitRepo::new(".");
+        let impact = build_impact(
+            &repo,
+            ImpactRequest {
+                sha: &"c".repeat(40),
+                parent: Some(&"b".repeat(40)),
+                files: &files,
+                depth: 2,
+                include_inferred: true,
+                patch_truncated: false,
+            },
+            None,
+            SymbolSupport::Available(&FailingExtractor),
+        )
+        .await
+        .unwrap();
+        let reason = impact.unavailable_reason.unwrap();
+        assert!(reason.contains("graphify timed out"), "{reason}");
+        assert_eq!(impact.files.len(), 1);
+        assert!(impact.files[0].symbols.is_empty());
+    }
+
+    #[tokio::test]
+    async fn files_without_hunks_in_a_cut_short_patch_are_counted_as_not_analysed() {
+        let sha = "c".repeat(40);
+        let parent = "b".repeat(40);
+        let extractor = FakeExtractor {
+            pre: HashMap::new(),
+            post: HashMap::from([("src/a.rs".to_string(), vec![sym("a", "a", 1)])]),
+            parent: parent.clone(),
+        };
+        let files = vec![file(FileChangeStatus::Modified, Vec::new())];
+        let repo = GitRepo::new(".");
+        let impact = build_impact(
+            &repo,
+            ImpactRequest {
+                sha: &sha,
+                parent: Some(&parent),
+                files: &files,
+                depth: 2,
+                include_inferred: true,
+                patch_truncated: true,
+            },
+            None,
+            SymbolSupport::Available(&extractor),
+        )
+        .await
+        .unwrap();
+        assert_eq!(impact.symbol_files_skipped, 1);
+        assert!(impact.files[0].symbols.is_empty());
     }
 }

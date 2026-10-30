@@ -59,12 +59,12 @@ export const WorktreesTab: React.FC = () => {
       {
         id: "branch",
         header: m.worktrees.columns.branch,
-        accessorFn: (w) => worktreeLabel(w),
+        accessorFn: (w) => worktreeLabel(w, m.commits.badges.detached),
         cell: ({ row }) => (
           <span className="flex min-w-0 max-w-[16rem] items-center gap-2">
             <GitBranch aria-hidden className="size-4 shrink-0 text-accent" />
             <span className="truncate font-mono text-xs text-foreground" title={row.original.path}>
-              {worktreeLabel(row.original)}
+              {worktreeLabel(row.original, m.commits.badges.detached)}
             </span>
             <Badge tone={row.original.kind === "main" ? "accent" : row.original.kind === "symphony" ? "info" : "neutral"}>
               {m.worktrees.kinds[row.original.kind]}
@@ -135,7 +135,10 @@ export const WorktreesTab: React.FC = () => {
         header: m.worktrees.columns.ahead,
         accessorFn: (w) => w.ahead_of_default ?? -1,
         cell: ({ row }) =>
-          row.original.ahead_of_default ? (
+          // `null` is "not known" (no default branch to compare with), which is not the same as 0.
+          row.original.ahead_of_default == null ? (
+            <span className="text-xs text-muted-foreground">—</span>
+          ) : row.original.ahead_of_default > 0 ? (
             <Hint label={formatMessage(m.worktrees.ahead, { count: row.original.ahead_of_default, branch: defaultBranch })}>
               <span className="font-mono text-xs tabular-nums text-foreground">+{row.original.ahead_of_default}</span>
             </Hint>

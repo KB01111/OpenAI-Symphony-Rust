@@ -65,7 +65,7 @@ const CommitRow: React.FC<{ commit: CommitSummary; selected: boolean; onSelect: 
           ))}
           {chips.map((wt) => (
             <Badge key={wt.worktree_id} tone="neutral">
-              {wt.branch ?? "detached"}
+              {wt.branch ?? m.commits.badges.detached}
               {wt.is_head ? " ●" : ""}
             </Badge>
           ))}
@@ -82,7 +82,7 @@ const WorkingTreeRow: React.FC<{ change: WorkingTreeChange }> = ({ change }) => 
     <div className="flex items-start gap-2.5 border-b border-border bg-warning-subtle/40 px-3 py-2 text-sm">
       <PencilLine aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
       <div className="min-w-0 flex-1">
-        <p className="font-medium text-foreground">{formatMessage(m.commits.workingTree, { count: change.changed_files, branch: change.branch ?? "HEAD" })}</p>
+        <p className="font-medium text-foreground">{formatMessage(m.commits.workingTree, { count: change.changed_files, branch: change.branch ?? m.commits.badges.head })}</p>
         <p className="truncate font-mono text-xs text-muted-foreground" title={change.files.join(", ")}>
           {change.files.slice(0, 4).join(", ")}
         </p>
@@ -139,7 +139,7 @@ export const CommitsTab: React.FC = () => {
               <SelectItem value={ALL}>{m.commits.allWorktrees}</SelectItem>
               {(worktrees.data ?? []).map((wt) => (
                 <SelectItem key={wt.id} value={wt.id}>
-                  {worktreeLabel(wt)}
+                  {worktreeLabel(wt, m.commits.badges.detached)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -153,18 +153,24 @@ export const CommitsTab: React.FC = () => {
             </div>
           ) : null}
         </div>
-        <div className="min-h-0 flex-1 overflow-auto">
-          {workingTrees.map((change) => (
-            <WorkingTreeRow key={change.worktree_id} change={change} />
-          ))}
+        <div className="flex min-h-0 flex-1 flex-col">
+          {workingTrees.length > 0 ? (
+            <div className="max-h-40 shrink-0 overflow-auto">
+              {workingTrees.map((change) => (
+                <WorkingTreeRow key={change.worktree_id} change={change} />
+              ))}
+            </div>
+          ) : null}
           {visible.length === 0 ? (
             <p className="p-4 text-sm text-muted-foreground">{m.commits.empty}</p>
           ) : (
+            // The list scrolls itself inside the space left over, which is what lets it render
+            // only the rows in view.
             <VirtualList
               items={visible}
               getKey={(commit) => commit.sha}
               estimateSize={64}
-              className="max-h-none"
+              className="min-h-0 flex-1"
               ariaLabel={m.commits.listLabel}
               renderItem={(commit) => <CommitRow commit={commit} selected={commit.sha === sha} onSelect={() => selection.selectCommit(commit.sha)} />}
             />

@@ -235,6 +235,16 @@ export function useKnowledgeWorktrees(projectId: string | null) {
   });
 }
 
+/**
+ * Keep the previous result on screen while a query for the same repository refetches (a longer
+ * list, another graph level), but never show one repository's rows under another's name: the
+ * project id is the second element of every Knowledge Base query key.
+ */
+function keepWithinProject(projectId: string | null) {
+  return <T>(previous: T | undefined, previousQuery?: { queryKey: readonly unknown[] }): T | undefined =>
+    previousQuery?.queryKey[1] === projectId ? previous : undefined;
+}
+
 export function useKnowledgeCommits(projectId: string | null, limit = 100) {
   const client = useClient();
   const refetchInterval = usePoll(30_000);
@@ -243,7 +253,7 @@ export function useKnowledgeCommits(projectId: string | null, limit = 100) {
     queryFn: ({ signal }) => client.listKnowledgeCommits(projectId!, limit, signal),
     enabled: projectId !== null,
     refetchInterval,
-    placeholderData: (previous) => previous
+    placeholderData: keepWithinProject(projectId)
   });
 }
 
@@ -304,7 +314,7 @@ export function useKnowledgeGraph(projectId: string | null, params: KnowledgeGra
     queryFn: ({ signal }) => client.getKnowledgeGraph(projectId!, params, signal),
     enabled: enabled && projectId !== null && (params.level !== "symbols" || Boolean(params.focus)),
     staleTime: 60_000,
-    placeholderData: (previous) => previous
+    placeholderData: keepWithinProject(projectId)
   });
 }
 

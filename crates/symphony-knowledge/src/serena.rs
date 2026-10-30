@@ -101,13 +101,22 @@ pub async fn ensure_project(
     name: &str,
     languages: &[&str],
 ) -> SymphonyResult<()> {
-    if dir.join(".serena").join("project.yml").is_file() {
-        return Ok(());
+    let config = dir.join(".serena").join("project.yml");
+    let existing = std::fs::read_to_string(&config).ok();
+    if let Some(text) = &existing {
+        // A repository that gained a language needs a new configuration; the old one only knows
+        // the languages it was created for.
+        if languages.iter().all(|l| config_lists_language(text, l)) {
+            return Ok(());
+        }
     }
     if languages.is_empty() {
         return Err(SymphonyError::Conflict(
             "none of the repository's languages is supported by Serena".into(),
         ));
+    }
+    if existing.is_some() {
+        let _ = std::fs::remove_file(&config);
     }
     let mut cmd = command_for(command);
     cmd.arg("project")
@@ -131,6 +140,17 @@ pub async fn ensure_project(
             "serena project create timed out".into(),
         )),
     }
+}
+
+/// Whether a `project.yml` written by `serena project create` names `language`.
+fn config_lists_language(config: &str, language: &str) -> bool {
+    config.lines().any(|line| {
+        let line = line.trim().trim_start_matches('-').trim();
+        line.trim_start_matches("language:")
+            .trim()
+            .trim_matches(['"', '\''])
+            == language
+    })
 }
 
 /// A running Serena MCP server on one project directory.
@@ -507,6 +527,17 @@ pub fn mode_path(root: &Path, project_dir_name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_project_config_is_current_only_when_it_names_every_language() {
+        let config = "project_name: demo\nlanguages:\n- rust\n- typescript\nignored_paths: []\n";
+        assert!(config_lists_language(config, "rust"));
+        assert!(config_lists_language(config, "typescript"));
+        assert!(!config_lists_language(config, "python"));
+        // The older single-language key is read too.
+        assert!(config_lists_language("language: python\n", "python"));
+        assert!(!config_lists_language("language: python\n", "rust"));
+    }
 
     // Captured from Serena 1.28 on this repository (see docs/KNOWLEDGE_BASE.md).
     const FIND_SYMBOL: &str = r#"[{"name_path": "impl WorkspaceManager/is_worktree_dirty", "kind": "Method", "relative_path": "crates\\symphony-workspaces\\src\\lib.rs", "body_location": {"start_line": 599, "end_line": 618}}]"#;

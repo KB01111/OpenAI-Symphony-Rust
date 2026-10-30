@@ -26,10 +26,13 @@ test.beforeAll(async () => {
     projects.find((p) => p.name === "E2E fixture") ??
     (await api<Project>("POST", "/projects", { name: "E2E fixture", repo_path: fixtureRepo(), preferred_provider: "simulated" }));
   // A second commit with a source file, so the timeline and the impact have something to show.
+  // (A reused data directory already has it: committing again would fail with nothing to commit.)
   const repo = fixtureRepo();
-  writeFileSync(join(repo, "lib.rs"), "pub fn answer() -> u32 {\n    42\n}\n");
-  execFileSync("git", ["add", "."], { cwd: repo });
-  execFileSync("git", ["commit", "-q", "-m", "Add the answer"], { cwd: repo });
+  if (execFileSync("git", ["ls-files", "lib.rs"], { cwd: repo }).toString().trim() === "") {
+    writeFileSync(join(repo, "lib.rs"), "pub fn answer() -> u32 {\n    42\n}\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-q", "-m", "Add the answer"], { cwd: repo });
+  }
   headSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo }).toString().trim();
 });
 
