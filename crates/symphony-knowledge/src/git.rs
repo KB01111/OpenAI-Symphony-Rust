@@ -740,7 +740,8 @@ impl GitRepo {
         max_bytes: usize,
     ) -> SymphonyResult<Option<Vec<u8>>> {
         validate_rev(sha)?;
-        if path.is_empty() || path.contains('\0') || path.starts_with('-') {
+        // The spec below starts with the commit id, so a path beginning with `-` is no option.
+        if path.is_empty() || path.contains('\0') {
             return Err(SymphonyError::InvalidConfig(format!(
                 "`{path}` is not a repository path"
             )));

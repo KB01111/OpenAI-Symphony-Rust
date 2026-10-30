@@ -1638,22 +1638,11 @@ mod tests {
         use crate::timeline::tests::{commit_file, init_repo};
         let temp = tempfile::TempDir::new().unwrap();
         init_repo(temp.path());
-        let sha = commit_file(
-            temp.path(),
-            "a.rs",
-            "one
-two
-three
-",
-            "add a",
-        );
+        let sha = commit_file(temp.path(), "a.rs", "one\ntwo\nthree\n", "add a");
+        // A file name starting with `-` is a path like any other.
+        let dashed = commit_file(temp.path(), "-dash.rs", "x\ny\n", "add dashed");
         // The working tree moves on; the snippet still shows the commit the graph was built from.
-        std::fs::write(
-            temp.path().join("a.rs"),
-            "changed
-",
-        )
-        .unwrap();
+        std::fs::write(temp.path().join("a.rs"), "changed\n").unwrap();
         let repo = GitRepo::new(temp.path());
         let snippet = read_snippet(&repo, &sha, "a.rs", 2).await.unwrap();
         assert!(
@@ -1662,6 +1651,7 @@ three
                 && !snippet.contains("one")
                 && !snippet.contains("changed")
         );
+        assert!(read_snippet(&repo, &dashed, "-dash.rs", 1).await.is_some());
         assert!(read_snippet(&repo, &sha, "../outside.rs", 1)
             .await
             .is_none());

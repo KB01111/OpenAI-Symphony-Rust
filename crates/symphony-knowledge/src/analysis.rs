@@ -17,7 +17,9 @@ use std::path::PathBuf;
 use symphony_core::{redact_secrets, ProviderKind, SymphonyError, SymphonyResult};
 
 /// Bump when the prompt or the output schema changes; cached analyses are keyed by it.
-pub const ANALYSIS_PROMPT_VERSION: u32 = 1;
+/// Part of the cache key of a stored analysis: bump it whenever the prompt changes, so analyses made
+/// with the old one are recomputed. (2: redacted metadata, bounded lists with a note.)
+pub const ANALYSIS_PROMPT_VERSION: u32 = 2;
 pub const MAX_DIFF_BYTES: usize = 60 * 1024;
 const MAX_LIST: usize = 20;
 const MAX_TITLE: usize = 200;

@@ -132,6 +132,17 @@ impl LoadedGraph {
 
     /// One node per package / directory module with aggregated dependency edges between them.
     pub fn module_view(&self, include_external: bool, include_inferred: bool) -> GraphView {
+        self.module_view_capped(include_external, include_inferred, true)
+    }
+
+    /// `cap_edges` is off for the statistics, which must count every link, not the ones that fit
+    /// in a response.
+    fn module_view_capped(
+        &self,
+        include_external: bool,
+        include_inferred: bool,
+        cap_edges: bool,
+    ) -> GraphView {
         struct Module {
             label: String,
             package: bool,
@@ -273,8 +284,10 @@ impl LoadedGraph {
             edges.retain(|e| keep.contains(e.source.as_str()) && keep.contains(e.target.as_str()));
         }
         // Fewer modules can still carry more links than the response allows.
-        edges.sort_by_key(|e| std::cmp::Reverse(e.weight));
-        edges.truncate(MAX_VIEW_EDGES);
+        if cap_edges {
+            edges.sort_by_key(|e| std::cmp::Reverse(e.weight));
+            edges.truncate(MAX_VIEW_EDGES);
+        }
         self.view(
             GraphLevel::Modules,
             None,
@@ -414,7 +427,13 @@ impl LoadedGraph {
         let mut seeds = vec![start];
         if self.nodes[start].kind == NodeKind::File {
             if let Some(file) = self.nodes[start].file.as_deref() {
-                seeds.extend(self.symbols_by_file.get(file).cloned().unwrap_or_default());
+                // Most connected first, so what is kept when the file has more symbols than fit
+                // are its hubs, not simply the earliest ones.
+                let mut symbols = self.symbols_by_file.get(file).cloned().unwrap_or_default();
+                symbols.sort_by_key(|&i| {
+                    (std::cmp::Reverse(self.nodes[i].degree), self.nodes[i].line)
+                });
+                seeds.extend(symbols);
             }
         }
         // A file with thousands of symbols must not start above the node cap; the ones left out
@@ -577,7 +596,7 @@ impl LoadedGraph {
                 entry.symbols += 1;
             }
         }
-        for edge in self.module_view(false, true).edges {
+        for edge in self.module_view_capped(false, true, false).edges {
             if let Some(m) = stats.get_mut(&edge.source) {
                 m.outgoing += edge.weight;
             }
@@ -925,6 +944,58 @@ mod tests {
         // The symbols that did not fit are counted, so the view reports itself as cut.
         assert_eq!(view.total_nodes as usize, MAX_VIEW_NODES + 51);
         assert!(view.truncated);
+    }
+
+    #[test]
+    fn a_cut_file_view_keeps_its_most_connected_symbols() {
+        let mut nodes = vec![n("file_big", NodeKind::File, "big.rs", "m", 1)];
+        for i in 0..(MAX_VIEW_NODES + 10) {
+            nodes.push(n(
+                &format!("sym{i}"),
+                NodeKind::Function,
+                "big.rs",
+                "m",
+                i as u32 + 2,
+            ));
+        }
+        // The last symbol of the file is the hub.
+        nodes.last_mut().unwrap().degree = 50;
+        let hub = nodes.last().unwrap().id.clone();
+        let graph = LoadedGraph::new(1, nodes, Vec::new());
+        let view = graph.neighborhood("file_big", 1, true).unwrap();
+        assert!(view.nodes.iter().any(|node| node.id == hub));
+    }
+
+    #[test]
+    fn module_statistics_count_every_link_not_only_those_that_fit_in_a_view() {
+        // 80 modules that all depend on each other: 6,320 links, above the view's edge cap.
+        let count = 80;
+        let nodes: Vec<GraphNode> = (0..count)
+            .map(|i| {
+                n(
+                    &format!("fn{i}"),
+                    NodeKind::Function,
+                    &format!("m{i}/a.rs"),
+                    &format!("m{i}"),
+                    1,
+                )
+            })
+            .collect();
+        let mut edges = Vec::new();
+        for from in 0..count {
+            for to in (0..count).filter(|t| *t != from) {
+                edges.push(e(
+                    &format!("fn{from}"),
+                    &format!("fn{to}"),
+                    "calls",
+                    Confidence::Extracted,
+                ));
+            }
+        }
+        let graph = LoadedGraph::new(1, nodes, edges);
+        assert_eq!(graph.module_view(false, true).edges.len(), MAX_VIEW_EDGES);
+        let outgoing: u32 = graph.module_stats(count).iter().map(|m| m.outgoing).sum();
+        assert_eq!(outgoing as usize, count * (count - 1));
     }
 
     #[test]

@@ -99,7 +99,10 @@ export const GraphTab: React.FC = () => {
     indexed
   );
   const impact = useKnowledgeCommitImpact(projectId, sha);
-  const nodes = graph.data?.nodes;
+  // At the symbol level without a focus node the query is off; a same-project placeholder would
+  // still hand over the previous level's graph, which must not be listed under the focus hint.
+  const awaitingFocus = level === "symbols" && !focus;
+  const nodes = awaitingFocus ? undefined : graph.data?.nodes;
   const marks = useMemo(() => highlightFor(level, nodes ?? [], impact.data), [level, nodes, impact.data]);
   const changed = [...marks.values()].filter((mark) => mark.emphasis === "changed").length;
   const affected = marks.size - changed;
@@ -170,7 +173,7 @@ export const GraphTab: React.FC = () => {
           ) : null}
           {graph.isFetching ? <Spinner className="size-3.5" /> : null}
           <span className="flex-1" />
-          {graph.data?.truncated ? (
+          {!awaitingFocus && graph.data?.truncated ? (
             <span className="text-xs text-muted-foreground">{formatMessage(m.graph.truncated, { shown: graph.data.nodes.length, total: graph.data.total_nodes })}</span>
           ) : null}
         </div>
@@ -230,7 +233,7 @@ export const GraphTab: React.FC = () => {
           {focusName ? <span className="truncate text-xs text-muted-foreground">{formatMessage(m.graph.selectedAt, { level: levelLabel, name: focusName })}</span> : null}
         </div>
 
-        {graph.data && graph.data.nodes.length > 0 ? (
+        {!awaitingFocus && graph.data && graph.data.nodes.length > 0 ? (
           <details className="@container rounded-md border border-border bg-surface px-2 py-1">
             <summary className="cursor-pointer text-sm text-muted-foreground">{m.graph.listLabel}</summary>
             <div className="pt-1">

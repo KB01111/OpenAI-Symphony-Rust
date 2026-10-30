@@ -461,6 +461,9 @@ describe("Repository Knowledge Base", () => {
     const strip = await screen.findByRole("region", { name: "Commits across all worktrees" });
     fireEvent.click(await within(strip).findByText("Fix agent lifecycle"));
     expect(await screen.findByRole("tab", { name: "Commits", selected: true })).toBeInTheDocument();
+    // ...with the chosen commit's panel open on it, not an empty one.
+    expect(await screen.findByRole("tab", { name: "Impact" })).toBeInTheDocument();
+    expect(screen.queryByText("Select a commit to see what it changed and what could break.")).not.toBeInTheDocument();
   });
 
   it("asks for a repository when none is registered", async () => {

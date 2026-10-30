@@ -81,7 +81,8 @@ export const AnalysisView: React.FC<{ sha: string; section?: "review" | "tests" 
       <AiEmptyView icon={<Sparkles className="size-5 text-accent" />} title={m.analysis.none} description={m.analysis.noneHint} action={runButton(m.analysis.run, false)} />
     );
   }
-  if (analysis.status === "running") {
+  // Also while a (re-)run is being started: the spinner replaces a retry button that would do nothing.
+  if (analysis.status === "running" || start.isPending) {
     return (
       <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
         <Spinner />
@@ -90,7 +91,7 @@ export const AnalysisView: React.FC<{ sha: string; section?: "review" | "tests" 
     );
   }
   if (analysis.status === "failed") {
-    return <ErrorState title={m.analysis.failed} message={analysis.error ?? undefined} onRetry={() => (running ? undefined : start.mutate({ sha, force: true }))} retryLabel={m.analysis.rerun} />;
+    return <ErrorState title={m.analysis.failed} message={analysis.error ?? undefined} onRetry={() => start.mutate({ sha, force: true })} retryLabel={m.analysis.rerun} />;
   }
   const result = analysis.result;
   if (!result) return null;
