@@ -289,9 +289,13 @@ Design and data flow: [`docs/KNOWLEDGE_BASE.md`](./docs/KNOWLEDGE_BASE.md).
 - **Git is observed, not changed.** Every call is read-only, takes no locks (`GIT_OPTIONAL_LOCKS=0`), disables
   `core.fsmonitor`, external diff drivers and textconv (a repository's configuration can name programs for
   them), validates revisions as hex and puts paths after `--`.
-- **AI analysis gets no tools.** The prompt carries a bounded, secret-redacted diff and numbered evidence; the
-  provider runs in an empty scratch directory with policy `never`, a read-only sandbox and an approval gate that
-  declines everything, so instructions hidden in a commit message or in code have nothing to act with. Output is
+- **AI analysis is given no tools and no repository content.** The prompt carries a bounded diff and numbered
+  evidence, all secret-redacted (including author names, subjects, paths and symbol names). The provider runs in
+  an empty scratch directory with policy `never`, a read-only sandbox and an approval gate that declines
+  everything, and Symphony's host tools are not offered. The provider's built-in tools are turned off through
+  its own project configuration written into that directory for the turn (Claude Code `permissions.deny`,
+  OpenCode `"permission": {"*": "deny"}`; Codex runs read-only without network). Those are the providers'
+  controls and do not cover a tool from the user's own configuration (an MCP server), so output is also
   validated: citations to evidence that was not in the prompt are removed, findings without evidence are
   dropped and counted, text is length-capped and rendered as text. CodeSandbox and the simulated provider are
   refused for analysis.

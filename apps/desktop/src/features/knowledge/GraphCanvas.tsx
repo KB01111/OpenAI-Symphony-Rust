@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
@@ -133,8 +133,6 @@ const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, edges, marks, selected
   view.current.marks = marks;
   view.current.selectedId = selectedId;
 
-  const signature = useMemo(() => `${nodes.length}:${edges.length}:${nodes[0]?.id ?? ""}:${nodes[nodes.length - 1]?.id ?? ""}`, [nodes, edges]);
-
   // Build the graph, lay it out and (re)create the renderer when the data or the theme changes.
   useEffect(() => {
     const container = containerRef.current;
@@ -226,9 +224,10 @@ const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, edges, marks, selected
       sigmaRef.current?.kill();
       sigmaRef.current = null;
     };
-    // `signature` stands for the node/edge arrays: identical data does not rebuild the graph.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signature, themeVersion]);
+    // The arrays themselves are the dependency: a re-index that changes only edges must redraw, and
+    // the query cache hands out the same arrays while the data is unchanged, so an unchanged graph is
+    // not laid out again.
+  }, [nodes, edges, themeVersion]);
 
   // Marks and selection only change how nodes are drawn.
   useEffect(() => {

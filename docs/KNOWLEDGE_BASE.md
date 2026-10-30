@@ -165,13 +165,22 @@ prefixes a changed file), files, or symbols.
 * The prompt carries a bounded (60 KB), secret-redacted diff, the changed symbols and the affected set as
   **numbered evidence** (`commit`, `f1..`, `s1..`, `a1..` for a commit; `e1..` for chat). Replies must be one
   JSON object whose findings cite those ids.
-* **The model gets no tools and no repository access.** It runs through the project's preferred provider
-  (Codex, Claude Code or OpenCode) in an empty scratch directory, policy `never`, read-only sandbox, and an
-  approval gate that declines everything. Commit messages and code are treated as untrusted input that has
-  nothing to act with. CodeSandbox and the simulated provider are refused for analysis.
+* **The model gets no host tools and no repository content.** It runs through the project's preferred provider
+  (Codex, Claude Code or OpenCode) in an empty scratch directory with policy `never`, a read-only sandbox and an
+  approval gate that declines everything; Symphony's own host tools are not offered. The provider's *built-in*
+  tools are switched off through the providers' own mechanisms, written into the scratch directory for that one
+  turn (`write_tool_restrictions` in the orchestrator): Claude Code gets `.claude/settings.json` with
+  `permissions.deny` for its built-in tools (deny outranks the user's allow rules), OpenCode gets
+  `opencode.json` with `"permission": {"*": "deny"}`, and Codex runs with `thread_sandbox: read-only` (no
+  writes, no network). These are the providers' controls, not something Symphony enforces: a tool that comes
+  from the user's own configuration (an MCP server, say) is not covered. That is why commit messages and code
+  are also treated as untrusted input: the reply is validated (below) and only ever shown as text.
+  CodeSandbox and the simulated provider are refused for analysis.
 * Validation (`analysis.rs`): ids that were not in the prompt are removed, a finding left without evidence is
   dropped and counted (`dropped_findings`, shown in the UI), text is length-capped and rendered as text. A
-  chat answer that cites nothing is rejected unless it states `insufficient_evidence`.
+  chat answer that cites nothing is rejected unless it states `insufficient_evidence`. Redaction covers the
+  whole prompt, not only the diff: author names, subjects, file paths and symbol names go through
+  `redact_secrets` too, and so do the stored evidence labels.
 * Analyses are cached by `(project, sha, provider, model, prompt version)`; `force` re-runs. Token usage is
   credited to the runtime totals.
 * Chat retrieval: FTS5 over symbol and file names (per word, then substring), the graph neighbours of the best

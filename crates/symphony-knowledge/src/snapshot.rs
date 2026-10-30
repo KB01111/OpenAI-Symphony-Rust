@@ -15,7 +15,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use symphony_core::{SymphonyError, SymphonyResult};
-use symphony_workspaces::{git_command, prepare_tree_command, ProcessTree};
+use symphony_workspaces::{
+    git_command, prepare_tree_command, ProcessTree, SECRET_ENV_VARS_TO_STRIP,
+};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 #[derive(Debug, Clone, Copy)]
@@ -126,9 +128,14 @@ async fn read_blobs(repo: &GitRepo, objects: &[String]) -> SymphonyResult<Vec<Ve
         .arg(repo.root())
         .args(["-c", "core.fsmonitor=false", "cat-file", "--batch"])
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    // A subprocess that reads repository data never inherits tracker or API credentials.
+    for var in SECRET_ENV_VARS_TO_STRIP {
+        cmd.env_remove(var);
+    }
     prepare_tree_command(&mut cmd);
     let mut child = cmd
         .spawn()

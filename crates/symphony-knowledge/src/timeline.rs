@@ -162,10 +162,14 @@ pub async fn build_timeline(project: &ProjectRef, limit: usize) -> SymphonyResul
     raw.truncate(limit);
     // A worktree sitting on an old commit still shows up, at its place in time.
     let mut listed: HashSet<String> = raw.iter().map(|c| c.sha.clone()).collect();
+    // These rows are not connected to the listed commits through parent links (the commits
+    // between are not listed), so their worktrees and default-branch status are asked of git.
+    let mut outside: Vec<String> = Vec::new();
     for head in &revs {
         if !listed.contains(head) {
             if let Ok(commit) = repo.commit(head).await {
                 listed.insert(commit.sha.clone());
+                outside.push(commit.sha.clone());
                 raw.push(commit);
             }
         }
@@ -184,7 +188,7 @@ pub async fn build_timeline(project: &ProjectRef, limit: usize) -> SymphonyResul
         .iter()
         .map(|c| (c.sha.as_str(), c.parents.as_slice()))
         .collect();
-    let default_reach = default_tip
+    let mut default_reach = default_tip
         .as_deref()
         .map(|tip| reachable_within(tip, &parents))
         .unwrap_or_default();
@@ -203,6 +207,33 @@ pub async fn build_timeline(project: &ProjectRef, limit: usize) -> SymphonyResul
                     branch: i.wt.branch.clone(),
                     is_head: sha == head,
                 });
+        }
+    }
+
+    for sha in &outside {
+        for i in &inspected {
+            let Some(head) = i.wt.head.as_deref() else {
+                continue;
+            };
+            let known = by_commit
+                .get(sha)
+                .map(|refs| refs.iter().any(|r| r.worktree_id == i.id))
+                .unwrap_or(false);
+            if !known && repo.is_ancestor(sha, head).await {
+                by_commit
+                    .entry(sha.clone())
+                    .or_default()
+                    .push(CommitWorktreeRef {
+                        worktree_id: i.id.clone(),
+                        branch: i.wt.branch.clone(),
+                        is_head: sha == head,
+                    });
+            }
+        }
+        if let Some(tip) = default_tip.as_deref() {
+            if repo.is_ancestor(sha, tip).await {
+                default_reach.insert(sha.clone());
+            }
         }
     }
 
@@ -448,6 +479,68 @@ pub(crate) mod tests {
         assert_eq!(find(&pushed).unpushed, Some(false));
         assert_eq!(find(&local).unpushed, Some(true));
         assert!(find(&pushed).refs.iter().any(|r| r == "origin/main"));
+    }
+
+    #[tokio::test]
+    async fn a_worktree_older_than_the_window_still_reports_every_worktree_that_contains_its_commit(
+    ) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let main = temp.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        init_repo(&main);
+        let old = commit_file(
+            &main, "a.txt", "0
+", "old",
+        );
+        // A detached worktree stays on the old commit while main moves on.
+        let wt = temp.path().join("wt-old");
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                wt.to_str().unwrap(),
+                &old,
+            ],
+        );
+        for n in 1..6 {
+            commit_file(
+                &main,
+                "a.txt",
+                &format!(
+                    "{n}
+"
+                ),
+                &format!("c{n}"),
+            );
+        }
+
+        let timeline = build_timeline(&project(&main), 3).await.unwrap();
+        assert!(timeline.truncated);
+        let row = timeline
+            .commits
+            .iter()
+            .find(|c| c.sha == old)
+            .expect("the worktree's HEAD is listed");
+        // Main contains the old commit although the commits between are not listed.
+        let branches: Vec<_> = row
+            .worktrees
+            .iter()
+            .map(|w| (w.branch.clone(), w.is_head))
+            .collect();
+        assert_eq!(branches.len(), 2, "{branches:?}");
+        assert!(branches.contains(&(Some("main".to_string()), false)));
+        assert!(
+            branches.contains(&(None, true)),
+            "the detached worktree has it as HEAD"
+        );
+        assert!(
+            row.on_default_branch,
+            "it is an ancestor of the default branch"
+        );
+        assert_eq!(timeline.commits.iter().filter(|c| c.sha == old).count(), 1);
     }
 
     #[tokio::test]

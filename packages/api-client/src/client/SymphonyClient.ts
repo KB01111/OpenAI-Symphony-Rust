@@ -46,6 +46,16 @@ interface CallOptions {
 /** The shape generated SDK functions resolve to when `throwOnError` is `false`. */
 type CallResult<T> = { data?: T; error?: unknown; response?: Response };
 
+/**
+ * Deadlines of the two Knowledge Base operations that legitimately take longer than the default
+ * 20 s, each a little above what the runtime itself allows: precise references wait for a language
+ * server to load the project (up to 240 s, the first time per indexed commit), and a commit's
+ * impact extracts its changed files with Graphify at the commit and at its parent (up to 180 s each,
+ * in parallel). Every other request keeps the client's own deadline.
+ */
+export const KNOWLEDGE_REFERENCES_TIMEOUT_MS = 270_000;
+export const KNOWLEDGE_IMPACT_TIMEOUT_MS = 200_000;
+
 /** Query values: empty strings, `null` and `undefined` are omitted. */
 function q<T>(value: T | null | undefined | ""): T | undefined {
   return value === null || value === "" ? undefined : value;
@@ -120,9 +130,14 @@ export class SymphonyClient {
    * armed until the response body has been read, so a stalled body still times out and can be
    * cancelled. Failures become `SymphonyApiError`.
    */
-  private async call<T>(operation: (options: CallOptions) => Promise<CallResult<T>>, signal?: AbortSignal): Promise<T> {
+  private async call<T>(
+    operation: (options: CallOptions) => Promise<CallResult<T>>,
+    signal?: AbortSignal,
+    /** A longer deadline for an operation the runtime is allowed to take its time over. */
+    slowTimeoutMs?: number
+  ): Promise<T> {
     const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(), this.config.timeoutMs);
+    const timer = setTimeout(() => deadline.abort(), Math.max(this.config.timeoutMs, slowTimeoutMs ?? 0));
     const onAbort = () => deadline.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
@@ -337,7 +352,11 @@ export class SymphonyClient {
   }
   /** Precise references from the optional language-server navigator (slow the first time). */
   getKnowledgeNodeReferences(projectId: string, nodeId: string, signal?: AbortSignal) {
-    return this.call((o) => api.getKnowledgeNodeReferences({ ...o, path: { id: projectId }, query: { node_id: nodeId } }), signal);
+    return this.call(
+      (o) => api.getKnowledgeNodeReferences({ ...o, path: { id: projectId }, query: { node_id: nodeId } }),
+      signal,
+      KNOWLEDGE_REFERENCES_TIMEOUT_MS
+    );
   }
   listKnowledgeWorktrees(projectId: string, signal?: AbortSignal) {
     return this.call((o) => api.listKnowledgeWorktrees({ ...o, path: { id: projectId } }), signal);
@@ -354,7 +373,8 @@ export class SymphonyClient {
   getKnowledgeCommitImpact(projectId: string, sha: string, depth = 2, includeInferred = true, signal?: AbortSignal) {
     return this.call(
       (o) => api.getKnowledgeCommitImpact({ ...o, path: { id: projectId, sha }, query: { depth, include_inferred: includeInferred } }),
-      signal
+      signal,
+      KNOWLEDGE_IMPACT_TIMEOUT_MS
     );
   }
   getKnowledgeCommitAnalysis(projectId: string, sha: string, signal?: AbortSignal) {

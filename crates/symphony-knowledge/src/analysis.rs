@@ -196,7 +196,23 @@ pub fn commit_evidence(detail: &CommitDetail, impact: &CommitImpact) -> Vec<Prom
             ),
         });
     }
+    redact_evidence(&mut out);
     out
+}
+
+/// Everything that reaches the provider is redacted, not only the diff: author names, commit
+/// subjects, file paths and symbol names can carry a token too. The stored labels are redacted
+/// as well, so a secret is not kept in the analysis record or shown in the UI.
+fn redact_evidence(evidence: &mut [PromptEvidence]) {
+    for item in evidence {
+        item.reference.label = redact_secrets(&item.reference.label, &[]);
+        item.reference.file = item
+            .reference
+            .file
+            .as_deref()
+            .map(|file| redact_secrets(file, &[]));
+        item.text = redact_secrets(&item.text, &[]);
+    }
 }
 
 fn evidence_section(evidence: &[PromptEvidence]) -> String {
@@ -405,10 +421,12 @@ pub fn number_evidence(items: Vec<(EvidenceRef, String)>) -> Vec<PromptEvidence>
         .enumerate()
         .map(|(i, (mut reference, text))| {
             reference.id = format!("e{}", i + 1);
-            PromptEvidence {
+            let mut item = PromptEvidence {
                 reference,
-                text: cap(&redact_secrets(&text, &[]), MAX_SNIPPET_BYTES),
-            }
+                text: cap(&text, MAX_SNIPPET_BYTES),
+            };
+            redact_evidence(std::slice::from_mut(&mut item));
+            item
         })
         .collect()
 }
@@ -633,6 +651,49 @@ mod tests {
             "secrets never reach the model"
         );
         assert!(built.prompt.contains("untrusted data"));
+    }
+
+    #[test]
+    fn metadata_is_redacted_too_not_only_the_diff() {
+        const TOKEN: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let mut detail = detail();
+        detail.commit.subject = format!("Rotate {TOKEN}");
+        detail.commit.author_name = format!("deploy-{TOKEN}");
+        detail.files[0].path = format!("config/{TOKEN}.env");
+        let mut impact = impact();
+        impact.files[0].symbols[0].label = format!("use_{TOKEN}()");
+        let built = build_analysis_prompt("demo", &detail, &impact, "", false);
+        assert!(
+            !built.prompt.contains(TOKEN),
+            "no token reaches the provider"
+        );
+        for evidence in &built.evidence {
+            assert!(!evidence.label.contains(TOKEN), "{evidence:?}");
+            assert!(
+                !evidence.file.clone().unwrap_or_default().contains(TOKEN),
+                "{evidence:?}"
+            );
+        }
+        // Chat evidence is held to the same rule.
+        let chat = number_evidence(vec![(
+            EvidenceRef {
+                id: String::new(),
+                kind: EvidenceKind::Symbol,
+                label: format!("fn {TOKEN}()"),
+                file: Some(format!("src/{TOKEN}.rs")),
+                line: Some(1),
+                node_id: None,
+                sha: None,
+            },
+            format!("fn {TOKEN}() {{}}"),
+        )]);
+        assert!(!chat[0].text.contains(TOKEN) && !chat[0].reference.label.contains(TOKEN));
+        assert!(!chat[0]
+            .reference
+            .file
+            .clone()
+            .unwrap_or_default()
+            .contains(TOKEN));
     }
 
     #[test]

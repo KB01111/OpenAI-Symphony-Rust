@@ -13,6 +13,56 @@ use symphony_knowledge::timeline::{ProjectRef, TaskLinks};
 /// An analysis turn never runs longer than this, whatever the workflow allows an agent.
 const ANALYSIS_TURN_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 
+/// Built-in tools of Claude Code, denied for an analysis (a bare tool name denies every use).
+const CLAUDE_DENIED_TOOLS: &[&str] = &[
+    "Bash",
+    "BashOutput",
+    "KillShell",
+    "Edit",
+    "MultiEdit",
+    "Write",
+    "NotebookEdit",
+    "Read",
+    "Glob",
+    "Grep",
+    "LS",
+    "WebFetch",
+    "WebSearch",
+    "Task",
+    "Agent",
+    "Skill",
+    "TodoWrite",
+];
+
+/// Ask the provider not to use any built-in tool, through the project configuration it reads from
+/// its working directory (an empty scratch directory that exists for this one turn):
+///
+/// - Claude Code: `.claude/settings.json` with `permissions.deny` for its built-in tools. Deny rules
+///   outrank allow rules from the user's own settings, and apply without a trust prompt.
+/// - OpenCode: `opencode.json` with `"permission": {"*": "deny"}`.
+/// - Codex has no such file; it runs with `thread_sandbox: read-only` (no writes, no network).
+///
+/// These are the providers' own mechanisms, not something Symphony enforces: a tool that comes from
+/// the user's own configuration (for example an MCP server) is not covered, which is why the output
+/// is also validated and only ever shown as text.
+fn write_tool_restrictions(dir: &Path) -> SymphonyResult<()> {
+    std::fs::create_dir_all(dir.join(".claude"))?;
+    let claude = json!({ "permissions": { "deny": CLAUDE_DENIED_TOOLS } });
+    std::fs::write(
+        dir.join(".claude").join("settings.json"),
+        serde_json::to_vec_pretty(&claude)?,
+    )?;
+    let opencode = json!({
+        "$schema": "https://opencode.ai/config.json",
+        "permission": { "*": "deny" }
+    });
+    std::fs::write(
+        dir.join("opencode.json"),
+        serde_json::to_vec_pretty(&opencode)?,
+    )?;
+    Ok(())
+}
+
 /// Answers every approval request with a refusal: an analysis has no use for tools, so anything
 /// the provider asks to run is denied.
 struct DenyAllGate;
@@ -57,6 +107,7 @@ impl AnalysisRunner for KnowledgeRunner {
 
     async fn run(&self, request: AnalysisRequest) -> SymphonyResult<AnalysisOutput> {
         let config = self.orch.memory.read().await.active_config.clone();
+        write_tool_restrictions(&request.scratch_dir)?;
         let launch = AgentLaunchConfig {
             provider: request.provider,
             command: config.codex.command.clone(),
@@ -65,7 +116,8 @@ impl AnalysisRunner for KnowledgeRunner {
             task_id: format!("knowledge:{}", request.project_id),
             issue_identifier: "KB".into(),
             issue_title: "Knowledge Base analysis".into(),
-            // Nobody can be asked, and nothing may be written: the prompt carries all the material.
+            // Nobody can be asked, nothing may be written and the provider's own tools are denied
+            // (see `write_tool_restrictions`): the prompt carries all the material.
             approval_policy: json!("never"),
             thread_sandbox: Value::String("read-only".into()),
             turn_sandbox_policy: Some(json!({ "type": "readOnly" })),
@@ -218,5 +270,48 @@ impl SymphonyOrchestrator {
                 ))
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_scratch_directory_denies_every_built_in_tool_of_each_provider() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_tool_restrictions(dir.path()).unwrap();
+
+        let claude: Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join(".claude").join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        let denied: Vec<&str> = claude["permissions"]["deny"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for tool in [
+            "Bash",
+            "Edit",
+            "Write",
+            "Read",
+            "WebFetch",
+            "WebSearch",
+            "Task",
+        ] {
+            assert!(denied.contains(&tool), "{tool} must be denied");
+        }
+        // Nothing is allowed back.
+        assert!(claude["permissions"].get("allow").is_none());
+
+        let opencode: Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("opencode.json")).unwrap())
+                .unwrap();
+        assert_eq!(opencode["permission"]["*"], json!("deny"));
+        // The directory stays otherwise empty: no repository content is placed in it.
+        let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
+        assert_eq!(entries.len(), 2);
     }
 }
