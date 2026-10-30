@@ -440,11 +440,11 @@ pub fn number_evidence(items: Vec<(EvidenceRef, String)>) -> Vec<PromptEvidence>
         .enumerate()
         .map(|(i, (mut reference, text))| {
             reference.id = format!("e{}", i + 1);
-            let mut item = PromptEvidence {
-                reference,
-                text: cap(&text, MAX_SNIPPET_BYTES),
-            };
+            let mut item = PromptEvidence { reference, text };
+            // Redact the whole text first and cap it afterwards: cutting first could leave the
+            // front of a token too short for the redaction pattern to recognise.
             redact_evidence(std::slice::from_mut(&mut item));
+            item.text = cap(&item.text, MAX_SNIPPET_BYTES);
             item
         })
         .collect()
@@ -724,6 +724,30 @@ mod tests {
             &chat,
         );
         assert!(!prompt.contains(TOKEN), "{prompt}");
+    }
+
+    #[test]
+    fn a_token_at_the_length_cap_is_redacted_whole_not_cut_into_a_prefix() {
+        const TOKEN: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        // The token starts 8 bytes before the cap: cut first, only "ghp_abcd" would be left, too
+        // short for the redaction pattern to recognise.
+        let text = format!("{}{TOKEN}", "a".repeat(MAX_SNIPPET_BYTES - 8));
+        let evidence = number_evidence(vec![(
+            EvidenceRef {
+                id: String::new(),
+                kind: EvidenceKind::File,
+                label: "f".into(),
+                file: None,
+                line: None,
+                node_id: None,
+                sha: None,
+            },
+            text,
+        )]);
+        assert!(
+            !evidence[0].text.contains("ghp_"),
+            "a token prefix survived"
+        );
     }
 
     #[test]

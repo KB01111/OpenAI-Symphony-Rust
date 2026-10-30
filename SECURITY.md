@@ -289,8 +289,8 @@ Design and data flow: [`docs/KNOWLEDGE_BASE.md`](./docs/KNOWLEDGE_BASE.md).
 - **Git is observed, not changed.** Every call is read-only, takes no locks (`GIT_OPTIONAL_LOCKS=0`), disables
   `core.fsmonitor`, external diff drivers and textconv (a repository's configuration can name programs for
   them), validates revisions as hex and puts paths after `--`.
-- **AI analysis is given no tools and no repository content.** The prompt carries a bounded diff and numbered
-  evidence, all secret-redacted (including author names, subjects, paths and symbol names). The provider runs in
+- **AI analysis is given no tools and no direct access to the repository.** The prompt carries a bounded diff and numbered
+  evidence, which is all of the repository the provider sees, all secret-redacted (including author names, subjects, paths and symbol names). The provider runs in
   an empty scratch directory with policy `never`, a read-only sandbox and an approval gate that declines
   everything, and Symphony's host tools are not offered. The provider's built-in tools are turned off through
   its own project configuration written into that directory for the turn (Claude Code `permissions.deny`,

@@ -8,7 +8,7 @@ import { useKnowledgeCommit, useKnowledgeCommitDiff } from "../../lib/queries.js
 import { AnalysisView } from "./AnalysisView.js";
 import { ImpactView } from "./ImpactView.js";
 import { Block, ShaChip } from "./parts.js";
-import { isTestFile, worktreeLabel } from "./knowledgeLogic.js";
+import { isTestFile } from "./knowledgeLogic.js";
 import { knowledgeMessages } from "./messages.js";
 import { useKnowledgeSelection, type CommitPanelTab } from "./selection.js";
 
@@ -101,7 +101,7 @@ export const CommitPanel: React.FC<{ sha: string }> = ({ sha }) => {
           ))}
           {summary.worktrees.map((wt) => (
             <Badge key={wt.worktree_id} tone="neutral" title={wt.is_head ? m.commits.badges.head : undefined}>
-              {wt.branch ?? worktreeLabel({ branch: null, head_short_sha: null, path: wt.worktree_id })}
+              {wt.branch ?? m.commits.badges.detached}
               {wt.is_head ? " ●" : ""}
             </Badge>
           ))}

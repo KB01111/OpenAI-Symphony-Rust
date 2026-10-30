@@ -167,7 +167,8 @@ prefixes a changed file), files, or symbols.
 * The prompt carries a bounded (60 KB), secret-redacted diff, the changed symbols and the affected set as
   **numbered evidence** (`commit`, `f1..`, `s1..`, `a1..` for a commit; `e1..` for chat). Replies must be one
   JSON object whose findings cite those ids.
-* **The model gets no host tools and no repository content.** It runs through the project's preferred provider
+* **The model gets no host tools and no direct access to the repository or a worktree**, only the bounded,
+  redacted evidence in its prompt. It runs through the project's preferred provider
   (Codex, Claude Code or OpenCode) in an empty scratch directory with policy `never`, a read-only sandbox and an
   approval gate that declines everything; Symphony's own host tools are not offered. The provider's *built-in*
   tools are switched off through the providers' own mechanisms, written into the scratch directory for that one
