@@ -456,6 +456,47 @@ describe("Repository Knowledge Base", () => {
     expect(rt.calls.some((c) => c.path.includes("/projects/p2/") && c.path.includes(SHA))).toBe(false);
   });
 
+  it("tells two detached worktrees that contain a commit apart", async () => {
+    const detached = (id: string, head: string) => ({
+      id,
+      path: `/repo/.wt/${id}`,
+      kind: "external",
+      branch: null,
+      detached: true,
+      head_sha: head.repeat(5),
+      head_short_sha: head,
+      head_subject: "wip",
+      head_committed_at: "2026-10-30T10:00:00Z",
+      exists: true,
+      dirty: false,
+      changed_files: 0,
+      locked: false,
+      prunable: false,
+      ahead_of_default: 1,
+      task: null
+    });
+    const rt = runtime({
+      "GET /projects/:id/knowledge/worktrees": () => [detached("wt_a", "abc12345"), detached("wt_b", "def67890")],
+      "GET /projects/:id/knowledge/commits/:sha": () => ({
+        commit: summary({
+          worktrees: [
+            { worktree_id: "wt_a", branch: null, is_head: false },
+            { worktree_id: "wt_b", branch: null, is_head: false }
+          ]
+        }),
+        body: "",
+        files: [],
+        additions: 0,
+        deletions: 0,
+        files_truncated: false,
+        diff_base: PARENT
+      })
+    });
+    open(`/knowledge?tab=commits&commit=${SHA}`, rt);
+    expect(await screen.findByText("detached abc12345")).toBeInTheDocument();
+    expect(await screen.findByText("detached def67890")).toBeInTheDocument();
+  });
+
   it("a commit chosen on the strip from another tab opens its panel on the Commits tab", async () => {
     open("/knowledge");
     const strip = await screen.findByRole("region", { name: "Commits across all worktrees" });

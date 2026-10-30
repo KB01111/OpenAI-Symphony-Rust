@@ -4,11 +4,11 @@ import { formatMessage } from "@symphony/shared-types";
 import { Badge, Button, ErrorState, LoadingRows, Tabs, TabsContent, TabsList, TabsTrigger, TimeAgo } from "@symphony/ui";
 import { DiffViewer } from "../../components/DiffViewer.js";
 import { useMessages } from "../../lib/i18n.js";
-import { useKnowledgeCommit, useKnowledgeCommitDiff } from "../../lib/queries.js";
+import { useKnowledgeCommit, useKnowledgeCommitDiff, useKnowledgeWorktrees } from "../../lib/queries.js";
 import { AnalysisView } from "./AnalysisView.js";
 import { ImpactView } from "./ImpactView.js";
 import { Block, ShaChip } from "./parts.js";
-import { isTestFile } from "./knowledgeLogic.js";
+import { isTestFile, worktreeLabel } from "./knowledgeLogic.js";
 import { knowledgeMessages } from "./messages.js";
 import { useKnowledgeSelection, type CommitPanelTab } from "./selection.js";
 
@@ -56,6 +56,10 @@ export const CommitPanel: React.FC<{ sha: string }> = ({ sha }) => {
   const selection = useKnowledgeSelection();
   const [tab, setTab] = useState<CommitPanelTab>("impact");
   const commit = useKnowledgeCommit(selection.projectId, sha);
+  // Detached worktrees have no branch name; the worktree list (already cached for the page) gives
+  // each one its own label, so two of them can be told apart.
+  const worktrees = useKnowledgeWorktrees(selection.projectId);
+  const worktreeById = new Map((worktrees.data ?? []).map((w) => [w.id, w]));
 
   if (commit.isPending) return <LoadingRows className="p-3" rows={6} />;
   if (commit.isError) return <ErrorState title={m.commits.loadFailed} message={commit.error.message} onRetry={() => void commit.refetch()} />;
@@ -101,7 +105,10 @@ export const CommitPanel: React.FC<{ sha: string }> = ({ sha }) => {
           ))}
           {summary.worktrees.map((wt) => (
             <Badge key={wt.worktree_id} tone="neutral" title={wt.is_head ? m.commits.badges.head : undefined}>
-              {wt.branch ?? m.commits.badges.detached}
+              {wt.branch ??
+                (worktreeById.has(wt.worktree_id)
+                  ? worktreeLabel(worktreeById.get(wt.worktree_id)!, m.commits.badges.detached)
+                  : m.commits.badges.detached)}
               {wt.is_head ? " ●" : ""}
             </Badge>
           ))}
