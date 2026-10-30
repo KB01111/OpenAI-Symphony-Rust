@@ -461,6 +461,10 @@ async fn start_embedded_runtime(
     orchestrator
         .set_workflow_fallback_path(data_dir.join("WORKFLOW.md"))
         .await;
+    if let Err(err) = orchestrator.enable_knowledge(&data_dir).await {
+        // The Knowledge Base is optional: the runtime works without it.
+        tracing::warn!(error = %err, "Knowledge Base unavailable");
+    }
     orchestrator.start_background_loops();
 
     let token = generate_access_token();

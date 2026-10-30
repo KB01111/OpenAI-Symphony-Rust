@@ -17,6 +17,7 @@ const TasksPage = lazy(() => import("../features/tasks/TasksPage.js"));
 const ExecutionPage = lazy(() => import("../features/execution/ExecutionPage.js"));
 const WorktreesPage = lazy(() => import("../features/worktrees/WorktreesPage.js"));
 const ReviewsPage = lazy(() => import("../features/reviews/ReviewsPage.js"));
+const KnowledgePage = lazy(() => import("../features/knowledge/KnowledgePage.js"));
 const WorkflowStudioPage = lazy(() => import("../features/workflows/WorkflowStudioPage.js"));
 const ProvidersPage = lazy(() => import("../features/providers/ProvidersPage.js"));
 const SettingsPage = lazy(() => import("../features/settings/SettingsPage.js"));
@@ -47,6 +48,7 @@ export const AppRoutes: React.FC = () => (
       <Route path="worktrees" element={frame(<WorktreesPage />)} />
       <Route path="reviews" element={frame(<ReviewsPage />)} />
       <Route path="reviews/:reviewId" element={frame(<ReviewsPage />)} />
+      <Route path="knowledge" element={frame(<KnowledgePage />)} />
       <Route path="workflow" element={frame(<WorkflowStudioPage />)} />
       <Route path="providers" element={frame(<ProvidersPage />)} />
       <Route path="settings" element={frame(<SettingsPage />)} />

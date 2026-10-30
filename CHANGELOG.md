@@ -10,6 +10,20 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Added
 
+- **Repository Knowledge Base** (`/knowledge`, crate `symphony-knowledge`): an intelligence view per
+  repository that joins a code graph, live worktrees, a deduplicated commit timeline and AI analysis.
+  *Worktrees* lists every git worktree (not only Symphony's) with HEAD, uncommitted files, commits ahead of the
+  default branch and the owning task/agent. *Commits* is one row per SHA across all worktrees with the
+  worktrees that contain it, unpushed state and uncommitted work, kept current by a git-directory watcher.
+  *Knowledge graph* shows modules, files and symbols from [Graphify](https://github.com/Graphify-Labs/graphify)
+  (offline, incremental), with Sigma.js. **Selecting a commit highlights the code it changed and what depends
+  on it** in the graph (changed symbols are found at the commit's own tree, dependents by a reverse walk of the
+  index, inferred links marked), and an **AI review** (summary, risks, security, regressions, tests) and a
+  repository-aware **chat** answer with citations that are checked against the evidence the model was given.
+  [Serena](https://oraios.github.io/serena/) (optional, GPL-3.0, run only as a separate process you install)
+  adds precise references on request. Engines run on Symphony-owned snapshots, never in your repository, and
+  Symphony installs nothing itself. New: `/api/v1/projects/{id}/knowledge/...` (16 operations, local only),
+  `knowledge/*` events and the `knowledge.db` index. **API:** additive only. See `docs/KNOWLEDGE_BASE.md`.
 - **CodeSandbox cloud agents**: a new *CodeSandbox Cloud Agent* provider runs a task's agent in a
   [CodeSandbox](https://codesandbox.io) microVM built from an SDK template, using a CodeSandbox API token
   stored under *Providers* (`CSB_API_KEY`). The agent is chosen per task in the composer and defaults to

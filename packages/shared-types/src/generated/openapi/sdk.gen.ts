@@ -2,7 +2,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client/index.js';
-import type { ApprovePrMergeData, ApprovePrMergeErrors, ApprovePrMergeResponses, CancelTaskData, CancelTaskErrors, CancelTaskResponses, ContinueTaskData, ContinueTaskErrors, ContinueTaskResponses, CreateBackupData, CreateBackupErrors, CreateBackupResponses, CreateProjectData, CreateProjectErrors, CreateProjectResponses, CreatePullRequestData, CreatePullRequestErrors, CreatePullRequestResponses, CreateTaskData, CreateTaskErrors, CreateTaskResponses, DecideApprovalData, DecideApprovalErrors, DecideApprovalResponses, DeleteCredentialData, DeleteCredentialErrors, DeleteCredentialResponses, DeleteProjectData, DeleteProjectErrors, DeleteProjectResponses, DispatchTaskData, DispatchTaskErrors, DispatchTaskResponses, ExportDiagnosticsData, ExportDiagnosticsErrors, ExportDiagnosticsResponses, GetIssueDetailData, GetIssueDetailErrors, GetIssueDetailResponses, GetProjectData, GetProjectErrors, GetProjectResponses, GetPrReviewData, GetPrReviewErrors, GetPrReviewResponses, GetRemoteAccessData, GetRemoteAccessErrors, GetRemoteAccessResponses, GetRuntimeData, GetRuntimeErrors, GetRuntimeResponses, GetSettingsData, GetSettingsErrors, GetSettingsResponses, GetStateData, GetStateErrors, GetStateResponses, GetTaskData, GetTaskDiffData, GetTaskDiffErrors, GetTaskDiffResponses, GetTaskErrors, GetTaskResponses, GetWorkflowData, GetWorkflowErrors, GetWorkflowResponses, HealthData, HealthErrors, HealthResponses, ListApprovalsData, ListApprovalsErrors, ListApprovalsResponses, ListBackupsData, ListBackupsErrors, ListBackupsResponses, ListCredentialsData, ListCredentialsErrors, ListCredentialsResponses, ListProjectsData, ListProjectsErrors, ListProjectsResponses, ListProvidersData, ListProvidersErrors, ListProvidersResponses, ListPrReviewsData, ListPrReviewsErrors, ListPrReviewsResponses, ListRecentEventsData, ListRecentEventsErrors, ListRecentEventsResponses, ListTaskAttemptsData, ListTaskAttemptsErrors, ListTaskAttemptsResponses, ListTaskEventsData, ListTaskEventsErrors, ListTaskEventsResponses, ListTasksData, ListTasksErrors, ListTasksResponses, ListTaskToolCallsData, ListTaskToolCallsErrors, ListTaskToolCallsResponses, ListTaskValidationsData, ListTaskValidationsErrors, ListTaskValidationsResponses, ListWorktreesData, ListWorktreesErrors, ListWorktreesResponses, MoveTaskStatusData, MoveTaskStatusErrors, MoveTaskStatusResponses, PauseSchedulerData, PauseSchedulerErrors, PauseSchedulerResponses, PreviewWorkflowData, PreviewWorkflowErrors, PreviewWorkflowResponses, RefreshData, RefreshErrors, RefreshPullRequestData, RefreshPullRequestErrors, RefreshPullRequestResponses, RefreshResponses, ResumeSchedulerData, ResumeSchedulerErrors, ResumeSchedulerResponses, RetryTaskData, RetryTaskErrors, RetryTaskResponses, RevokeRemoteAccessTokenData, RevokeRemoteAccessTokenErrors, RevokeRemoteAccessTokenResponses, RotateRemoteAccessTokenData, RotateRemoteAccessTokenErrors, RotateRemoteAccessTokenResponses, SetCredentialData, SetCredentialErrors, SetCredentialResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, UpdateProjectData, UpdateProjectErrors, UpdateProjectResponses, UpdateSettingsData, UpdateSettingsErrors, UpdateSettingsResponses, UpdateWorkflowData, UpdateWorkflowErrors, UpdateWorkflowResponses, ValidateRepositoryData, ValidateRepositoryErrors, ValidateRepositoryResponses } from './types.gen.js';
+import type { ApprovePrMergeData, ApprovePrMergeErrors, ApprovePrMergeResponses, AskKnowledgeData, AskKnowledgeErrors, AskKnowledgeResponses, CancelTaskData, CancelTaskErrors, CancelTaskResponses, ClearKnowledgeChatData, ClearKnowledgeChatErrors, ClearKnowledgeChatResponses, ContinueTaskData, ContinueTaskErrors, ContinueTaskResponses, CreateBackupData, CreateBackupErrors, CreateBackupResponses, CreateProjectData, CreateProjectErrors, CreateProjectResponses, CreatePullRequestData, CreatePullRequestErrors, CreatePullRequestResponses, CreateTaskData, CreateTaskErrors, CreateTaskResponses, DecideApprovalData, DecideApprovalErrors, DecideApprovalResponses, DeleteCredentialData, DeleteCredentialErrors, DeleteCredentialResponses, DeleteProjectData, DeleteProjectErrors, DeleteProjectResponses, DispatchTaskData, DispatchTaskErrors, DispatchTaskResponses, ExportDiagnosticsData, ExportDiagnosticsErrors, ExportDiagnosticsResponses, GetIssueDetailData, GetIssueDetailErrors, GetIssueDetailResponses, GetKnowledgeCommitAnalysisData, GetKnowledgeCommitAnalysisErrors, GetKnowledgeCommitAnalysisResponses, GetKnowledgeCommitData, GetKnowledgeCommitDiffData, GetKnowledgeCommitDiffErrors, GetKnowledgeCommitDiffResponses, GetKnowledgeCommitErrors, GetKnowledgeCommitImpactData, GetKnowledgeCommitImpactErrors, GetKnowledgeCommitImpactResponses, GetKnowledgeCommitResponses, GetKnowledgeEnginesData, GetKnowledgeEnginesErrors, GetKnowledgeEnginesResponses, GetKnowledgeGraphData, GetKnowledgeGraphErrors, GetKnowledgeGraphResponses, GetKnowledgeNodeData, GetKnowledgeNodeErrors, GetKnowledgeNodeReferencesData, GetKnowledgeNodeReferencesErrors, GetKnowledgeNodeReferencesResponses, GetKnowledgeNodeResponses, GetKnowledgeOverviewData, GetKnowledgeOverviewErrors, GetKnowledgeOverviewResponses, GetProjectData, GetProjectErrors, GetProjectResponses, GetPrReviewData, GetPrReviewErrors, GetPrReviewResponses, GetRemoteAccessData, GetRemoteAccessErrors, GetRemoteAccessResponses, GetRuntimeData, GetRuntimeErrors, GetRuntimeResponses, GetSettingsData, GetSettingsErrors, GetSettingsResponses, GetStateData, GetStateErrors, GetStateResponses, GetTaskData, GetTaskDiffData, GetTaskDiffErrors, GetTaskDiffResponses, GetTaskErrors, GetTaskResponses, GetWorkflowData, GetWorkflowErrors, GetWorkflowResponses, HealthData, HealthErrors, HealthResponses, ListApprovalsData, ListApprovalsErrors, ListApprovalsResponses, ListBackupsData, ListBackupsErrors, ListBackupsResponses, ListCredentialsData, ListCredentialsErrors, ListCredentialsResponses, ListKnowledgeChatData, ListKnowledgeChatErrors, ListKnowledgeChatResponses, ListKnowledgeCommitsData, ListKnowledgeCommitsErrors, ListKnowledgeCommitsResponses, ListKnowledgeWorktreesData, ListKnowledgeWorktreesErrors, ListKnowledgeWorktreesResponses, ListProjectsData, ListProjectsErrors, ListProjectsResponses, ListProvidersData, ListProvidersErrors, ListProvidersResponses, ListPrReviewsData, ListPrReviewsErrors, ListPrReviewsResponses, ListRecentEventsData, ListRecentEventsErrors, ListRecentEventsResponses, ListTaskAttemptsData, ListTaskAttemptsErrors, ListTaskAttemptsResponses, ListTaskEventsData, ListTaskEventsErrors, ListTaskEventsResponses, ListTasksData, ListTasksErrors, ListTasksResponses, ListTaskToolCallsData, ListTaskToolCallsErrors, ListTaskToolCallsResponses, ListTaskValidationsData, ListTaskValidationsErrors, ListTaskValidationsResponses, ListWorktreesData, ListWorktreesErrors, ListWorktreesResponses, MoveTaskStatusData, MoveTaskStatusErrors, MoveTaskStatusResponses, PauseSchedulerData, PauseSchedulerErrors, PauseSchedulerResponses, PreviewWorkflowData, PreviewWorkflowErrors, PreviewWorkflowResponses, RefreshData, RefreshErrors, RefreshPullRequestData, RefreshPullRequestErrors, RefreshPullRequestResponses, RefreshResponses, ResumeSchedulerData, ResumeSchedulerErrors, ResumeSchedulerResponses, RetryTaskData, RetryTaskErrors, RetryTaskResponses, RevokeRemoteAccessTokenData, RevokeRemoteAccessTokenErrors, RevokeRemoteAccessTokenResponses, RotateRemoteAccessTokenData, RotateRemoteAccessTokenErrors, RotateRemoteAccessTokenResponses, SearchKnowledgeData, SearchKnowledgeErrors, SearchKnowledgeResponses, SetCredentialData, SetCredentialErrors, SetCredentialResponses, StartKnowledgeCommitAnalysisData, StartKnowledgeCommitAnalysisErrors, StartKnowledgeCommitAnalysisResponses, StartKnowledgeIndexData, StartKnowledgeIndexErrors, StartKnowledgeIndexResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, UpdateProjectData, UpdateProjectErrors, UpdateProjectResponses, UpdateSettingsData, UpdateSettingsErrors, UpdateSettingsResponses, UpdateWorkflowData, UpdateWorkflowErrors, UpdateWorkflowResponses, ValidateRepositoryData, ValidateRepositoryErrors, ValidateRepositoryResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -275,6 +275,120 @@ export const listWorktrees = <ThrowOnError extends boolean = false>(options?: Op
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/worktrees',
     ...options
+});
+
+export const getKnowledgeEngines = <ThrowOnError extends boolean = false>(options?: Options<GetKnowledgeEnginesData, ThrowOnError>): RequestResult<GetKnowledgeEnginesResponses, GetKnowledgeEnginesErrors, ThrowOnError> => (options?.client ?? client).get<GetKnowledgeEnginesResponses, GetKnowledgeEnginesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/knowledge/engines',
+    ...options
+});
+
+export const getKnowledgeOverview = <ThrowOnError extends boolean = false>(options: Options<GetKnowledgeOverviewData, ThrowOnError>): RequestResult<GetKnowledgeOverviewResponses, GetKnowledgeOverviewErrors, ThrowOnError> => (options.client ?? client).get<GetKnowledgeOverviewResponses, GetKnowledgeOverviewErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge',
+    ...options
+});
+
+export const startKnowledgeIndex = <ThrowOnError extends boolean = false>(options: Options<StartKnowledgeIndexData, ThrowOnError>): RequestResult<StartKnowledgeIndexResponses, StartKnowledgeIndexErrors, ThrowOnError> => (options.client ?? client).post<StartKnowledgeIndexResponses, StartKnowledgeIndexErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/index',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const getKnowledgeGraph = <ThrowOnError extends boolean = false>(options: Options<GetKnowledgeGraphData, ThrowOnError>): RequestResult<GetKnowledgeGraphResponses, GetKnowledgeGraphErrors, ThrowOnError> => (options.client ?? client).get<GetKnowledgeGraphResponses, GetKnowledgeGraphErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/graph',
+    ...options
+});
+
+export const searchKnowledge = <ThrowOnError extends boolean = false>(options: Options<SearchKnowledgeData, ThrowOnError>): RequestResult<SearchKnowledgeResponses, SearchKnowledgeErrors, ThrowOnError> => (options.client ?? client).get<SearchKnowledgeResponses, SearchKnowledgeErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/search',
+    ...options
+});
+
+export const getKnowledgeNode = <ThrowOnError extends boolean = false>(options: Options<GetKnowledgeNodeData, ThrowOnError>): RequestResult<GetKnowledgeNodeResponses, GetKnowledgeNodeErrors, ThrowOnError> => (options.client ?? client).get<GetKnowledgeNodeResponses, GetKnowledgeNodeErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/node',
+    ...options
+});
+
+export const getKnowledgeNodeReferences = <ThrowOnError extends boolean = false>(options: Options<GetKnowledgeNodeReferencesData, ThrowOnError>): RequestResult<GetKnowledgeNodeReferencesResponses, GetKnowledgeNodeReferencesErrors, ThrowOnError> => (options.client ?? client).get<GetKnowledgeNodeReferencesResponses, GetKnowledgeNodeReferencesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/node/references',
+    ...options
+});
+
+export const listKnowledgeWorktrees = <ThrowOnError extends boolean = false>(options: Options<ListKnowledgeWorktreesData, ThrowOnError>): RequestResult<ListKnowledgeWorktreesResponses, ListKnowledgeWorktreesErrors, ThrowOnError> => (options.client ?? client).get<ListKnowledgeWorktreesResponses, ListKnowledgeWorktreesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/worktrees',
+    ...options
+});
+
+export const listKnowledgeCommits = <ThrowOnError extends boolean = false>(options: Options<ListKnowledgeCommitsData, ThrowOnError>): RequestResult<ListKnowledgeCommitsResponses, ListKnowledgeCommitsErrors, ThrowOnError> => (options.client ?? client).get<ListKnowledgeCommitsResponses, ListKnowledgeCommitsErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/commits',
+    ...options
+});
+
+export const getKnowledgeCommit = <ThrowOnError extends boolean = false>(options: Options<GetKnowledgeCommitData, ThrowOnError>): RequestResult<GetKnowledgeCommitResponses, GetKnowledgeCommitErrors, ThrowOnError> => (options.client ?? client).get<GetKnowledgeCommitResponses, GetKnowledgeCommitErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/commits/{sha}',
+    ...options
+});
+
+export const getKnowledgeCommitDiff = <ThrowOnError extends boolean = false>(options: Options<GetKnowledgeCommitDiffData, ThrowOnError>): RequestResult<GetKnowledgeCommitDiffResponses, GetKnowledgeCommitDiffErrors, ThrowOnError> => (options.client ?? client).get<GetKnowledgeCommitDiffResponses, GetKnowledgeCommitDiffErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/commits/{sha}/diff',
+    ...options
+});
+
+export const getKnowledgeCommitImpact = <ThrowOnError extends boolean = false>(options: Options<GetKnowledgeCommitImpactData, ThrowOnError>): RequestResult<GetKnowledgeCommitImpactResponses, GetKnowledgeCommitImpactErrors, ThrowOnError> => (options.client ?? client).get<GetKnowledgeCommitImpactResponses, GetKnowledgeCommitImpactErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/commits/{sha}/impact',
+    ...options
+});
+
+export const getKnowledgeCommitAnalysis = <ThrowOnError extends boolean = false>(options: Options<GetKnowledgeCommitAnalysisData, ThrowOnError>): RequestResult<GetKnowledgeCommitAnalysisResponses, GetKnowledgeCommitAnalysisErrors, ThrowOnError> => (options.client ?? client).get<GetKnowledgeCommitAnalysisResponses, GetKnowledgeCommitAnalysisErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/commits/{sha}/analysis',
+    ...options
+});
+
+export const startKnowledgeCommitAnalysis = <ThrowOnError extends boolean = false>(options: Options<StartKnowledgeCommitAnalysisData, ThrowOnError>): RequestResult<StartKnowledgeCommitAnalysisResponses, StartKnowledgeCommitAnalysisErrors, ThrowOnError> => (options.client ?? client).post<StartKnowledgeCommitAnalysisResponses, StartKnowledgeCommitAnalysisErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/commits/{sha}/analysis',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const clearKnowledgeChat = <ThrowOnError extends boolean = false>(options: Options<ClearKnowledgeChatData, ThrowOnError>): RequestResult<ClearKnowledgeChatResponses, ClearKnowledgeChatErrors, ThrowOnError> => (options.client ?? client).delete<ClearKnowledgeChatResponses, ClearKnowledgeChatErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/chat',
+    ...options
+});
+
+export const listKnowledgeChat = <ThrowOnError extends boolean = false>(options: Options<ListKnowledgeChatData, ThrowOnError>): RequestResult<ListKnowledgeChatResponses, ListKnowledgeChatErrors, ThrowOnError> => (options.client ?? client).get<ListKnowledgeChatResponses, ListKnowledgeChatErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/chat',
+    ...options
+});
+
+export const askKnowledge = <ThrowOnError extends boolean = false>(options: Options<AskKnowledgeData, ThrowOnError>): RequestResult<AskKnowledgeResponses, AskKnowledgeErrors, ThrowOnError> => (options.client ?? client).post<AskKnowledgeResponses, AskKnowledgeErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/projects/{id}/knowledge/chat',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });
 
 export const getWorkflow = <ThrowOnError extends boolean = false>(options?: Options<GetWorkflowData, ThrowOnError>): RequestResult<GetWorkflowResponses, GetWorkflowErrors, ThrowOnError> => (options?.client ?? client).get<GetWorkflowResponses, GetWorkflowErrors, ThrowOnError>({

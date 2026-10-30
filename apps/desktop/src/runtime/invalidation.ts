@@ -59,6 +59,24 @@ export function keysToInvalidate(batch: AgentEvent[]): QueryKey[] {
     if (type.startsWith("scheduler/")) add(qk.state);
     if (type.startsWith("workflow/")) add(qk.workflow);
     if (type.startsWith("backup/")) add(qk.backups);
+    if (type.startsWith("knowledge/")) {
+      const projectId = (e.payload as { project_id?: unknown } | null)?.project_id;
+      const scope = typeof projectId === "string" ? qk.knowledge(projectId) : qk.knowledgeAll;
+      if (type === "knowledge/repo_changed") {
+        // History and worktree state moved: the index and the AI results are unaffected.
+        for (const part of ["worktrees", "commits", "commit", "diff", "overview"]) add([...scope, part]);
+      } else if (type === "knowledge/analysis_completed") {
+        add([...scope, "analysis"]);
+      } else if (type === "knowledge/chat_completed") {
+        add([...scope, "chat"]);
+      } else if (type === "knowledge/index_progress") {
+        // Nothing in the index has changed yet, only the status line: not every open graph view.
+        add([...scope, "overview"]);
+      } else {
+        // A finished (or failed) run: the overview and every graph view.
+        add(scope);
+      }
+    }
     if (type === "session_started" || type === "turn/completed" || type.startsWith("item/fileChange")) {
       add(qk.state);
       if (taskId) add(qk.taskDiff(taskId));

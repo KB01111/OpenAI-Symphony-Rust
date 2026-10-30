@@ -34,7 +34,7 @@ describe("Desktop shell", () => {
       .getAllByRole("link")
       .map((link) => link.getAttribute("href")?.replace(/^#?\//, ""))
       .filter((view) => view && !view.startsWith("runs/"));
-    expect(views).toEqual(["overview", "projects", "tasks", "reviews", "activity", "worktrees", "workflow", "providers", "settings"]);
+    expect(views).toEqual(["overview", "projects", "tasks", "reviews", "knowledge", "activity", "worktrees", "workflow", "providers", "settings"]);
   });
 
   it("opens on the prompt composer", async () => {
