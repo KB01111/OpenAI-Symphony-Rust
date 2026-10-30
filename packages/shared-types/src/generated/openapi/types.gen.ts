@@ -4,6 +4,26 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
+export type AffectedNode = {
+    node: GraphNode;
+    /**
+     * Hops from the nearest changed node.
+     */
+    depth: number;
+    /**
+     * The relation of the last hop (for example `calls`).
+     */
+    via_relation: string;
+    /**
+     * The node it was reached from.
+     */
+    from_node_id: string;
+    /**
+     * The weakest edge on the path.
+     */
+    confidence: Confidence;
+};
+
 export type AgentConfig = {
     max_concurrent_agents: number;
     max_turns: number;
@@ -27,6 +47,16 @@ export type AgentEvent = {
     message: string;
     payload: unknown;
     timestamp: string;
+};
+
+export type AnalysisFinding = {
+    title: string;
+    detail: string;
+    severity: FindingSeverity;
+    /**
+     * Ids from `CommitAnalysis::evidence`; never empty after validation.
+     */
+    evidence: Array<string>;
 };
 
 export type ApiErrorBody = {
@@ -129,6 +159,13 @@ export type ApprovalRequest = {
 
 export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'cancelled';
 
+export type AskKnowledgeRequest = {
+    /**
+     * 1 to 2000 characters.
+     */
+    question: string;
+};
+
 export type AttemptSummary = {
     restart_count: number;
     current_retry_attempt: number;
@@ -185,12 +222,54 @@ export type CancelTaskRequest = {
     reason?: string | null;
 };
 
+export type ChangedFile = {
+    path: string;
+    old_path: string | null;
+    status: FileChangeStatus;
+    additions: number | null;
+    deletions: number | null;
+    binary: boolean;
+    hunks: Array<DiffHunk>;
+};
+
 export type ChangedFileSummary = {
     path: string;
     status: string;
     additions: number;
     deletions: number;
 };
+
+export type ChangedSymbol = {
+    /**
+     * The node id in the index, when the symbol still exists there.
+     */
+    node_id: string | null;
+    label: string;
+    kind: NodeKind;
+    file: string;
+    line: number;
+    change: SymbolChange;
+    precision: Precision;
+    /**
+     * `node_id` was found in the indexed graph (otherwise the symbol is new or was removed since).
+     */
+    in_index: boolean;
+};
+
+export type ChatMessage = {
+    id: number;
+    project_id: string;
+    role: ChatRole;
+    content: string;
+    evidence: Array<EvidenceRef>;
+    status: JobStatus;
+    provider: ProviderKind | null;
+    model: string | null;
+    error: string | null;
+    created_at: string;
+};
+
+export type ChatRole = 'user' | 'assistant';
 
 /**
  * Which agent runs inside a CodeSandbox cloud sandbox (`ProviderKind::CodeSandbox`).
@@ -244,6 +323,147 @@ export type CodexTotals = {
     seconds_running: number;
     estimated_cost_usd: number;
 };
+
+export type CommitAnalysis = {
+    id: number;
+    project_id: string;
+    sha: string;
+    provider: ProviderKind;
+    model: string | null;
+    prompt_version: number;
+    status: JobStatus;
+    result: CommitAnalysisResult | null;
+    /**
+     * Everything the model was allowed to cite.
+     */
+    evidence: Array<EvidenceRef>;
+    /**
+     * Findings the model produced that cited nothing the prompt contained; they are not shown.
+     */
+    dropped_findings: number;
+    error: string | null;
+    input_tokens: number;
+    output_tokens: number;
+    created_at: string;
+    finished_at: string | null;
+};
+
+export type CommitAnalysisResponse = {
+    analysis: CommitAnalysis | null;
+};
+
+export type CommitAnalysisResult = {
+    summary: string;
+    what_changed: Array<AnalysisFinding>;
+    risks: Array<AnalysisFinding>;
+    security: Array<AnalysisFinding>;
+    regressions: Array<AnalysisFinding>;
+    tests: Array<TestSuggestion>;
+    recommendations: Array<AnalysisFinding>;
+};
+
+export type CommitDetail = {
+    commit: CommitSummary;
+    body: string;
+    files: Array<ChangedFile>;
+    additions: number;
+    deletions: number;
+    files_truncated: boolean;
+    /**
+     * The commit the changes are relative to (the first parent); `None` for a root commit.
+     */
+    diff_base: string | null;
+};
+
+export type CommitDiffResponse = {
+    sha: string;
+    /**
+     * Unified diff against the first parent, secrets redacted.
+     */
+    diff: string;
+    truncated: boolean;
+};
+
+export type CommitImpact = {
+    sha: string;
+    /**
+     * The index the affected set was computed on, if there is one.
+     */
+    run_id: number | null;
+    indexed_sha: string | null;
+    /**
+     * Why the symbol-level part is missing, when it is.
+     */
+    unavailable_reason: string | null;
+    files: Array<ImpactFile>;
+    affected: Array<AffectedNode>;
+    depth: number;
+    affected_truncated: boolean;
+    /**
+     * Source files beyond the per-commit limit that were not looked at symbol by symbol.
+     */
+    symbol_files_skipped: number;
+    computed_at: string;
+};
+
+export type CommitSummary = {
+    sha: string;
+    short_sha: string;
+    parents: Array<string>;
+    author_name: string;
+    authored_at: string;
+    committed_at: string;
+    subject: string;
+    is_merge: boolean;
+    /**
+     * Reachable from the default branch.
+     */
+    on_default_branch: boolean;
+    /**
+     * Not on any remote-tracking ref. `None` when the repository has no remote refs at all, so
+     * "unpushed" would be meaningless.
+     */
+    unpushed: boolean | null;
+    /**
+     * Branches and tags pointing at this commit.
+     */
+    refs: Array<string>;
+    /**
+     * Every worktree whose HEAD history contains this commit; one entry per worktree, one row per SHA.
+     */
+    worktrees: Array<CommitWorktreeRef>;
+};
+
+export type CommitTimeline = {
+    commits: Array<CommitSummary>;
+    working_trees: Array<WorkingTreeChange>;
+    worktrees_total: number;
+    /**
+     * There are more commits than `limit`.
+     */
+    truncated: boolean;
+    has_remote_refs: boolean;
+    default_branch: string;
+    generated_at: string;
+};
+
+/**
+ * Which worktree contains a commit.
+ */
+export type CommitWorktreeRef = {
+    worktree_id: string;
+    branch: string | null;
+    /**
+     * The commit is this worktree's HEAD (not just in its history).
+     */
+    is_head: boolean;
+};
+
+/**
+ * How the engine came to an edge. `Extracted` was read from the source; the other two are
+ * inferred, and the UI draws them differently.
+ */
+export type Confidence = 'extracted' | 'inferred' | 'ambiguous';
 
 /**
  * Operator instructions that continue a task's agent thread (`POST /tasks/{id}/continue`).
@@ -307,6 +527,119 @@ export type DecideApprovalRequest = {
 };
 
 /**
+ * A changed line range. Zero-length ranges are pure insertions (`new_lines == 0` is a deletion).
+ */
+export type DiffHunk = {
+    old_start: number;
+    old_lines: number;
+    new_start: number;
+    new_lines: number;
+};
+
+/**
+ * A tool the Knowledge Base can use (`git`, `graphify`, `serena`).
+ */
+export type EngineStatus = {
+    /**
+     * `git`, `graphify` or `serena`.
+     */
+    id: string;
+    name: string;
+    available: boolean;
+    /**
+     * What the Knowledge Base cannot do without it.
+     */
+    required: boolean;
+    version: string | null;
+    /**
+     * The executable that was found (or the configured command that was not).
+     */
+    command: string | null;
+    /**
+     * A command the user can run to install it; Symphony never installs anything itself.
+     */
+    install_hint: string | null;
+    /**
+     * Why it is unavailable, or a licence/usage note.
+     */
+    detail: string | null;
+};
+
+export type EvidenceKind = 'file' | 'symbol' | 'commit' | 'hunk';
+
+/**
+ * A piece of repository material the model was given and may cite. Only ids that were in the
+ * prompt survive validation, so every citation resolves to something real.
+ */
+export type EvidenceRef = {
+    id: string;
+    kind: EvidenceKind;
+    label: string;
+    file: string | null;
+    line: number | null;
+    node_id: string | null;
+    sha: string | null;
+};
+
+export type FileChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'type_changed';
+
+export type FindingSeverity = 'info' | 'low' | 'medium' | 'high' | 'critical';
+
+export type GraphEdge = {
+    source: string;
+    target: string;
+    relation: string;
+    confidence: Confidence;
+    /**
+     * Line of the occurrence (for example the call site) in the source node's file.
+     */
+    line: number | null;
+    /**
+     * For aggregated edges: how many underlying edges they stand for.
+     */
+    weight: number;
+};
+
+export type GraphLevel = 'modules' | 'files' | 'symbols';
+
+export type GraphNode = {
+    id: string;
+    label: string;
+    kind: NodeKind;
+    /**
+     * Repository-relative path, `None` for externals and aggregated modules.
+     */
+    file: string | null;
+    line: number | null;
+    /**
+     * The package or directory the node belongs to.
+     */
+    module: string | null;
+    degree: number;
+    /**
+     * For aggregated nodes: how many underlying nodes they stand for.
+     */
+    members: number;
+};
+
+export type GraphView = {
+    run_id: number;
+    level: GraphLevel;
+    /**
+     * The module or node the view is centred on, when one was requested.
+     */
+    focus: string | null;
+    nodes: Array<GraphNode>;
+    edges: Array<GraphEdge>;
+    /**
+     * Counts before the size limit was applied.
+     */
+    total_nodes: number;
+    total_edges: number;
+    truncated: boolean;
+};
+
+/**
  * Hardware & power telemetry snapshot (Section 13: ASUS Zephyrus G16 / Windows 11 aware)
  */
 export type HardwareSnapshot = {
@@ -333,6 +666,17 @@ export type HealthResponse = {
     timestamp: string;
 };
 
+export type HealthSeverity = 'info' | 'warning' | 'problem';
+
+/**
+ * One observation about the repository or the index, each backed by a measured value.
+ */
+export type HealthSignal = {
+    code: string;
+    severity: HealthSeverity;
+    message: string;
+};
+
 export type HooksConfig = {
     after_create: string | null;
     before_run: string | null;
@@ -340,6 +684,40 @@ export type HooksConfig = {
     before_remove: string | null;
     timeout_ms: number;
 };
+
+export type ImpactFile = {
+    path: string;
+    status: FileChangeStatus;
+    file_node_id: string | null;
+    symbols: Array<ChangedSymbol>;
+    /**
+     * Changed lines that fall outside every known symbol (imports, constants, comments).
+     */
+    unattributed_hunks: number;
+};
+
+export type IndexRunSummary = {
+    id: number;
+    project_id: string;
+    /**
+     * The branch or worktree the indexed commit came from.
+     */
+    ref_name: string;
+    commit_sha: string;
+    engine: string;
+    engine_version: string;
+    status: IndexStatus;
+    node_count: number;
+    edge_count: number;
+    file_count: number;
+    languages: Array<LanguageStat>;
+    error: string | null;
+    started_at: string;
+    finished_at: string | null;
+    duration_ms: number | null;
+};
+
+export type IndexStatus = 'running' | 'completed' | 'failed';
 
 /**
  * Normalized Issue record used across orchestration, prompting, and observability (SPEC.md Section 4.1.1)
@@ -384,6 +762,74 @@ export type IssueDetailResponse = {
         [key: string]: unknown;
     };
     task: Task;
+};
+
+export type JobStatus = 'running' | 'completed' | 'failed';
+
+export type KnowledgeClearedResponse = {
+    cleared: boolean;
+};
+
+export type KnowledgeOverview = {
+    project_id: string;
+    default_branch: string;
+    /**
+     * The default branch tip right now.
+     */
+    default_branch_sha: string | null;
+    index: IndexRunSummary | null;
+    active_run: IndexRunSummary | null;
+    /**
+     * The index is older than the commit it was built from's branch tip.
+     */
+    index_stale: boolean;
+    engines: Array<EngineStatus>;
+    worktrees_total: number;
+    worktrees_dirty: number;
+    /**
+     * Types, functions and methods in the index (0 without an index).
+     */
+    symbol_count: number;
+    top_modules: Array<ModuleStat>;
+    hubs: Array<GraphNode>;
+    health: Array<HealthSignal>;
+    generated_at: string;
+};
+
+/**
+ * One git worktree of the repository (`git worktree list`), with live state.
+ */
+export type KnowledgeWorktree = {
+    /**
+     * Stable id derived from the path.
+     */
+    id: string;
+    path: string;
+    kind: WorktreeKind;
+    branch: string | null;
+    detached: boolean;
+    head_sha: string | null;
+    head_short_sha: string | null;
+    head_subject: string | null;
+    head_committed_at: string | null;
+    /**
+     * The directory exists on disk (a prunable worktree may have been deleted).
+     */
+    exists: boolean;
+    dirty: boolean;
+    changed_files: number;
+    locked: boolean;
+    prunable: boolean;
+    /**
+     * Commits reachable from this worktree's HEAD that are not on the default branch.
+     */
+    ahead_of_default: number | null;
+    task: WorktreeTaskLink | null;
+};
+
+export type LanguageStat = {
+    language: string;
+    files: number;
 };
 
 /**
@@ -431,8 +877,47 @@ export type MergeReadinessReport = {
     blockers: Array<string>;
 };
 
+export type ModuleStat = {
+    module: string;
+    files: number;
+    symbols: number;
+    incoming: number;
+    outgoing: number;
+};
+
 export type MoveTaskStatusRequest = {
     status: TaskStatus;
+};
+
+export type NodeDetail = {
+    node: GraphNode;
+    /**
+     * What this node uses (outgoing dependency edges).
+     */
+    dependencies: Array<NodeNeighbor>;
+    /**
+     * What uses this node (incoming dependency edges).
+     */
+    references: Array<NodeNeighbor>;
+    /**
+     * Members of a file / type (contained symbols).
+     */
+    members: Array<GraphNode>;
+    dependencies_total: number;
+    references_total: number;
+    /**
+     * Commits that touched the node's file, newest first (from git, not from the index).
+     */
+    recent_commits: Array<CommitSummary>;
+};
+
+export type NodeKind = 'package' | 'module' | 'file' | 'type' | 'function' | 'method' | 'dependency' | 'other';
+
+export type NodeNeighbor = {
+    node: GraphNode;
+    relation: string;
+    confidence: Confidence;
+    line: number | null;
 };
 
 /**
@@ -450,6 +935,11 @@ export type OrchestratorStateSnapshot = {
     active_workflow_path: string | null;
     workflow_error: string | null;
 };
+
+/**
+ * How exactly a changed line range was mapped onto a symbol.
+ */
+export type Precision = 'start_to_next';
 
 export type PreviewWorkflowRequest = {
     raw_markdown: string;
@@ -756,6 +1246,10 @@ export type SchedulerStateResponse = {
     scheduler_paused: boolean;
 };
 
+export type SearchHit = {
+    node: GraphNode;
+};
+
 /**
  * Typed view over `WorkflowDefinition.config` (SPEC.md Section 5.3 & Section 6)
  */
@@ -784,6 +1278,20 @@ export type SetCredentialRequest = {
     value: string;
 };
 
+export type StartKnowledgeAnalysisRequest = {
+    /**
+     * Run again even when an analysis for this configuration is cached.
+     */
+    force?: boolean | null;
+};
+
+export type StartKnowledgeIndexRequest = {
+    /**
+     * Index the HEAD of this worktree instead of the default branch.
+     */
+    worktree_id?: string | null;
+};
+
 export type StateCounts = {
     running: number;
     retrying: number;
@@ -801,6 +1309,53 @@ export type StreamControlEvent = {
     api_version: number;
     server_time: string;
     reason: string | null;
+};
+
+export type SymbolChange = 'added' | 'modified' | 'removed';
+
+/**
+ * One place that uses a symbol, as a language server reports it (Serena).
+ */
+export type SymbolReference = {
+    file: string;
+    /**
+     * The symbol that contains the use, for example `impl Orchestrator/list_worktrees`.
+     */
+    name_path: string;
+    kind: string;
+    /**
+     * Range of the containing symbol (1-based, inclusive).
+     */
+    start_line: number;
+    end_line: number;
+    /**
+     * The line of the use itself.
+     */
+    reference_line: number | null;
+    /**
+     * A few lines around the use.
+     */
+    snippet: string;
+};
+
+/**
+ * Precise references of a symbol from the optional language-server navigator.
+ */
+export type SymbolReferences = {
+    node_id: string;
+    /**
+     * `false` when the navigator could not answer; `reason` says why.
+     */
+    available: boolean;
+    reason: string | null;
+    references: Array<SymbolReference>;
+    total: number;
+    truncated: boolean;
+    /**
+     * The exact range of the definition (1-based, inclusive), including its doc comment.
+     */
+    definition_start_line: number | null;
+    definition_end_line: number | null;
 };
 
 /**
@@ -859,6 +1414,12 @@ export type TaskDiff = {
  * Symphony Desktop Kanban & Orchestration Task Statuses (Section 4.C & 5)
  */
 export type TaskStatus = 'backlog' | 'ready' | 'queued' | 'running' | 'blocked' | 'human_review' | 'completed' | 'failed' | 'cancelled';
+
+export type TestSuggestion = {
+    title: string;
+    rationale: string;
+    evidence: Array<string>;
+};
 
 /**
  * Allowed values of [`AppSettings::theme`]. Documents the API contract only; the setting is
@@ -965,6 +1526,19 @@ export type WorkflowValidation = {
     path: string | null;
 };
 
+/**
+ * Uncommitted work of a worktree, shown next to the commits (it has no SHA).
+ */
+export type WorkingTreeChange = {
+    worktree_id: string;
+    branch: string | null;
+    changed_files: number;
+    /**
+     * The first changed paths.
+     */
+    files: Array<string>;
+};
+
 export type WorkspaceInfo = {
     path: string | null;
     branch_name: string | null;
@@ -988,6 +1562,20 @@ export type WorktreeInfo = {
     dirty: boolean;
     active_session_id: string | null;
     last_activity_at: string;
+};
+
+export type WorktreeKind = 'main' | 'symphony' | 'external';
+
+/**
+ * The Symphony task that owns a worktree, when there is one.
+ */
+export type WorktreeTaskLink = {
+    task_id: string;
+    issue_identifier: string;
+    issue_title: string;
+    task_status: TaskStatus;
+    provider: ProviderKind;
+    active_session_id: string | null;
 };
 
 export type HealthData = {
@@ -1997,6 +2585,580 @@ export type ListWorktreesResponses = {
 };
 
 export type ListWorktreesResponse = ListWorktreesResponses[keyof ListWorktreesResponses];
+
+export type GetKnowledgeEnginesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/knowledge/engines';
+};
+
+export type GetKnowledgeEnginesErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type GetKnowledgeEnginesError = GetKnowledgeEnginesErrors[keyof GetKnowledgeEnginesErrors];
+
+export type GetKnowledgeEnginesResponses = {
+    /**
+     * git, Graphify and Serena: what is installed and how to install the rest
+     */
+    200: Array<EngineStatus>;
+};
+
+export type GetKnowledgeEnginesResponse = GetKnowledgeEnginesResponses[keyof GetKnowledgeEnginesResponses];
+
+export type GetKnowledgeOverviewData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{id}/knowledge';
+};
+
+export type GetKnowledgeOverviewErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type GetKnowledgeOverviewError = GetKnowledgeOverviewErrors[keyof GetKnowledgeOverviewErrors];
+
+export type GetKnowledgeOverviewResponses = {
+    /**
+     * OK
+     */
+    200: KnowledgeOverview;
+};
+
+export type GetKnowledgeOverviewResponse = GetKnowledgeOverviewResponses[keyof GetKnowledgeOverviewResponses];
+
+export type StartKnowledgeIndexData = {
+    body: StartKnowledgeIndexRequest;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{id}/knowledge/index';
+};
+
+export type StartKnowledgeIndexErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type StartKnowledgeIndexError = StartKnowledgeIndexErrors[keyof StartKnowledgeIndexErrors];
+
+export type StartKnowledgeIndexResponses = {
+    /**
+     * Indexing started; progress and the result arrive as `knowledge/index_*` events
+     */
+    202: IndexRunSummary;
+};
+
+export type StartKnowledgeIndexResponse = StartKnowledgeIndexResponses[keyof StartKnowledgeIndexResponses];
+
+export type GetKnowledgeGraphData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * `modules` (default), `files` or `symbols`.
+         */
+        level?: GraphLevel;
+        /**
+         * Scope the `files` level to this module.
+         */
+        module?: string;
+        /**
+         * Node the `symbols` level is centred on.
+         */
+        focus?: string;
+        /**
+         * Hops around the focus, 1 to 3 (default 1).
+         */
+        depth?: number;
+        /**
+         * Include inferred edges (default true).
+         */
+        include_inferred?: boolean;
+        /**
+         * Include external dependencies in the `modules` level (default false).
+         */
+        include_external?: boolean;
+    };
+    url: '/api/v1/projects/{id}/knowledge/graph';
+};
+
+export type GetKnowledgeGraphErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type GetKnowledgeGraphError = GetKnowledgeGraphErrors[keyof GetKnowledgeGraphErrors];
+
+export type GetKnowledgeGraphResponses = {
+    /**
+     * A bounded view of the code graph; `truncated` says when it was cut
+     */
+    200: GraphView;
+};
+
+export type GetKnowledgeGraphResponse = GetKnowledgeGraphResponses[keyof GetKnowledgeGraphResponses];
+
+export type SearchKnowledgeData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+    };
+    query: {
+        q: string;
+        /**
+         * 1 to 100, default 25.
+         */
+        limit?: number;
+    };
+    url: '/api/v1/projects/{id}/knowledge/search';
+};
+
+export type SearchKnowledgeErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type SearchKnowledgeError = SearchKnowledgeErrors[keyof SearchKnowledgeErrors];
+
+export type SearchKnowledgeResponses = {
+    /**
+     * Files and symbols whose name or path matches, best first
+     */
+    200: Array<SearchHit>;
+};
+
+export type SearchKnowledgeResponse = SearchKnowledgeResponses[keyof SearchKnowledgeResponses];
+
+export type GetKnowledgeNodeData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+    };
+    query: {
+        node_id: string;
+    };
+    url: '/api/v1/projects/{id}/knowledge/node';
+};
+
+export type GetKnowledgeNodeErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type GetKnowledgeNodeError = GetKnowledgeNodeErrors[keyof GetKnowledgeNodeErrors];
+
+export type GetKnowledgeNodeResponses = {
+    /**
+     * What the node uses, what uses it, what it contains and its recent commits
+     */
+    200: NodeDetail;
+};
+
+export type GetKnowledgeNodeResponse = GetKnowledgeNodeResponses[keyof GetKnowledgeNodeResponses];
+
+export type GetKnowledgeNodeReferencesData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+    };
+    query: {
+        node_id: string;
+    };
+    url: '/api/v1/projects/{id}/knowledge/node/references';
+};
+
+export type GetKnowledgeNodeReferencesErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type GetKnowledgeNodeReferencesError = GetKnowledgeNodeReferencesErrors[keyof GetKnowledgeNodeReferencesErrors];
+
+export type GetKnowledgeNodeReferencesResponses = {
+    /**
+     * Precise references from the optional language-server navigator; `available` is false, with a reason, when it cannot answer. The first request per indexed commit can take a minute.
+     */
+    200: SymbolReferences;
+};
+
+export type GetKnowledgeNodeReferencesResponse = GetKnowledgeNodeReferencesResponses[keyof GetKnowledgeNodeReferencesResponses];
+
+export type ListKnowledgeWorktreesData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{id}/knowledge/worktrees';
+};
+
+export type ListKnowledgeWorktreesErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ListKnowledgeWorktreesError = ListKnowledgeWorktreesErrors[keyof ListKnowledgeWorktreesErrors];
+
+export type ListKnowledgeWorktreesResponses = {
+    /**
+     * Every git worktree of the repository, with its HEAD, uncommitted changes and owning task
+     */
+    200: Array<KnowledgeWorktree>;
+};
+
+export type ListKnowledgeWorktreesResponse = ListKnowledgeWorktreesResponses[keyof ListKnowledgeWorktreesResponses];
+
+export type ListKnowledgeCommitsData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * 1 to 500, default 100.
+         */
+        limit?: number;
+    };
+    url: '/api/v1/projects/{id}/knowledge/commits';
+};
+
+export type ListKnowledgeCommitsErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ListKnowledgeCommitsError = ListKnowledgeCommitsErrors[keyof ListKnowledgeCommitsErrors];
+
+export type ListKnowledgeCommitsResponses = {
+    /**
+     * One row per commit across all worktrees, newest first
+     */
+    200: CommitTimeline;
+};
+
+export type ListKnowledgeCommitsResponse = ListKnowledgeCommitsResponses[keyof ListKnowledgeCommitsResponses];
+
+export type GetKnowledgeCommitData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+        /**
+         * Commit id (7 to 64 lowercase hex digits)
+         */
+        sha: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{id}/knowledge/commits/{sha}';
+};
+
+export type GetKnowledgeCommitErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type GetKnowledgeCommitError = GetKnowledgeCommitErrors[keyof GetKnowledgeCommitErrors];
+
+export type GetKnowledgeCommitResponses = {
+    /**
+     * OK
+     */
+    200: CommitDetail;
+};
+
+export type GetKnowledgeCommitResponse = GetKnowledgeCommitResponses[keyof GetKnowledgeCommitResponses];
+
+export type GetKnowledgeCommitDiffData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+        /**
+         * Commit id
+         */
+        sha: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{id}/knowledge/commits/{sha}/diff';
+};
+
+export type GetKnowledgeCommitDiffErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type GetKnowledgeCommitDiffError = GetKnowledgeCommitDiffErrors[keyof GetKnowledgeCommitDiffErrors];
+
+export type GetKnowledgeCommitDiffResponses = {
+    /**
+     * OK
+     */
+    200: CommitDiffResponse;
+};
+
+export type GetKnowledgeCommitDiffResponse = GetKnowledgeCommitDiffResponses[keyof GetKnowledgeCommitDiffResponses];
+
+export type GetKnowledgeCommitImpactData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+        /**
+         * Commit id
+         */
+        sha: string;
+    };
+    query?: {
+        /**
+         * Hops through dependents, 1 to 4 (default 2).
+         */
+        depth?: number;
+        /**
+         * Follow inferred edges too (default true).
+         */
+        include_inferred?: boolean;
+    };
+    url: '/api/v1/projects/{id}/knowledge/commits/{sha}/impact';
+};
+
+export type GetKnowledgeCommitImpactErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type GetKnowledgeCommitImpactError = GetKnowledgeCommitImpactErrors[keyof GetKnowledgeCommitImpactErrors];
+
+export type GetKnowledgeCommitImpactResponses = {
+    /**
+     * The symbols the commit touched and the code that depends on them
+     */
+    200: CommitImpact;
+};
+
+export type GetKnowledgeCommitImpactResponse = GetKnowledgeCommitImpactResponses[keyof GetKnowledgeCommitImpactResponses];
+
+export type GetKnowledgeCommitAnalysisData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+        /**
+         * Commit id
+         */
+        sha: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{id}/knowledge/commits/{sha}/analysis';
+};
+
+export type GetKnowledgeCommitAnalysisErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type GetKnowledgeCommitAnalysisError = GetKnowledgeCommitAnalysisErrors[keyof GetKnowledgeCommitAnalysisErrors];
+
+export type GetKnowledgeCommitAnalysisResponses = {
+    /**
+     * OK
+     */
+    200: CommitAnalysisResponse;
+};
+
+export type GetKnowledgeCommitAnalysisResponse = GetKnowledgeCommitAnalysisResponses[keyof GetKnowledgeCommitAnalysisResponses];
+
+export type StartKnowledgeCommitAnalysisData = {
+    body: StartKnowledgeAnalysisRequest;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+        /**
+         * Commit id
+         */
+        sha: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{id}/knowledge/commits/{sha}/analysis';
+};
+
+export type StartKnowledgeCommitAnalysisErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type StartKnowledgeCommitAnalysisError = StartKnowledgeCommitAnalysisErrors[keyof StartKnowledgeCommitAnalysisErrors];
+
+export type StartKnowledgeCommitAnalysisResponses = {
+    /**
+     * The cached analysis, or a running one that finishes with a `knowledge/analysis_completed` event
+     */
+    202: CommitAnalysis;
+};
+
+export type StartKnowledgeCommitAnalysisResponse = StartKnowledgeCommitAnalysisResponses[keyof StartKnowledgeCommitAnalysisResponses];
+
+export type ClearKnowledgeChatData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{id}/knowledge/chat';
+};
+
+export type ClearKnowledgeChatErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ClearKnowledgeChatError = ClearKnowledgeChatErrors[keyof ClearKnowledgeChatErrors];
+
+export type ClearKnowledgeChatResponses = {
+    /**
+     * OK
+     */
+    200: KnowledgeClearedResponse;
+};
+
+export type ClearKnowledgeChatResponse = ClearKnowledgeChatResponses[keyof ClearKnowledgeChatResponses];
+
+export type ListKnowledgeChatData = {
+    body?: never;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{id}/knowledge/chat';
+};
+
+export type ListKnowledgeChatErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ListKnowledgeChatError = ListKnowledgeChatErrors[keyof ListKnowledgeChatErrors];
+
+export type ListKnowledgeChatResponses = {
+    /**
+     * The recent conversation, oldest first
+     */
+    200: Array<ChatMessage>;
+};
+
+export type ListKnowledgeChatResponse = ListKnowledgeChatResponses[keyof ListKnowledgeChatResponses];
+
+export type AskKnowledgeData = {
+    body: AskKnowledgeRequest;
+    path: {
+        /**
+         * Project id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{id}/knowledge/chat';
+};
+
+export type AskKnowledgeErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type AskKnowledgeError = AskKnowledgeErrors[keyof AskKnowledgeErrors];
+
+export type AskKnowledgeResponses = {
+    /**
+     * The question and the answer being produced (`status = running`); it completes with a `knowledge/chat_completed` event
+     */
+    202: Array<ChatMessage>;
+};
+
+export type AskKnowledgeResponse = AskKnowledgeResponses[keyof AskKnowledgeResponses];
 
 export type GetWorkflowData = {
     body?: never;

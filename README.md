@@ -21,6 +21,9 @@ Symphony Desktop is a local-first autonomous coding orchestration platform inspi
   - Collision-resistant workspace keys (`[A-Za-z0-9._-]` sanitization + 64-bit SHA-256 suffix when modified).
   - Canonical path containment and symlink escape prevention.
   - Per-task Git worktree creation (`git worktree add -B`), dirty-worktree guards, lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`), and automated validation command execution.
+- **Repository Knowledge Base (`symphony-knowledge`)** — see [docs/KNOWLEDGE_BASE.md](./docs/KNOWLEDGE_BASE.md):
+  - One view per repository joining every git worktree (with its agent and uncommitted work), a commit timeline with one row per SHA across all worktrees, an interactive code graph, and AI analysis. Selecting a commit highlights the code it changed and what depends on it, and explains what changed, what could break and what to test; every AI finding cites evidence that was in the prompt.
+  - The graph comes from [Graphify](https://github.com/Graphify-Labs/graphify) (offline); [Serena](https://oraios.github.io/serena/) adds precise references on request. Both are separate tools you install (`uv tool install graphifyy==0.9.97`), run only on Symphony-owned snapshots and never in your repository; Serena is GPL-3.0 and is only ever run as its own process.
 - **Symphony Desktop 2.0 UI (`apps/desktop`, `packages/ui`)** — see [docs/UI_ARCHITECTURE.md](./docs/UI_ARCHITECTURE.md) and [docs/DESIGN_SYSTEM.md](./docs/DESIGN_SYSTEM.md):
   - Thread-first desktop shell, modelled on the ChatGPT Codex app: a prompt composer on the home screen (repository and base branch, provider/model, priority, labels, run now or queue), tasks listed as threads grouped by project, each thread with the prompt, live timeline, inline approvals, follow-up box and a run-details panel (changes, validation, tool calls, usage, pull request, context). Ctrl+K command palette, an Activity view (events, agent/terminal output, validations, approvals, problems) and a status bar with live hardware telemetry.
   - Views: Overview, Projects (guided Add Repository with native folder picker), Tasks (9-state Kanban with state-machine-validated drag and drop + data table), Agent Runs (control center), Live Execution workspace, Worktrees, Pull Request Review Center (1–5 merge readiness), Workflow Studio (CodeMirror + runtime validation/preview), Providers, Settings.
@@ -50,6 +53,7 @@ OpenAI-Symphony-Rust/
 │   ├── symphony-core/      # Domain models, SPEC.md workflow parser, redaction
 │   ├── symphony-storage/   # SQLite WAL persistence, migrations, crash recovery
 │   ├── symphony-workspaces/# Git worktrees, path safety, lifecycle hooks
+│   ├── symphony-knowledge/ # Repository Knowledge Base: git timeline, code graph, commit impact, AI analysis
 │   ├── symphony-platform/  # Windows 11 power/CPU/RAM telemetry, vault, lockfile
 │   ├── symphony-trackers/  # GitHub Issues, Linear GraphQL, & dynamic tools
 │   ├── symphony-agents/    # Codex App Server JSON-RPC, Claude Code, OpenCode, CodeSandbox cloud agents

@@ -59,3 +59,34 @@ describe("pull request events", () => {
     expect(has(keysToInvalidate([event("pr/status_changed")]), qk.pr("r1"))).toBe(false);
   });
 });
+
+describe("Knowledge Base events", () => {
+  const knowledgeEvent = (event_type: string, project_id?: string): AgentEvent => ({
+    ...event(event_type),
+    task_id: null,
+    payload: project_id ? { project_id } : null
+  });
+
+  it("repo changes refresh worktrees and history of that project but not its index or AI results", () => {
+    const keys = keysToInvalidate([knowledgeEvent("knowledge/repo_changed", "p1")]);
+    for (const part of ["worktrees", "commits", "commit", "diff", "overview"]) {
+      expect(has(keys, [...qk.knowledge("p1"), part]), part).toBe(true);
+    }
+    expect(has(keys, qk.knowledge("p1"))).toBe(false);
+    expect(has(keys, [...qk.knowledge("p1"), "analysis"])).toBe(false);
+    expect(has(keys, [...qk.knowledge("p2"), "worktrees"])).toBe(false);
+  });
+
+  it("index events refresh everything cached for the project; analysis and chat events only their own", () => {
+    expect(has(keysToInvalidate([knowledgeEvent("knowledge/index_completed", "p1")]), qk.knowledge("p1"))).toBe(true);
+    expect(has(keysToInvalidate([knowledgeEvent("knowledge/index_progress", "p1")]), qk.knowledge("p1"))).toBe(true);
+    const analysis = keysToInvalidate([knowledgeEvent("knowledge/analysis_completed", "p1")]);
+    expect(has(analysis, [...qk.knowledge("p1"), "analysis"])).toBe(true);
+    expect(has(analysis, qk.knowledge("p1"))).toBe(false);
+    expect(has(keysToInvalidate([knowledgeEvent("knowledge/chat_completed", "p1")]), [...qk.knowledge("p1"), "chat"])).toBe(true);
+  });
+
+  it("an event without a project refreshes every project's Knowledge Base data", () => {
+    expect(has(keysToInvalidate([knowledgeEvent("knowledge/index_completed")]), qk.knowledgeAll)).toBe(true);
+  });
+});

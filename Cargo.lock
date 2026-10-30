@@ -4810,6 +4810,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "symphony-knowledge"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dirs",
+ "futures",
+ "hex",
+ "notify",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "symphony-core",
+ "symphony-workspaces",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "utoipa",
+]
+
+[[package]]
 name = "symphony-orchestrator"
 version = "2.0.0"
 dependencies = [
@@ -4821,6 +4843,7 @@ dependencies = [
  "serde_json",
  "symphony-agents",
  "symphony-core",
+ "symphony-knowledge",
  "symphony-platform",
  "symphony-storage",
  "symphony-trackers",
@@ -4870,6 +4893,7 @@ dependencies = [
  "serde_json",
  "subtle",
  "symphony-core",
+ "symphony-knowledge",
  "symphony-orchestrator",
  "symphony-platform",
  "symphony-storage",

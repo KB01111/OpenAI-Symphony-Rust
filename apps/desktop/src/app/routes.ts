@@ -6,6 +6,7 @@ import {
   GitPullRequest,
   KanbanSquare,
   LayoutDashboard,
+  Network,
   Plug,
   ScrollText,
   Settings,
@@ -19,6 +20,7 @@ export type NavKey =
   | "activity"
   | "worktrees"
   | "reviews"
+  | "knowledge"
   | "workflow"
   | "providers"
   | "settings";
@@ -37,6 +39,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { key: "projects", path: "/projects", icon: FolderGit2, group: "work" },
   { key: "tasks", path: "/tasks", icon: KanbanSquare, group: "work" },
   { key: "reviews", path: "/reviews", icon: GitPullRequest, group: "work" },
+  { key: "knowledge", path: "/knowledge", icon: Network, group: "work" },
   { key: "activity", path: "/activity", icon: Activity, group: "work" },
   { key: "worktrees", path: "/worktrees", icon: GitBranch, group: "setup" },
   { key: "workflow", path: "/workflow", icon: ScrollText, group: "setup" },
@@ -57,6 +60,7 @@ export const paths = {
   worktrees: () => "/worktrees",
   reviews: () => "/reviews",
   review: (id: string) => `/reviews/${encodeURIComponent(id)}`,
+  knowledge: () => "/knowledge",
   workflow: () => "/workflow",
   providers: () => "/providers",
   settings: () => "/settings"

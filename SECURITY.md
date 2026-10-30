@@ -267,6 +267,37 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   that the SDK's bundled 0.16 stylesheet styles, both apps also load KaTeX's own stylesheet, guarded by
   `scripts/katex-stylesheet.test.mjs`. Accepted finding: RUSTSEC-2024-0429 (unsound `glib` 0.18
   `VariantStrIter`, only in Tauri's Linux GTK stack, unused by Symphony; listed in `deny.toml`).
+
+## 9. Repository Knowledge Base
+
+Design and data flow: [`docs/KNOWLEDGE_BASE.md`](./docs/KNOWLEDGE_BASE.md).
+
+- **Engines are separate, user-installed processes.** Graphify (code graph) and Serena (precise references) are
+  never bundled, linked or installed by Symphony; the app only reports what is present and shows the command
+  that installs the rest. **Serena is GPL-3.0-or-later** and Symphony is MIT, which is why it is only ever run
+  as its own process. Both run with the secret variables of every subprocess removed; Graphify additionally
+  runs offline (`--code-only`, `GRAPHIFY_BACKEND=none`, every LLM key removed) and under a timeout, as an owned
+  process tree.
+- **Engines never see a user's repository.** They write caches next to the code they read, so they only run on
+  Symphony-owned snapshot directories written from git objects: no `.git`, no symlinks, no submodule content,
+  no `.serena/` or `graphify-out/` from the repository, every path validated and contained, file size and
+  count limits.
+- **Serena is read-only.** Its mode file removes every tool that edits files, runs commands, reads arbitrary
+  files or writes memories; the client calls only `find_symbol`, `find_referencing_symbols`,
+  `get_symbols_overview`, `find_declaration` and `find_implementations`, and refuses a server that offers an
+  editing tool anyway.
+- **Git is observed, not changed.** Every call is read-only, takes no locks (`GIT_OPTIONAL_LOCKS=0`), disables
+  `core.fsmonitor`, external diff drivers and textconv (a repository's configuration can name programs for
+  them), validates revisions as hex and puts paths after `--`.
+- **AI analysis gets no tools.** The prompt carries a bounded, secret-redacted diff and numbered evidence; the
+  provider runs in an empty scratch directory with policy `never`, a read-only sandbox and an approval gate that
+  declines everything, so instructions hidden in a commit message or in code have nothing to act with. Output is
+  validated: citations to evidence that was not in the prompt are removed, findings without evidence are
+  dropped and counted, text is length-capped and rendered as text. CodeSandbox and the simulated provider are
+  refused for analysis.
+- **Local only.** None of the endpoints is in `REMOTE_OPERATIONS`, and there is no new Tauri command or
+  capability. The index (`<data_dir>/knowledge/knowledge.db`) holds source structure and AI output; it is
+  derived data, excluded from backups and removed with the project.
 - Workflow actions are pinned to commit SHAs, tokens are read-only except where a job publishes, and the
   release job restores no caches.
 - Releases (`.github/workflows/release.yml`) are built from a version tag, tested, smoke-tested natively,

@@ -11,6 +11,7 @@
 //! - The optional remote companion listener ([`remote`]) uses its own token and serves only a
 //!   restricted subset of operations ([`remote::REMOTE_OPERATIONS`]).
 
+mod knowledge;
 pub mod remote;
 
 pub use remote::{
@@ -377,6 +378,7 @@ pub struct StreamControlEvent {
         (name = "approvals", description = "Agent approval requests"),
         (name = "reviews", description = "Pull request reviews and merge readiness"),
         (name = "worktrees", description = "Agent workspaces"),
+        (name = "knowledge", description = "Repository Knowledge Base: worktrees, commit timeline, code graph, commit impact and AI analysis"),
         (name = "workflow", description = "WORKFLOW.md editing and validation"),
         (name = "settings", description = "Application settings"),
         (name = "providers", description = "Coding agent providers"),
@@ -413,6 +415,8 @@ const OPTIONAL_FIELD_SCHEMAS: &[&str] = &[
     "CancelTaskRequest",
     "PreviewWorkflowRequest",
     "ProjectUpdate",
+    "StartKnowledgeIndexRequest",
+    "StartKnowledgeAnalysisRequest",
 ];
 
 /// Individual properties added after 2.0 that older clients may omit from request bodies
@@ -562,6 +566,27 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(create_pull_request_handler))
         .routes(routes!(refresh_pull_request_handler))
         .routes(routes!(list_worktrees_handler))
+        .routes(routes!(knowledge::engines_handler))
+        .routes(routes!(knowledge::overview_handler))
+        .routes(routes!(knowledge::start_index_handler))
+        .routes(routes!(knowledge::graph_handler))
+        .routes(routes!(knowledge::search_handler))
+        .routes(routes!(knowledge::node_handler))
+        .routes(routes!(knowledge::node_references_handler))
+        .routes(routes!(knowledge::worktrees_handler))
+        .routes(routes!(knowledge::commits_handler))
+        .routes(routes!(knowledge::commit_handler))
+        .routes(routes!(knowledge::commit_diff_handler))
+        .routes(routes!(knowledge::commit_impact_handler))
+        .routes(routes!(
+            knowledge::commit_analysis_handler,
+            knowledge::start_analysis_handler
+        ))
+        .routes(routes!(
+            knowledge::chat_list_handler,
+            knowledge::ask_handler,
+            knowledge::chat_clear_handler
+        ))
         .routes(routes!(get_workflow_handler, update_workflow_handler))
         .routes(routes!(preview_workflow_handler))
         .routes(routes!(get_settings_handler, put_settings_handler))

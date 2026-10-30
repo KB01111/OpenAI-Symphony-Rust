@@ -119,7 +119,7 @@ apps/desktop/src/
 ```
 
 Routes: `/` (prompt composer), `/overview`, `/projects[/:projectId]`, `/tasks` (Board, Table and Runs views), `/runs/:taskId`
-(a task as a thread; the bare `/runs` redirects to the Runs view), `/activity`, `/worktrees`, `/reviews[/:reviewId]`, `/workflow`, `/providers`, `/settings`.
+(a task as a thread; the bare `/runs` redirects to the Runs view), `/activity`, `/worktrees`, `/reviews[/:reviewId]`, `/knowledge`, `/workflow`, `/providers`, `/settings`.
 The app always opens on the composer.
 
 The app uses a data router (`createHashRouter`; tests use `createMemoryRouter`), which lets a view block
@@ -137,6 +137,7 @@ loaded chunk; the CodeMirror editor is a separate lazy chunk loaded only by Work
 | Thread (`/runs/:taskId`) | Prompt, merged persisted + live timeline (concise/technical, kind filters, tail-following), pinned approvals, inline follow-up box (`POST /tasks/{id}/continue`, only after a run ended, 20 000 character limit) and a run-details panel (Changes, Validation, Tool calls, Usage, Pull request, Context). Wide windows dock the panel, narrow ones open it as a sheet. |
 | Activity | Cross-task events, scoped agent/terminal output, validations, approvals and problems (the former bottom dock). |
 | Worktrees | Worktree table with dirty state, diff viewer, "Open in Explorer" only in the embedded desktop host; no delete action. |
+| Knowledge Base (`/knowledge`) | Tabs for Overview (index, engines with install commands, health, modules), Knowledge graph (Sigma.js on a Graphology graph at module/file/symbol level with an accessible node list and an explorer panel), Commits (one row per SHA across all git worktrees; Diff / Impact / AI review / Tests for the selected commit), Worktrees (every git worktree with its agent) and AI insights (cited chat). The selected commit lives in the URL (`?tab=&commit=&node=&level=&module=`) and drives the graph highlight; a strip of the newest commits stays under every tab. The WebGL renderer is its own lazy chunk; graph colours are resolved from the design tokens at runtime. Design and data flow: [`KNOWLEDGE_BASE.md`](./KNOWLEDGE_BASE.md). |
 | Pull requests | Evidence-backed readiness (1–5), blockers, diff with review comments; "Record human approval" is a separate confirmed action and never merges. |
 | Workflow Studio | CodeMirror 6 (Markdown + YAML front matter), debounced runtime validation with located diagnostics, effective config, prompt preview, Ctrl+S, revert, external-change detection, unsaved-changes guard. |
 | Providers / Settings | Real detection (install, version, auth source) and vault-backed credentials; settings validated client-side as a mirror of the runtime. |

@@ -497,7 +497,11 @@ pub struct SymphonyOrchestrator {
     requeue_lock: Arc<Mutex<()>>,
     /// GitHub REST API base URL for pull requests (GitHub Enterprise, tests); `None` = github.com.
     github_api_url: Option<String>,
+    /// The Knowledge Base, once the host enabled it (`enable_knowledge`).
+    knowledge: Arc<std::sync::RwLock<Option<Arc<symphony_knowledge::service::KnowledgeService>>>>,
 }
+
+mod knowledge;
 
 impl SymphonyOrchestrator {
     pub async fn new(
@@ -605,6 +609,7 @@ impl SymphonyOrchestrator {
             publish_lock: Arc::new(Mutex::new(())),
             requeue_lock: Arc::new(Mutex::new(())),
             github_api_url: None,
+            knowledge: Arc::new(std::sync::RwLock::new(None)),
         })
     }
 
@@ -1232,6 +1237,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
             )));
         }
         self.storage.delete_project(id).await?;
+        if let Ok(knowledge) = self.knowledge() {
+            knowledge.forget_project(id).await;
+        }
         self.emit_event(
             None,
             None,

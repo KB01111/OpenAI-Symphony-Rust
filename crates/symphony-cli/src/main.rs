@@ -186,6 +186,10 @@ async fn main() -> anyhow::Result<()> {
     orchestrator
         .set_workflow_fallback_path(data_dir_workflow)
         .await;
+    if let Err(err) = orchestrator.enable_knowledge(&data_dir).await {
+        // The Knowledge Base is optional: the runtime works without it.
+        tracing::warn!(error = %err, "Knowledge Base unavailable");
+    }
     orchestrator.start_background_loops();
 
     if let Some(Commands::RunTask {

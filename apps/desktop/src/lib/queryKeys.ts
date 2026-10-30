@@ -24,5 +24,22 @@ export const qk = {
   runtime: ["runtime"] as const,
   remoteAccess: ["remote-access"] as const,
   backups: ["backups"] as const,
-  recentEvents: ["recent-events"] as const
+  recentEvents: ["recent-events"] as const,
+  /** Everything the Knowledge Base cached for a project (prefix of every key below). */
+  knowledge: (projectId: string) => ["knowledge", projectId] as const,
+  knowledgeAll: ["knowledge"] as const,
+  knowledgeEngines: ["knowledge", "engines"] as const,
+  knowledgeOverview: (projectId: string) => ["knowledge", projectId, "overview"] as const,
+  knowledgeWorktrees: (projectId: string) => ["knowledge", projectId, "worktrees"] as const,
+  knowledgeCommits: (projectId: string, limit: number) => ["knowledge", projectId, "commits", limit] as const,
+  knowledgeCommit: (projectId: string, sha: string) => ["knowledge", projectId, "commit", sha] as const,
+  knowledgeDiff: (projectId: string, sha: string) => ["knowledge", projectId, "diff", sha] as const,
+  knowledgeImpact: (projectId: string, sha: string, depth: number, inferred: boolean) =>
+    ["knowledge", projectId, "impact", sha, depth, inferred] as const,
+  knowledgeAnalysis: (projectId: string, sha: string) => ["knowledge", projectId, "analysis", sha] as const,
+  knowledgeGraph: (projectId: string, params: unknown) => ["knowledge", projectId, "graph", params] as const,
+  knowledgeSearch: (projectId: string, text: string) => ["knowledge", projectId, "search", text] as const,
+  knowledgeNode: (projectId: string, nodeId: string) => ["knowledge", projectId, "node", nodeId] as const,
+  knowledgeReferences: (projectId: string, nodeId: string) => ["knowledge", projectId, "references", nodeId] as const,
+  knowledgeChat: (projectId: string) => ["knowledge", projectId, "chat"] as const
 };
