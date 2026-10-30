@@ -83,16 +83,37 @@ const CODEX_ANALYSIS_FLAGS: &[&str] = &[
     "-c web_search=disabled",
 ];
 
+/// The program of a command line and the rest of it. The program may be quoted (a path with spaces),
+/// optionally after PowerShell's call operator: `& "C:\Program Files\nodejs\codex.cmd" app-server`.
+fn split_program(command: &str) -> (&str, &str) {
+    let command = command.trim_start();
+    let command = command
+        .strip_prefix('&')
+        .map(str::trim_start)
+        .unwrap_or(command);
+    match command.chars().next() {
+        Some(quote @ ('"' | '\'')) => {
+            let inner = &command[1..];
+            match inner.split_once(quote) {
+                Some((program, rest)) => (program, rest),
+                None => (inner, ""),
+            }
+        }
+        _ => command
+            .split_once(char::is_whitespace)
+            .unwrap_or((command, "")),
+    }
+}
+
 /// The Codex command for an analysis turn: the configured `codex ... app-server` command with the
 /// native tools switched off. A command that is not Codex's own (a wrapper script) is refused: there
 /// is no telling whether it passes the flags on, and an analysis must not run with Codex's tools.
 fn codex_analysis_command(configured: &str) -> SymphonyResult<String> {
     let trimmed = configured.trim();
-    let mut words = trimmed.split_whitespace();
-    let program = words.next().unwrap_or("");
+    let (program, rest) = split_program(trimmed);
     let program = program.rsplit(['/', '\\']).next().unwrap_or(program);
     let program = program.trim_end_matches(".cmd").trim_end_matches(".exe");
-    if program.eq_ignore_ascii_case("codex") && words.any(|w| w == "app-server") {
+    if program.eq_ignore_ascii_case("codex") && rest.split_whitespace().any(|w| w == "app-server") {
         Ok(format!("{trimmed} {}", CODEX_ANALYSIS_FLAGS.join(" ")))
     } else {
         Err(SymphonyError::Conflict(format!(
@@ -338,6 +359,10 @@ mod tests {
         for configured in [
             r"C:\tools\codex.cmd app-server",
             "/usr/bin/codex app-server",
+            // A path with spaces is quoted, with or without PowerShell's call operator.
+            r#""C:\Program Files\nodejs\codex.cmd" app-server"#,
+            r#"& "C:\Program Files\nodejs\codex.cmd" app-server"#,
+            r"& 'C:\Program Files\nodejs\codex.exe' app-server",
         ] {
             assert!(codex_analysis_command(configured)
                 .unwrap()
@@ -348,7 +373,14 @@ mod tests {
     #[test]
     fn a_codex_command_that_is_not_codex_is_refused_for_analysis() {
         // A wrapper might not pass the flags on, so the analysis would run with Codex's tools.
-        for wrapper in ["  ./run-codex.sh  ", "npx codex app-server", ""] {
+        for wrapper in [
+            "  ./run-codex.sh  ",
+            "npx codex app-server",
+            "",
+            r#""C:\Program Files\run-codex.cmd" app-server"#,
+            // An unterminated quote is not a program path.
+            r#""C:\Program Files\codex.cmd app-server"#,
+        ] {
             let error = codex_analysis_command(wrapper).unwrap_err().to_string();
             assert!(error.contains("codex app-server"), "{wrapper:?}: {error}");
         }

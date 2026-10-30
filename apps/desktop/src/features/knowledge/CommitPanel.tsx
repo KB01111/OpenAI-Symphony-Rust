@@ -108,7 +108,7 @@ export const CommitPanel: React.FC<{ sha: string }> = ({ sha }) => {
               {wt.branch ??
                 (worktreeById.has(wt.worktree_id)
                   ? worktreeLabel(worktreeById.get(wt.worktree_id)!, m.commits.badges.detached)
-                  : m.commits.badges.detached)}
+                  : `${m.commits.badges.detached} ${wt.worktree_id.replace(/^wt_/, "").slice(0, 6)}`)}
               {wt.is_head ? " ●" : ""}
             </Badge>
           ))}

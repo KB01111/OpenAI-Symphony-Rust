@@ -375,13 +375,14 @@ impl KnowledgeService {
         node_id: &str,
     ) -> SymphonyResult<SymbolReferences> {
         use crate::serena;
+        // The index first: without one the answer is the same whether or not Serena is installed.
+        let (graph, run) = self.graph_for(&project.id).await?.ok_or_else(not_indexed)?;
         let Some(command) = self.config.serena_path() else {
             return Ok(serena::unavailable(
                 node_id,
                 "Serena is not installed. Install it to get precise references (see Overview > Engines).",
             ));
         };
-        let (graph, run) = self.graph_for(&project.id).await?.ok_or_else(not_indexed)?;
         let node = graph.node(node_id).ok_or_else(|| {
             SymphonyError::NotFound(format!("node {node_id} not found in the index"))
         })?;
