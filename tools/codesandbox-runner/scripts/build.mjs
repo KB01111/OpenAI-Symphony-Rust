@@ -18,6 +18,8 @@ await build({
   target: "node22",
   // The SDK's CommonJS dependencies call require(); give the ESM bundle one.
   banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);' },
+  // `abort.sh` is bundled as text: the bridge can put it into a sandbox whose template predates it.
+  loader: { ".sh": "text" },
   legalComments: "none",
   logLevel: "info"
 });

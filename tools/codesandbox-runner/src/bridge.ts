@@ -1,3 +1,4 @@
+import abortScript from "../template/drivers/abort.sh";
 import type { RunningCommand, SandboxGateway, SandboxHandle } from "./gateway.ts";
 import {
   parseDriverLine,
@@ -172,12 +173,16 @@ export async function runTurn(
 
 /** `abort`: stop the agent process in a running sandbox (dropping the bridge does not). `stop`: hibernate / shut down. */
 /**
- * Stops the run in a sandbox built from a template that predates `abort.sh`: the driver and its direct
- * children only, which is enough to stop the push loop. Never fails by itself (`true` ends it).
+ * Stops the run with the bridge's own copy of `abort.sh`, for a sandbox built from a template that
+ * predates the script. It is the same script, so the whole process tree goes, not just the driver:
+ * what the agent started (a commit script in the middle of a push) must not outlive the abort.
  */
-export const ABORT_FALLBACK =
-  `bash -c 'for p in $(pgrep -f "[s]ymphony-run-agent"); do pkill -TERM -P "$p"; kill -TERM "$p"; done; ` +
-  `sleep 2; pkill -KILL -f "[s]ymphony-run-agent"; true'`;
+async function abortWithBundledScript(handle: SandboxHandle): Promise<number> {
+  const path = `${SCRATCH_DIR}/abort.sh`;
+  await (await handle.run(`mkdir -p ${SCRATCH_DIR}`, { name: "prepare" })).wait();
+  await handle.writeTextFile(path, abortScript);
+  return (await handle.run(`bash ${path}`, { name: "abort" })).wait();
+}
 
 export async function runControl(request: ControlRequest, gateway: SandboxGateway): Promise<boolean> {
   // `null`: the sandbox no longer exists, so nothing is running in it and there is nothing to stop.
@@ -190,8 +195,8 @@ export async function runControl(request: ControlRequest, gateway: SandboxGatewa
       // driver alone leaves those running, and pushing.
       let code = await (await handle.run(`bash ${DRIVER_DIR}/abort.sh`, { name: "abort" })).wait();
       // The script always exits 0, so anything else means it could not run (a sandbox from an older
-      // template does not have it). Try the weaker way rather than report a run as stopped that is not.
-      if (code !== 0) code = await (await handle.run(ABORT_FALLBACK, { name: "abort" })).wait();
+      // template does not have it). Run the bridge's copy rather than report a run as stopped that is not.
+      if (code !== 0) code = await abortWithBundledScript(handle);
       if (code !== 0) throw new Error(`Could not stop the agent in the sandbox (exit code ${code})`);
       return true;
     }

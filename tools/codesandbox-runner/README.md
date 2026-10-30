@@ -36,7 +36,8 @@ CodeSandboxSession ──stdin: 1 request──▶ @codesandbox/sdk ────
    dirty or diverged worktree).
 5. When the run ends the sandbox is hibernated (files and the agent's checkpoint are kept); cancelling
    first stops the driver and everything it started (`abort.sh`: the agent and the commands it ran, children
-   before parents), so nothing keeps working or pushing.
+   before parents), so nothing keeps working or pushing. A sandbox from a template that predates the
+   script gets the bridge's own copy of it.
 
 ## Setup
 

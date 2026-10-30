@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ABORT_FALLBACK, driverEnv, LineSplitter, runControl, runRequest, runTurn, DRIVER_DIR } from "../src/bridge.ts";
+import { driverEnv, LineSplitter, runControl, runRequest, runTurn, DRIVER_DIR } from "../src/bridge.ts";
 import type { OpenOptions, RunningCommand, SandboxGateway, SandboxHandle } from "../src/gateway.ts";
 import { parseDriverLine, parseRequest, redact, type BridgeEvent, type TurnRequest } from "../src/protocol.ts";
 
@@ -367,13 +368,20 @@ describe("controls", () => {
     expect(handle.disposed).toBe(1);
   });
 
-  it("falls back to a simpler kill when the sandbox's template has no abort.sh", async () => {
+  it("runs its own copy of abort.sh when the sandbox's template does not have one", async () => {
     const handle = new FakeHandle(true);
-    // bash: No such file or directory.
-    handle.script = (call) => call.handle.exit(call.command.includes("abort.sh") ? 127 : 0);
+    // bash: No such file or directory, for the template's copy only.
+    handle.script = (call) => call.handle.exit(call.command === `bash ${DRIVER_DIR}/abort.sh` ? 127 : 0);
     const ok = await runControl({ type: "abort", csbApiKey: CSB_KEY, sandboxId: "sb-123" }, new FakeGateway(handle));
     expect(ok).toBe(true);
-    expect(handle.runs.map((run) => run.command)).toEqual([`bash ${DRIVER_DIR}/abort.sh`, ABORT_FALLBACK]);
+    expect(handle.runs.map((run) => run.command)).toEqual([
+      `bash ${DRIVER_DIR}/abort.sh`,
+      "mkdir -p /tmp/symphony",
+      "bash /tmp/symphony/abort.sh",
+    ]);
+    // The same script the template carries, so the whole process tree goes, not just the driver.
+    const template = readFileSync(new URL("../template/drivers/abort.sh", import.meta.url), "utf8");
+    expect(handle.files.get("/tmp/symphony/abort.sh")).toBe(template);
     expect(handle.disposed).toBe(1);
   });
 

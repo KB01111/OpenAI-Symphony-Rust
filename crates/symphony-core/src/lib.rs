@@ -320,10 +320,20 @@ mod tests {
     fn an_unset_runner_path_variable_means_no_override() {
         // Resolved before the empty check: it must not become an explicit path (the temp-dir fallback of
         // `expand_path_value`) that the launch would then treat as authoritative.
-        let raw =
-            "---\ncodesandbox:\n  runner_path: $SYMPHONY_TEST_RUNNER_PATH_SURELY_UNSET\n---\nx";
+        // A name no environment can already hold: unique to this process and moment, so the test does not
+        // depend on (or have to change) the environment it runs in.
+        let unset = format!(
+            "SYMPHONY_UNSET_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        assert!(std::env::var_os(&unset).is_none());
+        let raw = format!("---\ncodesandbox:\n  runner_path: ${unset}\n---\nx");
         let cfg =
-            ServiceConfig::from_workflow(&WorkflowDefinition::parse(raw, None).unwrap()).unwrap();
+            ServiceConfig::from_workflow(&WorkflowDefinition::parse(&raw, None).unwrap()).unwrap();
         assert_eq!(cfg.codesandbox.runner_path, None);
     }
 
