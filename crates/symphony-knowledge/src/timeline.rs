@@ -6,7 +6,7 @@
 //! listed commits, which is exact because the listing is a prefix of a topological order.
 
 use crate::git::{
-    normalize_path_key, reachable_within, short_sha, worktree_id, GitRepo, GitWorktree, RawCommit,
+    path_match_key, reachable_within, short_sha, worktree_id, GitRepo, GitWorktree, RawCommit,
 };
 use crate::model::{
     CommitSummary, CommitTimeline, CommitWorktreeRef, KnowledgeWorktree, WorkingTreeChange,
@@ -30,7 +30,7 @@ pub struct ProjectRef {
     pub default_branch: String,
 }
 
-/// Symphony tasks by normalised worktree path ([`normalize_path_key`]).
+/// Symphony tasks by resolved worktree path ([`path_match_key`]).
 pub type TaskLinks = HashMap<String, WorktreeTaskLink>;
 
 struct Inspected {
@@ -110,7 +110,7 @@ pub async fn list_worktrees(
         .into_iter()
         .zip(ahead)
         .map(|(i, ahead_of_default)| {
-            let task = links.get(&normalize_path_key(&i.wt.path)).cloned();
+            let task = links.get(&path_match_key(&i.wt.path)).cloned();
             let kind = match (&i.wt.kind, &task) {
                 (WorktreeKind::Main, _) => WorktreeKind::Main,
                 (_, Some(_)) => WorktreeKind::Symphony,
@@ -422,7 +422,7 @@ pub(crate) mod tests {
 
         let mut links = TaskLinks::new();
         links.insert(
-            normalize_path_key(wt.to_str().unwrap()),
+            path_match_key(wt.to_str().unwrap()),
             WorktreeTaskLink {
                 task_id: "t1".into(),
                 issue_identifier: "SYM-1".into(),

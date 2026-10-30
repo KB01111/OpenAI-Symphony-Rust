@@ -75,6 +75,17 @@ pub fn normalize_path_key(path: &str) -> String {
     p
 }
 
+/// Like [`normalize_path_key`], but resolved first when the path exists, for matching a path from
+/// one source with the same directory from another: git prints a worktree's long, canonical path
+/// while a path built by Symphony (or a temp directory) can be a Windows 8.3 short name
+/// (`RUNNER~1`) or go through a link. Not used for ids, which must not change when a directory goes.
+pub fn path_match_key(path: &str) -> String {
+    match std::fs::canonicalize(path) {
+        Ok(resolved) => normalize_path_key(&resolved.to_string_lossy()),
+        Err(_) => normalize_path_key(path),
+    }
+}
+
 fn git_error(args: &[&str], detail: &str) -> SymphonyError {
     let verb = args.first().copied().unwrap_or("git");
     SymphonyError::GitWorktreeError(format!("git {verb}: {}", detail.trim()))
@@ -1088,6 +1099,22 @@ pub fn reachable_within(head: &str, parents: &HashMap<&str, &[String]>) -> HashS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paths_to_one_directory_match_however_they_are_spelled() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let wt = temp.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::create_dir_all(temp.path().join("other")).unwrap();
+        let roundabout = temp.path().join("other").join("..").join("wt");
+        let plain = wt.to_string_lossy().into_owned();
+        let indirect = roundabout.to_string_lossy().into_owned();
+        // A spelling with `..` (or, on Windows, an 8.3 short name) is the same directory...
+        assert_eq!(path_match_key(&plain), path_match_key(&indirect));
+        // ...a directory that is gone falls back to the plain normalised form.
+        let gone = temp.path().join("gone").to_string_lossy().into_owned();
+        assert_eq!(path_match_key(&gone), normalize_path_key(&gone));
+    }
 
     #[test]
     fn worktree_list_parses_main_linked_detached_and_flags() {

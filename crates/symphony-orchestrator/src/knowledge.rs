@@ -5,7 +5,7 @@
 use super::*;
 use symphony_knowledge::analysis::{AnalysisOutput, AnalysisRequest, AnalysisRunner, EventSink};
 use symphony_knowledge::engine::EngineConfig;
-use symphony_knowledge::git::normalize_path_key;
+use symphony_knowledge::git::path_match_key;
 use symphony_knowledge::model::WorktreeTaskLink;
 use symphony_knowledge::service::KnowledgeService;
 use symphony_knowledge::timeline::{ProjectRef, TaskLinks};
@@ -84,18 +84,20 @@ const CODEX_ANALYSIS_FLAGS: &[&str] = &[
 ];
 
 /// The Codex command for an analysis turn: the configured `codex ... app-server` command with the
-/// native tools switched off. A command that is not Codex's own (a wrapper script) is returned as it
-/// is, since there is no telling how it passes flags on; the read-only sandbox still applies.
-fn codex_analysis_command(configured: &str) -> String {
+/// native tools switched off. A command that is not Codex's own (a wrapper script) is refused: there
+/// is no telling whether it passes the flags on, and an analysis must not run with Codex's tools.
+fn codex_analysis_command(configured: &str) -> SymphonyResult<String> {
     let trimmed = configured.trim();
     let mut words = trimmed.split_whitespace();
     let program = words.next().unwrap_or("");
     let program = program.rsplit(['/', '\\']).next().unwrap_or(program);
     let program = program.trim_end_matches(".cmd").trim_end_matches(".exe");
     if program.eq_ignore_ascii_case("codex") && words.any(|w| w == "app-server") {
-        format!("{trimmed} {}", CODEX_ANALYSIS_FLAGS.join(" "))
+        Ok(format!("{trimmed} {}", CODEX_ANALYSIS_FLAGS.join(" ")))
     } else {
-        trimmed.to_string()
+        Err(SymphonyError::Conflict(format!(
+            "AI analysis with Codex needs the command to be `codex app-server` (it switches off Codex's own tools); `{trimmed}` is something else. Use another provider for this project, or set the Codex command back to `codex app-server`."
+        )))
     }
 }
 
@@ -144,13 +146,14 @@ impl AnalysisRunner for KnowledgeRunner {
     async fn run(&self, request: AnalysisRequest) -> SymphonyResult<AnalysisOutput> {
         let config = self.orch.memory.read().await.active_config.clone();
         write_tool_restrictions(&request.scratch_dir)?;
+        let command = if request.provider == ProviderKind::Codex {
+            codex_analysis_command(&config.codex.command)?
+        } else {
+            config.codex.command.clone()
+        };
         let launch = AgentLaunchConfig {
             provider: request.provider,
-            command: if request.provider == ProviderKind::Codex {
-                codex_analysis_command(&config.codex.command)
-            } else {
-                config.codex.command.clone()
-            },
+            command,
             model: request.model.clone(),
             workspace_path: request.scratch_dir.clone(),
             task_id: format!("knowledge:{}", request.project_id),
@@ -301,7 +304,7 @@ impl SymphonyOrchestrator {
             .filter_map(|task| {
                 let path = task.workspace_path.clone().filter(|p| !p.is_empty())?;
                 Some((
-                    normalize_path_key(&path),
+                    path_match_key(&path),
                     WorktreeTaskLink {
                         active_session_id: active.get(&task.id).cloned(),
                         task_id: task.id,
@@ -322,7 +325,7 @@ mod tests {
 
     #[test]
     fn codex_runs_an_analysis_with_its_native_tools_switched_off() {
-        let command = codex_analysis_command("codex app-server");
+        let command = codex_analysis_command("codex app-server").unwrap();
         assert!(command.starts_with("codex app-server "), "{command}");
         for flag in [
             "features.shell_tool=false",
@@ -331,15 +334,24 @@ mod tests {
         ] {
             assert!(command.contains(flag), "{flag} in {command}");
         }
-        // The npm shim and a full path are recognised; a wrapper script is left alone.
-        assert!(
-            codex_analysis_command(r"C:\tools\codex.cmd app-server").contains("shell_tool=false")
-        );
-        assert!(codex_analysis_command("/usr/bin/codex app-server").contains("shell_tool=false"));
-        assert_eq!(
-            codex_analysis_command("  ./run-codex.sh  "),
-            "./run-codex.sh"
-        );
+        // The npm shim and a full path are recognised.
+        for configured in [
+            r"C:\tools\codex.cmd app-server",
+            "/usr/bin/codex app-server",
+        ] {
+            assert!(codex_analysis_command(configured)
+                .unwrap()
+                .contains("shell_tool=false"));
+        }
+    }
+
+    #[test]
+    fn a_codex_command_that_is_not_codex_is_refused_for_analysis() {
+        // A wrapper might not pass the flags on, so the analysis would run with Codex's tools.
+        for wrapper in ["  ./run-codex.sh  ", "npx codex app-server", ""] {
+            let error = codex_analysis_command(wrapper).unwrap_err().to_string();
+            assert!(error.contains("codex app-server"), "{wrapper:?}: {error}");
+        }
     }
 
     #[test]
