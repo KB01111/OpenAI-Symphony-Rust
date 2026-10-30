@@ -90,7 +90,7 @@ export const AnalysisView: React.FC<{ sha: string; section?: "review" | "tests" 
     );
   }
   if (analysis.status === "failed") {
-    return <ErrorState title={m.analysis.failed} message={analysis.error ?? undefined} onRetry={() => start.mutate({ sha, force: true })} retryLabel={m.analysis.rerun} />;
+    return <ErrorState title={m.analysis.failed} message={analysis.error ?? undefined} onRetry={() => (running ? undefined : start.mutate({ sha, force: true }))} retryLabel={m.analysis.rerun} />;
   }
   const result = analysis.result;
   if (!result) return null;
