@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowUp, Flag, FolderGit2, GitBranch, Plus, SlidersHorizontal, Tag } from "lucide-react";
 import { errorMessage } from "@symphony/api-client";
-import { formatMessage, type CreateTaskRequest, type Project, type ProviderKind } from "@symphony/shared-types";
+import { formatMessage, type CloudAgentKind, type CreateTaskRequest, type Project, type ProviderKind } from "@symphony/shared-types";
 import {
   Alert,
   Button,
@@ -21,7 +21,7 @@ import {
 } from "@symphony/ui";
 import { paths } from "../../app/routes.js";
 import { useMessages, useT } from "../../lib/i18n.js";
-import { useCreateTask, useProjects, useProviders } from "../../lib/queries.js";
+import { useCreateTask, useDefaultCloudAgent, useProjects, useProviders } from "../../lib/queries.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { workbenchMessages } from "../../layouts/messages.js";
 import { ProviderModelFields } from "../projects/ProviderModelFields.js";
@@ -87,6 +87,7 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
   const setAddProjectOpen = useUiStore((s) => s.setAddProjectOpen);
   const projects = useProjects();
   const providerStatuses = useProviders();
+  const defaultCloudAgent = useDefaultCloudAgent();
   const createTask = useCreateTask();
   const textarea = useRef<HTMLTextAreaElement>(null);
 
@@ -94,6 +95,8 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
   const [projectId, setProjectId] = useState<string | null>(null);
   const [providerOverride, setProviderOverride] = useState<ProviderKind | null>(null);
   const [model, setModel] = useState("");
+  // null: the configured default (Settings → Defaults, mini-swe-agent unless changed).
+  const [cloudAgent, setCloudAgent] = useState<CloudAgentKind | null>(null);
   const [priority, setPriority] = useState<number | null>(null);
   const [labels, setLabels] = useState("");
   const [identifier, setIdentifier] = useState("");
@@ -110,6 +113,7 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
   // overridden provider never inherits the project's model for a different provider.
   const placeholderModel = fallbackModel ?? providerStatuses.data?.find((p) => p.provider === provider)?.default_model ?? null;
   const effectiveModel = model.trim() || placeholderModel;
+  const effectiveCloudAgent = provider === "codesandbox" ? (cloudAgent ?? defaultCloudAgent) : null;
 
   useEffect(() => {
     if (autoFocus) textarea.current?.focus();
@@ -132,6 +136,8 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
       priority,
       provider,
       model: effectiveModel,
+      // Only a deliberate choice is sent; otherwise the runtime applies the configured default.
+      cloud_agent: provider === "codesandbox" ? cloudAgent : null,
       labels: parseLabels(labels),
       auto_start: runNow
     };
@@ -229,6 +235,7 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
                         setProjectId(p.id);
                         setProviderOverride(null);
                         setModel("");
+                        setCloudAgent(null);
                       }}
                       className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-start text-sm outline-none hover:bg-surface-hover focus-visible:bg-surface-hover", p.id === project?.id && "bg-surface-selected")}
                     >
@@ -263,6 +270,7 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
             <PopoverTrigger asChild>
               <Chip icon={<SlidersHorizontal />} aria-label={`${m.provider} / ${m.model}`}>
                 {t.provider[provider]}
+                {effectiveCloudAgent ? ` · ${t.cloudAgent[effectiveCloudAgent]}` : ""}
                 {effectiveModel ? ` · ${effectiveModel}` : ""}
               </Chip>
             </PopoverTrigger>
@@ -273,9 +281,13 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
                 onProviderChange={(next) => {
                   setProviderOverride(next);
                   setModel("");
+                  setCloudAgent(null);
                 }}
                 model={model}
                 onModelChange={setModel}
+                cloudAgent={cloudAgent}
+                onCloudAgentChange={setCloudAgent}
+                defaultCloudAgent={defaultCloudAgent}
                 fallbackModel={fallbackModel}
                 providerLabel={m.provider}
                 modelLabel={m.model}

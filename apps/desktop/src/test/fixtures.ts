@@ -58,6 +58,7 @@ export function task(overrides: Partial<Task> & { identifier?: string; title?: s
       updated_at: now
     },
     status: "ready",
+    cloud_agent: null,
     provider: "simulated",
     model: null,
     workspace_path: null,
@@ -125,6 +126,7 @@ export function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     start_background_runtime_on_login: false,
     default_provider: "codex",
     default_model: "gpt-5-codex",
+    default_cloud_agent: "mini_swe_agent",
     polling_interval_ms: 30000,
     resource_policy: {
       max_concurrent_on_ac: 2,

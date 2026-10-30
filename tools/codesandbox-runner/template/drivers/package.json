@@ -1,0 +1,12 @@
+{
+  "name": "symphony-sandbox-drivers",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Drivers that run a Symphony cloud agent inside a CodeSandbox sandbox.",
+  "dependencies": {
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0"
+  }
+}

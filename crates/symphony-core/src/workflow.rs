@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use utoipa::ToSchema;
 
-use crate::domain::Issue;
+use crate::domain::{CloudAgentKind, Issue};
 use crate::error::{SymphonyError, SymphonyResult};
 
 pub const DEFAULT_PROMPT_TEMPLATE: &str =
@@ -110,7 +110,40 @@ pub struct ServiceConfig {
     pub hooks: HooksConfig,
     pub agent: AgentConfig,
     pub codex: CodexConfig,
+    /// CodeSandbox cloud agent settings (`codesandbox:` front matter section).
+    #[serde(default)]
+    pub codesandbox: CodeSandboxConfig,
     pub server_port: Option<u16>,
+}
+
+/// Settings for cloud agents that run in CodeSandbox microVMs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct CodeSandboxConfig {
+    /// Template id or alias built with `tools/codesandbox-runner/scripts/build-template.mjs`.
+    pub template_id: String,
+    /// `mini_swe_agent` (default), `pi` or `pi_durable`.
+    pub default_agent: CloudAgentKind,
+    /// `pico` | `nano` | `micro` | `small` | `medium` | `large` | `xlarge`.
+    pub vm_tier: String,
+    /// Seconds of inactivity before the sandbox hibernates.
+    pub hibernation_timeout_secs: u64,
+    /// Spend limit for one mini-swe-agent run in USD; `0` disables the limit.
+    pub cost_limit_usd: f64,
+    /// Path of the compiled bridge (`dist/bridge.mjs`); `None` finds the bundled one.
+    pub runner_path: Option<String>,
+}
+
+impl Default for CodeSandboxConfig {
+    fn default() -> Self {
+        Self {
+            template_id: "symphony-agents".to_string(),
+            default_agent: CloudAgentKind::MiniSweAgent,
+            vm_tier: "small".to_string(),
+            hibernation_timeout_secs: 1800,
+            cost_limit_usd: 3.0,
+            runner_path: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -193,6 +226,7 @@ impl Default for ServiceConfig {
                 read_timeout_ms: 5_000,
                 stall_timeout_ms: 300_000,
             },
+            codesandbox: CodeSandboxConfig::default(),
             server_port: None,
         }
     }
@@ -379,6 +413,47 @@ impl ServiceConfig {
             }
         }
 
+        if let Some(Value::Object(csb)) = root.get("codesandbox") {
+            if let Some(Value::String(t)) = csb.get("template_id") {
+                if !t.trim().is_empty() {
+                    cfg.codesandbox.template_id = resolve_env_token(t).trim().to_string();
+                }
+            }
+            if let Some(Value::String(a)) = csb.get("default_agent") {
+                cfg.codesandbox.default_agent = a.parse()?;
+            }
+            if let Some(Value::String(t)) = csb.get("vm_tier") {
+                if !t.trim().is_empty() {
+                    cfg.codesandbox.vm_tier = t.trim().to_lowercase();
+                }
+            }
+            if let Some(v) = csb
+                .get("hibernation_timeout_secs")
+                .and_then(parse_u64_flexible)
+            {
+                if v > 0 {
+                    cfg.codesandbox.hibernation_timeout_secs = v;
+                }
+            }
+            if let Some(v) = csb.get("cost_limit_usd").and_then(|v| v.as_f64()) {
+                if v >= 0.0 {
+                    cfg.codesandbox.cost_limit_usd = v;
+                }
+            }
+            if let Some(Value::String(p)) = csb.get("runner_path") {
+                // Resolve `$VAR` first: an unset variable is "no override", not a path.
+                let resolved = resolve_env_token(p);
+                if !resolved.trim().is_empty() {
+                    // Like `workspace.root`: `~`, `$VAR` and paths relative to the workflow file work.
+                    cfg.codesandbox.runner_path = Some(
+                        expand_path_value(&resolved, wf.source_path.as_deref())
+                            .to_string_lossy()
+                            .to_string(),
+                    );
+                }
+            }
+        }
+
         if let Some(Value::Object(server)) = root.get("server") {
             if let Some(port) = server.get("port").and_then(parse_u64_flexible) {
                 if port <= u16::MAX as u64 {
@@ -401,6 +476,21 @@ impl ServiceConfig {
             return Err(SymphonyError::InvalidConfig(
                 "codex.command must be non-empty".to_string(),
             ));
+        }
+        if self.codesandbox.template_id.trim().is_empty() {
+            return Err(SymphonyError::InvalidConfig(
+                "codesandbox.template_id must be non-empty".to_string(),
+            ));
+        }
+        if ![
+            "pico", "nano", "micro", "small", "medium", "large", "xlarge",
+        ]
+        .contains(&self.codesandbox.vm_tier.as_str())
+        {
+            return Err(SymphonyError::InvalidConfig(format!(
+                "codesandbox.vm_tier `{}` is not one of pico, nano, micro, small, medium, large, xlarge",
+                self.codesandbox.vm_tier
+            )));
         }
         Ok(())
     }

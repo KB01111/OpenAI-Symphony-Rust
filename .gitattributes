@@ -2,3 +2,7 @@
 # `pnpm generate:api` leaves no diff on Windows (core.autocrlf) and the CI staleness check is stable.
 openapi/*.json text eol=lf
 packages/shared-types/src/generated/** text eol=lf
+
+# Files copied into the Linux sandbox image (CodeSandbox cloud agents): a CRLF checkout on Windows would
+# add a carriage return to the shebang line and break them, so they are always LF.
+tools/codesandbox-runner/template/** text eol=lf

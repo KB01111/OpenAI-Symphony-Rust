@@ -57,6 +57,7 @@ export type AppSettings = {
     start_background_runtime_on_login: boolean;
     default_provider: ProviderKind;
     default_model: string;
+    default_cloud_agent?: CloudAgentKind | null;
     polling_interval_ms: number;
     resource_policy: ResourcePolicy;
     remote_api_enabled: boolean;
@@ -191,6 +192,41 @@ export type ChangedFileSummary = {
     deletions: number;
 };
 
+/**
+ * Which agent runs inside a CodeSandbox cloud sandbox (`ProviderKind::CodeSandbox`).
+ */
+export type CloudAgentKind = 'mini_swe_agent' | 'pi' | 'pi_durable';
+
+/**
+ * Settings for cloud agents that run in CodeSandbox microVMs.
+ */
+export type CodeSandboxConfig = {
+    /**
+     * Template id or alias built with `tools/codesandbox-runner/scripts/build-template.mjs`.
+     */
+    template_id: string;
+    /**
+     * `mini_swe_agent` (default), `pi` or `pi_durable`.
+     */
+    default_agent: CloudAgentKind;
+    /**
+     * `pico` | `nano` | `micro` | `small` | `medium` | `large` | `xlarge`.
+     */
+    vm_tier: string;
+    /**
+     * Seconds of inactivity before the sandbox hibernates.
+     */
+    hibernation_timeout_secs: number;
+    /**
+     * Spend limit for one mini-swe-agent run in USD; `0` disables the limit.
+     */
+    cost_limit_usd: number;
+    /**
+     * Path of the compiled bridge (`dist/bridge.mjs`); `None` finds the bundled one.
+     */
+    runner_path: string | null;
+};
+
 export type CodexConfig = {
     command: string;
     approval_policy: unknown;
@@ -244,6 +280,7 @@ export type CreateTaskRequest = {
     priority?: number | null;
     provider?: ProviderKind | null;
     model?: string | null;
+    cloud_agent?: CloudAgentKind | null;
     labels?: Array<string> | null;
     /**
      * Dispatch the task to an agent immediately after creation.
@@ -493,7 +530,7 @@ export type ProviderCapabilities = {
 /**
  * Multi-provider coding agent kinds
  */
-export type ProviderKind = 'codex' | 'claude_code' | 'opencode' | 'simulated';
+export type ProviderKind = 'codex' | 'claude_code' | 'opencode' | 'codesandbox' | 'simulated';
 
 /**
  * Runtime-detected status of a coding agent provider (`GET /api/v1/providers`).
@@ -735,6 +772,10 @@ export type ServiceConfig = {
     hooks: HooksConfig;
     agent: AgentConfig;
     codex: CodexConfig;
+    /**
+     * CodeSandbox cloud agent settings (`codesandbox:` front matter section).
+     */
+    codesandbox: CodeSandboxConfig;
     server_port: number | null;
 };
 
@@ -772,6 +813,7 @@ export type Task = {
     status: TaskStatus;
     provider: ProviderKind;
     model: string | null;
+    cloud_agent: CloudAgentKind | null;
     workspace_path: string | null;
     branch_name: string | null;
     attempt_count: number;

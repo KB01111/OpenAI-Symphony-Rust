@@ -37,10 +37,29 @@ Symphony Desktop 2.0 implements the language-independent [OpenAI Symphony Specif
 | `symphony-workspaces` | Workspace key generation, canonical path validation, Git worktree lifecycle (`git worktree add -B`, `git worktree remove`), dirty-tree inspection, simulated-merge conflict detection (`git merge-tree`), hook-free commit and non-forced push of a task branch, unified diff generation, lifecycle hooks, and validation command runner. |
 | `symphony-platform` | Windows 11 `GetSystemPowerStatus` power telemetry, `sysinfo` CPU/RAM pressure monitoring, hardware-aware concurrency calculation, single-instance lockfile guard, owner-only secret files (`secure_fs`: protected DACL on Windows, `0600` on Unix), the versioned credential vault (`credentials.vault`, DPAPI on Windows / ChaCha20-Poly1305 key file elsewhere), runtime discovery (`runtime.json`) and HKCU autostart via the registry API. |
 | `symphony-trackers` | `GitHubTracker` (REST v3 issues, label opt-in filter, PR diffs, CI check runs, review comment evaluation, `github_api` dynamic tool), `LinearTracker` (GraphQL polling, `inverseRelations` blocker resolution, `linear_graphql` dynamic tool) and `tool_policy` (the allowlist both agent tools obey; no merge, no deletion, project repository only). |
-| `symphony-agents` | Multi-provider coding agent runtime: `CodexAppServerDriver` (JSON-RPC 2.0 over stdio), `ClaudeCodeDriver` (`claude --output-format stream-json`), `OpenCodeDriver`, and deterministic `SimulatedAgentDriver`. |
+| `symphony-agents` | Multi-provider coding agent runtime: `CodexAppServerDriver` (JSON-RPC 2.0 over stdio), `ClaudeCodeDriver` (`claude --output-format stream-json`), `OpenCodeDriver`, `CodeSandboxSession` (cloud agents in CodeSandbox microVMs through the Node bridge in `tools/codesandbox-runner`), and deterministic `SimulatedAgentDriver`. |
 | `symphony-orchestrator` | Central scheduler, `WORKFLOW.md` hot-reload watcher, approval gate (`OrchestratorApprovalGate`), dynamic tool dispatcher (`HostDynamicToolExecutor`), and evidence-based `MergeReadinessReport` (1–5) calculator (merge conflicts simulated, CI `none` for local reviews — nothing is assumed), explicit-approval pull request publishing (`create_pull_request`: commit, push, open; never merge) and token accounting that separates thread history from session usage (`ThreadUsageLedger` in `symphony-core`). |
 | `symphony-server` | Axum HTTP & SSE server implementing SPEC endpoints (`/api/v1/state`, `/api/v1/{issue_identifier}`, `/api/v1/refresh`) and desktop/mobile management endpoints with Bearer token auth, plus the scoped remote companion listener (`RemoteAccessManager`, `REMOTE_OPERATIONS`). |
 | `symphony-cli` | Standalone runtime and CLI: serving the API is the default command; `validate` checks a `WORKFLOW.md`; `run-task` runs one task headlessly; `verify-backup` / `restore-backup` check and restore a backup offline. Shares the data directory, lock, vault and remote listener lifecycle with the desktop host. |
+
+### Cloud agents (CodeSandbox)
+
+`ProviderKind::CodeSandbox` runs the agent away from the machine. The CodeSandbox SDK is TypeScript-only, so
+`CodeSandboxSession` starts a small Node bridge (`tools/codesandbox-runner`, bundled to `dist/bridge.mjs`) per
+turn and talks to it in JSON lines (one request on stdin, events on stdout), the same shape as the CLI
+drivers. The bridge creates a sandbox from a template (or resumes the sandbox recorded as the task's
+`current_thread_id`), runs the chosen agent (`Task.cloud_agent` → `AppSettings.default_cloud_agent` →
+`codesandbox.default_agent`; mini-swe-agent unless changed) and streams output, tool calls, usage and pushes.
+
+The sandbox has no access to the local worktree, so the git remote is the transport: before a run the
+orchestrator publishes the task branch to `origin` (`prepare_cloud_launch`: requires an `https://` GitHub
+origin that matches the project's repository, a GitHub token and a CodeSandbox token, and fails the attempt
+with that reason otherwise); inside the sandbox every edit is committed and pushed (`autocommit.sh`); each
+`codesandbox/pushed` event makes the orchestrator fast-forward the worktree (`sync_cloud_worktree` →
+`WorkspaceManager::fast_forward_from_origin`, serialised per run, refused when the worktree has local changes or
+diverged), and once more after each turn. Everything downstream (diff, validation, merge readiness, pull
+request) therefore sees the cloud agent's commits like a local agent's. Cancelling a run first stops the agent
+process in the sandbox (`abort`); finishing hibernates the sandbox so a retry or follow-up resumes it.
 
 ---
 

@@ -3,10 +3,35 @@ packages:
   - "packages/*"
   - "tools/*"
 allowBuilds:
+  # Transitive dependencies of the CodeSandbox runner's Pi packages. The runner does not need their
+  # install scripts, so they are denied explicitly (an undecided build script fails `pnpm install`).
+  '@google/genai': false
+  bufferutil: false
   esbuild: true
+  protobufjs: false
+  utf-8-validate: false
 # Security overrides for exact transitive pins whose parents have no fixed release yet. Each one is
 # scoped to the vulnerable versions, so it disappears as soon as a parent moves on; remove it then.
 # - js-yaml: @hey-api/json-schema-ref-parser pins 4.2.0 (quadratic CPU on crafted YAML; fixed in
 #   4.3.2). Build-time only; `pnpm generate:api` output is unchanged.
+# - lodash, xml2js: @codesandbox/sdk (CodeSandbox runner) -> blessed-contrib, the terminal UI of its own CLI.
+#   The patched lines (lodash 4.18, xml2js 0.6) are drop-in for it.
 overrides:
   "js-yaml@>=4.0.0 <4.3.2": "^4.3.2"
+  "lodash@<=4.17.23": "^4.18.0"
+  "xml2js@<0.5.0": "^0.6.2"
+
+# Advisories that are reported but cannot be fixed by an override and do not apply here. Each is
+# reachable only through @codesandbox/sdk -> @sentry/node, whose OpenTelemetry packages are several
+# 0.x/major lines behind the patched ones (forcing them would pair mismatched instrumentation with
+# Sentry), and the conditions for each do not exist in the runner (a short-lived local process that
+# neither serves HTTP nor talks to MongoDB / MySQL / Postgres / Knex / Tedious):
+# - GHSA-8988-4f7v-96qf: @opentelemetry/core < 2.8.0, unbounded memory in W3C baggage extraction from
+#   inbound headers.
+# - GHSA-qqmp-wf37-98f9: @opentelemetry/instrumentation-{knex,mongoose,mysql,mysql2,pg,tedious}, the
+#   database username is recorded as a span attribute by those database instrumentations.
+# Remove these entries when @codesandbox/sdk (or its @sentry/node) moves past the affected versions.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-8988-4f7v-96qf
+    - GHSA-qqmp-wf37-98f9

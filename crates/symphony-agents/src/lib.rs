@@ -21,9 +21,13 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 
+pub mod codesandbox;
 pub mod detection;
 mod opencode_server;
 pub mod tool_events;
+pub use codesandbox::{
+    find_runner_bundle, CloudLaunch, CodeSandboxSession, CSB_API_KEY, RUNNER_ENV,
+};
 pub use detection::{
     clear_model_catalogues, detect_provider_status, detect_provider_statuses, find_on_path,
 };
@@ -49,6 +53,9 @@ pub struct AgentLaunchConfig {
     /// (`Task::resume_usage_baseline`); `None` for a new thread or when it was never recorded.
     #[serde(default)]
     pub resume_usage_baseline: Option<TokenUsage>,
+    /// Cloud settings of a `codesandbox` run; `None` for every local provider.
+    #[serde(default)]
+    pub cloud: Option<CloudLaunch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +184,10 @@ pub async fn start_agent_session(
             let session = OpenCodeSession::new(config, existing_thread_id, approval_gate);
             Ok(Box::new(session))
         }
+        ProviderKind::CodeSandbox => {
+            let session = CodeSandboxSession::new(config, existing_thread_id);
+            Ok(Box::new(session))
+        }
         ProviderKind::Simulated => {
             let session = SimulatedAgentSession::new(config, existing_thread_id)
                 .with_approval_gate(approval_gate);
@@ -218,6 +229,17 @@ pub fn detect_all_providers() -> Vec<ProviderProfile> {
             approval_policy: "never".into(),
             sandbox_mode: "workspace-write".into(),
             credential_ref: None,
+            is_default: false,
+        },
+        ProviderProfile {
+            id: "codesandbox-default".into(),
+            name: "CodeSandbox Cloud Agent".into(),
+            provider: ProviderKind::CodeSandbox,
+            model: None,
+            command_override: None,
+            approval_policy: "never".into(),
+            sandbox_mode: "workspace-write".into(),
+            credential_ref: Some(CSB_API_KEY.into()),
             is_default: false,
         },
         ProviderProfile {

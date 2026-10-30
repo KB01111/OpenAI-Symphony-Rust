@@ -299,6 +299,33 @@ describe("SettingsPage", () => {
     expect(await screen.findByRole("button", { name: "Reset" })).toBeEnabled();
   });
 
+  it("saves the default cloud agent chosen for CodeSandbox tasks", async () => {
+    let stored = settings({ default_cloud_agent: "mini_swe_agent" });
+    const rt = createMockRuntime({
+      "GET /settings": () => stored,
+      "GET /providers": () => [],
+      "PUT /settings": ({ body }) => {
+        stored = body as typeof stored;
+        return stored;
+      }
+    });
+    renderWithProviders(<SettingsPage />, { runtime: rt, route: "/settings" });
+    await screen.findByRole("heading", { name: "Appearance" });
+    openSection("Default provider");
+
+    const select = await screen.findByRole("combobox", { name: "Default cloud agent" });
+    expect(select).toHaveTextContent("mini-swe-agent");
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    fireEvent.keyDown(select, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("option", { name: "Pi Durable" }));
+
+    const save = screen.getByRole("button", { name: "Save changes" });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    await waitFor(() => expect(stored.default_cloud_agent).toBe("pi_durable"));
+    expect(rt.calls.find((c) => c.method === "PUT" && c.path === "/settings")!.body).toMatchObject({ default_cloud_agent: "pi_durable" });
+  });
+
   it("marks a section that has an invalid field even while another section is open", async () => {
     renderPage();
     await screen.findByRole("heading", { name: "Appearance" });

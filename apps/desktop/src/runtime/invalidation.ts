@@ -20,7 +20,8 @@ const TOOL_CALL_EVENT_TYPES = new Set([
   "item/fileChange",
   "claude/assistant",
   "claude/user",
-  "opencode/event"
+  "opencode/event",
+  "codesandbox/tool"
 ]);
 
 export function carriesToolCalls(eventType: string): boolean {
@@ -60,6 +61,10 @@ export function keysToInvalidate(batch: AgentEvent[]): QueryKey[] {
     if (type.startsWith("backup/")) add(qk.backups);
     if (type === "session_started" || type === "turn/completed" || type.startsWith("item/fileChange")) {
       add(qk.state);
+      if (taskId) add(qk.taskDiff(taskId));
+    }
+    // A cloud agent's push (applied to the worktree by the runtime) changes the task's files.
+    if (type === "codesandbox/worktree_updated" || type === "codesandbox/pushed") {
       if (taskId) add(qk.taskDiff(taskId));
     }
   }

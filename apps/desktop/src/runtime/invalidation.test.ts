@@ -33,6 +33,23 @@ describe("keysToInvalidate", () => {
   });
 });
 
+describe("CodeSandbox cloud agent events", () => {
+  it("refetch the tool calls of the task, and its changes when a push reached the worktree", () => {
+    expect(carriesToolCalls("codesandbox/tool")).toBe(true);
+    expect(has(keysToInvalidate([event("codesandbox/tool")]), qk.taskToolCalls("t1"))).toBe(true);
+    for (const type of ["codesandbox/worktree_updated", "codesandbox/pushed"]) {
+      expect(has(keysToInvalidate([event(type)]), qk.taskDiff("t1"))).toBe(true);
+    }
+    // Plain output and usage reports change nothing but the timeline.
+    for (const type of ["codesandbox/output", "codesandbox/usage"]) {
+      const keys = keysToInvalidate([event(type)]);
+      expect(has(keys, qk.taskDiff("t1"))).toBe(false);
+      expect(has(keys, qk.taskToolCalls("t1"))).toBe(false);
+      expect(has(keys, qk.taskEvents("t1"))).toBe(true);
+    }
+  });
+});
+
 describe("pull request events", () => {
   it("refresh the open review detail named in the payload", () => {
     const changed = { ...event("pr/status_changed"), payload: { review_id: "r1", ci_status: "failed" } };

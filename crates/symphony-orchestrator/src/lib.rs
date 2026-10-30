@@ -9,12 +9,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use symphony_agents::{
     detect_provider_statuses, start_agent_session, AgentLaunchConfig, AgentSession,
-    AgentStreamEvent, ApprovalGate, DynamicToolHandler,
+    AgentStreamEvent, ApprovalGate, CloudLaunch, DynamicToolHandler, CSB_API_KEY,
 };
 use symphony_core::{
     compute_backoff_delay_ms, detect_secrets_in_added_lines, redact_json_strings, redact_secrets,
     render_continuation_prompt, render_workflow_prompt, sort_candidate_issues, AgentEvent,
-    ApprovalDecision, ApprovalRequest, ApprovalStatus, CodexTotals, ConflictCheck,
+    ApprovalDecision, ApprovalRequest, ApprovalStatus, CloudAgentKind, CodexTotals, ConflictCheck,
     HardwareSnapshot, Issue, LiveSession, MergeReadinessReport, OrchestratorStateSnapshot, Project,
     ProviderKind, ProviderStatus, PullRequestReview, RepositoryValidation, RetryEntry, RunAttempt,
     RunAttemptPhase, RunningSessionSummary, ServiceConfig, StateCounts, SymphonyError,
@@ -35,6 +35,68 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 use uuid::Uuid;
+
+/// Why a cloud run cannot start with this model and these provider keys, or `None`. Cloud models are
+/// `provider/model-id` (what mini-swe-agent and Pi take); the sandbox only receives the OpenAI and
+/// Anthropic keys, so a model of either needs its key, and without a model one of them is needed to pick
+/// a default. Checked before anything is published or started, so the reason is shown instead of an
+/// agent crash inside a sandbox.
+fn cloud_model_problem(
+    model: Option<&str>,
+    provider_env: &HashMap<String, String>,
+) -> Option<String> {
+    let key_for = |provider: &str| match provider {
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "openai" => Some("OPENAI_API_KEY"),
+        _ => None,
+    };
+    match model {
+        None => (!provider_env.contains_key("ANTHROPIC_API_KEY")
+            && !provider_env.contains_key("OPENAI_API_KEY"))
+        .then(|| {
+            "A CodeSandbox run needs a model key: add ANTHROPIC_API_KEY or OPENAI_API_KEY under Providers, or choose a model"
+                .to_string()
+        }),
+        Some(model) => {
+            let Some((provider, _)) = model.split_once('/') else {
+                return Some(format!(
+                    "`{model}` is not a cloud model id: use provider/model-id, for example anthropic/claude-sonnet-5-5"
+                ));
+            };
+            let key = key_for(provider)?;
+            (!provider_env.contains_key(key)).then(|| {
+                format!(
+                    "The model `{model}` needs {key}: add it under Providers (it is sent to the sandbox)"
+                )
+            })
+        }
+    }
+}
+
+/// The agent a cloud run uses: the task's own choice, else the application setting (only if it was
+/// ever chosen), else `codesandbox.default_agent` of the workflow, which is mini-swe-agent unless
+/// the workflow says otherwise.
+fn resolve_cloud_agent(
+    task_choice: Option<CloudAgentKind>,
+    settings: &symphony_core::AppSettings,
+    config: &ServiceConfig,
+) -> CloudAgentKind {
+    task_choice
+        .or(settings.default_cloud_agent)
+        .unwrap_or(config.codesandbox.default_agent)
+}
+
+/// Where a CodeSandbox cloud run's pushes are applied locally.
+#[derive(Clone)]
+struct CloudSync {
+    workspace: PathBuf,
+    branch: String,
+    git_token: Option<String>,
+    /// The `origin` that was validated before the token was handed out; the sync refuses another.
+    origin: String,
+    /// Held while the worktree is updated: the live event stream and the end of a turn both do it.
+    lock: Arc<Mutex<()>>,
+}
 
 /// How long provider detection results are reused before re-probing CLIs.
 const PROVIDER_CACHE_TTL_SECS: i64 = 60;
@@ -805,6 +867,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
             Ok(wf) => match ServiceConfig::from_workflow(&wf) {
                 Ok(cfg) => {
                     let mut mem = self.memory.write().await;
+                    if mem.active_config.codesandbox.runner_path != cfg.codesandbox.runner_path {
+                        mem.provider_cache = None;
+                    }
                     mem.active_workflow = wf;
                     mem.active_config = cfg;
                     mem.active_workflow_path = Some(path.to_path_buf());
@@ -929,6 +994,14 @@ Please implement the requested changes cleanly in the current Git workspace, run
         }
         let settings = self.storage.get_settings().await.unwrap_or_default();
         let vault_keys = self.secret_store.list_configured_keys();
+        let codesandbox_runner = self
+            .memory
+            .read()
+            .await
+            .active_config
+            .codesandbox
+            .runner_path
+            .clone();
         let statuses = detect_provider_statuses(
             &vault_keys,
             |kind| {
@@ -942,6 +1015,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     })
             },
             force_refresh,
+            codesandbox_runner.as_deref(),
         )
         .await;
         self.memory.write().await.provider_cache = Some((Utc::now(), statuses.clone()));
@@ -1325,6 +1399,37 @@ Please implement the requested changes cleanly in the current Git workspace, run
         labels: Vec<String>,
         auto_start: bool,
     ) -> SymphonyResult<Task> {
+        self.create_manual_task_with_agent(
+            project_id,
+            identifier,
+            title,
+            description,
+            priority,
+            provider,
+            model,
+            None,
+            labels,
+            auto_start,
+        )
+        .await
+    }
+
+    /// [`Self::create_manual_task`] with the cloud agent that runs the task in a CodeSandbox
+    /// sandbox (only used when the provider is `codesandbox`; `None` = the configured default).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_manual_task_with_agent(
+        &self,
+        project_id: String,
+        identifier: Option<String>,
+        title: String,
+        description: Option<String>,
+        priority: Option<i32>,
+        provider: Option<ProviderKind>,
+        model: Option<String>,
+        cloud_agent: Option<CloudAgentKind>,
+        labels: Vec<String>,
+        auto_start: bool,
+    ) -> SymphonyResult<Task> {
         let project = self
             .storage
             .get_project(&project_id)
@@ -1346,6 +1451,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             model.or(project.preferred_model.clone()),
             labels,
         );
+        task.cloud_agent = cloud_agent;
         if auto_start {
             task.status = TaskStatus::Queued;
         }
@@ -2108,7 +2214,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .map_err(|e| with_redacted_message(e, &secrets))?;
         let pushed_commit = self.workspaces.head_commit(&workspace).await?;
         self.workspaces
-            .push_branch(&workspace, &branch, push_token)
+            .push_branch_pinned(&workspace, &branch, push_token, Some(origin.as_str()))
             .await
             .map_err(|e| with_redacted_message(e, &secrets))?;
 
@@ -2553,6 +2659,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let was_watched = {
             let mut mem = self.memory.write().await;
             let was_watched = mem.active_workflow_path.is_some();
+            if mem.active_config.codesandbox.runner_path != cfg.codesandbox.runner_path {
+                mem.provider_cache = None;
+            }
             mem.active_workflow = wf;
             mem.active_config = cfg;
             mem.active_workflow_path = Some(path.clone());
@@ -2618,6 +2727,158 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     .map(|v| ((*key).to_string(), v))
             })
             .collect()
+    }
+
+    /// Everything a CodeSandbox cloud run needs: the sandbox clones `origin` over https and pushes
+    /// the task branch back with the GitHub token, so the remote must be a GitHub https URL, the
+    /// branch must already exist there (it is published here) and both tokens must be configured.
+    /// The `Err` text is shown to the user as the reason the attempt failed.
+    async fn prepare_cloud_launch(
+        &self,
+        task: &Task,
+        project: &Project,
+        config: &ServiceConfig,
+        workspace: &Path,
+        branch: &str,
+    ) -> Result<(CloudLaunch, CloudSync), String> {
+        let csb_api_key = self
+            .secret_store
+            .get_secret(CSB_API_KEY)
+            .filter(|v| !v.trim().is_empty())
+            .ok_or_else(|| {
+                "No CodeSandbox API token: add CSB_API_KEY under Providers (create one at https://codesandbox.io/t/api)".to_string()
+            })?;
+        let git_token = self.github_token().ok_or_else(|| {
+            "A CodeSandbox run pushes to GitHub: add a GitHub token (GITHUB_TOKEN) under Providers"
+                .to_string()
+        })?;
+        let origin = self
+            .workspaces
+            .origin_url(workspace)
+            .await
+            .map_err(|e| e.to_string())?;
+        let Some((host, path)) = symphony_workspaces::https_remote(&origin) else {
+            return Err(
+                "A CodeSandbox run needs the repository's `origin` to be an https:// GitHub URL; \
+                 the sandbox cannot use your local ssh keys or a local path"
+                    .to_string(),
+            );
+        };
+        if !self.is_github_host(&host) {
+            return Err(format!(
+                "The repository's origin is https://{host}/{path}, not GitHub; the GitHub token is not sent there"
+            ));
+        }
+        if let Some(repo) = project.github_repo.as_deref() {
+            if !path.eq_ignore_ascii_case(repo) {
+                return Err(format!(
+                    "The repository's origin is https://{host}/{path}, not the project's GitHub repository {repo}; the GitHub token is not sent there"
+                ));
+            }
+        }
+        // Without a configured GitHub repository there is nothing to compare the origin with, so
+        // say where the token is about to go.
+        if project.github_repo.is_none() {
+            self.emit_event(
+                Some(task.id.clone()),
+                Some(task.issue.identifier.clone()),
+                None,
+                Some(task.provider),
+                "codesandbox/launch",
+                None,
+                format!(
+                    "The cloud agent will use the GitHub token on https://{host}/{path}, the repository's origin (this project has no GitHub repository configured to check it against)"
+                ),
+                None,
+            )
+            .await;
+        }
+        let settings = self.storage.get_settings().await.unwrap_or_default();
+        let agent = resolve_cloud_agent(task.cloud_agent, &settings, config);
+        let secrets = self.secret_store.all_secret_values();
+        // The sandbox clones the task branch, so it has to exist on origin first.
+        self.workspaces
+            .push_branch_pinned(
+                workspace,
+                branch,
+                Some(git_token.as_str()),
+                Some(origin.as_str()),
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "Could not publish branch `{branch}` for the cloud agent: {}",
+                    redact_secrets(&e.to_string(), &secrets)
+                )
+            })?;
+        let launch = CloudLaunch {
+            agent,
+            template_id: config.codesandbox.template_id.clone(),
+            repo_url: format!("https://{host}/{path}.git"),
+            branch: branch.to_string(),
+            base_branch: project.default_branch.clone(),
+            vm_tier: config.codesandbox.vm_tier.clone(),
+            hibernation_timeout_secs: config.codesandbox.hibernation_timeout_secs,
+            cost_limit_usd: config.codesandbox.cost_limit_usd,
+            git_user_name: "Symphony Cloud Agent".to_string(),
+            git_user_email: "symphony-cloud-agent@users.noreply.github.com".to_string(),
+            runner_path: config.codesandbox.runner_path.clone(),
+            csb_api_key,
+            git_token: git_token.clone(),
+        };
+        let sync = CloudSync {
+            workspace: workspace.to_path_buf(),
+            branch: branch.to_string(),
+            git_token: Some(git_token),
+            origin: origin.clone(),
+            lock: Arc::new(Mutex::new(())),
+        };
+        Ok((launch, sync))
+    }
+
+    /// Fast-forward the local worktree to what the sandbox pushed. Serialised per run (the live
+    /// event stream and the end of each turn both call it) and never fatal: a worktree that has
+    /// local changes or diverged is left alone and the reason is shown in the activity log.
+    async fn sync_cloud_worktree(&self, task: &Task, sync: &CloudSync) {
+        let _guard = sync.lock.lock().await;
+        let secrets = self.secret_store.all_secret_values();
+        let result = self
+            .workspaces
+            .fast_forward_from_origin(
+                &sync.workspace,
+                &sync.branch,
+                sync.git_token.as_deref(),
+                Some(&sync.origin),
+            )
+            .await;
+        let (event_type, message) = match result {
+            Ok(Some(commit)) => (
+                "codesandbox/worktree_updated",
+                format!(
+                    "Worktree updated to {} from the cloud agent",
+                    &commit[..commit.len().min(12)]
+                ),
+            ),
+            Ok(None) => return,
+            Err(err) => (
+                "codesandbox/worktree_update_failed",
+                redact_secrets(
+                    &format!("Could not apply the cloud agent's commits: {err}"),
+                    &secrets,
+                ),
+            ),
+        };
+        self.emit_event(
+            Some(task.id.clone()),
+            Some(task.issue.identifier.clone()),
+            None,
+            Some(task.provider),
+            event_type,
+            None,
+            message,
+            None,
+        )
+        .await;
     }
 
     fn build_tracker_for_project(&self, project: &Project) -> Option<Box<dyn TrackerAdapter>> {
@@ -2687,6 +2948,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     },
                     provider: project.preferred_provider,
                     model: project.preferred_model.clone(),
+                    cloud_agent: None,
                     workspace_path: None,
                     branch_name: None,
                     attempt_count: 0,
@@ -3352,10 +3614,66 @@ Please implement the requested changes cleanly in the current Git workspace, run
             event_tx: self.event_tx.clone(),
         });
 
+        let provider_env = self.provider_env_from_vault();
+        let is_cloud = task.provider == ProviderKind::CodeSandbox;
+        // litellm-style ids: pick the family whose key is configured when no model was chosen.
+        let cloud_default_model = is_cloud
+            .then(|| {
+                if provider_env.contains_key("ANTHROPIC_API_KEY") {
+                    Some("anthropic/claude-sonnet-5-5".to_string())
+                } else if provider_env.contains_key("OPENAI_API_KEY") {
+                    Some("openai/gpt-6-sol".to_string())
+                } else {
+                    None
+                }
+            })
+            .flatten();
+        let effective_model = task.model.clone().or(cloud_default_model);
+        // Before the branch is published or a sandbox started: a run that cannot work says so now.
+        if is_cloud {
+            if let Some(problem) = cloud_model_problem(effective_model.as_deref(), &provider_env) {
+                self.finish_failed_attempt(
+                    &mut task,
+                    &mut attempt_record,
+                    RunAttemptPhase::Failed,
+                    problem,
+                )
+                .await;
+                return;
+            }
+        }
+
+        let (cloud, cloud_sync) = if is_cloud {
+            match self
+                .prepare_cloud_launch(
+                    &task,
+                    &project,
+                    &config,
+                    &allocated.path,
+                    &allocated.branch_name,
+                )
+                .await
+            {
+                Ok((launch, sync)) => (Some(launch), Some(sync)),
+                Err(message) => {
+                    self.finish_failed_attempt(
+                        &mut task,
+                        &mut attempt_record,
+                        RunAttemptPhase::Failed,
+                        message,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        } else {
+            (None, None)
+        };
+
         let launch_cfg = AgentLaunchConfig {
             provider: task.provider,
             command: config.codex.command.clone(),
-            model: task.model.clone(),
+            model: effective_model,
             workspace_path: allocated.path.clone(),
             issue_identifier: task.issue.identifier.clone(),
             issue_title: task.issue.title.clone(),
@@ -3365,10 +3683,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
             turn_sandbox_policy: config.codex.turn_sandbox_policy.clone(),
             read_timeout_ms: config.codex.read_timeout_ms,
             turn_timeout_ms: config.codex.turn_timeout_ms,
-            extra_env: self.provider_env_from_vault(),
+            extra_env: provider_env,
             dynamic_tools,
             require_human_approval_for_requests: config.codex.approval_policy != json!("never"),
             resume_usage_baseline: task.resume_usage_baseline(),
+            cloud,
         };
 
         let (stream_tx, mut stream_rx) = mpsc::channel::<AgentStreamEvent>(512);
@@ -3377,6 +3696,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let event_identifier = task.issue.identifier.clone();
         let event_provider = task.provider;
         let event_model = task.model.clone();
+        let event_task = task.clone();
+        let event_cloud_sync = cloud_sync.clone();
         // Tokens of the task's earlier attempts, so the live session shows the task's total.
         let usage_before_attempt = TokenUsage {
             input_tokens: task.input_tokens,
@@ -3396,6 +3717,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     credited = credited.max(&session_usage);
                     ev.usage = Some(usage_before_attempt.plus(&session_usage));
                 }
+                let pushed = ev.event_type == "codesandbox/pushed";
+                // The sandbox exists from here on: remember it now, so an attempt that ends before it
+                // returns (error, timeout, cancel) can still be resumed in it.
+                let started_sandbox = (ev.event_type == "codesandbox/started")
+                    .then(|| ev.thread_id.clone())
+                    .flatten();
                 orch_events
                     .handle_agent_stream_event(
                         &event_task_id,
@@ -3404,6 +3731,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
                         ev,
                     )
                     .await;
+                if let Some(sandbox_id) = started_sandbox {
+                    if let Err(error) = orch_events
+                        .storage
+                        .set_task_thread_id(&event_task_id, &sandbox_id)
+                        .await
+                    {
+                        warn!(task_id = %event_task_id, %error, "Could not record the sandbox of a cloud run");
+                    }
+                }
+                // Every push of the cloud agent lands in the local worktree right away.
+                if let (true, Some(sync)) = (pushed, event_cloud_sync.as_ref()) {
+                    orch_events.sync_cloud_worktree(&event_task, sync).await;
+                }
             }
         });
 
@@ -3491,6 +3831,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 }
             };
 
+            // The sandbox's last pushes belong in the worktree whether or not the turn succeeded.
+            if let Some(sync) = cloud_sync.as_ref() {
+                self.sync_cloud_worktree(&task, sync).await;
+            }
+
             match outcome_res {
                 Ok(outcome) => {
                     if turn_number == 1 && delivers_follow_up {
@@ -3559,6 +3904,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     // The turn ended without an outcome (timeout, dead process): what the session
                     // reported before that is still real usage.
                     settle_session_usage(&mut task, &mut attempt_record, agent_session.as_ref());
+                    // A cloud run's sandbox outlives its bridge: the retry resumes it.
+                    if task.provider == ProviderKind::CodeSandbox {
+                        if let Some(sandbox_id) = agent_session.thread_id() {
+                            task.current_thread_id = Some(sandbox_id);
+                        }
+                    }
                     let _ = agent_session.stop().await;
                     let phase = match err {
                         SymphonyError::TurnTimeout(_) => RunAttemptPhase::TimedOut,
@@ -6113,6 +6464,7 @@ rl.on('line', (line) => {
             dynamic_tools: Vec::new(),
             require_human_approval_for_requests: false,
             resume_usage_baseline: None,
+            cloud: None,
         };
 
         struct AutoApprove;
@@ -6153,5 +6505,359 @@ rl.on('line', (line) => {
             received_events.push(ev);
         }
         assert!(!received_events.is_empty());
+    }
+
+    // ---- CodeSandbox cloud runs: what has to be in place before a sandbox is started ----------
+    //
+    // These cover the checks that run before anything reaches the network. The run itself (bridge,
+    // sandbox, pushes, fast-forward) is covered by the agents crate's fake-bridge tests and by
+    // `symphony-workspaces`' fast-forward test.
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Symphony Test")
+            .env("GIT_AUTHOR_EMAIL", "test@symphony.local")
+            .env("GIT_COMMITTER_NAME", "Symphony Test")
+            .env("GIT_COMMITTER_EMAIL", "test@symphony.local")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A project on a real git repository whose `origin` is `origin_url`, with the given vault
+    /// entries, and one dispatchable CodeSandbox task; returns why the task failed.
+    async fn cloud_task_failure(
+        origin_url: &str,
+        github_repo: Option<&str>,
+        vault: &[(&str, &str)],
+    ) -> String {
+        cloud_task_failure_with_model(
+            origin_url,
+            github_repo,
+            Some("anthropic/claude-sonnet-5-5"),
+            vault,
+        )
+        .await
+    }
+
+    /// [`cloud_task_failure`] for a task with the given model. A model key is always in the vault, so
+    /// the model check passes unless the model itself is the problem.
+    async fn cloud_task_failure_with_model(
+        origin_url: &str,
+        github_repo: Option<&str>,
+        model: Option<&str>,
+        vault: &[(&str, &str)],
+    ) -> String {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        std::fs::write(repo.join("README.md"), "# Test\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "initial"]);
+        git(&repo, &["remote", "add", "origin", origin_url]);
+
+        let storage = Storage::connect_in_memory().await.unwrap();
+        let mut settings = storage.get_settings().await.unwrap();
+        settings.resource_policy = symphony_core::ResourcePolicy {
+            max_concurrent_on_ac: 1,
+            max_concurrent_on_battery: 1,
+            high_memory_threshold_percent: 101.0,
+            high_cpu_threshold_percent: 101.0,
+            reduce_on_thermal_throttle: false,
+        };
+        storage.save_settings(&settings).await.unwrap();
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        secrets
+            .set_secret("ANTHROPIC_API_KEY", "sk-ant-exampleexampleexample1234")
+            .unwrap();
+        for (key, value) in vault {
+            secrets.set_secret(key, value).unwrap();
+        }
+        let orch = SymphonyOrchestrator::new(storage, None, secrets)
+            .await
+            .unwrap();
+        orch.create_project(Project {
+            id: "proj-cloud".into(),
+            name: "Cloud Repo".into(),
+            repo_path: repo.to_string_lossy().to_string(),
+            default_branch: "main".into(),
+            workspace_root: temp.path().join("workspaces").to_string_lossy().to_string(),
+            workflow_path: None,
+            preferred_provider: ProviderKind::CodeSandbox,
+            preferred_model: None,
+            tracker_kind: "manual".into(),
+            github_repo: github_repo.map(str::to_string),
+            linear_project_slug: None,
+            required_labels: Vec::new(),
+            auto_dispatch: false,
+            max_concurrent_agents: 1,
+            validation_commands: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+        let task = orch
+            .create_manual_task_with_agent(
+                "proj-cloud".into(),
+                Some("SYM-CLOUD".into()),
+                "Cloud task".into(),
+                None,
+                Some(1),
+                Some(ProviderKind::CodeSandbox),
+                model.map(str::to_string),
+                Some(CloudAgentKind::Pi),
+                Vec::new(),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.cloud_agent, Some(CloudAgentKind::Pi));
+        let failed = wait_for_status(&orch, &task.id, &[TaskStatus::Failed]).await;
+        failed.last_error.unwrap_or_default()
+    }
+
+    /// The tests below need these to be absent from the environment (the secret store falls back
+    /// to it), so a developer who has them exported does not get a spurious failure.
+    fn environment_is_clean() -> bool {
+        let clean = ["CSB_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"]
+            .iter()
+            .all(|key| std::env::var(key).map(|v| v.is_empty()).unwrap_or(true));
+        if !clean {
+            eprintln!("skipping: CSB_API_KEY / GITHUB_TOKEN / GH_TOKEN is set in the environment");
+        }
+        clean
+    }
+
+    const GITHUB_ORIGIN: &str = "https://github.com/acme/widgets.git";
+
+    #[tokio::test]
+    async fn a_cloud_run_without_a_codesandbox_token_fails_with_the_reason() {
+        if !environment_is_clean() {
+            return;
+        }
+        let error = cloud_task_failure(
+            GITHUB_ORIGIN,
+            None,
+            &[("GITHUB_TOKEN", "ghp_exampleexampleexample1234")],
+        )
+        .await;
+        assert!(error.contains("CSB_API_KEY"), "{error}");
+        assert!(error.contains("codesandbox.io/t/api"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_cloud_run_without_a_github_token_fails_with_the_reason() {
+        if !environment_is_clean() {
+            return;
+        }
+        let error = cloud_task_failure(
+            GITHUB_ORIGIN,
+            None,
+            &[("CSB_API_KEY", "csb_v1_exampleexample123456")],
+        )
+        .await;
+        assert!(error.contains("GITHUB_TOKEN"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_cloud_run_needs_an_https_github_origin_and_never_sends_the_token_elsewhere() {
+        if !environment_is_clean() {
+            return;
+        }
+        let vault = [
+            ("CSB_API_KEY", "csb_v1_exampleexample123456"),
+            ("GITHUB_TOKEN", "ghp_exampleexampleexample1234"),
+        ];
+
+        // A local path or ssh remote: the sandbox cannot use the user's own git credentials.
+        let local = cloud_task_failure("C:/repos/widgets.git", None, &vault).await;
+        assert!(local.contains("https://"), "{local}");
+        let ssh = cloud_task_failure("git@github.com:acme/widgets.git", None, &vault).await;
+        assert!(ssh.contains("https://"), "{ssh}");
+
+        // Another host: the GitHub token is not sent there.
+        let other_host =
+            cloud_task_failure("https://gitlab.example.com/acme/widgets.git", None, &vault).await;
+        assert!(other_host.contains("not GitHub"), "{other_host}");
+        assert!(other_host.contains("not sent"), "{other_host}");
+
+        // The right host but another repository than the project's.
+        let other_repo = cloud_task_failure(GITHUB_ORIGIN, Some("someone/else"), &vault).await;
+        assert!(other_repo.contains("someone/else"), "{other_repo}");
+        assert!(other_repo.contains("not sent"), "{other_repo}");
+
+        // None of the failures leaks a credential into the error.
+        for error in [&local, &ssh, &other_host, &other_repo] {
+            assert!(
+                !error.contains("ghp_example") && !error.contains("csb_v1_example"),
+                "{error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_manual_task_remembers_its_cloud_agent() {
+        let temp = TempDir::new().unwrap();
+        let (orch, _) = single_slot_orchestrator(&temp).await;
+        let with_agent = orch
+            .create_manual_task_with_agent(
+                "proj-retry".into(),
+                None,
+                "Pick an agent".into(),
+                None,
+                None,
+                Some(ProviderKind::CodeSandbox),
+                None,
+                Some(CloudAgentKind::PiDurable),
+                Vec::new(),
+                false,
+            )
+            .await
+            .unwrap();
+        let plain = orch
+            .create_manual_task(
+                "proj-retry".into(),
+                None,
+                "Default agent".into(),
+                None,
+                None,
+                Some(ProviderKind::CodeSandbox),
+                None,
+                Vec::new(),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            orch.get_task(&with_agent.id).await.unwrap().cloud_agent,
+            Some(CloudAgentKind::PiDurable)
+        );
+        assert_eq!(orch.get_task(&plain.id).await.unwrap().cloud_agent, None);
+    }
+
+    #[tokio::test]
+    async fn a_changed_runner_path_drops_the_cached_provider_status() {
+        let temp = TempDir::new().unwrap();
+        let (orch, _) = single_slot_orchestrator(&temp).await;
+        orch.set_workflow_fallback_path(temp.path().join("WORKFLOW.md"))
+            .await;
+        orch.memory.write().await.provider_cache = Some((Utc::now(), Vec::new()));
+
+        // A workflow that leaves the runner path as it was keeps the cached answer.
+        let plain = "---\ntracker:\n  kind: manual\n---\nWork on {{ issue.identifier }}: {{ issue.title }}\n";
+        orch.save_workflow_document(plain).await.unwrap();
+        assert!(orch.memory.read().await.provider_cache.is_some());
+
+        // A different runner path changes whether CodeSandbox counts as installed: no stale answer.
+        let with_runner = "---\ntracker:\n  kind: manual\ncodesandbox:\n  runner_path: C:/runner/bridge.mjs\n---\nWork on {{ issue.identifier }}: {{ issue.title }}\n";
+        orch.save_workflow_document(with_runner).await.unwrap();
+        assert!(orch.memory.read().await.provider_cache.is_none());
+    }
+
+    #[test]
+    fn the_cloud_agent_comes_from_the_task_then_the_settings_then_the_workflow() {
+        let mut workflow = ServiceConfig::default();
+        let mut settings = symphony_core::AppSettings::default();
+
+        // Nothing chosen anywhere: mini-swe-agent.
+        assert_eq!(settings.default_cloud_agent, None);
+        assert_eq!(
+            resolve_cloud_agent(None, &settings, &workflow),
+            CloudAgentKind::MiniSweAgent
+        );
+        // The workflow's default applies while the application setting was never chosen, which is
+        // the case on a new install.
+        workflow.codesandbox.default_agent = CloudAgentKind::PiDurable;
+        assert_eq!(
+            resolve_cloud_agent(None, &settings, &workflow),
+            CloudAgentKind::PiDurable
+        );
+        // An application setting that was chosen wins over the workflow.
+        settings.default_cloud_agent = Some(CloudAgentKind::Pi);
+        assert_eq!(
+            resolve_cloud_agent(None, &settings, &workflow),
+            CloudAgentKind::Pi
+        );
+        // The task's own choice wins over both.
+        assert_eq!(
+            resolve_cloud_agent(Some(CloudAgentKind::MiniSweAgent), &settings, &workflow),
+            CloudAgentKind::MiniSweAgent
+        );
+    }
+
+    fn keys(names: &[&str]) -> HashMap<String, String> {
+        names
+            .iter()
+            .map(|k| (k.to_string(), "secret-value".to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_cloud_model_needs_its_providers_key_and_the_provider_model_form() {
+        let both = keys(&["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
+        assert_eq!(
+            cloud_model_problem(Some("anthropic/claude-sonnet-5-5"), &both),
+            None
+        );
+        assert_eq!(cloud_model_problem(Some("openai/gpt-6-sol"), &both), None);
+        assert_eq!(cloud_model_problem(None, &keys(&["OPENAI_API_KEY"])), None);
+
+        let anthropic_only = keys(&["ANTHROPIC_API_KEY"]);
+        let problem = cloud_model_problem(Some("openai/gpt-6-sol"), &anthropic_only).unwrap();
+        assert!(
+            problem.contains("OPENAI_API_KEY") && problem.contains("openai/gpt-6-sol"),
+            "{problem}"
+        );
+
+        // No model and no key at all: say what to add.
+        let none = cloud_model_problem(None, &keys(&[])).unwrap();
+        assert!(
+            none.contains("ANTHROPIC_API_KEY") && none.contains("OPENAI_API_KEY"),
+            "{none}"
+        );
+
+        // A bare alias like the local Claude Code ones is not a cloud model id.
+        let bare = cloud_model_problem(Some("sonnet"), &both).unwrap();
+        assert!(bare.contains("provider/model-id"), "{bare}");
+
+        // Another provider's models are the user's call: nothing is known about its key.
+        assert_eq!(
+            cloud_model_problem(Some("openrouter/some-model"), &keys(&[])),
+            None
+        );
+        // The secret values are never part of a message.
+        for message in [&problem, &none, &bare] {
+            assert!(!message.contains("secret-value"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cloud_run_with_the_wrong_model_fails_before_the_branch_is_published() {
+        if !environment_is_clean() {
+            return;
+        }
+        // The origin and both tokens are fine, but the model is a local Claude Code alias: the run
+        // stops at the model check, which comes before the branch is pushed anywhere (a push would
+        // reach github.com, so reaching it would also make this test slow and flaky).
+        let error = cloud_task_failure_with_model(
+            GITHUB_ORIGIN,
+            None,
+            Some("sonnet"),
+            &[
+                ("CSB_API_KEY", "csb_v1_exampleexample123456"),
+                ("GITHUB_TOKEN", "ghp_exampleexampleexample1234"),
+            ],
+        )
+        .await;
+        assert!(error.contains("provider/model-id"), "{error}");
+        assert!(!error.contains("sk-ant-example"), "{error}");
     }
 }

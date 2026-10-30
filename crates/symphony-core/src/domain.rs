@@ -299,7 +299,62 @@ pub enum ProviderKind {
     /// `open_code` is still accepted for payloads written by earlier builds.
     #[serde(rename = "opencode", alias = "open_code")]
     OpenCode,
+    /// A cloud agent that runs in a CodeSandbox microVM and pushes to the task branch.
+    #[serde(rename = "codesandbox", alias = "code_sandbox")]
+    CodeSandbox,
     Simulated,
+}
+
+/// Which agent runs inside a CodeSandbox cloud sandbox (`ProviderKind::CodeSandbox`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudAgentKind {
+    /// mini-swe-agent with per-step checkpoints (the default).
+    #[default]
+    MiniSweAgent,
+    /// The Pi coding agent.
+    Pi,
+    /// Pi Durable: crash-resumable Pi harness.
+    PiDurable,
+}
+
+impl CloudAgentKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MiniSweAgent => "mini_swe_agent",
+            Self::Pi => "pi",
+            Self::PiDurable => "pi_durable",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::MiniSweAgent => "mini-swe-agent",
+            Self::Pi => "Pi coding agent",
+            Self::PiDurable => "Pi Durable",
+        }
+    }
+}
+
+impl std::fmt::Display for CloudAgentKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for CloudAgentKind {
+    type Err = SymphonyError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().replace('-', "_").as_str() {
+            "mini_swe_agent" | "mini" | "miniswe" | "mini_swe" => Ok(Self::MiniSweAgent),
+            "pi" | "pi_coding_agent" => Ok(Self::Pi),
+            "pi_durable" | "pidurable" => Ok(Self::PiDurable),
+            other => Err(SymphonyError::InvalidConfig(format!(
+                "unknown cloud agent kind: {other}"
+            ))),
+        }
+    }
 }
 
 impl ProviderKind {
@@ -308,6 +363,7 @@ impl ProviderKind {
             Self::Codex => "codex",
             Self::ClaudeCode => "claude_code",
             Self::OpenCode => "opencode",
+            Self::CodeSandbox => "codesandbox",
             Self::Simulated => "simulated",
         }
     }
@@ -317,6 +373,7 @@ impl ProviderKind {
             Self::Codex => "OpenAI Codex",
             Self::ClaudeCode => "Claude Code",
             Self::OpenCode => "OpenCode",
+            Self::CodeSandbox => "CodeSandbox Cloud Agent",
             Self::Simulated => "Deterministic Test Agent",
         }
     }
@@ -392,6 +449,28 @@ impl ProviderKind {
                 ],
                 status_message: "OpenCode CLI (`opencode run --format json`)".to_string(),
             },
+            Self::CodeSandbox => ProviderCapabilities {
+                provider: Self::CodeSandbox,
+                available: false,
+                binary_path: None,
+                version: None,
+                supports_session_resume: true,
+                supports_mid_turn_pause: false,
+                supports_cancel: true,
+                supports_streaming_events: true,
+                supports_approvals: false,
+                supports_dynamic_tools: false,
+                supports_token_usage: true,
+                // litellm-style ids understood by mini-swe-agent and Pi inside the sandbox.
+                models: vec![
+                    "anthropic/claude-opus-5-5".to_string(),
+                    "anthropic/claude-sonnet-5-5".to_string(),
+                    "openai/gpt-6-sol".to_string(),
+                ],
+                status_message:
+                    "CodeSandbox cloud agent (mini-swe-agent, Pi or Pi Durable in a microVM)"
+                        .to_string(),
+            },
             Self::Simulated => ProviderCapabilities {
                 provider: Self::Simulated,
                 available: true,
@@ -425,6 +504,7 @@ impl std::str::FromStr for ProviderKind {
             "codex" | "openai_codex" | "openai" => Ok(Self::Codex),
             "claude_code" | "claude-code" | "claude" => Ok(Self::ClaudeCode),
             "opencode" | "open_code" => Ok(Self::OpenCode),
+            "codesandbox" | "code_sandbox" | "code-sandbox" | "csb" => Ok(Self::CodeSandbox),
             "simulated" | "fake" | "test" => Ok(Self::Simulated),
             other => Err(SymphonyError::InvalidConfig(format!(
                 "unknown provider kind: {other}"
@@ -496,6 +576,10 @@ pub struct Task {
     pub status: TaskStatus,
     pub provider: ProviderKind,
     pub model: Option<String>,
+    /// Agent that runs in the sandbox when `provider` is `codesandbox`; `None` uses the default
+    /// from settings / `WORKFLOW.md` (mini-swe-agent).
+    #[serde(default)]
+    pub cloud_agent: Option<CloudAgentKind>,
     pub workspace_path: Option<String>,
     pub branch_name: Option<String>,
     pub attempt_count: u32,
@@ -581,6 +665,7 @@ impl Task {
             status: TaskStatus::Ready,
             provider,
             model,
+            cloud_agent: None,
             workspace_path: None,
             branch_name: None,
             attempt_count: 0,
@@ -1163,6 +1248,11 @@ pub struct AppSettings {
     pub start_background_runtime_on_login: bool,
     pub default_provider: ProviderKind,
     pub default_model: String,
+    /// Agent used for CodeSandbox cloud runs when a task does not pick one. `None` (never chosen)
+    /// defers to `codesandbox.default_agent` in `WORKFLOW.md`, which is mini-swe-agent unless the
+    /// workflow says otherwise. Omit it to keep the stored value.
+    #[serde(default)]
+    pub default_cloud_agent: Option<CloudAgentKind>,
     pub polling_interval_ms: u64,
     pub resource_policy: ResourcePolicy,
     pub remote_api_enabled: bool,
@@ -1233,6 +1323,7 @@ impl Default for AppSettings {
             // Empty: each provider's own default (what its CLI reports), never a hard-coded id
             // that a CLI release can retire.
             default_model: String::new(),
+            default_cloud_agent: None,
             polling_interval_ms: 30_000,
             resource_policy: ResourcePolicy::default(),
             remote_api_enabled: false,

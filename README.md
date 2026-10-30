@@ -15,6 +15,7 @@ Symphony Desktop is a local-first autonomous coding orchestration platform inspi
 - **Multi-Provider AI Agent Runtime (`symphony-agents`)**:
   - **OpenAI Codex App Server** primary integration over stdio JSON-RPC 2.0 (`initialize`, `initialized`, `thread/start`, `thread/resume`, `turn/start`, `turn/interrupt`, `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `item/tool/call`, `thread/tokenUsage/updated`).
   - **Claude Code** CLI/stream-json adapter and **OpenCode** HTTP/CLI adapter with explicit capability reporting (`ProviderCapabilities`).
+  - **CodeSandbox cloud agents**: run **mini-swe-agent** (default), the **Pi coding agent** or **Pi Durable** in a CodeSandbox microVM built from an SDK template, with a CodeSandbox API token. The agent commits and pushes to the task branch after every edit and the local worktree follows. See [tools/codesandbox-runner/README.md](./tools/codesandbox-runner/README.md).
   - Strict stdout protocol / stderr diagnostic separation and automatic stripping of tracker credentials from child agent environments.
 - **First-Class Git Worktree Isolation (`symphony-workspaces`)**:
   - Collision-resistant workspace keys (`[A-Za-z0-9._-]` sanitization + 64-bit SHA-256 suffix when modified).
@@ -51,7 +52,7 @@ OpenAI-Symphony-Rust/
 │   ├── symphony-workspaces/# Git worktrees, path safety, lifecycle hooks
 │   ├── symphony-platform/  # Windows 11 power/CPU/RAM telemetry, vault, lockfile
 │   ├── symphony-trackers/  # GitHub Issues, Linear GraphQL, & dynamic tools
-│   ├── symphony-agents/    # Codex App Server JSON-RPC, Claude Code, OpenCode
+│   ├── symphony-agents/    # Codex App Server JSON-RPC, Claude Code, OpenCode, CodeSandbox cloud agents
 │   ├── symphony-orchestrator/ # Authoritative scheduler, reconciliation, PR review
 │   ├── symphony-server/    # Axum HTTP + SSE local & authenticated remote server
 │   └── symphony-cli/       # Headless daemon & CLI (`symphony-cli`)

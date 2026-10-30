@@ -25,6 +25,7 @@ const PROVIDER_COLORS: Record<ProviderKind, BadgeTone> = {
   codex: "accent",
   claude_code: "warning",
   opencode: "success",
+  codesandbox: "info",
   simulated: "neutral"
 };
 

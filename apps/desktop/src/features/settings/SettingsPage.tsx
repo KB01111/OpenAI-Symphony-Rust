@@ -45,6 +45,7 @@ type EditableSettings = Pick<
   | "start_background_runtime_on_login"
   | "default_provider"
   | "default_model"
+  | "default_cloud_agent"
   | "polling_interval_ms"
   | "event_retention_days"
   | "backup_interval_hours"
@@ -62,6 +63,8 @@ function editable(s: AppSettings): EditableSettings {
     start_background_runtime_on_login: s.start_background_runtime_on_login,
     default_provider: s.default_provider,
     default_model: s.default_model,
+    // null (never chosen) stays null: saving other settings must not pin the workflow's default.
+    default_cloud_agent: s.default_cloud_agent ?? null,
     polling_interval_ms: s.polling_interval_ms,
     event_retention_days: s.event_retention_days ?? 30,
     backup_interval_hours: s.backup_interval_hours ?? 24,

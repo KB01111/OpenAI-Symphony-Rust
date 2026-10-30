@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { DatabaseBackup, Download, FileJson, FolderOpen, Keyboard, KeyRound, LogOut, RefreshCw, ShieldOff } from "lucide-react";
 import { SymphonyApiError, errorMessage, isTauri, nativeHost } from "@symphony/api-client";
-import { ALL_PROVIDERS, formatMessage, type AppSettings, type Locale, type ProviderKind } from "@symphony/shared-types";
+import { ALL_CLOUD_AGENTS, ALL_PROVIDERS, DEFAULT_CLOUD_AGENT, formatMessage, type AppSettings, type CloudAgentKind, type Locale, type ProviderKind } from "@symphony/shared-types";
 import {
   Alert,
   Badge,
@@ -36,7 +36,7 @@ import { useMutation } from "@tanstack/react-query";
 import { paths } from "../../app/routes.js";
 import { useLocale, useMessages, useT } from "../../lib/i18n.js";
 import { useUiStore } from "../../store/uiStore.js";
-import { useCredentials, useProviders, useRuntimeState } from "../../lib/queries.js";
+import { useCredentials, useProviders, useRuntimeState, useWorkflow } from "../../lib/queries.js";
 import { useRuntime } from "../../runtime/RuntimeProvider.js";
 import { CredentialRow } from "../providers/CredentialControls.js";
 import { PROVIDER_CREDENTIAL_KEYS } from "../providers/ProviderCard.js";
@@ -332,6 +332,9 @@ export const DefaultsSection: React.FC<FormSectionProps> = ({ draft, update }) =
   const m = useMessages(settingsMessages);
   const t = useT();
   const providers = useProviders();
+  const workflow = useWorkflow();
+  // Until an agent is chosen here, the workflow's `codesandbox.default_agent` decides.
+  const shownCloudAgent = draft.default_cloud_agent ?? workflow.data?.config?.codesandbox.default_agent ?? DEFAULT_CLOUD_AGENT;
   const status = providers.data?.find((p) => p.provider === draft.default_provider);
   const models = status?.capabilities.models ?? [];
   const label = (kind: ProviderKind) => {
@@ -368,6 +371,23 @@ export const DefaultsSection: React.FC<FormSectionProps> = ({ draft, update }) =
             placeholder={status?.default_model ?? undefined}
             onValueChange={(value) => update((s) => ({ ...s, default_model: value }))}
           />
+        </Field>
+        <Field label={m.defaults.cloudAgent} hint={m.defaults.cloudAgentHint}>
+          <Select
+            value={shownCloudAgent}
+            onValueChange={(value) => update((s) => ({ ...s, default_cloud_agent: value as CloudAgentKind }))}
+          >
+            <SelectTrigger>
+              <SelectValue>{t.cloudAgent[shownCloudAgent]}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {ALL_CLOUD_AGENTS.map((agent) => (
+                <SelectItem key={agent} value={agent}>
+                  {t.cloudAgent[agent]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Field>
       </div>
       <Link to={paths.providers()} className="text-sm text-accent hover:underline">

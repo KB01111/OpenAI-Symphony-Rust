@@ -8,7 +8,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use symphony_orchestrator::SymphonyOrchestrator;
 use symphony_platform::SecretStore;
-use symphony_server::{build_router, ServerConfig};
+use symphony_server::{build_router, ServerConfig, API_VERSION};
 use symphony_storage::Storage;
 use tower::ServiceExt;
 
@@ -65,7 +65,7 @@ async fn public_routes_do_not_require_token() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
     assert_eq!(body["auth_required"], json!(true));
-    assert_eq!(body["api_version"], json!(2));
+    assert_eq!(body["api_version"], json!(API_VERSION));
 }
 
 #[tokio::test]
