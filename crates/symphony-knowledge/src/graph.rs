@@ -417,7 +417,9 @@ impl LoadedGraph {
                 seeds.extend(self.symbols_by_file.get(file).cloned().unwrap_or_default());
             }
         }
-        // A file with thousands of symbols must not start above the node cap.
+        // A file with thousands of symbols must not start above the node cap; the ones left out
+        // still count towards the total so the view says it is cut.
+        let seeds_left_out = seeds.len().saturating_sub(MAX_VIEW_NODES);
         seeds.truncate(MAX_VIEW_NODES);
         let mut seen: HashSet<usize> = seeds.iter().copied().collect();
         let mut frontier: VecDeque<(usize, u32)> = seeds.iter().map(|&i| (i, 0)).collect();
@@ -454,7 +456,7 @@ impl LoadedGraph {
                 }
             }
         }
-        let total_nodes = seen.len();
+        let total_nodes = seen.len() + seeds_left_out;
         let mut ordered: Vec<usize> = seen.into_iter().collect();
         ordered.sort_unstable();
         let nodes: Vec<GraphNode> = ordered.iter().map(|&i| self.nodes[i].clone()).collect();
@@ -920,6 +922,9 @@ mod tests {
         let graph = LoadedGraph::new(1, nodes, Vec::new());
         let view = graph.neighborhood("file_big", 1, true).unwrap();
         assert!(view.nodes.len() <= MAX_VIEW_NODES);
+        // The symbols that did not fit are counted, so the view reports itself as cut.
+        assert_eq!(view.total_nodes as usize, MAX_VIEW_NODES + 51);
+        assert!(view.truncated);
     }
 
     #[test]

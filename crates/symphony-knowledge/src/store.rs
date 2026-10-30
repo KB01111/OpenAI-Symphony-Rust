@@ -761,13 +761,16 @@ impl KnowledgeStore {
     }
 
     /// Clear the conversation. An answer that is still being written is kept together with the
-    /// question stored just before it, so it does not reappear alone when it finishes.
+    /// project's question stored before it (message ids are shared by all projects, so "the one
+    /// just before" is looked up within this project), so it does not reappear alone.
     pub async fn clear_messages(&self, project_id: &str) -> SymphonyResult<()> {
         sqlx::query(
             "DELETE FROM kb_chat_messages WHERE project_id = ?1 AND status != 'running'
-             AND id < COALESCE(
-                 (SELECT MIN(id) - 1 FROM kb_chat_messages WHERE project_id = ?1 AND status = 'running'),
-                 9223372036854775807)",
+             AND id NOT IN (
+                 SELECT COALESCE(MAX(q.id), -1) FROM kb_chat_messages q
+                 WHERE q.project_id = ?1 AND q.role = 'user'
+                   AND q.id < (SELECT MIN(r.id) FROM kb_chat_messages r
+                               WHERE r.project_id = ?1 AND r.status = 'running'))",
         )
         .bind(project_id)
         .execute(&self.pool)
@@ -1025,6 +1028,18 @@ mod tests {
             )
             .await
             .unwrap();
+        // A message of another project lands between the question and its answer.
+        store
+            .add_message(
+                "p2",
+                ChatRole::User,
+                "other",
+                JobStatus::Completed,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
         let a = store
             .add_message(
                 "p1",
@@ -1037,7 +1052,8 @@ mod tests {
             .await
             .unwrap();
         assert!(store.has_running_message("p1").await.unwrap());
-        // Clearing while the answer is being written keeps it with its question.
+        // Another project's message can land between a question and its answer (ids are shared).
+        // Clearing while the answer is being written keeps it with its own question.
         store.clear_messages("p1").await.unwrap();
         assert_eq!(
             store
