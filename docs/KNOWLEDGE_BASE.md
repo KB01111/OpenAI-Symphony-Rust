@@ -173,9 +173,13 @@ prefixes a changed file), files, or symbols.
   tools are switched off through the providers' own mechanisms, written into the scratch directory for that one
   turn (`write_tool_restrictions` in the orchestrator): Claude Code gets `.claude/settings.json` with
   `permissions.deny` for its built-in tools (deny outranks the user's allow rules), OpenCode gets
-  `opencode.json` with `"permission": {"*": "deny"}`, and Codex runs with `thread_sandbox: read-only` (no
-  writes, no network). These are the providers' controls, not something Symphony enforces: a tool that comes
-  from the user's own configuration (an MCP server, say) is not covered. That is why commit messages and code
+  `opencode.json` with `"permission": {"*": "deny"}`, and Codex, which has no such file, is started with `-c`
+  overrides that switch off its shell, web search, browser, apps, plugins, sub-agents, memories and hooks
+  (`codex_analysis_command`; applied when the configured command is `codex ... app-server`, a wrapper script
+  is left as it is) on top of `thread_sandbox: read-only` (no writes, no network). These are the providers'
+  controls, not something Symphony enforces: a tool that comes from the user's own configuration (an MCP
+  server, say) is not covered, and the Codex flags were checked to be accepted at startup but not by running a
+  full model turn. That is why commit messages and code
   are also treated as untrusted input: the reply is validated (below) and only ever shown as text.
   CodeSandbox and the simulated provider are refused for analysis.
 * Validation (`analysis.rs`): ids that were not in the prompt are removed, a finding left without evidence is

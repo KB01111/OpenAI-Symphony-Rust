@@ -40,7 +40,8 @@ const CLAUDE_DENIED_TOOLS: &[&str] = &[
 /// - Claude Code: `.claude/settings.json` with `permissions.deny` for its built-in tools. Deny rules
 ///   outrank allow rules from the user's own settings, and apply without a trust prompt.
 /// - OpenCode: `opencode.json` with `"permission": {"*": "deny"}`.
-/// - Codex has no such file; it runs with `thread_sandbox: read-only` (no writes, no network).
+/// - Codex has no such file; its shell and other native tools are switched off with `-c` flags on
+///   its command line ([`codex_analysis_command`]), on top of `thread_sandbox: read-only`.
 ///
 /// These are the providers' own mechanisms, not something Symphony enforces: a tool that comes from
 /// the user's own configuration (for example an MCP server) is not covered, which is why the output
@@ -61,6 +62,41 @@ fn write_tool_restrictions(dir: &Path) -> SymphonyResult<()> {
         serde_json::to_vec_pretty(&opencode)?,
     )?;
     Ok(())
+}
+
+/// Codex config overrides for an analysis turn: no shell, no web search, no browser, apps, plugins,
+/// sub-agents, memories or hooks. Names Codex does not know are ignored by `-c features.<name>`,
+/// so the list holds for older and newer versions alike.
+const CODEX_ANALYSIS_FLAGS: &[&str] = &[
+    "-c features.shell_tool=false",
+    "-c features.unified_exec=false",
+    "-c features.apps=false",
+    "-c features.plugins=false",
+    "-c features.browser_use=false",
+    "-c features.browser_use_external=false",
+    "-c features.computer_use=false",
+    "-c features.in_app_browser=false",
+    "-c features.image_generation=false",
+    "-c features.multi_agent=false",
+    "-c features.memories=false",
+    "-c features.hooks=false",
+    "-c web_search=disabled",
+];
+
+/// The Codex command for an analysis turn: the configured `codex ... app-server` command with the
+/// native tools switched off. A command that is not Codex's own (a wrapper script) is returned as it
+/// is, since there is no telling how it passes flags on; the read-only sandbox still applies.
+fn codex_analysis_command(configured: &str) -> String {
+    let trimmed = configured.trim();
+    let mut words = trimmed.split_whitespace();
+    let program = words.next().unwrap_or("");
+    let program = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let program = program.trim_end_matches(".cmd").trim_end_matches(".exe");
+    if program.eq_ignore_ascii_case("codex") && words.any(|w| w == "app-server") {
+        format!("{trimmed} {}", CODEX_ANALYSIS_FLAGS.join(" "))
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Answers every approval request with a refusal: an analysis has no use for tools, so anything
@@ -110,7 +146,11 @@ impl AnalysisRunner for KnowledgeRunner {
         write_tool_restrictions(&request.scratch_dir)?;
         let launch = AgentLaunchConfig {
             provider: request.provider,
-            command: config.codex.command.clone(),
+            command: if request.provider == ProviderKind::Codex {
+                codex_analysis_command(&config.codex.command)
+            } else {
+                config.codex.command.clone()
+            },
             model: request.model.clone(),
             workspace_path: request.scratch_dir.clone(),
             task_id: format!("knowledge:{}", request.project_id),
@@ -279,6 +319,28 @@ impl SymphonyOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_runs_an_analysis_with_its_native_tools_switched_off() {
+        let command = codex_analysis_command("codex app-server");
+        assert!(command.starts_with("codex app-server "), "{command}");
+        for flag in [
+            "features.shell_tool=false",
+            "features.computer_use=false",
+            "web_search=disabled",
+        ] {
+            assert!(command.contains(flag), "{flag} in {command}");
+        }
+        // The npm shim and a full path are recognised; a wrapper script is left alone.
+        assert!(
+            codex_analysis_command(r"C:\tools\codex.cmd app-server").contains("shell_tool=false")
+        );
+        assert!(codex_analysis_command("/usr/bin/codex app-server").contains("shell_tool=false"));
+        assert_eq!(
+            codex_analysis_command("  ./run-codex.sh  "),
+            "./run-codex.sh"
+        );
+    }
 
     #[test]
     fn the_scratch_directory_denies_every_built_in_tool_of_each_provider() {

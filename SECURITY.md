@@ -294,7 +294,8 @@ Design and data flow: [`docs/KNOWLEDGE_BASE.md`](./docs/KNOWLEDGE_BASE.md).
   an empty scratch directory with policy `never`, a read-only sandbox and an approval gate that declines
   everything, and Symphony's host tools are not offered. The provider's built-in tools are turned off through
   its own project configuration written into that directory for the turn (Claude Code `permissions.deny`,
-  OpenCode `"permission": {"*": "deny"}`; Codex runs read-only without network). Those are the providers'
+  OpenCode `"permission": {"*": "deny"}`; Codex is started with `-c` overrides that switch off its shell and
+  other native tools and runs read-only without network). Those are the providers'
   controls and do not cover a tool from the user's own configuration (an MCP server), so output is also
   validated: citations to evidence that was not in the prompt are removed, findings without evidence are
   dropped and counted, text is length-capped and rendered as text. CodeSandbox and the simulated provider are
