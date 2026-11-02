@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "resources/codesandbox-runner/bridge.mjs": "resources/codesandbox-runner/bridge.mjs",
+      "resources/codesandbox-runner/node.exe": "resources/codesandbox-runner/node.exe"
+    }
+  }
+}
