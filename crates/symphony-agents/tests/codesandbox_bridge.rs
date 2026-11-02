@@ -11,9 +11,10 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 use symphony_agents::{
-    codesandbox::{find_node_runtime, supports_node_version}, detection::find_on_path,
-    start_agent_session, AgentLaunchConfig, AgentSession,
-    AgentStreamEvent, AutoApprovalGate, CloudLaunch, CodeSandboxSession,
+    codesandbox::{find_node_runtime, supports_node_version},
+    detection::find_on_path,
+    start_agent_session, AgentLaunchConfig, AgentSession, AgentStreamEvent, AutoApprovalGate,
+    CloudLaunch, CodeSandboxSession,
 };
 use symphony_core::domain::{CloudAgentKind, ProviderKind};
 use symphony_core::redaction::redact_secrets;
@@ -593,7 +594,13 @@ async fn a_pushed_event_with_a_non_ascii_commit_id_does_not_panic_the_worker() {
 
 #[test]
 fn codesandbox_node_version_preflight_rejects_old_and_invalid_versions() {
-    for version in ["v18.20.0", "v20.10.0", "v22.12.0", "unknown", "v24.0.0-beta.1"] {
+    for version in [
+        "v18.20.0",
+        "v20.10.0",
+        "v22.12.0",
+        "unknown",
+        "v24.0.0-beta.1",
+    ] {
         assert!(!supports_node_version(version), "{version}");
     }
     for version in ["v22.13.0", "v22.20.0", "v23.0.0", "v24.15.0"] {
@@ -604,7 +611,9 @@ fn codesandbox_node_version_preflight_rejects_old_and_invalid_versions() {
 #[test]
 fn codesandbox_chooses_bundled_node_over_path_when_it_exists() {
     let fx = Fixture::new();
-    let bundled = fx.bridge.with_file_name(if cfg!(windows) { "node.exe" } else { "node" });
+    let bundled = fx
+        .bridge
+        .with_file_name(if cfg!(windows) { "node.exe" } else { "node" });
     std::fs::write(&bundled, "stand-in for bundled Node").unwrap();
     // Pure path resolution: the executable is never launched in this test.
     assert_eq!(find_node_runtime(Some(&fx.bridge)), Some(bundled));
@@ -615,9 +624,20 @@ async fn missing_explicit_bridge_is_reported_by_provider_detection() {
     let fx = Fixture::new();
     let missing = fx.workspace.join("not-a-bridge.mjs");
     let status = symphony_agents::detect_provider_status(
-        ProviderKind::CodeSandbox, &[], None, false, missing.to_str()
-    ).await;
+        ProviderKind::CodeSandbox,
+        &[],
+        None,
+        false,
+        missing.to_str(),
+    )
+    .await;
     assert!(!status.installed);
-    assert!(status.capabilities.status_message.contains("bridge missing"),
-        "{}", status.capabilities.status_message);
+    assert!(
+        status
+            .capabilities
+            .status_message
+            .contains("bridge missing"),
+        "{}",
+        status.capabilities.status_message
+    );
 }
