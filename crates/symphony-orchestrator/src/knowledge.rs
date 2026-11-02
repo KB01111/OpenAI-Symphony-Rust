@@ -105,12 +105,42 @@ fn split_program(command: &str) -> (&str, &str) {
     }
 }
 
+/// Characters a shell reads as syntax instead of as part of an argument: command separators, pipes,
+/// redirections, substitutions, grouping and line breaks.
+const SHELL_SYNTAX: &[char] = &['|', '&', ';', '<', '>', '`', '$', '(', ')', '\n', '\r'];
+
+/// Whether the command line does anything a plain `codex ... app-server` does not. The command is
+/// handed to a shell, and the tools-off flags are appended at its very end: with `| tee`, `&&` or a
+/// `;` in it they would land on the last command instead of Codex.
+///
+/// A quoted program path is literal text to the shell, so only what still expands inside quotes
+/// (`$`, a backtick), a stray quote or a line break is refused there; `C:\Program Files (x86)\...`
+/// is fine. Everything after the program, and an unquoted program, may not contain any shell syntax.
+fn has_shell_syntax(command: &str, program: &str, rest: &str) -> bool {
+    let unprefixed = command
+        .strip_prefix('&')
+        .map(str::trim_start)
+        .unwrap_or(command);
+    let quoted_program = matches!(unprefixed.chars().next(), Some('"' | '\''));
+    let program_bad = if quoted_program {
+        program.contains(['$', '`', '"', '\'', '\n', '\r'])
+    } else {
+        program.contains(SHELL_SYNTAX) || program.contains(['"', '\''])
+    };
+    program_bad || rest.contains(SHELL_SYNTAX)
+}
+
 /// The Codex command for an analysis turn: the configured `codex ... app-server` command with the
 /// native tools switched off. A command that is not Codex's own (a wrapper script) is refused: there
 /// is no telling whether it passes the flags on, and an analysis must not run with Codex's tools.
 fn codex_analysis_command(configured: &str) -> SymphonyResult<String> {
     let trimmed = configured.trim();
     let (program, rest) = split_program(trimmed);
+    if has_shell_syntax(trimmed, program, rest) {
+        return Err(SymphonyError::Conflict(format!(
+            "AI analysis with Codex needs the command to be `codex app-server` (it switches off Codex's own tools); `{trimmed}` contains shell syntax (a separator, pipe, redirection or substitution), so the flags that switch the tools off could end up on a different program. Set the Codex command back to `codex app-server`."
+        )));
+    }
     let program = program.rsplit(['/', '\\']).next().unwrap_or(program);
     let program = program.trim_end_matches(".cmd").trim_end_matches(".exe");
     if program.eq_ignore_ascii_case("codex") && rest.split_whitespace().any(|w| w == "app-server") {
@@ -411,6 +441,48 @@ mod tests {
         ] {
             let error = codex_analysis_command(wrapper).unwrap_err().to_string();
             assert!(error.contains("codex app-server"), "{wrapper:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_codex_command_with_shell_syntax_is_refused_for_analysis() {
+        // The flags are appended at the end of the line, so a pipe, a second command or a
+        // substitution would send them to the wrong program and leave Codex with its tools.
+        for command in [
+            "codex app-server | tee /tmp/x",
+            "codex app-server && echo hi",
+            "codex app-server; echo hi",
+            "codex app-server > /tmp/x",
+            "codex app-server `id`",
+            "codex app-server $(id)",
+            "codex app-server\necho hi",
+            "codex app-server & echo hi",
+            // The program part is checked too: only its last path segment is `codex`.
+            "foo;/codex app-server",
+            "foo|/codex app-server",
+            r#""C:\Program Files\codex$(id).cmd" app-server"#,
+        ] {
+            let error = codex_analysis_command(command).unwrap_err().to_string();
+            assert!(error.contains("codex app-server"), "{command:?}: {error}");
+            assert!(
+                error.contains("shell syntax"),
+                "{command:?} is refused for its syntax: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_plain_codex_command_with_options_is_still_accepted_for_analysis() {
+        for command in [
+            "codex app-server",
+            "codex -c model=o3 app-server",
+            r#""C:\Program Files (x86)\nodejs\codex.cmd" app-server"#,
+            r#"& "C:\Program Files\nodejs\codex.cmd" app-server"#,
+            "/usr/local/bin/codex app-server",
+        ] {
+            let built = codex_analysis_command(command)
+                .unwrap_or_else(|e| panic!("{command:?} should be accepted: {e}"));
+            assert!(built.contains("features.shell_tool=false"), "{built}");
         }
     }
 

@@ -113,8 +113,17 @@ pub fn find_executable(name: &str, override_command: Option<&str>) -> Option<Pat
         .find_map(|dir| first_executable_in(&dir, &names))
 }
 
+/// A command for an engine executable, with the secret environment variables stripped. It never
+/// inherits the host's working directory: that can be a user's repository, and these tools (Python
+/// programs) read and write files relative to where they run. The default is the executable's own
+/// directory; callers set the directory they really work in (a snapshot or the engine's output
+/// directory under the data directory) with `current_dir`.
 pub(crate) fn command_for(path: &Path) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(path);
+    // Only for an absolute path: a relative program path would be resolved against the new directory.
+    if let Some(dir) = path.parent().filter(|_| path.is_absolute()) {
+        cmd.current_dir(dir);
+    }
     for var in SECRET_ENV_VARS_TO_STRIP {
         cmd.env_remove(var);
     }
@@ -289,6 +298,9 @@ impl GraphifyEngine {
             .arg(snapshot)
             .args(["--code-only", "--no-cluster", "--out"])
             .arg(out_dir)
+            // Anything Graphify writes relative to where it runs lands in its own output directory:
+            // not in the snapshot (which stays an exact copy of the commit) and not in a repository.
+            .current_dir(out_dir)
             .env("GRAPHIFY_BACKEND", "none");
         for var in LLM_ENV_VARS {
             cmd.env_remove(var);
@@ -647,6 +659,18 @@ mod tests {
 
     fn known(files: &[&str]) -> HashSet<String> {
         files.iter().map(|f| f.to_string()).collect()
+    }
+
+    #[test]
+    fn an_engine_never_inherits_the_host_working_directory() {
+        // An absolute executable runs from its own directory, not from wherever the host was started
+        // (which can be inside a user's repository).
+        let exe = std::env::current_exe().unwrap();
+        let cmd = command_for(&exe);
+        assert_eq!(cmd.as_std().get_current_dir(), exe.parent());
+        // A relative path would be resolved against the new directory, so it is left alone.
+        let relative = command_for(Path::new("tools/graphify"));
+        assert_eq!(relative.as_std().get_current_dir(), None);
     }
 
     #[test]
