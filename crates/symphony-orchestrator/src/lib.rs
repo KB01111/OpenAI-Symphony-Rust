@@ -103,6 +103,11 @@ const PROVIDER_CACHE_TTL_SECS: i64 = 60;
 /// Upper bound for operator follow-up instructions (`continue_task`).
 pub const MAX_FOLLOW_UP_CHARS: usize = 20_000;
 
+/// Validation commands (tests, linters, builds) get at least this long, whatever `hooks.timeout_ms`
+/// says: that setting bounds short lifecycle hooks (60 seconds by default), and a real test suite
+/// would be reported as timed out under it.
+const MIN_VALIDATION_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+
 /// First prompt of an attempt that continues a task with operator instructions. A resumed thread
 /// already holds the task and its earlier turns, so it gets the instructions alone; a fresh one gets
 /// the task prompt followed by them.
@@ -374,6 +379,59 @@ fn redact_event(mut event: AgentEvent) -> AgentEvent {
     event
 }
 
+/// Tracker states compare case-insensitively (`In Progress` = `in progress`).
+fn state_key(state: &str) -> String {
+    state.trim().to_lowercase()
+}
+
+/// How many agents run per project and per tracker state: what the project's
+/// `max_concurrent_agents` and the workflow's `agent.max_concurrent_agents_by_state` limit.
+#[derive(Debug, Default)]
+struct RunningCounts {
+    by_project: HashMap<String, u32>,
+    by_state: HashMap<String, u32>,
+}
+
+impl RunningCounts {
+    fn of<'a>(running: impl Iterator<Item = &'a Task>) -> Self {
+        let mut counts = Self::default();
+        for task in running {
+            counts.note_started(task);
+        }
+        counts
+    }
+
+    fn note_started(&mut self, task: &Task) {
+        *self.by_project.entry(task.project_id.clone()).or_default() += 1;
+        *self
+            .by_state
+            .entry(state_key(&task.issue.state))
+            .or_default() += 1;
+    }
+
+    /// Whether one more run of `task` stays within its project's limit and within the limit for the
+    /// state its issue is in. A limit of `None` (or 0) is no limit.
+    fn allows(
+        &self,
+        task: &Task,
+        project_limit: Option<u32>,
+        state_limits: &HashMap<String, u32>,
+    ) -> bool {
+        if let Some(limit) = project_limit.filter(|limit| *limit > 0) {
+            if self.by_project.get(&task.project_id).copied().unwrap_or(0) >= limit {
+                return false;
+            }
+        }
+        let state = state_key(&task.issue.state);
+        if let Some(limit) = state_limits.get(&state).filter(|limit| **limit > 0) {
+            if self.by_state.get(&state).copied().unwrap_or(0) >= *limit {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 struct OrchestratorApprovalGate {
     storage: Storage,
     memory: Arc<RwLock<OrchestratorRuntimeMemory>>,
@@ -384,7 +442,22 @@ struct OrchestratorApprovalGate {
 impl ApprovalGate for OrchestratorApprovalGate {
     async fn request_approval(&self, request: ApprovalRequest) -> SymphonyResult<ApprovalDecision> {
         let approval_id = request.id.clone();
-        self.storage.upsert_approval(&request).await?;
+        // The waiting side is registered before the request becomes visible (stored, broadcast):
+        // an answer can arrive the moment the UI shows it, and `resolve_approval` only accepts an
+        // answer for a request somebody is waiting for.
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut mem = self.memory.write().await;
+            mem.pending_approvals.insert(approval_id.clone(), tx);
+        }
+        if let Err(err) = self.storage.upsert_approval(&request).await {
+            self.memory
+                .write()
+                .await
+                .pending_approvals
+                .remove(&approval_id);
+            return Err(err);
+        }
 
         let evt = AgentEvent {
             id: Uuid::new_v4().to_string(),
@@ -401,12 +474,6 @@ impl ApprovalGate for OrchestratorApprovalGate {
         let evt = redact_event(evt);
         let _ = self.storage.record_event(&evt).await;
         let _ = self.event_tx.send(evt);
-
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut mem = self.memory.write().await;
-            mem.pending_approvals.insert(approval_id.clone(), tx);
-        }
 
         match rx.await {
             Ok(decision) => Ok(decision),
@@ -1765,6 +1832,37 @@ Please implement the requested changes cleanly in the current Git workspace, run
             )));
         }
 
+        // Only a run that is still waiting can act on a decision. After a restart, or once the run
+        // ended, nobody is listening: recording "approved" would put a decision in the audit trail
+        // that changed nothing. The request is closed as expired and the caller is told.
+        let waiting = {
+            let mut mem = self.memory.write().await;
+            mem.pending_approvals.remove(approval_id)
+        };
+        let Some(waiting) = waiting else {
+            req.status = ApprovalStatus::Cancelled;
+            req.decision = Some(ApprovalDecision::Cancel);
+            req.resolved_at = Some(Utc::now());
+            self.storage.upsert_approval(&req).await?;
+            self.emit_event(
+                Some(req.task_id.clone()),
+                Some(req.issue_identifier.clone()),
+                Some(req.session_id.clone()),
+                Some(req.provider),
+                "approval/expired",
+                None,
+                format!(
+                    "Approval '{}' expired: no run was waiting for it",
+                    req.title
+                ),
+                None,
+            )
+            .await;
+            return Err(SymphonyError::Conflict(format!(
+                "Approval {approval_id} is no longer waiting for an answer (its run ended or Symphony restarted); it was closed without effect"
+            )));
+        };
+
         req.decision = Some(decision);
         req.resolved_at = Some(Utc::now());
         req.status = match decision {
@@ -1775,14 +1873,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             ApprovalDecision::Cancel => ApprovalStatus::Cancelled,
         };
         self.storage.upsert_approval(&req).await?;
-
-        let tx_opt = {
-            let mut mem = self.memory.write().await;
-            mem.pending_approvals.remove(approval_id)
-        };
-        if let Some(tx) = tx_opt {
-            let _ = tx.send(decision);
-        }
+        let _ = waiting.send(decision);
 
         self.emit_event(
             Some(req.task_id.clone()),
@@ -2934,16 +3025,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .await?;
 
         let existing = self.storage.list_tasks(Some(project_id)).await?;
-        let mut by_identifier: HashMap<String, Task> = existing
+        let by_identifier: HashMap<String, Task> = existing
             .into_iter()
             .map(|t| (t.issue.identifier.clone(), t))
             .collect();
 
         for issue in issues {
-            if let Some(existing_task) = by_identifier.get_mut(&issue.identifier) {
-                existing_task.issue = issue;
-                existing_task.updated_at = Utc::now();
-                self.storage.upsert_task(existing_task).await?;
+            if let Some(existing_task) = by_identifier.get(&issue.identifier) {
+                // Only the tracker's view of the issue: `existing_task` is a snapshot from before
+                // the tracker was asked, and a worker may have finished since. Writing the whole
+                // row back would put its old status and usage over the worker's result.
+                self.storage
+                    .update_task_issue(&existing_task.id, &issue, Utc::now())
+                    .await?;
             } else {
                 let now = Utc::now();
                 let new_task = Task {
@@ -3064,6 +3158,17 @@ Please implement the requested changes cleanly in the current Git workspace, run
         // 5. Select eligible candidate tasks sorted by priority, created_at, identifier (SPEC.md Section 8.2)
         let all_tasks = self.storage.list_tasks(None).await?;
         let mut eligible_tasks: Vec<Task> = Vec::new();
+        let (mut counts, state_limits, terminal_states) = {
+            let mem = self.memory.read().await;
+            (
+                RunningCounts::of(all_tasks.iter().filter(|t| mem.running.contains_key(&t.id))),
+                mem.active_config
+                    .agent
+                    .max_concurrent_agents_by_state
+                    .clone(),
+                mem.active_config.terminal_states.clone(),
+            )
+        };
         {
             let mem = self.memory.read().await;
             for task in all_tasks {
@@ -3097,13 +3202,69 @@ Please implement the requested changes cleanly in the current Git workspace, run
         sort_candidate_issues(&mut issues);
 
         let available_slots = hw.effective_max_concurrency.saturating_sub(running_count) as usize;
-        for issue in issues.into_iter().take(available_slots) {
-            if let Some(task) = eligible_tasks.iter().find(|t| t.issue.id == issue.id) {
-                let _ = self.dispatch_task_now(&task.id).await;
+        let mut attempted = 0;
+        for issue in issues {
+            if attempted >= available_slots {
+                break;
+            }
+            let Some(task) = eligible_tasks.iter().find(|t| t.issue.id == issue.id) else {
+                continue;
+            };
+            let project = projects.iter().find(|p| p.id == task.project_id);
+            // A task over its project's or its state's limit waits for a free place; it does not
+            // use up one of the global slots.
+            if !counts.allows(
+                task,
+                project.map(|p| p.max_concurrent_agents),
+                &state_limits,
+            ) {
+                continue;
+            }
+            attempted += 1;
+            if self
+                .issue_closed_in_tracker(task, project, &terminal_states)
+                .await
+            {
+                continue;
+            }
+            if self.dispatch_task_now(&task.id).await.is_ok() {
+                counts.note_started(task);
             }
         }
 
         Ok(())
+    }
+
+    /// Re-read the issue of a task that is about to start. Dispatch decisions come from the cached
+    /// copy, which is refreshed only for issues the tracker still lists as candidates, so a task
+    /// whose issue was closed while it waited would start anyway. When the tracker says the issue is
+    /// in a terminal state the task is cancelled and `true` is returned. A tracker that cannot be
+    /// asked (not configured, unreachable) leaves the decision to the cached copy.
+    async fn issue_closed_in_tracker(
+        &self,
+        task: &Task,
+        project: Option<&Project>,
+        terminal_states: &[String],
+    ) -> bool {
+        let Some(tracker) = project.and_then(|p| self.build_tracker_for_project(p)) else {
+            return false;
+        };
+        let Ok(refreshed) = tracker
+            .fetch_issue_states_by_ids(std::slice::from_ref(&task.issue.id))
+            .await
+        else {
+            return false;
+        };
+        let Some(issue) = refreshed.into_iter().next() else {
+            return false;
+        };
+        if !issue.is_in_states(terminal_states) {
+            return false;
+        }
+        let _ = self
+            .cancel_task(&task.id, "Tracker issue is no longer active")
+            .await;
+        true
     }
 
     async fn reconcile_active_runs(&self) -> SymphonyResult<()> {
@@ -3124,6 +3285,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
             {
                 let mem = self.memory.read().await;
                 for (task_id, handle) in &mem.running {
+                    // Once the agent has stopped (hooks, validation, merge checks) nothing streams
+                    // any more, and those steps are bounded by their own timeouts.
+                    if handle.session.phase == RunAttemptPhase::Finishing {
+                        continue;
+                    }
                     let ref_time = handle
                         .session
                         .last_event_at
@@ -3132,6 +3298,15 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     if elapsed_ms > stall_timeout_ms {
                         stalled_task_ids.push(task_id.clone());
                     }
+                }
+            }
+            // A run waiting for a person's approval is silent too, for as long as the person takes:
+            // that is not a stall.
+            if !stalled_task_ids.is_empty() {
+                if let Ok(pending) = self.storage.list_approvals(true).await {
+                    let waiting: HashSet<&str> =
+                        pending.iter().map(|a| a.task_id.as_str()).collect();
+                    stalled_task_ids.retain(|id| !waiting.contains(id.as_str()));
                 }
             }
 
@@ -3216,7 +3391,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
     /// as the candidate filter would hold the task back, and runs once the issue is eligible.
     async fn process_due_retries(&self, available_slots: usize) -> SymphonyResult<()> {
         let now = Utc::now();
-        let (due_task_ids, terminal_states) = {
+        let (due_task_ids, terminal_states, state_limits) = {
             let mem = self.memory.read().await;
             let mut due: Vec<&RetryEntry> = mem
                 .retry_attempts
@@ -3225,8 +3400,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 .collect();
             due.sort_by_key(|r| r.due_at);
             let ids: Vec<String> = due.into_iter().map(|r| r.task_id.clone()).collect();
-            (ids, mem.active_config.terminal_states.clone())
+            (
+                ids,
+                mem.active_config.terminal_states.clone(),
+                mem.active_config
+                    .agent
+                    .max_concurrent_agents_by_state
+                    .clone(),
+            )
         };
+        if due_task_ids.is_empty() {
+            return Ok(());
+        }
+        let mut counts = self.running_counts().await.unwrap_or_default();
 
         let mut dispatched = 0;
         for task_id in due_task_ids {
@@ -3235,7 +3421,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             }
             // Checked, claimed and started as one step against manual status changes.
             let _dispatch_guard = self.dispatch_lock.lock().await;
-            match self.get_task(&task_id).await {
+            let task = match self.get_task(&task_id).await {
                 Ok(task)
                     if !task.issue.dispatchable || task.issue.is_todo_blocked(&terminal_states) =>
                 {
@@ -3243,12 +3429,26 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 }
                 // Moved by hand since the snapshot (which also dropped the retry).
                 Ok(task) if task.status != TaskStatus::Queued => continue,
-                Ok(_) => {}
+                Ok(task) => task,
                 // The task is gone: nothing left to retry.
                 Err(_) => {
                     self.memory.write().await.retry_attempts.remove(&task_id);
                     continue;
                 }
+            };
+            // A retry over its project's or its state's limit stays due until a place is free.
+            let project = self
+                .storage
+                .get_project(&task.project_id)
+                .await
+                .ok()
+                .flatten();
+            if !counts.allows(
+                &task,
+                project.as_ref().map(|p| p.max_concurrent_agents),
+                &state_limits,
+            ) {
+                continue;
             }
             // Claim the retry: only an entry that is still registered may start.
             if self
@@ -3261,10 +3461,21 @@ Please implement the requested changes cleanly in the current Git workspace, run
             {
                 continue;
             }
-            let _ = self.dispatch_task_locked(&task_id).await;
+            if self.dispatch_task_locked(&task_id).await.is_ok() {
+                counts.note_started(&task);
+            }
             dispatched += 1;
         }
         Ok(())
+    }
+
+    /// Per-project and per-state counts of the runs in progress.
+    async fn running_counts(&self) -> SymphonyResult<RunningCounts> {
+        let tasks = self.storage.list_tasks(None).await?;
+        let mem = self.memory.read().await;
+        Ok(RunningCounts::of(
+            tasks.iter().filter(|t| mem.running.contains_key(&t.id)),
+        ))
     }
 
     pub async fn schedule_retry(
@@ -3946,6 +4157,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 let _ = self.storage.upsert_task(&task).await;
             }
         }
+        // A cancel that arrived while the last turn ended is honoured here, not overwritten below.
+        if let Some(reason) = self.external_stop(&task.id, &mut cancel_rx).await {
+            self.finish_externally_stopped_attempt(&mut attempt_record, &reason)
+                .await;
+            return;
+        }
 
         // 6. Run `after_run` lifecycle hook (failure logged and ignored per SPEC.md)
         if let Some(ref after_script) = config.hooks.after_run {
@@ -3972,12 +4189,20 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 task.attempt_count,
                 &allocated.path,
                 &project.validation_commands,
-                config.hooks.timeout_ms,
+                config.hooks.timeout_ms.max(MIN_VALIDATION_TIMEOUT_MS),
             )
             .await;
 
         for vr in &validation_results {
-            let _ = self.storage.save_validation_result(vr).await;
+            if let Err(err) = self.storage.save_validation_result(vr).await {
+                warn!(task_id = %task.id, error = %err, "could not store a validation result");
+            }
+        }
+        // Validation can take minutes: a cancel during it must not turn into a review below.
+        if let Some(reason) = self.external_stop(&task.id, &mut cancel_rx).await {
+            self.finish_externally_stopped_attempt(&mut attempt_record, &reason)
+                .await;
+            return;
         }
 
         // 8. Inspect workspace changes, diff, and construct structured PR review / merge-readiness report
@@ -4083,18 +4308,30 @@ Please implement the requested changes cleanly in the current Git workspace, run
         task.status = TaskStatus::HumanReview;
         task.current_phase = Some(RunAttemptPhase::Succeeded);
         task.updated_at = Utc::now();
-        let _ = self.storage.upsert_task(&task).await;
-
-        attempt_record.phase = RunAttemptPhase::Succeeded;
-        attempt_record.finished_at = Some(Utc::now());
-        let _ = self.storage.upsert_run_attempt(&attempt_record).await;
-
         {
+            // The row is written under the memory lock, as the turn loop does: `cancel_task`, stall
+            // detection and tracker reconciliation take the run's handle out under that lock before
+            // they persist anything. Missing handle = somebody else owns the task now, and this stale
+            // copy must not be written over their state (a `Cancelled` task turning into a review).
             let mut mem = self.memory.write().await;
+            if !mem.running.contains_key(&task.id) {
+                drop(mem);
+                let reason = cancel_rx
+                    .try_recv()
+                    .unwrap_or_else(|_| "cancelled".to_string());
+                self.finish_externally_stopped_attempt(&mut attempt_record, &reason)
+                    .await;
+                return;
+            }
+            let _ = self.storage.upsert_task(&task).await;
             mem.running.remove(&task.id);
             mem.claimed_issue_ids.remove(&task.issue.id);
             mem.codex_totals.seconds_running += elapsed_secs;
         }
+
+        attempt_record.phase = RunAttemptPhase::Succeeded;
+        attempt_record.finished_at = Some(Utc::now());
+        let _ = self.storage.upsert_run_attempt(&attempt_record).await;
 
         self.emit_event(
             Some(task.id.clone()),
@@ -4110,6 +4347,25 @@ Please implement the requested changes cleanly in the current Git workspace, run
             None,
         )
         .await;
+    }
+
+    /// `Some(reason)` once the run was taken over by the side that stops runs from outside the
+    /// worker (`cancel_task`, stall detection, tracker reconciliation): each of them removes the
+    /// run's handle from `running` before it persists anything, so a missing handle means "not
+    /// yours any more". The worker then only closes its attempt record.
+    async fn external_stop(
+        &self,
+        task_id: &str,
+        cancel_rx: &mut oneshot::Receiver<String>,
+    ) -> Option<String> {
+        if self.memory.read().await.running.contains_key(task_id) {
+            return None;
+        }
+        Some(
+            cancel_rx
+                .try_recv()
+                .unwrap_or_else(|_| "cancelled".to_string()),
+        )
     }
 
     async fn finish_failed_attempt(
@@ -5772,6 +6028,301 @@ rl.on('line', (line) => {
         let opened = orch.create_pull_request(&review.id).await.unwrap();
         assert_eq!(opened.pr_number, 42);
         assert!(opened.has_pull_request());
+    }
+
+    fn task_in(project: &str, state: &str, identifier: &str) -> Task {
+        let mut task = Task::new_manual(
+            project.into(),
+            identifier.into(),
+            "A task".into(),
+            None,
+            Some(1),
+            ProviderKind::Simulated,
+            None,
+            Vec::new(),
+        );
+        task.issue.state = state.into();
+        task
+    }
+
+    #[test]
+    fn running_counts_enforce_the_project_limit_and_the_state_limit() {
+        let running = [
+            task_in("a", "In Progress", "A-1"),
+            task_in("a", "Todo", "A-2"),
+            task_in("b", "In Progress", "B-1"),
+        ];
+        let counts = RunningCounts::of(running.iter());
+        let no_state_limits = HashMap::new();
+
+        // Project "a" runs two: a limit of 2 is reached, 3 is not; project "b" runs one.
+        let candidate = task_in("a", "Todo", "A-3");
+        assert!(!counts.allows(&candidate, Some(2), &no_state_limits));
+        assert!(counts.allows(&candidate, Some(3), &no_state_limits));
+        assert!(counts.allows(&task_in("b", "Todo", "B-2"), Some(2), &no_state_limits));
+        // No limit (or 0) means unlimited.
+        assert!(counts.allows(&candidate, None, &no_state_limits));
+        assert!(counts.allows(&candidate, Some(0), &no_state_limits));
+
+        // State limits compare case-insensitively across projects: two run "in progress".
+        let state_limits: HashMap<String, u32> = [("in progress".to_string(), 2)].into();
+        assert!(!counts.allows(&task_in("c", "IN PROGRESS", "C-1"), None, &state_limits));
+        assert!(counts.allows(&task_in("c", "Todo", "C-2"), None, &state_limits));
+
+        // Starting one more is counted.
+        let mut counts = counts;
+        counts.note_started(&task_in("c", "Todo", "C-3"));
+        assert!(!counts.allows(&task_in("c", "Todo", "C-4"), Some(1), &no_state_limits));
+    }
+
+    #[tokio::test]
+    async fn an_approval_nobody_waits_for_is_closed_not_approved() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        // A request a previous process left behind: stored as pending, no run waits for it.
+        orch.storage
+            .upsert_approval(&ApprovalRequest {
+                id: "approval-orphan".into(),
+                task_id: task.id.clone(),
+                issue_identifier: task.issue.identifier.clone(),
+                session_id: "session".into(),
+                provider: ProviderKind::Codex,
+                kind: "command".into(),
+                title: "Run rm -rf".into(),
+                description: String::new(),
+                command_or_diff: None,
+                status: ApprovalStatus::Pending,
+                created_at: Utc::now(),
+                resolved_at: None,
+                decision: None,
+            })
+            .await
+            .unwrap();
+
+        let error = orch
+            .resolve_approval("approval-orphan", ApprovalDecision::Accept)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "conflict", "{error}");
+
+        // The audit trail does not claim an approval that changed nothing.
+        let stored = orch
+            .list_approvals(false)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == "approval-orphan")
+            .unwrap();
+        assert_eq!(stored.status, ApprovalStatus::Cancelled);
+        assert_eq!(stored.decision, Some(ApprovalDecision::Cancel));
+        assert!(orch.list_approvals(true).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_run_waiting_for_an_approval_or_finishing_is_not_stalled() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        {
+            let mut mem = orch.memory.write().await;
+            mem.active_config.codex.stall_timeout_ms = 1;
+        }
+        let long_ago = Utc::now() - chrono::Duration::minutes(30);
+        let session = |phase: RunAttemptPhase, id: &str| {
+            let (cancel_tx, _cancel_rx) = oneshot::channel::<String>();
+            (
+                id.to_string(),
+                ActiveWorkerHandle {
+                    session: LiveSession {
+                        session_id: format!("session-{id}"),
+                        thread_id: String::new(),
+                        turn_id: "turn-1".into(),
+                        task_id: id.to_string(),
+                        issue_id: format!("issue-{id}"),
+                        issue_identifier: format!("SYM-{id}"),
+                        issue_title: "Silent".into(),
+                        project_id: "proj-retry".into(),
+                        provider: ProviderKind::Simulated,
+                        model: None,
+                        workspace_path: String::new(),
+                        branch_name: String::new(),
+                        pid: None,
+                        phase,
+                        attempt_number: 1,
+                        turn_count: 1,
+                        started_at: long_ago,
+                        last_event: None,
+                        last_message: None,
+                        last_event_at: Some(long_ago),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        total_tokens: 0,
+                    },
+                    cancel_tx,
+                },
+            )
+        };
+        // The real task waits for an approval; a second run is validating; a third is silent and stalls.
+        let (_, waiting) = session(RunAttemptPhase::StreamingTurn, &task.id);
+        let (finishing_id, finishing) = session(RunAttemptPhase::Finishing, "finishing");
+        let (silent_id, silent) = session(RunAttemptPhase::StreamingTurn, "silent");
+        orch.storage
+            .upsert_approval(&ApprovalRequest {
+                id: "approval-live".into(),
+                task_id: task.id.clone(),
+                issue_identifier: task.issue.identifier.clone(),
+                session_id: "session".into(),
+                provider: ProviderKind::Simulated,
+                kind: "command".into(),
+                title: "Run tests".into(),
+                description: String::new(),
+                command_or_diff: None,
+                status: ApprovalStatus::Pending,
+                created_at: Utc::now(),
+                resolved_at: None,
+                decision: None,
+            })
+            .await
+            .unwrap();
+        {
+            let mut mem = orch.memory.write().await;
+            mem.running.insert(task.id.clone(), waiting);
+            mem.running.insert(finishing_id.clone(), finishing);
+            mem.running.insert(silent_id.clone(), silent);
+        }
+
+        orch.reconcile_active_runs().await.ok();
+
+        let mem = orch.memory.read().await;
+        assert!(
+            mem.running.contains_key(&task.id),
+            "a run waiting for a person is not stalled"
+        );
+        assert!(
+            mem.running.contains_key(&finishing_id),
+            "validation is not an agent stall"
+        );
+        assert!(
+            !mem.running.contains_key(&silent_id),
+            "a silent streaming run still stalls"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_project_at_its_agent_limit_does_not_start_another_task() {
+        let temp = TempDir::new().unwrap();
+        let (orch, queued) = single_slot_orchestrator(&temp).await;
+        // Room for four agents overall, but the project allows one.
+        let mut settings = orch.storage.get_settings().await.unwrap();
+        settings.resource_policy.max_concurrent_on_ac = 4;
+        settings.resource_policy.max_concurrent_on_battery = 4;
+        orch.storage.save_settings(&settings).await.unwrap();
+
+        // One run of the project is in progress (a task in storage with a live handle) ...
+        let mut busy = task_in("proj-retry", "Todo", "SYM-BUSY");
+        busy.status = TaskStatus::Running;
+        orch.storage.upsert_task(&busy).await.unwrap();
+        let (cancel_tx, _cancel_rx) = oneshot::channel::<String>();
+        orch.memory.write().await.running.insert(
+            busy.id.clone(),
+            ActiveWorkerHandle {
+                session: LiveSession {
+                    session_id: "busy".into(),
+                    thread_id: String::new(),
+                    turn_id: "turn-1".into(),
+                    task_id: busy.id.clone(),
+                    issue_id: busy.issue.id.clone(),
+                    issue_identifier: busy.issue.identifier.clone(),
+                    issue_title: "Occupies the project".into(),
+                    project_id: "proj-retry".into(),
+                    provider: ProviderKind::Simulated,
+                    model: None,
+                    workspace_path: String::new(),
+                    branch_name: String::new(),
+                    pid: None,
+                    phase: RunAttemptPhase::StreamingTurn,
+                    attempt_number: 1,
+                    turn_count: 1,
+                    started_at: Utc::now(),
+                    last_event: None,
+                    last_message: None,
+                    last_event_at: Some(Utc::now()),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                },
+                cancel_tx,
+            },
+        );
+        // ... and another one of that project waits in the queue.
+        let mut waiting = orch.get_task(&queued.id).await.unwrap();
+        waiting.status = TaskStatus::Queued;
+        orch.storage.upsert_task(&waiting).await.unwrap();
+
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(
+            orch.get_task(&queued.id).await.unwrap().attempt_count,
+            0,
+            "the project's limit holds the queued task back"
+        );
+
+        // Once the project has room, it starts.
+        orch.memory.write().await.running.remove(&busy.id);
+        let mut busy = orch.get_task(&busy.id).await.unwrap();
+        busy.status = TaskStatus::Completed;
+        orch.storage.upsert_task(&busy).await.unwrap();
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&queued.id).await.unwrap().attempt_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_a_cancel_during_validation_is_not_turned_into_a_review() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        // A slow validation command keeps the run in its finishing phase long enough to cancel it.
+        let mut project = orch
+            .storage
+            .get_project("proj-retry")
+            .await
+            .unwrap()
+            .unwrap();
+        project.validation_commands = vec!["node -e \"setTimeout(function(){},2500)\"".into()];
+        orch.storage.upsert_project(&project).await.unwrap();
+
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        let mut finishing = false;
+        for _ in 0..300 {
+            if orch.get_task(&task.id).await.unwrap().current_phase
+                == Some(RunAttemptPhase::Finishing)
+            {
+                finishing = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(finishing, "the run reached its validation");
+
+        orch.cancel_task(&task.id, "operator").await.unwrap();
+        for _ in 0..200 {
+            if !orch.memory.read().await.winding_down.contains(&task.id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let after = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(
+            after.status,
+            TaskStatus::Cancelled,
+            "the worker's last write must not undo the cancellation"
+        );
+        assert!(
+            orch.storage
+                .get_pr_review(&format!("pr-{}", task.id))
+                .await
+                .unwrap()
+                .is_none(),
+            "a cancelled run leaves no review behind"
+        );
     }
 
     #[tokio::test]

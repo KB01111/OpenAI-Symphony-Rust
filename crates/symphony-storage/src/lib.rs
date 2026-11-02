@@ -413,6 +413,35 @@ impl Storage {
         Ok(())
     }
 
+    /// Replace only the tracker's view of a task's issue (`issue_json` with its id and identifier).
+    /// For the tracker sync, which works from a snapshot of the tasks: a whole-row write would put
+    /// the snapshot's status and usage over whatever a worker recorded in the meantime.
+    pub async fn update_task_issue(
+        &self,
+        task_id: &str,
+        issue: &symphony_core::Issue,
+        updated_at: DateTime<Utc>,
+    ) -> SymphonyResult<()> {
+        let issue_json =
+            serde_json::to_string(issue).map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let result = sqlx::query(
+            "UPDATE tasks SET issue_id = ?2, issue_identifier = ?3, issue_json = ?4, updated_at = ?5
+             WHERE id = ?1",
+        )
+        .bind(task_id)
+        .bind(&issue.id)
+        .bind(&issue.identifier)
+        .bind(issue_json)
+        .bind(updated_at.to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(SymphonyError::NotFound(format!("task {task_id} not found")));
+        }
+        Ok(())
+    }
+
     /// Persist only the lifecycle columns of `task` (status, session/thread/turn ids, phase, error,
     /// retry time, update time). For the side that stops a worker: its copy of the task was read
     /// before the worker settled usage, and [`upsert_task`](Self::upsert_task) would write that
@@ -591,7 +620,25 @@ impl Storage {
             recovered.push(task);
         }
 
+        // No worker survives a restart, so no approval can still be waited on: one left `pending`
+        // would show as actionable in the UI, and "approving" it would record a decision that
+        // changes nothing.
+        self.cancel_stale_pending_approvals().await?;
+
         Ok(recovered)
+    }
+
+    /// Mark every approval that is still `pending` as cancelled. Called on startup, when no run is
+    /// alive to receive a decision. Returns how many were closed.
+    pub async fn cancel_stale_pending_approvals(&self) -> SymphonyResult<u64> {
+        let done = sqlx::query(
+            "UPDATE approval_requests SET status = 'cancelled', decision = 'cancel', resolved_at = ?1 WHERE status = 'pending'",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(done.rows_affected())
     }
 
     // =========================================================================
@@ -1656,6 +1703,46 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("Interrupted"));
+    }
+
+    #[tokio::test]
+    async fn approvals_left_pending_by_a_crash_are_closed_on_startup_recovery() {
+        let storage = Storage::connect_in_memory().await.unwrap();
+        let request = |id: &str, status: ApprovalStatus| ApprovalRequest {
+            id: id.into(),
+            task_id: "task-1".into(),
+            issue_identifier: "SYM-1".into(),
+            session_id: "session-1".into(),
+            provider: ProviderKind::Codex,
+            kind: "command".into(),
+            title: format!("approval {id}"),
+            description: String::new(),
+            command_or_diff: None,
+            status,
+            created_at: Utc::now(),
+            resolved_at: None,
+            decision: None,
+        };
+        storage
+            .upsert_approval(&request("pending-1", ApprovalStatus::Pending))
+            .await
+            .unwrap();
+        storage
+            .upsert_approval(&request("approved-1", ApprovalStatus::Approved))
+            .await
+            .unwrap();
+
+        storage.recover_stale_running_tasks().await.unwrap();
+
+        assert!(storage.list_approvals(true).await.unwrap().is_empty());
+        let all = storage.list_approvals(false).await.unwrap();
+        let pending = all.iter().find(|a| a.id == "pending-1").unwrap();
+        assert_eq!(pending.status, ApprovalStatus::Cancelled);
+        assert_eq!(pending.decision, Some(ApprovalDecision::Cancel));
+        assert!(pending.resolved_at.is_some());
+        // A decision that was already made is left alone.
+        let approved = all.iter().find(|a| a.id == "approved-1").unwrap();
+        assert_eq!(approved.status, ApprovalStatus::Approved);
     }
 }
 

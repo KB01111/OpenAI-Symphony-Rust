@@ -670,7 +670,25 @@ impl CodexAppServerSession {
                     return Ok(None);
                 }
                 "item/tool/requestUserInput" => {
-                    let answers = build_tool_user_input_answers(&params);
+                    // Codex asks before it runs some tools (an MCP tool call, for instance) as a
+                    // question with options. Answering it is an approval, so it goes through the
+                    // same gate as command and file approvals: the policy decides whether a person
+                    // is asked, and the answer follows the decision instead of granting on sight.
+                    let ask = json!({
+                        "reason": user_input_question_text(&params),
+                        "questions": params.get("questions").cloned().unwrap_or(Value::Null),
+                    });
+                    let decision = self
+                        .resolve_approval(
+                            method,
+                            &ask,
+                            "acceptForSession",
+                            "accept",
+                            "decline",
+                            "cancel",
+                        )
+                        .await?;
+                    let answers = build_tool_user_input_answers(&params, &decision);
                     self.send_json(&json!({
                         "id": req_id,
                         "result": { "answers": answers }
@@ -734,21 +752,25 @@ impl CodexAppServerSession {
                         .await;
                     return Ok(None);
                 }
-                _ => {}
+                other => {
+                    // A request (it has a method, not just a result) that this driver does not
+                    // implement. Unanswered, the server would wait for the reply until the turn
+                    // timeout (an hour by default); JSON-RPC 2.0 says to answer "method not found".
+                    if msg.get("method").is_some() {
+                        self.send_json(&json!({
+                            "id": req_id,
+                            "error": {
+                                "code": -32601,
+                                "message": format!("Method not found: {other}")
+                            }
+                        }))
+                        .await?;
+                    }
+                }
             }
         }
 
-        match method {
-            "turn/completed" => Ok(Some(TurnCompletionSignal::Completed)),
-            "turn/failed" => Ok(Some(TurnCompletionSignal::Failed(
-                params
-                    .get("error")
-                    .map(|e| e.to_string())
-                    .unwrap_or_else(|| "Turn failed".into()),
-            ))),
-            "turn/cancelled" => Ok(Some(TurnCompletionSignal::Cancelled)),
-            _ => Ok(None),
-        }
+        Ok(turn_completion_signal(method, &params))
     }
 
     async fn resolve_approval(
@@ -811,6 +833,52 @@ enum TurnCompletionSignal {
     Completed,
     Failed(String),
     Cancelled,
+}
+
+/// How a turn ended, from the notification that says so. Codex reports every end as
+/// `turn/completed` and puts the outcome in `turn.status` (`completed`, `interrupted`, `failed`);
+/// reading the method alone would record a failed or interrupted turn as a success. The separate
+/// `turn/failed` and `turn/cancelled` methods are kept for servers that send them.
+fn turn_completion_signal(method: &str, params: &Value) -> Option<TurnCompletionSignal> {
+    match method {
+        "turn/completed" => {
+            let status = params
+                .pointer("/turn/status")
+                .or_else(|| params.get("status"))
+                .and_then(Value::as_str)
+                .unwrap_or("completed")
+                .to_ascii_lowercase();
+            match status.as_str() {
+                "failed" => Some(TurnCompletionSignal::Failed(turn_error_message(params))),
+                "interrupted" | "cancelled" | "canceled" => Some(TurnCompletionSignal::Cancelled),
+                _ => Some(TurnCompletionSignal::Completed),
+            }
+        }
+        "turn/failed" => Some(TurnCompletionSignal::Failed(turn_error_message(params))),
+        "turn/cancelled" => Some(TurnCompletionSignal::Cancelled),
+        _ => None,
+    }
+}
+
+/// The reason a turn failed, as far as the notification gives one.
+fn turn_error_message(params: &Value) -> String {
+    params
+        .pointer("/turn/error/message")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            params
+                .pointer("/turn/error")
+                .filter(|e| !e.is_null())
+                .map(|e| e.to_string())
+        })
+        .or_else(|| {
+            params
+                .get("error")
+                .filter(|e| !e.is_null())
+                .map(|e| e.to_string())
+        })
+        .unwrap_or_else(|| "Turn failed".into())
 }
 
 #[async_trait]
@@ -1471,7 +1539,7 @@ impl AgentSession for ClaudeCodeSession {
                 self.config.command.trim()
             };
 
-        let mut cmd = Command::new(exe);
+        let mut cmd = Command::new(launch_program(exe));
         cmd.arg("-p")
             .arg("--input-format")
             .arg("stream-json")
@@ -1708,7 +1776,7 @@ impl AgentSession for OpenCodeSession {
             return self.run_server_turn(&exe, prompt, event_tx).await;
         }
 
-        let mut cmd = Command::new(exe);
+        let mut cmd = Command::new(launch_program(exe));
         cmd.arg("run")
             .arg("--format")
             .arg("json")
@@ -2209,6 +2277,33 @@ impl AgentSession for SimulatedAgentSession {
     }
 }
 
+/// The program to start for a configured command such as `claude`. A bare name is resolved on `PATH`
+/// here, honouring `PATHEXT` on Windows: Rust's process spawning appends only `.exe` when it
+/// searches, so an npm-installed `claude.cmd` or `opencode.cmd` shim, which provider detection
+/// reports as installed, would otherwise fail to start by its bare name. (A resolved `.cmd` path is
+/// started through `cmd.exe` by the standard library, with its arguments escaped.)
+pub(crate) fn launch_program(exe: &str) -> std::ffi::OsString {
+    let bare = !exe.contains(['/', '\\']);
+    if cfg!(windows) && bare && Path::new(exe).extension().is_none() {
+        if let Some(found) = detection::find_on_path(exe) {
+            return found.into_os_string();
+        }
+    }
+    exe.into()
+}
+
+/// A command line for `powershell -Command`. PowerShell reads a line that starts with a quoted path
+/// as a string to print, not as a program to run, unless the call operator `&` is in front.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn powershell_command_line(command: &str) -> String {
+    let trimmed = command.trim();
+    if matches!(trimmed.chars().next(), Some('"' | '\'')) {
+        format!("& {trimmed}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn build_codex_command(
     raw_command: &str,
     workspace_path: &Path,
@@ -2229,7 +2324,7 @@ fn build_codex_command(
                 .arg("-NoProfile")
                 .arg("-NonInteractive")
                 .arg("-Command")
-                .arg(trimmed);
+                .arg(powershell_command_line(trimmed));
             c
         }
     };
@@ -2357,16 +2452,47 @@ fn extract_assistant_text(msg: &Value) -> Option<String> {
     None
 }
 
-fn build_tool_user_input_answers(params: &Value) -> Value {
+/// The text of the questions Codex asks in an `item/tool/requestUserInput` request, for the
+/// approval a person is shown.
+fn user_input_question_text(params: &Value) -> String {
+    let text: Vec<&str> = params
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(|questions| {
+            questions
+                .iter()
+                .filter_map(|q| q.get("question").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    if text.is_empty() {
+        "Codex asks for permission to use a tool".to_string()
+    } else {
+        text.join("\n")
+    }
+}
+
+/// The answers to an `item/tool/requestUserInput` request for an approval decision
+/// (`acceptForSession`, `accept`, `decline` or `cancel`): each question is answered with the one of
+/// its own options that means that decision.
+fn build_tool_user_input_answers(params: &Value, decision: &str) -> Value {
     let mut answers = serde_json::Map::new();
     if let Some(questions) = params.get("questions").and_then(|v| v.as_array()) {
         for q in questions {
             if let Some(qid) = q.get("id").and_then(|v| v.as_str()) {
+                let labels: Vec<&str> = q
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .map(|options| {
+                        options
+                            .iter()
+                            .filter_map(|o| o.get("label").and_then(Value::as_str))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 answers.insert(
                     qid.to_string(),
-                    json!({
-                        "answers": ["Approve this Session"]
-                    }),
+                    json!({ "answers": [pick_option_label(&labels, decision)] }),
                 );
             }
         }
@@ -2374,9 +2500,202 @@ fn build_tool_user_input_answers(params: &Value) -> Value {
     Value::Object(answers)
 }
 
+/// The label among `labels` that stands for `decision`; when a question lists no options (or none
+/// fits) the label Codex uses for it.
+fn pick_option_label(labels: &[&str], decision: &str) -> String {
+    let words = |label: &str| -> Vec<String> {
+        label
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric() && c != '\'')
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let has_any = |label: &str, wanted: &[&str]| {
+        let label_words = words(label);
+        wanted.iter().any(|w| label_words.iter().any(|lw| lw == w))
+    };
+    let affirmative = |l: &&str| {
+        has_any(
+            l,
+            &["approve", "allow", "accept", "yes", "ok", "run", "proceed"],
+        )
+    };
+    let negative = |l: &&str| {
+        has_any(
+            l,
+            &[
+                "deny", "denied", "decline", "reject", "no", "don't", "never",
+            ],
+        )
+    };
+    let cancelling = |l: &&str| has_any(l, &["cancel", "abort", "stop"]);
+    let broad = |l: &&str| has_any(l, &["session", "always"]);
+    let pick = |matching: &dyn Fn(&&str) -> bool| labels.iter().find(|l| matching(l)).copied();
+
+    let (chosen, fallback) = match decision {
+        "acceptForSession" => (
+            pick(&|l| affirmative(l) && has_any(l, &["session"]))
+                .or_else(|| pick(&|l| affirmative(l) && !broad(l)))
+                .or_else(|| pick(&affirmative)),
+            "Approve this Session",
+        ),
+        "accept" => (
+            pick(&|l| affirmative(l) && !broad(l)).or_else(|| pick(&affirmative)),
+            "Approve Once",
+        ),
+        "cancel" => (pick(&cancelling).or_else(|| pick(&negative)), "Cancel"),
+        // Anything else is a refusal: never fall back to an affirmative option.
+        _ => (pick(&negative).or_else(|| pick(&cancelling)), "Deny"),
+    };
+    chosen.unwrap_or(fallback).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn outcome(method: &str, params: Value) -> &'static str {
+        match turn_completion_signal(method, &params) {
+            Some(TurnCompletionSignal::Completed) => "completed",
+            Some(TurnCompletionSignal::Failed(_)) => "failed",
+            Some(TurnCompletionSignal::Cancelled) => "cancelled",
+            None => "none",
+        }
+    }
+
+    #[test]
+    fn a_turn_that_codex_reports_as_failed_or_interrupted_is_not_recorded_as_a_success() {
+        // Codex ends every turn with `turn/completed`; the outcome is in `turn.status`.
+        assert_eq!(
+            outcome(
+                "turn/completed",
+                json!({ "turn": { "status": "completed" } })
+            ),
+            "completed"
+        );
+        assert_eq!(
+            outcome("turn/completed", json!({ "turn": { "status": "failed" } })),
+            "failed"
+        );
+        assert_eq!(
+            outcome(
+                "turn/completed",
+                json!({ "turn": { "status": "interrupted" } })
+            ),
+            "cancelled"
+        );
+        // Without a status (older servers, fixtures) a completion is a completion.
+        assert_eq!(outcome("turn/completed", json!({})), "completed");
+        assert_eq!(outcome("turn/completed", Value::Null), "completed");
+        // The separate methods still work, and other notifications are not turn ends.
+        assert_eq!(outcome("turn/failed", json!({})), "failed");
+        assert_eq!(outcome("turn/cancelled", json!({})), "cancelled");
+        assert_eq!(outcome("item/completed", json!({})), "none");
+    }
+
+    #[test]
+    fn a_failed_turn_carries_the_reason_codex_gave() {
+        let params = json!({ "turn": { "status": "failed", "error": { "message": "context window exceeded" } } });
+        match turn_completion_signal("turn/completed", &params) {
+            Some(TurnCompletionSignal::Failed(reason)) => {
+                assert_eq!(reason, "context window exceeded")
+            }
+            _ => panic!("expected a failure"),
+        }
+        match turn_completion_signal("turn/completed", &json!({ "turn": { "status": "failed" } })) {
+            Some(TurnCompletionSignal::Failed(reason)) => assert_eq!(reason, "Turn failed"),
+            _ => panic!("expected a failure"),
+        }
+    }
+
+    #[test]
+    fn user_input_questions_are_answered_with_the_option_that_matches_the_decision() {
+        let params = json!({ "questions": [{
+            "id": "q1",
+            "question": "Allow the github tool to create an issue?",
+            "options": [
+                { "label": "Approve Once" },
+                { "label": "Approve this Session" },
+                { "label": "Deny" },
+                { "label": "Cancel" },
+            ]
+        }]});
+        let answer = |decision: &str| {
+            build_tool_user_input_answers(&params, decision)["q1"]["answers"][0]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(answer("acceptForSession"), "Approve this Session");
+        assert_eq!(answer("accept"), "Approve Once");
+        assert_eq!(answer("decline"), "Deny");
+        assert_eq!(answer("cancel"), "Cancel");
+        assert_eq!(
+            user_input_question_text(&params),
+            "Allow the github tool to create an issue?"
+        );
+    }
+
+    #[test]
+    fn a_refusal_never_picks_an_affirmative_option() {
+        // Options in another wording, and none that says "deny": a refusal must still not approve.
+        let labels = ["Allow", "Allow for this session", "Don't allow"];
+        assert_eq!(pick_option_label(&labels, "decline"), "Don't allow");
+        assert_eq!(pick_option_label(&labels, "accept"), "Allow");
+        assert_eq!(
+            pick_option_label(&labels, "acceptForSession"),
+            "Allow for this session"
+        );
+        // Only affirmative options: a refusal falls back to Codex's own label, not to an approval.
+        let only_yes = ["Yes", "Yes, always"];
+        assert_eq!(pick_option_label(&only_yes, "decline"), "Deny");
+        assert_eq!(pick_option_label(&only_yes, "cancel"), "Cancel");
+        // No options at all (a free-text question): Codex's labels.
+        assert_eq!(pick_option_label(&[], "accept"), "Approve Once");
+        assert_eq!(
+            pick_option_label(&[], "acceptForSession"),
+            "Approve this Session"
+        );
+        assert_eq!(
+            user_input_question_text(&json!({})),
+            "Codex asks for permission to use a tool"
+        );
+    }
+
+    #[test]
+    fn a_quoted_program_path_gets_the_powershell_call_operator() {
+        assert_eq!(
+            powershell_command_line(r#"  "C:\Program Files\nodejs\codex.cmd" app-server "#),
+            r#"& "C:\Program Files\nodejs\codex.cmd" app-server"#
+        );
+        assert_eq!(
+            powershell_command_line("'C:\\codex.cmd' app-server"),
+            "& 'C:\\codex.cmd' app-server"
+        );
+        // An unquoted command is passed as it is.
+        assert_eq!(
+            powershell_command_line(" codex app-server "),
+            "codex app-server"
+        );
+    }
+
+    #[test]
+    fn a_configured_program_with_a_path_or_extension_is_started_as_written() {
+        // Only a bare name on Windows is looked up; everything else is the user's explicit choice.
+        assert_eq!(
+            launch_program("/usr/local/bin/claude"),
+            "/usr/local/bin/claude"
+        );
+        assert_eq!(
+            launch_program(r"C:\tools\claude.exe"),
+            r"C:\tools\claude.exe"
+        );
+        assert_eq!(launch_program("claude.cmd"), "claude.cmd");
+        if !cfg!(windows) {
+            assert_eq!(launch_program("claude"), "claude");
+        }
+    }
 
     #[test]
     fn claude_prompt_cache_tokens_count_as_input_but_codex_cached_tokens_do_not() {

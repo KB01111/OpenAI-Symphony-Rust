@@ -103,6 +103,20 @@ mod tests {
     }
 
     #[test]
+    fn a_workflow_file_written_with_a_byte_order_mark_and_crlf_keeps_its_settings() {
+        // Notepad and Windows PowerShell write exactly this; the settings must not turn into prompt text.
+        let raw = "\u{feff}---\r\ntracker:\r\n  kind: github\r\nagent:\r\n  max_concurrent_agents: 3\r\n---\r\nHello {{ issue.identifier }}\r\n";
+        let wf = WorkflowDefinition::parse(raw, None).expect("should parse");
+        assert_eq!(wf.prompt_template, "Hello {{ issue.identifier }}");
+        assert!(wf.config.contains_key("tracker"));
+        let cfg = ServiceConfig::from_workflow(&wf).expect("valid config");
+        assert_eq!(cfg.tracker_kind, "github");
+        assert_eq!(cfg.agent.max_concurrent_agents, 3);
+        // The original text, byte order mark included, is kept so an editor round-trips the file.
+        assert!(wf.raw_source.starts_with('\u{feff}'));
+    }
+
+    #[test]
     fn test_redaction_masks_nested_tracker_credentials() {
         let cfg = ServiceConfig {
             tracker_provider: serde_json::json!({

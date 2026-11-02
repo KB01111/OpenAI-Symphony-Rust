@@ -26,7 +26,10 @@ pub struct WorkflowDefinition {
 impl WorkflowDefinition {
     /// Parse a `WORKFLOW.md` string into YAML front matter map and trimmed Markdown body (SPEC.md Section 5.2)
     pub fn parse(raw: &str, source_path: Option<PathBuf>) -> SymphonyResult<Self> {
-        let normalized = raw.replace("\r\n", "\n");
+        // Windows editors (Notepad, Windows PowerShell's UTF-8 output) start a file with a byte order
+        // mark. Left in, the opening `---` is no longer at the start of the document, and the whole
+        // front matter, every setting in it, would be read as prompt text.
+        let normalized = raw.trim_start_matches('\u{feff}').replace("\r\n", "\n");
         if let Some(rest) = normalized.strip_prefix("---\n") {
             if let Some(end_idx) = rest.find("\n---\n") {
                 let yaml_str = &rest[..end_idx];

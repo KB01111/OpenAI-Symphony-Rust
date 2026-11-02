@@ -11,6 +11,8 @@ use tracing::{debug, info, warn};
 pub mod process;
 pub use process::{hide_console_window, output_with_timeout, prepare_tree_command, ProcessTree};
 
+/// The longest a commit, fetch or push may take before it is given up on.
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const HASH_PREFIX_HEX_LEN: usize = 16; // 64 bits of entropy per SPEC.md Section 4.2
 
 /// Secret environment variables that must NEVER be inherited by workspace hooks or agent subprocesses.
@@ -110,6 +112,12 @@ pub enum MergeCheck {
 pub fn git_command() -> Command {
     let mut cmd = Command::new("git");
     hide_console_window(&mut cmd);
+    // A repository's configuration can name programs that git runs (fsmonitor, textconv and clean
+    // filters): none of them may see the tracker credentials. Pushes do not need them from the
+    // environment, the token is bound to the origin explicitly (`http.<url>.extraheader`).
+    for var in SECRET_ENV_VARS_TO_STRIP {
+        cmd.env_remove(var);
+    }
     cmd
 }
 
@@ -310,6 +318,16 @@ pub fn lexical_normalize(path: &Path) -> PathBuf {
 fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     let s = path.to_string_lossy();
     if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        // `\\?\UNC\server\share\dir` is the extended form of `\\server\share\dir`. Dropping only
+        // the `\\?\` would leave `UNC\server\share\dir`, a *relative* path that resolves against the
+        // process's working directory.
+        if let Some(unc) = stripped
+            .get(..4)
+            .filter(|prefix| prefix.eq_ignore_ascii_case(r"UNC\"))
+            .map(|_| &stripped[4..])
+        {
+            return PathBuf::from(format!(r"\\{unc}"));
+        }
         PathBuf::from(stripped)
     } else {
         path
@@ -528,15 +546,22 @@ impl WorkspaceManager {
         };
 
         let mut checked_out = branch_name.to_string();
-        let output = git_command()
-            .arg("-C")
-            .arg(repo_path)
-            .arg("worktree")
-            .arg("add")
-            .arg("-B")
-            .arg(branch_name)
-            .arg(worktree_path)
-            .arg(&base_ref)
+        // An existing branch is checked out as it is. `-B` would reset it to the base branch, and
+        // the commits of an earlier attempt, or of the branch the tracker names (which can be the
+        // user's own), would be left reachable only through the reflog.
+        let branch_exists =
+            Self::git_ref_exists(repo_path, &format!("refs/heads/{branch_name}")).await;
+        let mut add = git_command();
+        add.arg("-C").arg(repo_path).arg("worktree").arg("add");
+        if branch_exists {
+            add.arg(worktree_path).arg(branch_name);
+        } else {
+            add.arg("-b")
+                .arg(branch_name)
+                .arg(worktree_path)
+                .arg(&base_ref);
+        }
+        let output = add
             .output()
             .await
             .map_err(|e| SymphonyError::GitWorktreeError(e.to_string()))?;
@@ -1353,10 +1378,24 @@ impl WorkspaceManager {
         for (key, value) in env {
             cmd.env(key, value);
         }
-        let out = cmd
-            .output()
-            .await
-            .map_err(|e| SymphonyError::GitWorktreeError(format!("could not run git: {e}")))?;
+        // Bounded: a stalled remote (a push or fetch with no answer) must not hold the attempt, or
+        // the publish button, forever. The whole process tree ends with the timeout.
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let out = match output_with_timeout(&mut cmd, GIT_COMMAND_TIMEOUT).await {
+            Some(Ok(out)) => out,
+            Some(Err(e)) => {
+                return Err(SymphonyError::GitWorktreeError(format!(
+                    "could not run git: {e}"
+                )))
+            }
+            None => {
+                return Err(SymphonyError::GitWorktreeError(format!(
+                    "git {} did not finish within {} seconds (is the remote reachable?)",
+                    args.first().copied().unwrap_or(""),
+                    GIT_COMMAND_TIMEOUT.as_secs()
+                )))
+            }
+        };
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
@@ -1445,27 +1484,27 @@ impl WorkspaceManager {
                     let code = output.status.code().unwrap_or(-1);
                     let passed = output.status.success();
                     results.push(ValidationResult {
-                        id: format!("{task_id}-val-{}", results.len() + 1),
+                        id: validation_result_id(task_id, attempt_number, results.len() + 1),
                         task_id: task_id.to_string(),
                         attempt_number,
                         command: trimmed.to_string(),
                         exit_code: code,
                         passed,
-                        stdout: String::from_utf8_lossy(&output.stdout)
-                            .chars()
-                            .take(8192)
-                            .collect(),
-                        stderr: String::from_utf8_lossy(&output.stderr)
-                            .chars()
-                            .take(8192)
-                            .collect(),
+                        stdout: head_and_tail(
+                            &String::from_utf8_lossy(&output.stdout),
+                            VALIDATION_OUTPUT_CHARS,
+                        ),
+                        stderr: head_and_tail(
+                            &String::from_utf8_lossy(&output.stderr),
+                            VALIDATION_OUTPUT_CHARS,
+                        ),
                         duration_ms,
                         executed_at,
                     });
                 }
                 Some(Err(e)) => {
                     results.push(ValidationResult {
-                        id: format!("{task_id}-val-{}", results.len() + 1),
+                        id: validation_result_id(task_id, attempt_number, results.len() + 1),
                         task_id: task_id.to_string(),
                         attempt_number,
                         command: trimmed.to_string(),
@@ -1479,7 +1518,7 @@ impl WorkspaceManager {
                 }
                 None => {
                     results.push(ValidationResult {
-                        id: format!("{task_id}-val-{}", results.len() + 1),
+                        id: validation_result_id(task_id, attempt_number, results.len() + 1),
                         task_id: task_id.to_string(),
                         attempt_number,
                         command: trimmed.to_string(),
@@ -1495,6 +1534,31 @@ impl WorkspaceManager {
         }
         results
     }
+}
+
+/// How much of a validation command's stdout or stderr is kept.
+const VALIDATION_OUTPUT_CHARS: usize = 8192;
+
+/// The id of one validation result. The attempt number is part of it: the id is the table's primary
+/// key, and a retry runs the same commands again, so without it the second attempt's results would
+/// collide with the first attempt's and be dropped.
+fn validation_result_id(task_id: &str, attempt_number: u32, index: usize) -> String {
+    format!("{task_id}-a{attempt_number}-val-{index}")
+}
+
+/// `text` cut to about `max` characters by dropping the middle. Test runners and compilers print the
+/// failure summary last, so keeping only the beginning would hide exactly what failed.
+fn head_and_tail(text: &str, max: usize) -> String {
+    let total = text.chars().count();
+    if total <= max {
+        return text.to_string();
+    }
+    let head = max / 4;
+    let tail = max - head;
+    let omitted = total - head - tail;
+    let start: String = text.chars().take(head).collect();
+    let end: String = text.chars().skip(total - tail).collect();
+    format!("{start}\n… [{omitted} characters omitted] …\n{end}")
 }
 
 /// Run a repository lifecycle hook (`after_create`, `before_run`, `after_run`, `before_remove`)
@@ -1575,6 +1639,55 @@ pub fn build_host_shell_command(script: &str, cwd: &Path) -> Command {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn validation_results_of_different_attempts_get_different_ids() {
+        // The id is the table's primary key and a retry runs the same commands again.
+        let first = validation_result_id("task-1", 1, 1);
+        let second = validation_result_id("task-1", 2, 1);
+        assert_ne!(first, second);
+        assert_ne!(
+            validation_result_id("task-1", 1, 1),
+            validation_result_id("task-1", 1, 2)
+        );
+        assert_ne!(
+            validation_result_id("task-1", 1, 1),
+            validation_result_id("task-2", 1, 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_attempt_keeps_its_own_validation_results() {
+        let dir = tempdir().unwrap();
+        let manager = WorkspaceManager::new();
+        let commands = vec!["echo ok".to_string()];
+        let first = manager
+            .run_validation_commands("task-1", 1, dir.path(), &commands, 30_000)
+            .await;
+        let second = manager
+            .run_validation_commands("task-1", 2, dir.path(), &commands, 30_000)
+            .await;
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_ne!(first[0].id, second[0].id);
+        assert_eq!((first[0].attempt_number, second[0].attempt_number), (1, 2));
+    }
+
+    #[test]
+    fn long_command_output_keeps_its_beginning_and_its_end() {
+        // The failure summary of a test run is the last thing printed.
+        let output = format!("start\n{}\nFAILED: 2 tests", "x".repeat(50_000));
+        let kept = head_and_tail(&output, VALIDATION_OUTPUT_CHARS);
+        assert!(kept.starts_with("start\n"));
+        assert!(kept.ends_with("FAILED: 2 tests"), "the tail survives");
+        assert!(kept.contains("characters omitted"));
+        assert!(kept.chars().count() < VALIDATION_OUTPUT_CHARS + 64);
+        // Short output is untouched, and multi-byte text is never split.
+        assert_eq!(head_and_tail("short", VALIDATION_OUTPUT_CHARS), "short");
+        let wide = "é".repeat(20_000);
+        let kept = head_and_tail(&wide, 1000);
+        assert!(kept.chars().count() < 1100);
+    }
 
     #[test]
     fn test_workspace_key_sanitization_and_collision_resistance() {
@@ -1767,6 +1880,114 @@ mod tests {
             ],
         );
         (repo, wt)
+    }
+
+    #[test]
+    fn git_does_not_inherit_tracker_credentials() {
+        let cmd = git_command();
+        let std_cmd = cmd.as_std();
+        for var in SECRET_ENV_VARS_TO_STRIP {
+            let removed = std_cmd
+                .get_envs()
+                .any(|(key, value)| key == std::ffi::OsStr::new(var) && value.is_none());
+            assert!(removed, "{var} must be removed from git's environment");
+        }
+    }
+
+    #[test]
+    fn a_windows_unc_path_keeps_its_leading_double_backslash() {
+        // `canonicalize` on a network share returns `\\?\UNC\server\share\...`. Stripping only the
+        // `\\?\` leaves a *relative* `UNC\server\...`, which would resolve against the working directory.
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\srv\share\work\task-1")),
+            PathBuf::from(r"\\srv\share\work\task-1")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\unc\srv\share")),
+            PathBuf::from(r"\\srv\share")
+        );
+        // A local drive loses only the prefix; an ordinary path is untouched.
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\C:\work\task-1")),
+            PathBuf::from(r"C:\work\task-1")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from("/home/user/work")),
+            PathBuf::from("/home/user/work")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worktree_for_an_existing_branch_keeps_that_branchs_commits() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        std::fs::write(repo.join("file.txt"), "base\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "initial"]);
+        // The branch the tracker names already exists and holds work that is not on `main`.
+        git(&repo, &["checkout", "-b", "feature/mine"]);
+        std::fs::write(repo.join("mine.txt"), "my unpushed work\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "my work"]);
+        let tip = git_stdout(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        git(&repo, &["checkout", "main"]);
+
+        let worktree = dir.path().join("wt");
+        let branch = WorkspaceManager::new()
+            .create_git_worktree(&repo, &worktree, "feature/mine", "main")
+            .await
+            .unwrap();
+
+        assert_eq!(branch, "feature/mine");
+        assert!(
+            worktree.join("mine.txt").is_file(),
+            "the work is checked out"
+        );
+        let after = git_stdout(&repo, &["rev-parse", "feature/mine"])
+            .await
+            .unwrap();
+        assert_eq!(after.trim(), tip.trim(), "the branch was not reset to main");
+    }
+
+    #[tokio::test]
+    async fn a_worktree_for_a_new_branch_starts_from_the_base_branch() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        std::fs::write(repo.join("file.txt"), "base\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "initial"]);
+        let main_tip = git_stdout(&repo, &["rev-parse", "main"]).await.unwrap();
+
+        let worktree = dir.path().join("wt");
+        let branch = WorkspaceManager::new()
+            .create_git_worktree(&repo, &worktree, "symphony/new-task", "main")
+            .await
+            .unwrap();
+
+        assert_eq!(branch, "symphony/new-task");
+        let tip = git_stdout(&worktree, &["rev-parse", "HEAD"]).await.unwrap();
+        assert_eq!(tip.trim(), main_tip.trim());
+    }
+
+    #[tokio::test]
+    async fn a_git_command_that_never_finishes_is_given_up_on() {
+        // `git_checked` bounds every commit, fetch and push; the bound applies through the same
+        // helper, so check that helper times a hung command out and reports it.
+        let mut cmd = Command::new(if cfg!(windows) { "ping" } else { "sleep" });
+        if cfg!(windows) {
+            cmd.args(["-n", "30", "127.0.0.1"]);
+        } else {
+            cmd.arg("30");
+        }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let started = std::time::Instant::now();
+        let result = output_with_timeout(&mut cmd, Duration::from_millis(300)).await;
+        assert!(result.is_none(), "a hung command times out");
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[tokio::test]
