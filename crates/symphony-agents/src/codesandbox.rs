@@ -264,13 +264,14 @@ impl CodeSandboxSession {
                 ),
             }
         })?;
-        let node = find_node_runtime(Some(&runner)).ok_or_else(|| {
-            SymphonyError::AgentProtocolError {
+        let node =
+            find_node_runtime(Some(&runner)).ok_or_else(|| SymphonyError::AgentProtocolError {
                 code: "node_not_found".into(),
-                message: "CodeSandbox needs Node.js >=22.13.0. Reinstall Symphony Desktop to restore \
-                          its bundled Node runtime, or install a compatible Node.js version.".into(),
-            }
-        })?;
+                message:
+                    "CodeSandbox needs Node.js >=22.13.0. Reinstall Symphony Desktop to restore \
+                          its bundled Node runtime, or install a compatible Node.js version."
+                        .into(),
+            })?;
         let version = crate::detection::probe_version(&node).await;
         if !version.as_deref().is_some_and(supports_node_version) {
             return Err(SymphonyError::AgentProtocolError {
