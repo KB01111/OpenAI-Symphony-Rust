@@ -158,6 +158,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   the workflow's `terminal_states` for Linear blockers, were parsed and then ignored. A failed or
   rate-limited poll was hidden; it is reported once as an activity event and a rate-limited tracker is left
   alone until its limit resets.
+- Deleting a project or a task left its approvals, validation results and pull request reviews behind, and the
+  automatic pull request status sweep then failed on every orphaned review each time; they are removed with it.
+- A pull request's changed files and review comments were read from the first page only (30 items), so a large
+  pull request showed an incomplete diff summary and missed comments; every page is read now (up to GitHub's limits).
 - A desktop attached to a running `symphony-cli` kept the old token after the CLI restarted and showed
   *unauthorized* until the app was restarted; a different API version is written to the log.
 - An unsupported saved language no longer breaks the whole UI at start; the task composer says when the

@@ -124,6 +124,55 @@ async fn github_listing_stops_at_the_page_limit() {
 }
 
 #[tokio::test]
+async fn a_pull_request_reads_every_page_of_its_files_and_review_comments() {
+    // 230 changed files and 105 review comments: more than one page of each (100 per page).
+    let (base, requests) = serve(Box::new(|target, _| {
+        let page = query_param(target, "page").unwrap_or(1);
+        let path = target.split('?').next().unwrap_or("");
+        let slice = |total: usize| {
+            let first = (page - 1) * 100;
+            first..total.min(first + 100)
+        };
+        if path.ends_with("/pulls/7/files") {
+            Value::Array(
+                slice(230)
+                    .map(|n| json!({ "filename": format!("src/file{n}.rs"), "status": "modified", "additions": 1, "deletions": 0 }))
+                    .collect(),
+            )
+        } else if path.ends_with("/pulls/7/comments") {
+            Value::Array(
+                slice(105)
+                    .map(|n| json!({ "user": { "login": "reviewer", "type": "User" }, "body": format!("comment {n}"), "path": "src/file0.rs" }))
+                    .collect(),
+            )
+        } else if path.ends_with("/pulls/7") {
+            json!({ "title": "Many files", "state": "open", "head": { "ref": "task", "sha": "" }, "base": { "ref": "main" }, "mergeable": true })
+        } else {
+            json!({})
+        }
+    }))
+    .await;
+    let tracker = GitHubTracker::new(Some(base), "owner/repo".into(), None, None);
+
+    let details = tracker.fetch_pull_request_details(7).await.unwrap();
+
+    assert_eq!(details.changed_files.len(), 230, "every page of files");
+    assert_eq!(details.changed_files.last().unwrap().path, "src/file229.rs");
+    assert_eq!(details.review_comments.len(), 105, "every page of comments");
+    let pages = |suffix: &str| {
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(target, _)| target.split('?').next().unwrap_or("").ends_with(suffix))
+            .map(|(target, _)| query_param(target, "page"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(pages("/files"), vec![Some(1), Some(2), Some(3)]);
+    assert_eq!(pages("/comments"), vec![Some(1), Some(2)]);
+}
+
+#[tokio::test]
 async fn linear_listing_follows_the_cursor() {
     let (base, requests) = serve(Box::new(|_, body| {
         let request: Value = serde_json::from_str(body).unwrap();

@@ -253,12 +253,27 @@ impl Storage {
         row.map(row_to_project).transpose()
     }
 
+    /// Delete a project with everything that belongs to it. Tasks, attempts, follow-ups and tool
+    /// calls go through their foreign keys; approvals, validation results and pull request reviews
+    /// predate the cascading tables and have none, so they are removed here, in the same
+    /// transaction. Left behind, a review of a deleted project fails the pull request sweep on every
+    /// pass.
     pub async fn delete_project(&self, id: &str) -> SymphonyResult<()> {
-        sqlx::query("DELETE FROM projects WHERE id = ?1")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let storage_err = |e: sqlx::Error| SymphonyError::StorageError(e.to_string());
+        let mut tx = self.pool.begin().await.map_err(storage_err)?;
+        for statement in [
+            "DELETE FROM approval_requests WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+            "DELETE FROM validation_results WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+            "DELETE FROM pull_request_reviews WHERE project_id = ?1 OR task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+            "DELETE FROM projects WHERE id = ?1",
+        ] {
+            sqlx::query(statement)
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_err)?;
+        }
+        tx.commit().await.map_err(storage_err)?;
         Ok(())
     }
 
@@ -532,12 +547,24 @@ impl Storage {
         row.map(row_to_task).transpose()
     }
 
+    /// Delete a task with its approvals, validation results and pull request review (see
+    /// [`delete_project`](Self::delete_project) for why those are removed explicitly).
     pub async fn delete_task(&self, id: &str) -> SymphonyResult<()> {
-        sqlx::query("DELETE FROM tasks WHERE id = ?1")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let storage_err = |e: sqlx::Error| SymphonyError::StorageError(e.to_string());
+        let mut tx = self.pool.begin().await.map_err(storage_err)?;
+        for statement in [
+            "DELETE FROM approval_requests WHERE task_id = ?1",
+            "DELETE FROM validation_results WHERE task_id = ?1",
+            "DELETE FROM pull_request_reviews WHERE task_id = ?1",
+            "DELETE FROM tasks WHERE id = ?1",
+        ] {
+            sqlx::query(statement)
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_err)?;
+        }
+        tx.commit().await.map_err(storage_err)?;
         Ok(())
     }
 
@@ -1703,6 +1730,110 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("Interrupted"));
+    }
+
+    #[tokio::test]
+    async fn deleting_a_project_leaves_no_orphaned_reviews_approvals_or_validation_results() {
+        let storage = Storage::connect_in_memory().await.unwrap();
+        let now = Utc::now();
+        let project = |id: &str| Project {
+            id: id.into(),
+            name: format!("Project {id}"),
+            repo_path: "C:/repos/x".into(),
+            default_branch: "main".into(),
+            workspace_root: "C:/repos/ws".into(),
+            workflow_path: None,
+            preferred_provider: ProviderKind::Codex,
+            preferred_model: None,
+            tracker_kind: "manual".into(),
+            github_repo: None,
+            linear_project_slug: None,
+            required_labels: Vec::new(),
+            auto_dispatch: false,
+            max_concurrent_agents: 1,
+            validation_commands: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        };
+        let mut tasks = Vec::new();
+        for project_id in ["doomed", "kept"] {
+            storage.upsert_project(&project(project_id)).await.unwrap();
+            let task = Task::new_manual(
+                project_id.into(),
+                format!("SYM-{project_id}"),
+                "A task".into(),
+                None,
+                Some(1),
+                ProviderKind::Codex,
+                None,
+                Vec::new(),
+            );
+            storage.upsert_task(&task).await.unwrap();
+            storage
+                .upsert_approval(&ApprovalRequest {
+                    id: format!("approval-{project_id}"),
+                    task_id: task.id.clone(),
+                    issue_identifier: task.issue.identifier.clone(),
+                    session_id: "s".into(),
+                    provider: ProviderKind::Codex,
+                    kind: "command".into(),
+                    title: "t".into(),
+                    description: String::new(),
+                    command_or_diff: None,
+                    status: ApprovalStatus::Approved,
+                    created_at: now,
+                    resolved_at: None,
+                    decision: None,
+                })
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO validation_results (id, task_id, attempt_number, command, exit_code, passed, stdout, stderr, duration_ms, executed_at)
+                 VALUES (?1, ?2, 1, 'cargo test', 0, 1, '', '', 1, ?3)",
+            )
+            .bind(format!("val-{project_id}"))
+            .bind(&task.id)
+            .bind(now.to_rfc3339())
+            .execute(&storage.pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO pull_request_reviews (id, task_id, project_id, pr_number, review_json, updated_at)
+                 VALUES (?1, ?2, ?3, 0, '{}', ?4)",
+            )
+            .bind(format!("pr-{project_id}"))
+            .bind(&task.id)
+            .bind(project_id)
+            .bind(now.to_rfc3339())
+            .execute(&storage.pool)
+            .await
+            .unwrap();
+            tasks.push(task);
+        }
+
+        storage.delete_project("doomed").await.unwrap();
+
+        let count = |sql: &'static str| {
+            let pool = storage.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(sql)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        // Only the other project's rows remain.
+        assert_eq!(count("SELECT COUNT(*) FROM tasks").await, 1);
+        assert_eq!(count("SELECT COUNT(*) FROM approval_requests").await, 1);
+        assert_eq!(count("SELECT COUNT(*) FROM validation_results").await, 1);
+        assert_eq!(count("SELECT COUNT(*) FROM pull_request_reviews").await, 1);
+
+        // Deleting a single task is just as thorough.
+        storage.delete_task(&tasks[1].id).await.unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM tasks").await, 0);
+        assert_eq!(count("SELECT COUNT(*) FROM approval_requests").await, 0);
+        assert_eq!(count("SELECT COUNT(*) FROM validation_results").await, 0);
+        assert_eq!(count("SELECT COUNT(*) FROM pull_request_reviews").await, 0);
     }
 
     #[tokio::test]

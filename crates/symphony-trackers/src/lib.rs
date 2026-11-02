@@ -18,6 +18,8 @@ const MAX_ISSUE_PAGES: usize = 10;
 /// first, so a low cap would hide every newer issue); this only bounds a runaway listing.
 const MAX_CANDIDATE_PAGES: usize = 100;
 const GITHUB_PAGE_SIZE: usize = 100;
+/// GitHub lists at most 3000 files of a pull request (30 pages of 100); review comments are bounded the same way.
+const MAX_PULL_REQUEST_LIST_PAGES: usize = 30;
 
 /// The error code of a GitHub answer that says a rate limit is used up.
 pub const GITHUB_RATE_LIMITED: &str = "github_rate_limited";
@@ -520,6 +522,31 @@ impl GitHubTracker {
     }
 
     /// Fetch full Pull Request details, CI status, changed files, and review comments (evaluating agent vs human comments)
+    /// Every item of a paginated GitHub list, 100 per page, up to [`MAX_PULL_REQUEST_LIST_PAGES`]
+    /// pages. A page that cannot be read ends the listing with what was read so far: the callers
+    /// show a partial answer rather than none, as they did when only the first page was asked for.
+    async fn fetch_all_pages(&self, base_url: &str) -> Vec<Value> {
+        let mut out = Vec::new();
+        for page in 1..=MAX_PULL_REQUEST_LIST_PAGES {
+            let url = format!("{base_url}?per_page={GITHUB_PAGE_SIZE}&page={page}");
+            let Ok(resp) = self.apply_headers(self.client.get(&url)).send().await else {
+                break;
+            };
+            if !resp.status().is_success() {
+                break;
+            }
+            let Ok(Value::Array(items)) = resp.json::<Value>().await else {
+                break;
+            };
+            let count = items.len();
+            out.extend(items);
+            if count < GITHUB_PAGE_SIZE {
+                break;
+            }
+        }
+        out
+    }
+
     pub async fn fetch_pull_request_details(
         &self,
         pr_number: u64,
@@ -596,30 +623,24 @@ impl GitHubTracker {
         let merged = pr.get("merged").and_then(|v| v.as_bool()).unwrap_or(false)
             || pr.get("merged_at").map(|v| !v.is_null()).unwrap_or(false);
 
-        // Fetch changed files
+        // Fetch changed files (every page: GitHub returns 30 per page unless asked for more)
         let files_url = format!(
             "{}/repos/{}/pulls/{pr_number}/files",
             self.api_url, self.repo
         );
         let mut changed_files = Vec::new();
-        if let Ok(f_resp) = self.apply_headers(self.client.get(&files_url)).send().await {
-            if let Ok(Value::Array(arr)) = f_resp.json::<Value>().await {
-                for item in arr {
-                    if let Some(path) = item.get("filename").and_then(|v| v.as_str()) {
-                        changed_files.push(ChangedFileSummary {
-                            path: path.to_string(),
-                            status: item
-                                .get("status")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("modified")
-                                .to_string(),
-                            additions: item.get("additions").and_then(|v| v.as_u64()).unwrap_or(0)
-                                as u32,
-                            deletions: item.get("deletions").and_then(|v| v.as_u64()).unwrap_or(0)
-                                as u32,
-                        });
-                    }
-                }
+        for item in self.fetch_all_pages(&files_url).await {
+            if let Some(path) = item.get("filename").and_then(|v| v.as_str()) {
+                changed_files.push(ChangedFileSummary {
+                    path: path.to_string(),
+                    status: item
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("modified")
+                        .to_string(),
+                    additions: item.get("additions").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                    deletions: item.get("deletions").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                });
             }
         }
 
@@ -677,63 +698,55 @@ impl GitHubTracker {
             self.api_url, self.repo
         );
         let mut review_comments = Vec::new();
-        if let Ok(cm_resp) = self
-            .apply_headers(self.client.get(&comments_url))
-            .send()
-            .await
-        {
-            if let Ok(Value::Array(arr)) = cm_resp.json::<Value>().await {
-                for item in arr {
-                    let author = item
-                        .get("user")
-                        .and_then(|u| u.get("login"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("reviewer")
-                        .to_string();
-                    let user_type = item
-                        .get("user")
-                        .and_then(|u| u.get("type"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("User");
-                    let is_agent = user_type.eq_ignore_ascii_case("Bot")
-                        || author.contains("[bot]")
-                        || author.contains("copilot")
-                        || author.contains("codex");
-                    let comment_body = item
-                        .get("body")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let file_path = item
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+        for item in self.fetch_all_pages(&comments_url).await {
+            let author = item
+                .get("user")
+                .and_then(|u| u.get("login"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("reviewer")
+                .to_string();
+            let user_type = item
+                .get("user")
+                .and_then(|u| u.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("User");
+            let is_agent = user_type.eq_ignore_ascii_case("Bot")
+                || author.contains("[bot]")
+                || author.contains("copilot")
+                || author.contains("codex");
+            let comment_body = item
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let file_path = item
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
 
-                    let verified_against_diff = match &file_path {
-                        Some(fp) => changed_files.iter().any(|cf| &cf.path == fp),
-                        None => !changed_files.is_empty(),
-                    };
+            let verified_against_diff = match &file_path {
+                Some(fp) => changed_files.iter().any(|cf| &cf.path == fp),
+                None => !changed_files.is_empty(),
+            };
 
-                    let evaluation_summary = if is_agent {
-                        if verified_against_diff {
-                            "Agent review comment targets an active file in the PR diff; verify line context before acting.".to_string()
-                        } else {
-                            "Agent review comment references a path not modified in the current diff; treat with caution.".to_string()
-                        }
-                    } else {
-                        "Human reviewer feedback.".to_string()
-                    };
-
-                    review_comments.push(ReviewCommentEvaluation {
-                        author,
-                        is_agent,
-                        body: comment_body,
-                        file_path,
-                        verified_against_diff,
-                        evaluation_summary,
-                    });
+            let evaluation_summary = if is_agent {
+                if verified_against_diff {
+                    "Agent review comment targets an active file in the PR diff; verify line context before acting.".to_string()
+                } else {
+                    "Agent review comment references a path not modified in the current diff; treat with caution.".to_string()
                 }
-            }
+            } else {
+                "Human reviewer feedback.".to_string()
+            };
+
+            review_comments.push(ReviewCommentEvaluation {
+                author,
+                is_agent,
+                body: comment_body,
+                file_path,
+                verified_against_diff,
+                evaluation_summary,
+            });
         }
 
         Ok(GitHubPullRequestDetails {
