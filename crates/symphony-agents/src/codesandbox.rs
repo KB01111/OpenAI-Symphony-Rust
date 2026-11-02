@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use symphony_core::domain::{CloudAgentKind, ProviderCapabilities, ProviderKind, TokenUsage};
@@ -124,6 +124,37 @@ pub fn find_runner_bundle(configured: Option<&str>) -> Option<PathBuf> {
     None
 }
 
+/// Prefer the Node executable shipped alongside a packaged bridge. A source checkout and the
+/// CLI still support a system Node installation. Neither requires an explicit runner override.
+pub fn find_node_runtime(runner: Option<&Path>) -> Option<PathBuf> {
+    if let Some(runner) = runner {
+        let bundled = runner.with_file_name(if cfg!(windows) { "node.exe" } else { "node" });
+        if bundled.is_file() {
+            return Some(absolute(bundled));
+        }
+    }
+    crate::detection::find_on_path("node")
+}
+
+/// The workspace and the bridge require at least Node 22.13.0. Reject unparseable versions
+/// instead of claiming that a present but incompatible Node installation is usable.
+pub fn supports_node_version(version: &str) -> bool {
+    let mut parts = version.trim().trim_start_matches('v').split('.');
+    let Some(major) = parts.next().and_then(|p| p.parse::<u32>().ok()) else {
+        return false;
+    };
+    let Some(minor) = parts.next().and_then(|p| p.parse::<u32>().ok()) else {
+        return false;
+    };
+    let Some(_patch) = parts.next().and_then(|p| p.parse::<u32>().ok()) else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+    major > 22 || (major == 22 && minor >= 13)
+}
+
 /// The bridge is started with the task's workspace as its working directory, so a path that was
 /// relative to wherever Symphony runs must be made absolute first.
 fn absolute(path: PathBuf) -> PathBuf {
@@ -222,23 +253,35 @@ impl CodeSandboxSession {
             })
     }
 
-    fn bridge_command(&self) -> Result<(Command, String)> {
+    async fn bridge_command(&self) -> Result<(Command, String)> {
         let cloud = self.cloud()?;
         let runner = find_runner_bundle(cloud.runner_path.as_deref()).ok_or_else(|| {
             SymphonyError::AgentProtocolError {
                 code: "codesandbox_runner_not_found".into(),
                 message: format!(
-                    "The CodeSandbox bridge (bridge.mjs) was not found. Build it with \
+                    "The CodeSandbox bridge (bridge.mjs) is missing. Reinstall Symphony Desktop or build it with \
                      `pnpm --filter @symphony/codesandbox-runner build` or set {RUNNER_ENV}."
                 ),
             }
         })?;
-        let node = crate::detection::find_on_path("node").ok_or_else(|| {
+        let node = find_node_runtime(Some(&runner)).ok_or_else(|| {
             SymphonyError::AgentProtocolError {
                 code: "node_not_found".into(),
-                message: "Node.js (>= 22) is required to run CodeSandbox cloud agents".into(),
+                message: "CodeSandbox needs Node.js >=22.13.0. Reinstall Symphony Desktop to restore \
+                          its bundled Node runtime, or install a compatible Node.js version.".into(),
             }
         })?;
+        let version = crate::detection::probe_version(&node).await;
+        if !version.as_deref().is_some_and(supports_node_version) {
+            return Err(SymphonyError::AgentProtocolError {
+                code: "codesandbox_node_version_unsupported".into(),
+                message: format!(
+                    "CodeSandbox requires Node.js >=22.13.0 (found {}). Reinstall Symphony Desktop \
+                     or update the Node.js runtime.",
+                    version.as_deref().unwrap_or("an unreadable version")
+                ),
+            });
+        }
         let exe = node.to_string_lossy().to_string();
         let mut cmd = Command::new(&node);
         cmd.arg(&runner).current_dir(&self.config.workspace_path);
@@ -284,7 +327,7 @@ impl CodeSandboxSession {
     /// Short-lived bridge call that acts on an existing sandbox (`abort`, `stop`). Best effort:
     /// failures are logged, never raised, so cleanup cannot mask the turn's own result.
     async fn control(&self, request: Value) {
-        let Ok((mut cmd, _)) = self.bridge_command() else {
+        let Ok((mut cmd, _)) = self.bridge_command().await else {
             return;
         };
         cmd.stdin(Stdio::piped())
@@ -366,7 +409,7 @@ impl AgentSession for CodeSandboxSession {
         self.turn_usage = TokenUsage::default();
         let turn_id = format!("turn-{}", self.turn_counter);
         let request = self.turn_request(prompt, &turn_id)?;
-        let (mut cmd, exe) = self.bridge_command()?;
+        let (mut cmd, exe) = self.bridge_command().await?;
         let mut process = CliTurnProcess::spawn_with_stdin(
             &mut cmd,
             &self.config,

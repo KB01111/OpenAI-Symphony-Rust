@@ -67,7 +67,7 @@ pub fn find_on_path(binary: &str) -> Option<PathBuf> {
     None
 }
 
-async fn probe_version(binary: &Path) -> Option<String> {
+pub(crate) async fn probe_version(binary: &Path) -> Option<String> {
     let mut cmd = Command::new(binary);
     cmd.arg("--version")
         .stdin(Stdio::null())
@@ -555,29 +555,56 @@ pub async fn detect_provider_status(
     codesandbox_runner: Option<&str>,
 ) -> ProviderStatus {
     let mut capabilities = kind.default_capabilities();
-    let (installed, binary_path, version) = match provider_binary_name(kind) {
-        None => (
-            true,
-            capabilities.binary_path.clone(),
-            capabilities.version.clone(),
-        ),
-        Some(binary) => match find_on_path(binary) {
+    let bridge = (kind == ProviderKind::CodeSandbox)
+        .then(|| crate::codesandbox::find_runner_bundle(codesandbox_runner))
+        .flatten();
+    let (installed, binary_path, version) = if kind == ProviderKind::CodeSandbox {
+        // The installed desktop has a private Node runtime next to its packaged bridge.
+        // The CLI and developer checkouts retain PATH discovery as a fallback.
+        match crate::codesandbox::find_node_runtime(bridge.as_deref()) {
             Some(path) => {
                 let version = probe_version(&path).await;
-                (true, Some(path.to_string_lossy().to_string()), version)
+                let supported = version
+                    .as_deref()
+                    .is_some_and(crate::codesandbox::supports_node_version);
+                (supported, Some(path.to_string_lossy().to_string()), version)
             }
             None => (false, None, None),
-        },
+        }
+    } else {
+        match provider_binary_name(kind) {
+            None => (
+                true,
+                capabilities.binary_path.clone(),
+                capabilities.version.clone(),
+            ),
+            Some(binary) => match find_on_path(binary) {
+                Some(path) => {
+                    let version = probe_version(&path).await;
+                    (true, Some(path.to_string_lossy().to_string()), version)
+                }
+                None => (false, None, None),
+            },
+        }
     };
-    // The cloud provider also needs the compiled bridge next to Node.
-    let bridge_missing = kind == ProviderKind::CodeSandbox
-        && installed
-        && crate::codesandbox::find_runner_bundle(codesandbox_runner).is_none();
+    let bridge_missing = kind == ProviderKind::CodeSandbox && bridge.is_none();
     if bridge_missing {
         capabilities.status_message = format!(
-            "{} · Bridge not built: run `pnpm --filter @symphony/codesandbox-runner build` or set {}",
+            "{} · CodeSandbox bridge missing: reinstall Symphony Desktop or set {} to a built bridge.",
             capabilities.status_message,
             crate::codesandbox::RUNNER_ENV
+        );
+    }
+    if kind == ProviderKind::CodeSandbox && binary_path.is_none() {
+        capabilities.status_message = format!(
+            "{} · Node.js runtime missing: reinstall Symphony Desktop or install Node.js >=22.13.0.",
+            capabilities.status_message
+        );
+    } else if kind == ProviderKind::CodeSandbox && !installed {
+        capabilities.status_message = format!(
+            "{} · Unsupported Node.js version ({}); requires >=22.13.0.",
+            capabilities.status_message,
+            version.as_deref().unwrap_or("unknown")
         );
     }
     let installed = installed && !bridge_missing;

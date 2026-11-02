@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { copyFile, mkdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -70,7 +70,7 @@ export async function prepareBundle() {
   await verifyBundle();
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === join(dirname(fileURLToPath(new URL("../", import.meta.url))), "scripts", "prepare-codesandbox-windows.mjs")) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === join(root, "scripts", "prepare-codesandbox-windows.mjs")) {
   try {
     if (process.argv.slice(2).includes("--verify")) await verifyBundle();
     else await prepareBundle();
