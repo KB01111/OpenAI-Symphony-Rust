@@ -28,7 +28,7 @@ export const providerMessages = defineMessages({
       templateEnv:
         "Set the token in the same terminal first. PowerShell: $env:CSB_API_KEY = \"…\"  ·  cmd.exe: set CSB_API_KEY=…  ·  macOS and Linux: export CSB_API_KEY=…",
       runnerHint:
-        "Windows installers include the bridge and Node.js. If either is missing, reinstall Symphony Desktop. Source builds may use Node.js >=22.13.0 and SYMPHONY_CODESANDBOX_RUNNER (or codesandbox.runner_path in WORKFLOW.md).";
+        "Windows installers include the bridge and Node.js. If either is missing, reinstall Symphony Desktop. Source builds may use Node.js >=22.13.0 and SYMPHONY_CODESANDBOX_RUNNER (or codesandbox.runner_path in WORKFLOW.md)."
     },
     builtin: "Built into the runtime",
     authentication: "Authentication",
@@ -113,7 +113,7 @@ export const providerMessages = defineMessages({
       templateEnv:
         "Ange först token i samma terminal. PowerShell: $env:CSB_API_KEY = \"…\"  ·  cmd.exe: set CSB_API_KEY=…  ·  macOS och Linux: export CSB_API_KEY=…",
       runnerHint:
-        "Windows-installationen innehåller bryggan och Node.js. Installera om Symphony Desktop om de saknas. Källkodsbyggen kan använda Node.js >=22.13.0 och SYMPHONY_CODESANDBOX_RUNNER (eller codesandbox.runner_path i WORKFLOW.md).";
+        "Windows-installationen innehåller bryggan och Node.js. Installera om Symphony Desktop om de saknas. Källkodsbyggen kan använda Node.js >=22.13.0 och SYMPHONY_CODESANDBOX_RUNNER (eller codesandbox.runner_path i WORKFLOW.md)."
     },
     builtin: "Inbyggd i körtiden",
     authentication: "Autentisering",

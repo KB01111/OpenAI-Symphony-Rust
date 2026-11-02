@@ -32,7 +32,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   checkpointing agent class that reloads its progress after an interruption. Whatever the agent, it commits
   and pushes to the task branch after every edit, and Symphony fast-forwards the local worktree after each
   push (it never touches a dirty or diverged worktree). A retry or follow-up resumes the same sandbox.
-  Needs Node.js ≥ 22, a GitHub token and an `https://github.com` origin; see
+  Windows NSIS installers now include the pre-built bridge and a private Node.js >=22.13.0
+  runtime, so installed users need neither Node on PATH nor a source checkout; source/CLI
+  builds retain their overrides. Cloud runs still require a configured CodeSandbox template,
+  CodeSandbox and GitHub credentials, and an `https://github.com` origin; see
   `tools/codesandbox-runner/README.md`. New: `ProviderKind::CodeSandbox`, `CloudAgentKind`,
   `Task.cloud_agent` (migration 0005), `AppSettings.default_cloud_agent`, `CreateTaskRequest.cloud_agent`,
   the `codesandbox:` section of `WORKFLOW.md`, and `WorkspaceManager::fast_forward_from_origin`.

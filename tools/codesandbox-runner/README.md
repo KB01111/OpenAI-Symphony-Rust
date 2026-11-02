@@ -45,14 +45,12 @@ CodeSandboxSession ──stdin: 1 request──▶ @codesandbox/sdk ────
    *Providers → CodeSandbox Cloud Agent* (`CSB_API_KEY`).
 2. **GitHub**: a token (`GITHUB_TOKEN`, *Providers* / *Integrations*) that can push to the repository, and a
    repository whose `origin` is an `https://github.com/...` URL. The sandbox cannot use your local SSH keys.
-3. **Build the bridge** (Node ≥ 22 on `PATH`):
+3. **Bridge and Node runtime**: the Windows NSIS installer ships a compiled `bridge.mjs` and a private Node.js >=22.13.0 executable under `resources/codesandbox-runner/`. **Users of installed Symphony Desktop need neither a source checkout nor Node.js or pnpm on PATH**. The installer build stages both resources automatically and fails when either file is invalid or missing. The Node executable comes from the Windows x64 build host (release CI uses `actions/setup-node@22`), and the packaging step reports SHA-256 hashes for both files. No Node download or Node installer runs on the user's machine.
 
-   ```bash
-   pnpm --filter @symphony/codesandbox-runner build
-   ```
+   **Source checkout / standalone CLI:** install Node.js >=22.13.0 and run `pnpm --filter @symphony/codesandbox-runner build`. A source checkout finds `tools/codesandbox-runner/dist/bridge.mjs` automatically; you can also set `SYMPHONY_CODESANDBOX_RUNNER` or `codesandbox.runner_path` in `WORKFLOW.md` explicitly. Reinstall Symphony Desktop if its packaged bridge or Node runtime is missing.
 
-   A source checkout finds `tools/codesandbox-runner/dist/bridge.mjs` on its own. Anywhere else set
-   `SYMPHONY_CODESANDBOX_RUNNER` or `codesandbox.runner_path` in `WORKFLOW.md`.
+   A CodeSandbox template is still required, but its owner can provision it separately once; installed end users only need the template id in `WORKFLOW.md`.
+
 4. **Build the template** once (and again after changing `template/`):
 
    ```bash
@@ -101,6 +99,10 @@ CodeSandboxSession ──stdin: 1 request──▶ @codesandbox/sdk ────
 One JSON request line on stdin, JSON event lines on stdout (nothing else is written there). See
 `src/protocol.ts`. Requests: `turn`, `abort` (kill the agent process in a sandbox), `stop` (hibernate or
 shut down). Events: `started`, `output`, `tool`, `usage`, `pushed`, `turn_completed`, `error`.
+
+## Windows distribution verification
+
+The Windows native and release workflows build an NSIS installer using `tauri.windows.conf.json`. The installer smoke test installs and upgrades the application, invokes the bundled `node.exe --version` and `node.exe --check bridge.mjs` by absolute path without relying on PATH, and verifies that both resources are removed on uninstall. Rust tests check Node version preflight and resolution of packaged resources. These local checks do **not** validate a real CodeSandbox account, configured template, GitHub push or live model execution.
 
 ## Tests
 
