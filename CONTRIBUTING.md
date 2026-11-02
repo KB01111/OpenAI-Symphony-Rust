@@ -91,7 +91,7 @@ The Axum route table in `crates/symphony-server` is the only source of truth for
 | --- | --- | --- |
 | Rust unit/integration tests | `cargo test --workspace` on `windows-latest` (ci.yml) and Linux | Vault (DPAPI on Windows), owner-only DACLs in world-writable directories, HKCU autostart round-trip (`crates/symphony-platform/tests/windows_native.rs`), CLI runtime lifecycle (`crates/symphony-cli/tests/runtime_lifecycle.rs`), remote access (`crates/symphony-server/tests/remote_access.rs`) |
 | Native smoke test | `scripts/windows-native-smoke.ps1` in desktop-native.yml and release.yml, against the release `symphony-desktop.exe` and `symphony-cli.exe` | Runtime start, DACLs, DPAPI persistence across restart, owner-only token-free desktop log, single instance / single scheduler, crash recovery without orphans, attach mode |
-| Browser E2E | Playwright (`pnpm --filter @symphony/desktop e2e`) against the Vite dev server and a real `symphony-cli` | UI flows and contracts; **not** native behaviour |
+| Browser E2E | Playwright (`pnpm --filter @symphony/desktop e2e`) against the Vite dev server and a real `symphony-cli`; screenshots and perf numbers go to `target/e2e-evidence/` (set `SYMPHONY_UPDATE_DOCS=1` to refresh the committed `docs/screenshots` and `docs/perf`) | UI flows and contracts; **not** native behaviour |
 | Manual | [`docs/WINDOWS_NATIVE_SMOKE_TEST.md`](./docs/WINDOWS_NATIVE_SMOKE_TEST.md) | Tray, folder picker, notifications, window-state restore, autostart at sign-in, unsigned installer |
 
 A successful Tauri build alone proves compilation, not runtime behaviour; say which layer verified a claim.

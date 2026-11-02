@@ -383,6 +383,69 @@ pub fn windows_autostart_command() -> SymphonyResult<Option<String>> {
     }
 }
 
+/// What it takes to make the login-autostart registration agree with the stored setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutostartFix {
+    /// Nothing to do.
+    InSync,
+    /// The setting is on but nothing usable is registered.
+    Register,
+    /// The setting is off but an entry is still registered.
+    Remove,
+}
+
+/// The executable named by a registered autostart command: the quoted path, or the first word.
+fn registered_executable(command: &str) -> Option<PathBuf> {
+    let command = command.trim();
+    let path = match command.strip_prefix('"') {
+        Some(rest) => rest.split('"').next()?,
+        None => command.split_whitespace().next()?,
+    };
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// Decide whether the registry entry needs fixing. A missing entry (a new Windows profile, a
+/// cleaned registry) or one that launches a program that no longer exists (the app moved or was
+/// reinstalled elsewhere) is registered again for `exe_path`; an entry that launches another
+/// existing copy is left to that copy. With the setting off, any entry is removed.
+pub fn autostart_fix(
+    wanted: bool,
+    registered: Option<&str>,
+    exe_path: &Path,
+    exists: impl Fn(&Path) -> bool,
+) -> AutostartFix {
+    match (wanted, registered) {
+        (true, None) => AutostartFix::Register,
+        (true, Some(command)) => {
+            if command == autostart_command(exe_path) {
+                return AutostartFix::InSync;
+            }
+            match registered_executable(command) {
+                Some(other) if exists(&other) => AutostartFix::InSync,
+                _ => AutostartFix::Register,
+            }
+        }
+        (false, Some(_)) => AutostartFix::Remove,
+        (false, None) => AutostartFix::InSync,
+    }
+}
+
+/// Bring the login-autostart registration in line with the stored setting (see [`autostart_fix`])
+/// and report what was done. Windows only; elsewhere there is no registration to keep.
+pub fn reconcile_autostart(wanted: bool, exe_path: &Path) -> SymphonyResult<AutostartFix> {
+    if !cfg!(windows) {
+        return Ok(AutostartFix::InSync);
+    }
+    let registered = windows_autostart_command()?;
+    let fix = autostart_fix(wanted, registered.as_deref(), exe_path, |p| p.is_file());
+    match fix {
+        AutostartFix::InSync => {}
+        AutostartFix::Register => configure_windows_autostart(true, exe_path)?,
+        AutostartFix::Remove => configure_windows_autostart(false, exe_path)?,
+    }
+    Ok(fix)
+}
+
 #[cfg(windows)]
 #[doc(hidden)]
 pub mod win_autostart {
@@ -603,6 +666,60 @@ pub fn default_app_data_dir() -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn the_autostart_entry_is_repaired_when_it_is_missing_or_dead_and_left_alone_otherwise() {
+        let exe = Path::new(r"C:\Apps\Symphony\symphony.exe");
+        let ours = autostart_command(exe);
+        let nowhere = |_: &Path| false;
+        let everywhere = |_: &Path| true;
+
+        // On, and registered for this very executable: nothing to do.
+        assert_eq!(
+            autostart_fix(true, Some(&ours), exe, nowhere),
+            AutostartFix::InSync
+        );
+        // On, but nothing registered (new profile, cleaned registry).
+        assert_eq!(
+            autostart_fix(true, None, exe, everywhere),
+            AutostartFix::Register
+        );
+        // On, registered for a program that is gone (the app moved): repaired.
+        let stale = r#""C:\Old\Symphony\symphony.exe" --background"#;
+        assert_eq!(
+            autostart_fix(true, Some(stale), exe, nowhere),
+            AutostartFix::Register
+        );
+        // On, registered for another copy that still exists (e.g. an installed build while a
+        // development build runs): not overwritten.
+        assert_eq!(
+            autostart_fix(true, Some(stale), exe, everywhere),
+            AutostartFix::InSync
+        );
+        // Off: an entry is removed, no entry is fine.
+        assert_eq!(
+            autostart_fix(false, Some(&ours), exe, everywhere),
+            AutostartFix::Remove
+        );
+        assert_eq!(
+            autostart_fix(false, None, exe, everywhere),
+            AutostartFix::InSync
+        );
+    }
+
+    #[test]
+    fn the_registered_executable_is_read_from_a_quoted_or_a_plain_command() {
+        assert_eq!(
+            registered_executable(r#""C:\Program Files\Symphony\symphony.exe" --background"#),
+            Some(PathBuf::from(r"C:\Program Files\Symphony\symphony.exe"))
+        );
+        assert_eq!(
+            registered_executable(r"C:\Symphony\symphony.exe --background"),
+            Some(PathBuf::from(r"C:\Symphony\symphony.exe"))
+        );
+        assert_eq!(registered_executable(""), None);
+        assert_eq!(registered_executable("   "), None);
+    }
 
     #[test]
     fn test_hardware_snapshot_and_resource_policy() {

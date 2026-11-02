@@ -15,7 +15,8 @@
     4. the INSTALLED application passes scripts/windows-native-smoke.ps1,
     5. installing the same installer again (the upgrade path) succeeds without a second entry,
     6. the silent uninstall removes the application and the uninstall entry,
-    7. user data in %LOCALAPPDATA%\symphony-desktop survives the uninstall.
+    7. user data in %LOCALAPPDATA%\symphony-desktop survives the uninstall,
+    8. the uninstall removes the per-user "start when I sign in" entry the application registers.
 
   Shortcuts are checked with warnings only: their exact placement is a Tauri/NSIS decision, and a
   missing shortcut should be seen, not block a release.
@@ -43,6 +44,10 @@ $productName = [string] $tauriConfig.productName
 $expectedPublisher = [string] $tauriConfig.bundle.publisher
 if (-not $productName -or -not $expectedPublisher) { throw 'tauri.conf.json has no productName or bundle.publisher' }
 $uninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+# The sign-in entry the application writes itself (crates/symphony-platform AUTOSTART_VALUE_NAME).
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$runName = 'SymphonyDesktopRuntime'
+$plantedRunValue = $false
 $dataDir = Join-Path $env:LOCALAPPDATA 'symphony-desktop'
 $marker = Join-Path $dataDir 'installer-smoke-marker.txt'
 $createdDataDir = $false
@@ -119,6 +124,7 @@ try {
   # The cleanup below removes the install directory and the marker: only ever what this run created.
   if (Test-Path $defaultInstallDir) { Fail "$defaultInstallDir already exists; run this test on a clean profile" }
   if (Test-Path $marker) { Fail "$marker already exists; refusing to overwrite it" }
+  if (Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue) { Fail "$runKey\$runName already exists; run this test on a clean profile" }
   if ($RequireSignature) { Assert-Signed $Installer }
 
   # Data that an uninstall must not remove: the real default data directory.
@@ -171,12 +177,23 @@ try {
   if (@(Get-UninstallEntries).Count -ne 1) { Fail 'the upgrade left more than one uninstall entry' }
   if (-not (Test-Path $app.FullName)) { Fail 'the application is missing after the upgrade' }
 
+  # The application registers this entry itself when "start when I sign in" is switched on, which the
+  # installer does not know about: plant it the way the application writes it, and require the
+  # uninstaller to take it away again (installer/hooks.nsh).
+  New-ItemProperty -Path $runKey -Name $runName -PropertyType String -Force `
+    -Value "`"$($app.FullName)`" --background" | Out-Null
+  $plantedRunValue = $true
+
   Step 'Silent uninstall'
   # `_?=<dir>` keeps the uninstaller in this process (otherwise it copies itself to %TEMP% and
   # returns immediately); the side effect is that uninstall.exe stays behind and is removed below.
   Invoke-Silent $uninstaller @('/S', "_?=$installDir") 'the uninstaller'
   Wait-Until { -not (Test-Path $app.FullName) } 'the application to be removed'
   Wait-Until { @(Get-UninstallEntries).Count -eq 0 } 'the uninstall entry to be removed'
+  Step 'The uninstall removes the sign-in entry'
+  if (Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue) {
+    Fail "the uninstaller left $runKey\$runName behind; it would launch a program that is gone at every sign-in"
+  }
 
   Step 'User data survives the uninstall'
   if (-not (Test-Path $marker)) { Fail "$marker was removed by the uninstaller" }
@@ -197,6 +214,7 @@ finally {
       Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
+  if ($plantedRunValue) { Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue }
   if ($createdMarker) { Remove-Item $marker -Force -ErrorAction SilentlyContinue }
   if ($createdDataDir) { Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue }
 }

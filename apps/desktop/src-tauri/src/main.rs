@@ -71,10 +71,22 @@ struct LocalApiConfig {
 
 #[tauri::command]
 fn get_local_api_config(state: State<'_, DesktopAppState>) -> LocalApiConfig {
+    // An attached runtime (`symphony-cli serve`) publishes a new port and token whenever it
+    // restarts, so read what it publishes now: the values captured when the window opened would
+    // keep the UI locked out ("unauthorized") until the app is restarted. The embedded runtime
+    // never changes. When nothing live is published the last known values are returned.
+    let attached = match state.mode {
+        RuntimeMode::Attached => RuntimeDiscovery::read_live(&state.data_dir),
+        RuntimeMode::Embedded { .. } => None,
+    };
+    let (base_url, token, api_version) = match attached {
+        Some(found) => (found.base_url, found.token, found.api_version),
+        None => (state.base_url.clone(), state.token.clone(), API_VERSION),
+    };
     LocalApiConfig {
-        base_url: state.base_url.clone(),
-        token: state.token.clone(),
-        api_version: API_VERSION,
+        base_url,
+        token,
+        api_version,
         mode: match state.mode {
             RuntimeMode::Embedded { .. } => "embedded",
             RuntimeMode::Attached => "attached",
@@ -450,6 +462,27 @@ async fn start_embedded_runtime(
         }
     }
 
+    // The "start on login" registry entry can be missing (a new Windows profile, a cleaned
+    // registry) or point at a program that moved while the stored setting says it is on. Bring it
+    // back in line, so the switch in Settings tells the truth.
+    match std::env::current_exe() {
+        Ok(exe) => {
+            match symphony_platform::reconcile_autostart(
+                settings.start_background_runtime_on_login,
+                &exe,
+            ) {
+                Ok(symphony_platform::AutostartFix::InSync) => {}
+                Ok(fix) => tracing::info!(?fix, "Login autostart registration repaired"),
+                Err(err) => {
+                    tracing::warn!(error = %err, "Could not reconcile the login autostart registration")
+                }
+            }
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "Could not locate the executable to reconcile autostart")
+        }
+    }
+
     let wf_path = [PathBuf::from("WORKFLOW.md"), data_dir.join("WORKFLOW.md")]
         .into_iter()
         .find(|p| p.is_file());
@@ -633,6 +666,13 @@ fn main() {
                     RuntimeOwner::This(guard) => start_embedded_runtime(&handle, data_dir.clone(), guard).await,
                     RuntimeOwner::Other(found) => {
                         tracing::info!(base_url = %found.base_url, owner = %found.owner, "Attaching to existing Symphony runtime");
+                        if found.api_version != API_VERSION {
+                            tracing::warn!(
+                                runtime_api_version = found.api_version,
+                                desktop_api_version = API_VERSION,
+                                "The attached runtime speaks a different API version than this desktop build; some screens may not work"
+                            );
+                        }
                         Ok(DesktopAppState {
                             mode: RuntimeMode::Attached,
                             data_dir: data_dir.clone(),

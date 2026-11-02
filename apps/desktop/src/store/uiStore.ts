@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { Locale, TaskStatus } from "@symphony/shared-types";
+import { isLocale, type Locale, type TaskStatus } from "@symphony/shared-types";
 import type { Density, ThemeMode } from "@symphony/ui";
 import { safeJSONStorage } from "./safeStorage.js";
 
@@ -141,10 +141,17 @@ export const useUiStore = create<UiState>()(
       version: 1,
       storage: safeJSONStorage,
       // Saved state is untrusted: an earlier build could save Runs as the task view, which is not a
-      // board/table view any more, so anything but "table" falls back to the board.
+      // board/table view any more, so anything but "table" falls back to the board. A language that
+      // is not (or no longer) offered falls back to the default: every screen looks its texts up by
+      // it, so an unknown value would break the whole app at start.
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<UiState>;
-        return { ...current, ...saved, taskView: saved.taskView === "table" ? "table" : "board" };
+        return {
+          ...current,
+          ...saved,
+          taskView: saved.taskView === "table" ? "table" : "board",
+          locale: isLocale(saved.locale) ? saved.locale : current.locale
+        };
       },
       partialize: (s) => ({
         sidebarCollapsed: s.sidebarCollapsed,

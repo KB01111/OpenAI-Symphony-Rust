@@ -1,8 +1,22 @@
 import { expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const fixtureRepo = () => process.env.SYMPHONY_E2E_REPO!;
+
+/**
+ * Where a run writes the screenshots and the performance numbers it produces. A normal run writes
+ * under `target/` (git-ignored), so running the tests never rewrites the documentation committed
+ * under `docs/` and leaves the working tree clean. `SYMPHONY_UPDATE_DOCS=1` refreshes the committed
+ * `docs/screenshots` and `docs/perf` on purpose.
+ */
+export function evidenceDir(kind: "screenshots" | "perf"): string {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  return process.env.SYMPHONY_UPDATE_DOCS === "1"
+    ? resolve(repoRoot, "docs", kind)
+    : resolve(repoRoot, "target", "e2e-evidence", kind);
+}
 
 /** Direct runtime access for test setup (same discovery file the dev server uses). */
 export function runtime(): { baseUrl: string; token: string } {

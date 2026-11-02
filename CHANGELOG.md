@@ -126,8 +126,52 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   badges, alerts and code highlighting, through its own theme variables); the approvals bell and
   every copy button (event cards, code blocks, Markdown code) have an accessible name; scrollable
   diffs and logs can be scrolled from the keyboard.
+- **Cancelling a run while it was finishing** (after the agent stopped, during the `after_run` hook and the
+  validation commands) was undone by the worker's last write: the task ended in *Human review* instead of
+  *Cancelled*. The worker now checks that it still owns the run before it writes.
+- The project's **Max concurrent agents** and `agent.max_concurrent_agents_by_state` in `WORKFLOW.md` were
+  stored but never applied. Dispatch and retries now stay within both.
+- The stall timer cancelled runs that were validating or waiting for you to answer an approval; it now only
+  watches an agent that is streaming.
+- Approvals that a crash or restart left pending showed as actionable, and answering one recorded
+  "approved" although nothing was waiting. They are closed on startup, and answering a request nobody waits
+  for is refused with an explanation.
+- A queued task whose issue was closed in the tracker in the meantime was started anyway; the issue is
+  re-read right before it starts and the task is cancelled instead. The tracker sync no longer overwrites a
+  task row a worker has just finished.
+- Validation results of a retry were silently dropped (the same id as the first attempt's), a test suite
+  was reported as timed out after the 60 s hook timeout, and long output lost its end, where the failure is.
+  Results are kept per attempt, validation gets at least 10 minutes, and the tail of long output is kept.
+- A UTF-8 byte order mark (Notepad, Windows PowerShell) turned the whole `WORKFLOW.md` front matter into
+  prompt text; it is ignored now.
+- **Codex**: a turn that failed or was interrupted (`turn/completed` with `turn.status`) was recorded as a
+  success; `item/tool/requestUserInput` was approved on sight and now goes through the approval gate;
+  requests this app does not implement are answered with "method not found" instead of stalling the turn.
+- **Windows**: npm-installed Claude Code and OpenCode (`.cmd` shims) are resolved through `PATH`/`PATHEXT`
+  and start; a quoted Codex path is launched with PowerShell's call operator; `\\?\UNC\` network paths keep
+  their leading `\\`; the *Start when I sign in* entry is repaired at startup when it is missing or points
+  at a program that moved, and is removed by the uninstaller.
+- A branch that already exists (a previous attempt's, or the one a tracker issue names) is checked out as it
+  is instead of being reset to the base branch; commits, fetches and pushes give up after 5 minutes instead of
+  hanging on a stalled remote; git no longer inherits the tracker tokens.
+- `tracker.provider.api_url` (GitHub Enterprise), `assignee` and the Linear `endpoint` in `WORKFLOW.md`, and
+  the workflow's `terminal_states` for Linear blockers, were parsed and then ignored. A failed or
+  rate-limited poll was hidden; it is reported once as an activity event and a rate-limited tracker is left
+  alone until its limit resets.
+- A desktop attached to a running `symphony-cli` kept the old token after the CLI restarted and showed
+  *unauthorized* until the app was restarted; a different API version is written to the log.
+- An unsupported saved language no longer breaks the whole UI at start; the task composer says when the
+  repositories could not be loaded (with *Retry*) instead of asking you to register one.
+- `pnpm --filter @symphony/desktop e2e` no longer rewrites the committed `docs/screenshots` and
+  `docs/perf/perf-results.json` (they go to `target/e2e-evidence/`; `SYMPHONY_UPDATE_DOCS=1` refreshes them).
 
 ### Security
+
+- **Knowledge Base AI analysis**: the Codex command guard accepted shell syntax (`codex app-server | tee x`,
+  `foo;/codex app-server`), so the flags that switch Codex's own tools off could land on another program; it
+  now refuses it. The commit diff is redacted *before* it is cut to the prompt size (a token straddling the
+  cut used to reach the provider as a fragment), and Graphify and Serena no longer run in the host's working
+  directory.
 
 - Raw provider event payloads (command output, tool results, diffs) were stored, streamed and exported
   without redaction (only the event message was redacted), so a token an agent printed reached the

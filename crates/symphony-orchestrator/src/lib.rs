@@ -6492,11 +6492,13 @@ rl.on('line', (line) => {
     #[test]
     fn the_workflow_github_api_url_is_only_taken_when_it_is_safe_to_send_a_token_there() {
         let cfg = |kind: &str, api_url: &str| {
-            let mut cfg = ServiceConfig::default();
-            cfg.tracker_kind = kind.into();
-            cfg.tracker_provider
-                .insert("api_url".into(), json!(api_url));
-            cfg
+            let mut tracker_provider = serde_json::Map::new();
+            tracker_provider.insert("api_url".into(), json!(api_url));
+            ServiceConfig {
+                tracker_kind: kind.into(),
+                tracker_provider,
+                ..ServiceConfig::default()
+            }
         };
         assert_eq!(
             workflow_github_api_url(&cfg("github", "https://ghe.example.com/api/v3/")),

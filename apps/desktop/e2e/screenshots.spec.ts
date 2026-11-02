@@ -1,14 +1,15 @@
 /**
- * Captures the documentation screenshots (docs/screenshots) from the real UI and runtime with
- * seeded simulated-agent data, in light and dark themes and at several window sizes.
+ * Captures the documentation screenshots from the real UI and runtime with seeded simulated-agent
+ * data, in light and dark themes and at several window sizes. They go to
+ * target/e2e-evidence/screenshots, or to docs/screenshots when SYMPHONY_UPDATE_DOCS=1
+ * (see `evidenceDir`).
  */
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { api, fixtureRepo, openApp, prepareRuntime } from "./helpers.js";
+import { join } from "node:path";
+import { api, evidenceDir, fixtureRepo, openApp, prepareRuntime } from "./helpers.js";
 
-const outDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "docs", "screenshots");
+const outDir = evidenceDir("screenshots");
 
 interface Project {
   id: string;

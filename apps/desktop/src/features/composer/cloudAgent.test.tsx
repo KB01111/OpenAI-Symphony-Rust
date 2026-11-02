@@ -138,3 +138,31 @@ describe("composer: cloud agent for CodeSandbox tasks", () => {
     expect(body).toMatchObject({ provider: "simulated", cloud_agent: null });
   });
 });
+
+describe("composer: repositories that fail to load", () => {
+  beforeEach(() => {
+    useUiStore.setState({ activeProjectId: null, newTaskOpen: true });
+  });
+
+  it("says the repositories could not be loaded, and retries, instead of asking to register one", async () => {
+    let failing = true;
+    const runtime = createMockRuntime({
+      "GET /projects": () =>
+        failing
+          ? { status: 500, body: { error: { code: "storage_error", message: "database is locked" } } }
+          : [project({ id: "p1", name: "Repo" })],
+      "GET /providers": () => [providerStatus({ provider: "simulated", installed: true })],
+      "GET /settings": () => settings(),
+      "GET /tasks": () => []
+    });
+    renderWithProviders(<NewTaskDialog />, { runtime });
+    const dialog = await screen.findByRole("dialog");
+
+    expect(await within(dialog).findByText("The repositories could not be loaded")).toBeTruthy();
+    expect(within(dialog).queryByText(/Register a repository/)).toBeNull();
+
+    failing = false;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    expect(await within(dialog).findByRole("textbox", { name: "Task prompt" })).toBeTruthy();
+  });
+});
