@@ -18,6 +18,79 @@ const MAX_ISSUE_PAGES: usize = 10;
 /// first, so a low cap would hide every newer issue); this only bounds a runaway listing.
 const MAX_CANDIDATE_PAGES: usize = 100;
 const GITHUB_PAGE_SIZE: usize = 100;
+
+/// The error code of a GitHub answer that says a rate limit is used up.
+pub const GITHUB_RATE_LIMITED: &str = "github_rate_limited";
+/// The longest a rate-limit answer can make the caller wait. GitHub's primary limit resets within
+/// the hour; a longer wait is not trusted.
+const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60 * 60);
+
+/// How long GitHub asks the client to wait, from the headers of a 403/429 answer: `Retry-After`
+/// (seconds), or `X-RateLimit-Reset` (epoch seconds) when `X-RateLimit-Remaining` is 0. `None`
+/// when the answer is not a rate limit (a 403 for a missing permission carries neither).
+fn rate_limit_wait(headers: &reqwest::header::HeaderMap, now: DateTime<Utc>) -> Option<Duration> {
+    let number = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<i64>().ok())
+    };
+    let seconds = if let Some(retry_after) = number("retry-after") {
+        retry_after
+    } else if number("x-ratelimit-remaining") == Some(0) {
+        number("x-ratelimit-reset")? - now.timestamp()
+    } else {
+        return None;
+    };
+    Some(Duration::from_secs(seconds.max(1) as u64).min(MAX_RATE_LIMIT_WAIT))
+}
+
+/// The error for a GitHub answer that is not a success. A rate limit becomes
+/// [`GITHUB_RATE_LIMITED`] with the wait in the message (read it back with
+/// [`rate_limit_retry_after`]), so the caller can back off instead of asking again at once; anything
+/// else is `github_http_<status>` with the body.
+async fn github_http_error(resp: reqwest::Response) -> SymphonyError {
+    let status = resp.status().as_u16();
+    let wait = if status == 403 || status == 429 {
+        rate_limit_wait(resp.headers(), Utc::now())
+    } else {
+        None
+    };
+    let body = resp.text().await.unwrap_or_default();
+    match wait {
+        Some(wait) => SymphonyError::TrackerError {
+            code: GITHUB_RATE_LIMITED.to_string(),
+            message: format!(
+                "retry_after_secs={}; GitHub rate limit reached: {}",
+                wait.as_secs(),
+                body.chars().take(200).collect::<String>()
+            ),
+        },
+        None => SymphonyError::TrackerError {
+            code: format!("github_http_{status}"),
+            message: body,
+        },
+    }
+}
+
+/// How long to wait before asking the tracker again, when `error` says a rate limit is used up.
+pub fn rate_limit_retry_after(error: &SymphonyError) -> Option<Duration> {
+    match error {
+        SymphonyError::TrackerError { code, message } if code == GITHUB_RATE_LIMITED => {
+            let digits: String = message
+                .split("retry_after_secs=")
+                .nth(1)?
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits
+                .parse::<u64>()
+                .ok()
+                .map(|secs| Duration::from_secs(secs).min(MAX_RATE_LIMIT_WAIT))
+        }
+        _ => None,
+    }
+}
 const LINEAR_PAGE_SIZE: usize = 50;
 
 #[async_trait]
@@ -381,10 +454,7 @@ impl GitHubTracker {
                 message: e.to_string(),
             })?;
         if !resp.status().is_success() {
-            return Err(SymphonyError::TrackerError {
-                code: format!("github_http_{}", resp.status().as_u16()),
-                message: resp.text().await.unwrap_or_default(),
-            });
+            return Err(github_http_error(resp).await);
         }
         let list: Value = resp.json().await.unwrap_or(Value::Null);
         Ok(list
@@ -822,10 +892,7 @@ impl GitHubTracker {
                 })?;
 
             if !resp.status().is_success() {
-                return Err(SymphonyError::TrackerError {
-                    code: format!("github_http_{}", resp.status().as_u16()),
-                    message: resp.text().await.unwrap_or_default(),
-                });
+                return Err(github_http_error(resp).await);
             }
 
             let items: Vec<Value> = resp.json().await.map_err(|e| SymphonyError::TrackerError {
@@ -898,10 +965,7 @@ impl TrackerAdapter for GitHubTracker {
                 continue;
             }
             if !resp.status().is_success() {
-                return Err(SymphonyError::TrackerError {
-                    code: format!("github_http_{}", resp.status().as_u16()),
-                    message: resp.text().await.unwrap_or_default(),
-                });
+                return Err(github_http_error(resp).await);
             }
             let val: Value = resp.json().await.map_err(|e| SymphonyError::TrackerError {
                 code: "github_payload_error".to_string(),
@@ -929,10 +993,7 @@ impl TrackerAdapter for GitHubTracker {
             })?;
 
         if !resp.status().is_success() {
-            return Err(SymphonyError::TrackerError {
-                code: format!("github_http_{}", resp.status().as_u16()),
-                message: resp.text().await.unwrap_or_default(),
-            });
+            return Err(github_http_error(resp).await);
         }
         Ok(())
     }
@@ -956,10 +1017,7 @@ impl TrackerAdapter for GitHubTracker {
             })?;
 
         if !resp.status().is_success() {
-            return Err(SymphonyError::TrackerError {
-                code: format!("github_http_{}", resp.status().as_u16()),
-                message: resp.text().await.unwrap_or_default(),
-            });
+            return Err(github_http_error(resp).await);
         }
         Ok(())
     }
@@ -1507,6 +1565,77 @@ fn derive_priority_from_labels(labels: &[String]) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+        let mut map = reqwest::header::HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                reqwest::header::HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn a_rate_limit_answer_tells_how_long_to_wait() {
+        let now = DateTime::<Utc>::from_timestamp(1_800_000_000, 0).unwrap();
+        // Secondary limit: Retry-After in seconds.
+        assert_eq!(
+            rate_limit_wait(&headers(&[("retry-after", "42")]), now),
+            Some(Duration::from_secs(42))
+        );
+        // Primary limit: used up, resets at an epoch time.
+        assert_eq!(
+            rate_limit_wait(
+                &headers(&[
+                    ("x-ratelimit-remaining", "0"),
+                    ("x-ratelimit-reset", "1800000120"),
+                ]),
+                now
+            ),
+            Some(Duration::from_secs(120))
+        );
+        // A reset time in the past still waits a moment; a wait is never trusted past an hour.
+        assert_eq!(
+            rate_limit_wait(
+                &headers(&[("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", "1")]),
+                now
+            ),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            rate_limit_wait(&headers(&[("retry-after", "999999")]), now),
+            Some(MAX_RATE_LIMIT_WAIT)
+        );
+        // A 403 for a missing permission carries neither header; quota left is not a rate limit.
+        assert_eq!(rate_limit_wait(&headers(&[]), now), None);
+        assert_eq!(
+            rate_limit_wait(&headers(&[("x-ratelimit-remaining", "4999")]), now),
+            None
+        );
+    }
+
+    #[test]
+    fn the_wait_survives_the_trip_through_the_error() {
+        let limited = SymphonyError::TrackerError {
+            code: GITHUB_RATE_LIMITED.to_string(),
+            message: "retry_after_secs=90; GitHub rate limit reached: slow down".to_string(),
+        };
+        assert_eq!(
+            rate_limit_retry_after(&limited),
+            Some(Duration::from_secs(90))
+        );
+        let other = SymphonyError::TrackerError {
+            code: "github_http_404".to_string(),
+            message: "retry_after_secs=90".to_string(),
+        };
+        assert_eq!(rate_limit_retry_after(&other), None);
+        assert_eq!(
+            rate_limit_retry_after(&SymphonyError::Conflict("x".into())),
+            None
+        );
+    }
 
     #[test]
     fn check_runs_are_summarised_without_inventing_a_pass() {

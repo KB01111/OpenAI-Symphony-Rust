@@ -353,6 +353,11 @@ struct OrchestratorRuntimeMemory {
     pub workflow_error: Option<String>,
     pub pending_approvals: HashMap<String, oneshot::Sender<ApprovalDecision>>,
     pub provider_cache: Option<(DateTime<Utc>, Vec<ProviderStatus>)>,
+    /// Per project: until when the tracker is left alone after it answered with a rate limit.
+    pub tracker_backoff: HashMap<String, DateTime<Utc>>,
+    /// Per project: the tracker failure that was last reported, so one that persists is reported
+    /// once instead of on every poll.
+    pub tracker_sync_errors: HashMap<String, String>,
     /// Where the workflow is saved when no `WORKFLOW.md` was loaded at startup.
     pub workflow_fallback_path: Option<PathBuf>,
 }
@@ -564,11 +569,29 @@ pub struct SymphonyOrchestrator {
     requeue_lock: Arc<Mutex<()>>,
     /// GitHub REST API base URL for pull requests (GitHub Enterprise, tests); `None` = github.com.
     github_api_url: Option<String>,
+    /// The GitHub API URL the loaded `WORKFLOW.md` names (`tracker.provider.api_url`, GitHub
+    /// Enterprise Server), kept in step with the active configuration.
+    workflow_github_api_url: Arc<std::sync::RwLock<Option<String>>>,
     /// The Knowledge Base, once the host enabled it (`enable_knowledge`).
     knowledge: Arc<std::sync::RwLock<Option<Arc<symphony_knowledge::service::KnowledgeService>>>>,
 }
 
 mod knowledge;
+
+/// The GitHub API base URL a workflow names for a GitHub tracker (GitHub Enterprise Server):
+/// `tracker.provider.api_url`. Tracker tokens are sent there, so only an absolute `https://` URL is
+/// accepted; plain `http://` only for a loopback address.
+fn workflow_github_api_url(cfg: &ServiceConfig) -> Option<String> {
+    if !cfg.tracker_kind.eq_ignore_ascii_case("github") {
+        return None;
+    }
+    let raw = cfg.tracker_provider.get("api_url")?.as_str()?.trim();
+    let parsed = url::Url::parse(raw).ok()?;
+    let host = parsed.host_str()?;
+    let loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1");
+    let acceptable = parsed.scheme() == "https" || (parsed.scheme() == "http" && loopback);
+    acceptable.then(|| raw.trim_end_matches('/').to_string())
+}
 
 impl SymphonyOrchestrator {
     pub async fn new(
@@ -645,6 +668,7 @@ impl SymphonyOrchestrator {
         let (event_tx, _) = broadcast::channel(2048);
         let (refresh_tx, refresh_rx) = mpsc::channel(32);
 
+        let workflow_api_url = workflow_github_api_url(&active_config);
         let memory = Arc::new(RwLock::new(OrchestratorRuntimeMemory {
             scheduler_paused: false,
             running: HashMap::new(),
@@ -660,6 +684,8 @@ impl SymphonyOrchestrator {
             workflow_error,
             pending_approvals: HashMap::new(),
             provider_cache: None,
+            tracker_backoff: HashMap::new(),
+            tracker_sync_errors: HashMap::new(),
             workflow_fallback_path: None,
         }));
 
@@ -676,6 +702,7 @@ impl SymphonyOrchestrator {
             publish_lock: Arc::new(Mutex::new(())),
             requeue_lock: Arc::new(Mutex::new(())),
             github_api_url: None,
+            workflow_github_api_url: Arc::new(std::sync::RwLock::new(workflow_api_url)),
             knowledge: Arc::new(std::sync::RwLock::new(None)),
         })
     }
@@ -943,6 +970,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                         mem.provider_cache = None;
                     }
                     mem.active_workflow = wf;
+                    self.note_workflow_endpoints(&cfg);
                     mem.active_config = cfg;
                     mem.active_workflow_path = Some(path.to_path_buf());
                     mem.workflow_error = None;
@@ -2145,7 +2173,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         if host.eq_ignore_ascii_case("github.com") {
             return true;
         }
-        self.github_api_url
+        self.effective_github_api_url()
             .as_deref()
             .and_then(|api| url::Url::parse(api).ok())
             .map(|api| {
@@ -2158,6 +2186,24 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     || host.eq_ignore_ascii_case(api_host.strip_prefix("api.").unwrap_or(&api_host))
             })
             .unwrap_or(false)
+    }
+
+    /// The GitHub API URL in use: the one set explicitly (tests, embedding), else the one the loaded
+    /// workflow names; `None` is api.github.com.
+    fn effective_github_api_url(&self) -> Option<String> {
+        self.github_api_url.clone().or_else(|| {
+            self.workflow_github_api_url
+                .read()
+                .ok()
+                .and_then(|url| url.clone())
+        })
+    }
+
+    /// Keep [`Self::effective_github_api_url`] in step with a configuration that is being applied.
+    fn note_workflow_endpoints(&self, cfg: &ServiceConfig) {
+        if let Ok(mut slot) = self.workflow_github_api_url.write() {
+            *slot = workflow_github_api_url(cfg);
+        }
     }
 
     /// Use another GitHub REST API base URL (GitHub Enterprise Server) for pull requests.
@@ -2276,7 +2322,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         // is opened for it instead.
         if updating {
             let details = GitHubTracker::new(
-                self.github_api_url.clone(),
+                self.effective_github_api_url(),
                 repo.clone(),
                 Some(token.clone()),
                 None,
@@ -2322,7 +2368,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let (number, html_url, already_existed) = if updating {
             (review.pr_number, review.url.clone(), true)
         } else {
-            let tracker = GitHubTracker::new(self.github_api_url.clone(), repo, Some(token), None);
+            let tracker =
+                GitHubTracker::new(self.effective_github_api_url(), repo, Some(token), None);
             let body = redact_secrets(
                 &format!(
                     "{}\n\n---\nOpened by Symphony Desktop after explicit human approval of this review (merge readiness {}/5). Nothing is merged automatically.",
@@ -2423,8 +2470,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     "the project has no GitHub repository (owner/name) configured".into(),
                 )
             })?;
-        let tracker =
-            GitHubTracker::new(self.github_api_url.clone(), repo, self.github_token(), None);
+        let tracker = GitHubTracker::new(
+            self.effective_github_api_url(),
+            repo,
+            self.github_token(),
+            None,
+        );
         let details = tracker
             .fetch_pull_request_details(review.pr_number)
             .await
@@ -2762,6 +2813,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 mem.provider_cache = None;
             }
             mem.active_workflow = wf;
+            self.note_workflow_endpoints(&cfg);
             mem.active_config = cfg;
             mem.active_workflow_path = Some(path.clone());
             mem.workflow_error = None;
@@ -2980,12 +3032,42 @@ Please implement the requested changes cleanly in the current Git workspace, run
         .await;
     }
 
-    fn build_tracker_for_project(&self, project: &Project) -> Option<Box<dyn TrackerAdapter>> {
+    /// The tracker adapter of a project, configured from the loaded workflow where that has
+    /// something to say: the GitHub Enterprise API URL and assignee filter of a GitHub tracker, the
+    /// endpoint of a Linear one, and the workflow's terminal states. The workflow's tracker settings
+    /// apply to projects of the workflow's own tracker kind only.
+    async fn build_tracker_for_project(
+        &self,
+        project: &Project,
+    ) -> Option<Box<dyn TrackerAdapter>> {
+        let (provider, terminal_states) = {
+            let mem = self.memory.read().await;
+            let cfg = &mem.active_config;
+            let provider = if cfg.tracker_kind.eq_ignore_ascii_case(&project.tracker_kind) {
+                cfg.tracker_provider.clone()
+            } else {
+                Default::default()
+            };
+            (provider, cfg.terminal_states.clone())
+        };
+        let setting = |key: &str| {
+            provider
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
         match project.tracker_kind.to_lowercase().as_str() {
             "github" => {
                 let repo = project.github_repo.clone()?;
                 let token = self.github_token();
-                Some(Box::new(GitHubTracker::new(None, repo, token, None)))
+                Some(Box::new(GitHubTracker::new(
+                    self.effective_github_api_url(),
+                    repo,
+                    token,
+                    setting("assignee"),
+                )))
             }
             "linear" => {
                 let slug = project.linear_project_slug.clone()?;
@@ -2994,10 +3076,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     .get_secret("LINEAR_API_KEY")
                     .or_else(|| std::env::var("LINEAR_API_KEY").ok())?;
                 Some(Box::new(LinearTracker::new(
-                    None,
+                    setting("endpoint"),
                     slug,
                     Some(key),
-                    vec!["Done".into(), "Closed".into(), "Cancelled".into()],
+                    terminal_states,
                 )))
             }
             _ => None,
@@ -3011,7 +3093,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .await?
             .ok_or_else(|| SymphonyError::ProjectNotFound(project_id.to_string()))?;
 
-        let Some(tracker) = self.build_tracker_for_project(&project) else {
+        let Some(tracker) = self.build_tracker_for_project(&project).await else {
             return self.storage.list_tasks(Some(project_id)).await;
         };
 
@@ -3093,7 +3175,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         };
 
         for project in projects {
-            if let Some(tracker) = self.build_tracker_for_project(&project) {
+            if let Some(tracker) = self.build_tracker_for_project(&project).await {
                 if let Ok(terminal_issues) = tracker.fetch_issues_by_states(&terminal_states).await
                 {
                     let root = PathBuf::from(&project.workspace_root);
@@ -3151,7 +3233,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let projects = self.storage.list_projects().await?;
         for project in &projects {
             if project.auto_dispatch {
-                let _ = self.sync_project_issues(&project.id).await;
+                self.sync_project_for_tick(project).await;
             }
         }
 
@@ -3235,6 +3317,88 @@ Please implement the requested changes cleanly in the current Git workspace, run
         Ok(())
     }
 
+    /// One tick's sync of a project's issues. A failure is reported once, as an event the user can
+    /// see, not on every poll and not silently; a tracker that answered with a rate limit is left
+    /// alone until its limit resets.
+    async fn sync_project_for_tick(&self, project: &Project) {
+        let now = Utc::now();
+        {
+            let mem = self.memory.read().await;
+            if mem
+                .tracker_backoff
+                .get(&project.id)
+                .is_some_and(|until| *until > now)
+            {
+                return;
+            }
+        }
+        match self.sync_project_issues(&project.id).await {
+            Ok(_) => {
+                let recovered = {
+                    let mut mem = self.memory.write().await;
+                    mem.tracker_backoff.remove(&project.id);
+                    mem.tracker_sync_errors.remove(&project.id).is_some()
+                };
+                if recovered {
+                    self.emit_event(
+                        None,
+                        None,
+                        None,
+                        None,
+                        "tracker/sync_recovered",
+                        None,
+                        format!("Issues of project {} can be read again.", project.name),
+                        None,
+                    )
+                    .await;
+                }
+            }
+            Err(err) => {
+                let wait = symphony_trackers::rate_limit_retry_after(&err);
+                let message = redact_secrets(&err.to_string(), &[]);
+                // A rate limit repeats with a different wait each time; it is one failure.
+                let key = if wait.is_some() {
+                    symphony_trackers::GITHUB_RATE_LIMITED.to_string()
+                } else {
+                    message.clone()
+                };
+                let first_time = {
+                    let mut mem = self.memory.write().await;
+                    if let Some(wait) = wait {
+                        if let Ok(wait) = chrono::Duration::from_std(wait) {
+                            mem.tracker_backoff.insert(project.id.clone(), now + wait);
+                        }
+                    }
+                    mem.tracker_sync_errors
+                        .insert(project.id.clone(), key.clone())
+                        .as_deref()
+                        != Some(key.as_str())
+                };
+                if first_time {
+                    warn!(project = %project.id, error = %message, "could not read the project's issues");
+                    let hint = match wait {
+                        Some(wait) => format!(" It is asked again in {} s.", wait.as_secs()),
+                        None => String::new(),
+                    };
+                    self.emit_event(
+                        None,
+                        None,
+                        None,
+                        None,
+                        "tracker/sync_failed",
+                        None,
+                        format!(
+                            "Could not read the issues of project {}: {message}.{hint}",
+                            project.name
+                        ),
+                        None,
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
     /// Re-read the issue of a task that is about to start. Dispatch decisions come from the cached
     /// copy, which is refreshed only for issues the tracker still lists as candidates, so a task
     /// whose issue was closed while it waited would start anyway. When the tracker says the issue is
@@ -3246,7 +3410,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
         project: Option<&Project>,
         terminal_states: &[String],
     ) -> bool {
-        let Some(tracker) = project.and_then(|p| self.build_tracker_for_project(p)) else {
+        let Some(project) = project else {
+            return false;
+        };
+        let Some(tracker) = self.build_tracker_for_project(project).await else {
             return false;
         };
         let Ok(refreshed) = tracker
@@ -3345,7 +3512,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
 
         for (task_id, project_id, issue_id) in running_snapshots {
             if let Ok(Some(project)) = self.storage.get_project(&project_id).await {
-                if let Some(tracker) = self.build_tracker_for_project(&project) {
+                if let Some(tracker) = self.build_tracker_for_project(&project).await {
                     if let Ok(refreshed) = tracker
                         .fetch_issue_states_by_ids(std::slice::from_ref(&issue_id))
                         .await
@@ -6272,6 +6439,166 @@ rl.on('line', (line) => {
         orch.storage.upsert_task(&busy).await.unwrap();
         orch.reconcile_and_dispatch_tick().await.unwrap();
         assert_eq!(orch.get_task(&queued.id).await.unwrap().attempt_count, 1);
+    }
+
+    /// An orchestrator whose `WORKFLOW.md` names `api_url` as its GitHub API (as a GitHub Enterprise
+    /// user would), with an auto-dispatching GitHub project `acme/widgets` and a vault token.
+    async fn github_tracked_orchestrator(
+        temp: &TempDir,
+        api_url: &str,
+    ) -> (SymphonyOrchestrator, Project) {
+        let workflow = temp.path().join("WORKFLOW.md");
+        std::fs::write(
+            &workflow,
+            format!(
+                "---\ntracker:\n  kind: github\n  provider:\n    api_url: {api_url}\n    repo: acme/widgets\nagent:\n  max_concurrent_agents: 4\n---\nWork on {{{{ issue.identifier }}}}\n"
+            ),
+        )
+        .unwrap();
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        secrets
+            .set_secret("GITHUB_TOKEN", "ghp_testtokentesttokentesttoken123456")
+            .unwrap();
+        let orch = SymphonyOrchestrator::new(
+            Storage::connect_in_memory().await.unwrap(),
+            Some(workflow),
+            secrets,
+        )
+        .await
+        .unwrap();
+        let project = Project {
+            id: "proj-gh".into(),
+            name: "Widgets".into(),
+            repo_path: temp.path().join("repo").to_string_lossy().to_string(),
+            default_branch: "main".into(),
+            workspace_root: temp.path().join("workspaces").to_string_lossy().to_string(),
+            workflow_path: None,
+            preferred_provider: ProviderKind::Simulated,
+            preferred_model: None,
+            tracker_kind: "github".into(),
+            github_repo: Some("acme/widgets".into()),
+            linear_project_slug: None,
+            required_labels: Vec::new(),
+            auto_dispatch: true,
+            max_concurrent_agents: 2,
+            validation_commands: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        orch.create_project(project.clone()).await.unwrap();
+        (orch, project)
+    }
+
+    #[test]
+    fn the_workflow_github_api_url_is_only_taken_when_it_is_safe_to_send_a_token_there() {
+        let cfg = |kind: &str, api_url: &str| {
+            let mut cfg = ServiceConfig::default();
+            cfg.tracker_kind = kind.into();
+            cfg.tracker_provider
+                .insert("api_url".into(), json!(api_url));
+            cfg
+        };
+        assert_eq!(
+            workflow_github_api_url(&cfg("github", "https://ghe.example.com/api/v3/")),
+            Some("https://ghe.example.com/api/v3".to_string())
+        );
+        // Plain http only to the local machine; other schemes and garbage are ignored.
+        assert_eq!(
+            workflow_github_api_url(&cfg("github", "http://127.0.0.1:8080")),
+            Some("http://127.0.0.1:8080".to_string())
+        );
+        for refused in [
+            "http://ghe.example.com",
+            "ftp://ghe.example.com",
+            "ghe.example.com",
+            "",
+        ] {
+            assert_eq!(
+                workflow_github_api_url(&cfg("github", refused)),
+                None,
+                "{refused:?}"
+            );
+        }
+        // The setting belongs to a GitHub tracker.
+        assert_eq!(
+            workflow_github_api_url(&cfg("linear", "https://ghe.example.com")),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_queued_task_whose_issue_was_closed_meanwhile_is_cancelled_not_started() {
+        let temp = TempDir::new().unwrap();
+        let (api, seen) = github_mock_with(Arc::new(|_method: &str, target: &str| {
+            if target.starts_with("/repos/acme/widgets/issues/7") {
+                (
+                    "200 OK".to_string(),
+                    json!({ "number": 7, "title": "Closed meanwhile", "state": "closed", "labels": [] }),
+                )
+            } else {
+                ("200 OK".to_string(), json!([]))
+            }
+        }))
+        .await;
+        let (orch, project) = github_tracked_orchestrator(&temp, &api).await;
+        let mut task = task_in(&project.id, "open", "GH-7");
+        task.issue.id = "7".into();
+        task.status = TaskStatus::Queued;
+        orch.storage.upsert_task(&task).await.unwrap();
+
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+
+        let after = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(after.status, TaskStatus::Cancelled, "{after:?}");
+        assert_eq!(after.attempt_count, 0, "it never started");
+        // The workflow's API URL was used, with the vault token.
+        let requests = seen.lock().unwrap().clone();
+        let lookup = requests
+            .iter()
+            .find(|(method, target, _, _)| method == "GET" && target.contains("/issues/7"))
+            .expect("the issue was looked up on the configured GitHub API");
+        assert!(lookup.2.contains("ghp_testtokentesttokentesttoken123456"));
+    }
+
+    #[tokio::test]
+    async fn test_a_rate_limited_tracker_is_left_alone_and_reported_once() {
+        let temp = TempDir::new().unwrap();
+        let (api, seen) = github_mock_with(Arc::new(|_method: &str, _target: &str| {
+            // The status text carries a header: the mock writes it into the response head.
+            (
+                "429 Too Many Requests\r\nRetry-After: 120".to_string(),
+                json!({ "message": "API rate limit exceeded" }),
+            )
+        }))
+        .await;
+        let (orch, _project) = github_tracked_orchestrator(&temp, &api).await;
+
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+
+        let listings = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, target, _, _)| method == "GET" && target.contains("/issues?"))
+            .count();
+        assert_eq!(listings, 1, "later ticks leave the limited tracker alone");
+        let events = orch.list_events(None, 100).await.unwrap();
+        let failures: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == "tracker/sync_failed")
+            .collect();
+        assert_eq!(failures.len(), 1, "reported once: {events:?}");
+        assert!(
+            failures[0].message.contains("120"),
+            "{}",
+            failures[0].message
+        );
+        assert!(
+            !failures[0].message.contains("ghp_"),
+            "no token in the report"
+        );
     }
 
     #[tokio::test]
