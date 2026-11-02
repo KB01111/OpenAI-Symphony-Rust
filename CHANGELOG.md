@@ -158,6 +158,8 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   the workflow's `terminal_states` for Linear blockers, were parsed and then ignored. A failed or
   rate-limited poll was hidden; it is reported once as an activity event and a rate-limited tracker is left
   alone until its limit resets.
+- The power mode shown on Overview always said "Battery Power (1 Agent Limit)"; it names the limit set in
+  *Settings → Resource policy*.
 - Deleting a project or a task left its approvals, validation results and pull request reviews behind, and the
   automatic pull request status sweep then failed on every orphaned review each time; they are removed with it.
 - A pull request's changed files and review comments were read from the first page only (30 items), so a large

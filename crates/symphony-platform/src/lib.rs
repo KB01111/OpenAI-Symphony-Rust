@@ -161,15 +161,11 @@ impl HardwareMonitor {
             ));
         }
 
-        let power_mode = if power.on_battery {
-            if power.battery_saver_active {
-                "Battery Saver (Eco / iGPU Only)".to_string()
-            } else {
-                "Battery Power (1 Agent Limit)".to_string()
-            }
-        } else {
-            "AC Power (Performance)".to_string()
-        };
+        let power_mode = power_mode_label(
+            power.on_battery,
+            power.battery_saver_active,
+            base_recommended,
+        );
 
         HardwareSnapshot {
             cpu_brand,
@@ -187,6 +183,16 @@ impl HardwareMonitor {
             dispatch_delayed_reason: delay_reason,
             captured_at: Utc::now(),
         }
+    }
+}
+
+/// The power mode shown in the UI. The battery limit is the configured one (Settings → Resource
+/// policy), not a fixed number.
+fn power_mode_label(on_battery: bool, battery_saver: bool, battery_agent_limit: u32) -> String {
+    match (on_battery, battery_saver) {
+        (true, true) => "Battery Saver (Eco / iGPU Only)".to_string(),
+        (true, false) => format!("Battery Power ({battery_agent_limit} Agent Limit)"),
+        (false, _) => "AC Power (Performance)".to_string(),
     }
 }
 
@@ -719,6 +725,24 @@ mod tests {
         );
         assert_eq!(registered_executable(""), None);
         assert_eq!(registered_executable("   "), None);
+    }
+
+    #[test]
+    fn the_power_mode_names_the_configured_battery_limit() {
+        assert_eq!(
+            power_mode_label(true, false, 1),
+            "Battery Power (1 Agent Limit)"
+        );
+        assert_eq!(
+            power_mode_label(true, false, 3),
+            "Battery Power (3 Agent Limit)"
+        );
+        assert_eq!(
+            power_mode_label(true, true, 3),
+            "Battery Saver (Eco / iGPU Only)"
+        );
+        assert_eq!(power_mode_label(false, false, 3), "AC Power (Performance)");
+        assert_eq!(power_mode_label(false, true, 3), "AC Power (Performance)");
     }
 
     #[test]
