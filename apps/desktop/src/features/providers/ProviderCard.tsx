@@ -20,9 +20,7 @@ const INSTALL_HINTS: Partial<Record<ProviderKind, string>> = {
   codex: "npm install -g @openai/codex",
   claude_code: "npm install -g @anthropic-ai/claude-code",
   opencode: "npm install -g opencode-ai",
-  // The bridge is not part of the installer: this builds it in a source checkout. The other way to get one
-  // (a built bridge.mjs named by SYMPHONY_CODESANDBOX_RUNNER) is explained in `cloud.runnerHint`.
-  codesandbox: "pnpm --filter @symphony/codesandbox-runner build"
+
 };
 
 type CapabilityKey = keyof (typeof providerMessages)["en"]["capability"];
@@ -126,7 +124,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate">{provider.display_name}</span>
           <Badge tone={provider.installed ? "success" : "danger"}>
-            {provider.installed ? m.installed : m.notFound}
+            {provider.installed ? m.installed : kind === "codesandbox" ? m.cloud.unavailable : m.notFound}
           </Badge>
           {isGlobalDefault ? (
             <Badge tone="info">
@@ -152,7 +150,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
           />
         ) : (
           <div className="space-y-1.5 text-sm">
-            <p className="text-destructive">{m.notFound}</p>
+            <p className="text-destructive">{kind === "codesandbox" ? m.cloud.unavailable : m.notFound}</p>
             {INSTALL_HINTS[kind] ? (
               <p className="text-xs text-muted-foreground">
                 {m.installHint}:{" "}
