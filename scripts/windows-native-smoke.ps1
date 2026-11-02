@@ -25,7 +25,9 @@
 #>
 param(
   [Parameter(Mandatory = $true)] [string] $DesktopExe,
-  [Parameter(Mandatory = $true)] [string] $CliExe
+  [Parameter(Mandatory = $true)] [string] $CliExe,
+  # Only for the installed NSIS app; the bare release EXE does not carry bundled resources.
+  [switch] $AssertCodeSandboxProvider
 )
 
 $ErrorActionPreference = 'Stop'
@@ -115,6 +117,20 @@ try {
   Step 'Authenticated local API'
   $state = Invoke-Api GET "$($record.base_url)/api/v1/state" $record.token
   if ($state.StatusCode -ne 200) { Fail "GET /state with token returned $($state.StatusCode)" }
+  if ($AssertCodeSandboxProvider) {
+    Step 'Installed CodeSandbox provider discovery (packaged bridge and private Node)'
+    $response = Invoke-Api GET "$($record.base_url)/api/v1/providers" $record.token
+    if ($response.StatusCode -ne 200) { Fail "GET /providers returned $($response.StatusCode)" }
+    $providers = @($response.Content | ConvertFrom-Json)
+    $cloud = @($providers | Where-Object { $_.provider -eq 'codesandbox' })
+    if ($cloud.Count -ne 1 -or -not $cloud[0].installed) { Fail 'installed CodeSandbox provider was not detected' }
+    $expectedNode = Join-Path (Split-Path $DesktopExe -Parent) 'resources\codesandbox-runner\node.exe'
+    $actualNode = [string] $cloud[0].binary_path
+    if (-not [string]::Equals([IO.Path]::GetFullPath($actualNode), [IO.Path]::GetFullPath($expectedNode), [StringComparison]::OrdinalIgnoreCase)) {
+      Fail "CodeSandbox selected '$actualNode' instead of bundled '$expectedNode'"
+    }
+    Write-Host "    packaged CodeSandbox runtime detected: $actualNode ($($cloud[0].version))"
+  }
   $anon = Invoke-Api GET "$($record.base_url)/api/v1/state" $null
   if ($anon.StatusCode -ne 401) { Fail "GET /state without token returned $($anon.StatusCode)" }
   $remote = (Invoke-Api GET "$($record.base_url)/api/v1/remote-access" $record.token).Content | ConvertFrom-Json

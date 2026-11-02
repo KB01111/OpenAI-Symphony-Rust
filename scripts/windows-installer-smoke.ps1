@@ -172,7 +172,7 @@ try {
   else { Write-Host "Start Menu shortcut: $($shortcuts[0].FullName)" }
 
   Step 'The installed application passes the native runtime smoke test'
-  & pwsh -NoProfile -File $smokeScript -DesktopExe $app.FullName -CliExe $CliExe
+  & pwsh -NoProfile -File $smokeScript -DesktopExe $app.FullName -CliExe $CliExe -AssertCodeSandboxProvider
   if ($LASTEXITCODE -ne 0) { Fail "native smoke test of the installed application failed ($LASTEXITCODE)" }
   Stop-InstalledApp $installDir
 
