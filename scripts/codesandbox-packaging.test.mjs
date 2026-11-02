@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { resourceDirectory, sourceBridge, stagedBridge, stagedNode, supportedNodeVersion } from "./prepare-codesandbox-windows.mjs";
+import { resourceDirectory, sourceBridge, stagedBridge, stagedNode, supportedNodeVersion, prepareBundle } from "./prepare-codesandbox-windows.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const config = JSON.parse(readFileSync(join(root, "apps/desktop/src-tauri/tauri.windows.conf.json"), "utf8"));
@@ -19,7 +19,8 @@ test("Windows installer maps the compiled bridge and its own Node executable int
   assert.equal(stagedBridge, join(resourceDirectory, "bridge.mjs"));
   assert.equal(stagedNode, join(resourceDirectory, "node.exe"));
   assert.equal(sourceBridge, join(root, "tools/codesandbox-runner/dist/bridge.mjs"));
-  assert.ok(tauri.build.beforeBuildCommand.includes("prepare:codesandbox"));
+  assert.ok(config.build.beforeBuildCommand.includes("prepare:codesandbox"));
+  assert.ok(!tauri.build.beforeBuildCommand.includes("prepare:codesandbox"), "other platforms retain their normal build");
   assert.ok(desktop.scripts["prepare:codesandbox"].includes("@symphony/codesandbox-runner build"));
   assert.ok(desktop.scripts["prepare:codesandbox"].includes("prepare-codesandbox-windows.mjs"));
 });
@@ -30,5 +31,11 @@ test("packaged runtime enforces Node >=22.13 (not just executable presence)", ()
   }
   for (const value of ["v22.13.0", "v22.20.0", "v23.0.0", "v24.0.0"]) {
     assert.equal(supportedNodeVersion(value), true, value);
+  }
+});
+
+test("non-Windows build hosts cannot silently stage the wrong Node executable", async () => {
+  if (process.platform !== "win32" || process.arch !== "x64") {
+    await assert.rejects(prepareBundle(), /Windows x64 Node.js build host/);
   }
 });
