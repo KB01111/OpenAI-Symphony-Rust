@@ -2568,7 +2568,16 @@ fn pick_option_label(labels: &[&str], decision: &str) -> String {
         ) || (
             // "All" widens the grant, unless the option says it is for this one time ("Allow all
             // requested changes once"): that still only answers the question that was asked.
-            has_any(l, &["all"]) && !has_any(l, &["once", "onetime"])
+            // "Once per day" is a standing grant, not a one-time one.
+            has_any(l, &["all"])
+                && !(has_any(l, &["once", "onetime"])
+                    && !has_any(
+                        l,
+                        &[
+                            "per", "each", "daily", "weekly", "monthly", "hourly", "day", "days",
+                            "week", "weeks", "month", "months", "hour", "hours",
+                        ],
+                    ))
         )
     };
     let pick = |matching: &dyn Fn(&&str) -> bool| labels.iter().find(|l| matching(l)).copied();
@@ -2731,6 +2740,11 @@ mod tests {
         // Without "once", "all" does widen the grant, so a one-time answer does not select it.
         let wide = ["Allow all", "Deny"];
         assert_eq!(pick_option_label(&wide, "accept"), "Approve Once");
+        // "Once" with a recurrence is a standing grant, not a one-time one.
+        let recurring = ["Allow all commands once per day", "Allow once"];
+        assert_eq!(pick_option_label(&recurring, "accept"), "Allow once");
+        let only_recurring = ["Allow all commands once per day", "Deny"];
+        assert_eq!(pick_option_label(&only_recurring, "accept"), "Approve Once");
         // And an option that is persistent in another word stays so, whatever else it says.
         let always = ["Always allow all once more", "Allow once"];
         assert_eq!(pick_option_label(&always, "accept"), "Allow once");

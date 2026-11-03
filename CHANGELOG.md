@@ -208,7 +208,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   recognised from its body and waited out for a minute; a pull request page that cannot be read fails the refresh
   instead of replacing the stored files and review comments with a partial list; a one-time answer can pick
   "Allow all requested changes once"; a restore retried after an interrupted start puts the database that attempt
-  set aside back first, so the retry lists it with the other replaced files.
+  set aside back first, so the retry lists it with the other replaced files (and, when that retry then fails on
+  a damaged backup, reports the database as put back rather than the data folder as partly replaced); a rate limit
+  met while refreshing pull requests pauses that project's sweep for the wait GitHub named; "Allow all commands
+  once per day" is not taken for a one-time approval.
 
 ### Security
 

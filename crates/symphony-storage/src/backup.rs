@@ -798,6 +798,8 @@ pub async fn apply_pending_restore(
     };
     // Whether an earlier start already began applying this request.
     let interrupted_before = pending.as_ref().is_some_and(|p| p.attempts >= 1);
+    // Whether this attempt itself put back the database an interrupted one had set aside.
+    let mut recovered_early = false;
     let result: Result<RestoreReport, RestoreFailure> = match pending {
         None => Err(storage_err("the restore request could not be read").into()),
         Some(pending) if pending.attempts >= MAX_RESTORE_ATTEMPTS => Err(RestoreFailure {
@@ -831,7 +833,10 @@ pub async fn apply_pending_restore(
                             // The recovery below names the files that are still displaced.
                             displaced: Vec::new(),
                         }),
-                        _ => restore_detailed(&dir, data_dir).await,
+                        early => {
+                            recovered_early = matches!(early, Some(Recovery::Recovered));
+                            restore_detailed(&dir, data_dir).await
+                        }
                     },
                     Err(err) => Err(err.into()),
                 },
@@ -842,7 +847,13 @@ pub async fn apply_pending_restore(
     // database: the one that attempt set aside is put back first.
     let result = match result {
         Err(mut failure) if interrupted_before => {
-            match recover_displaced_database(data_dir) {
+            let recovery = match recover_displaced_database(data_dir) {
+                // Put back by this very attempt before it failed (a damaged backup, say): the
+                // database is in place because of that, not because nothing had happened.
+                Recovery::NotNeeded if recovered_early => Recovery::Recovered,
+                other => other,
+            };
+            match recovery {
                 // The database is in place, but an earlier start was interrupted while applying
                 // this request: it may have installed the restored database (or moved the
                 // workflow) before it died, so "left as it was" cannot be claimed.

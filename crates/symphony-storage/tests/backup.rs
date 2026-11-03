@@ -927,6 +927,53 @@ async fn a_retry_that_fails_puts_the_database_an_interrupted_attempt_set_aside_b
 }
 
 #[tokio::test]
+async fn a_damaged_backup_after_an_interrupted_start_reports_the_database_as_put_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, task) = storage_with_task(&data, "Live").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    schedule_restore(&root, &backup.id).await.unwrap();
+    storage.pool().close().await;
+
+    // The first start set the database aside and died; the backup then became damaged, so the
+    // retry puts the database back and fails before it replaces anything.
+    let started = PendingRestore {
+        attempts: 1,
+        ..pending_restore(&root).unwrap()
+    };
+    std::fs::write(
+        root.join(PENDING_RESTORE_FILE),
+        serde_json::to_vec(&started).unwrap(),
+    )
+    .unwrap();
+    let aside = data.join(format!("{DATABASE_FILE}.pre-restore-20261103T020000Z"));
+    std::fs::rename(data.join(DATABASE_FILE), &aside).unwrap();
+    std::fs::write(backup.path.join(DATABASE_FILE), b"not a database").unwrap();
+
+    let outcome = apply_pending_restore(&root, &data)
+        .await
+        .unwrap()
+        .expect("the request was still pending");
+
+    assert!(!outcome.succeeded, "{outcome:?}");
+    let error = outcome.error.as_deref().unwrap();
+    assert!(error.contains("damaged"), "{error}");
+    assert!(error.contains("put back"), "{error}");
+    // The data is in place because this attempt put it there: nothing for the user to repair.
+    assert!(
+        !outcome.rollback_incomplete,
+        "a database that was put back is not a partial restore: {outcome:?}"
+    );
+    assert!(!aside.exists(), "the displaced database was moved back");
+    let live = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    assert_eq!(
+        live.get_task(&task.id).await.unwrap().unwrap().issue.title,
+        "Live"
+    );
+}
+
+#[tokio::test]
 async fn a_failed_retry_after_an_interrupted_start_never_claims_the_data_is_as_it_was() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");

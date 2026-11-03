@@ -606,10 +606,8 @@ impl GitHubTracker {
             })?;
 
         if !resp.status().is_success() {
-            return Err(SymphonyError::TrackerError {
-                code: format!("github_http_{}", resp.status().as_u16()),
-                message: format!("Failed to fetch PR #{pr_number}"),
-            });
+            // A rate limit keeps its own error (with the wait), so the caller backs off.
+            return Err(github_http_error(resp).await);
         }
 
         let pr: Value = resp.json().await.map_err(|e| SymphonyError::TrackerError {

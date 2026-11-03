@@ -2652,7 +2652,15 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .filter(|r| r.has_pull_request() && !matches!(r.state.as_str(), "merged" | "closed"))
             .collect();
         failing.retain(|id| open.iter().any(|r| &r.id == id));
+        // Projects whose GitHub answered with a rate limit during this sweep: the rest of their
+        // pull requests wait for the next one, instead of asking again at once.
+        let mut limited: HashSet<String> = HashSet::new();
         for before in open {
+            if limited.contains(&before.project_id)
+                || self.tracker_backed_off(&before.project_id).await
+            {
+                continue;
+            }
             sweep.checked += 1;
             match self.refresh_pull_request(&before.id).await {
                 Ok(after) => {
@@ -2697,6 +2705,18 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 }
                 Err(e) => {
                     sweep.failed += 1;
+                    // The same back-off as the issue sync: no request for this project until the
+                    // wait GitHub named is over.
+                    if let Some(wait) = symphony_trackers::rate_limit_retry_after(&e) {
+                        if let Ok(wait) = chrono::Duration::from_std(wait) {
+                            self.memory
+                                .write()
+                                .await
+                                .tracker_backoff
+                                .insert(before.project_id.clone(), Utc::now() + wait);
+                        }
+                        limited.insert(before.project_id.clone());
+                    }
                     if failing.insert(before.id.clone()) {
                         warn!(review = %before.id, error = %e, "Refreshing a pull request failed");
                         self.emit_event(
@@ -6890,6 +6910,70 @@ rl.on('line', (line) => {
             .await
             .retry_attempts
             .contains_key(&task.id));
+    }
+
+    #[tokio::test]
+    async fn test_a_rate_limit_ends_the_pull_request_sweep_for_that_project() {
+        let temp = TempDir::new().unwrap();
+        // GitHub refuses every request with a secondary rate limit that names no wait header.
+        let (api, seen) = github_mock_with(Arc::new(|_method: &str, _target: &str| {
+            (
+                "403 Forbidden".to_string(),
+                json!({ "message": "You have exceeded a secondary rate limit. Please wait." }),
+            )
+        }))
+        .await;
+        let (orch, project) = github_tracked_orchestrator(&temp, &api).await;
+        for number in [7u64, 8] {
+            let review = PullRequestReview {
+                id: format!("pr-task-{number}"),
+                task_id: format!("task-{number}"),
+                project_id: project.id.clone(),
+                pr_number: number,
+                title: format!("PR {number}"),
+                description: String::new(),
+                url: format!("https://github.com/acme/widgets/pull/{number}"),
+                branch_name: format!("task-{number}"),
+                base_branch: "main".into(),
+                state: "open".into(),
+                ci_status: "none".into(),
+                mergeable: true,
+                has_conflicts: false,
+                changed_files: Vec::new(),
+                diff_preview: String::new(),
+                validation_results: Vec::new(),
+                review_comments: Vec::new(),
+                security_warnings: Vec::new(),
+                merge_readiness: MergeReadinessReport::evaluate(
+                    ConflictCheck::NotChecked,
+                    "none",
+                    &[],
+                    &[],
+                    0,
+                ),
+                human_approved: false,
+                updated_at: Utc::now(),
+                reviewed_commit: None,
+                unpushed_changes: false,
+            };
+            orch.storage.upsert_pr_review(&review).await.unwrap();
+        }
+        let mut failing = HashSet::new();
+
+        let first = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+
+        assert_eq!(
+            (first.checked, first.failed),
+            (1, 1),
+            "the second pull request of the limited project was not asked about"
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1, "one request, then silence");
+        assert!(orch.tracker_backed_off(&project.id).await);
+
+        // And while the wait lasts, the next sweep leaves the project alone.
+        let second = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+        assert_eq!((second.checked, second.failed), (0, 0));
+        assert_eq!(seen.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
