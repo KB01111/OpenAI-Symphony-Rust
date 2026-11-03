@@ -654,6 +654,20 @@ impl TrackerSettings {
     }
 }
 
+/// Keep a project's tracker quiet until `until`, never shortening a wait that is already running:
+/// the issue sync and the pull request sweep can both meet a rate limit, and the later, shorter
+/// answer must not cut the longer one short.
+fn extend_tracker_backoff(
+    backoff: &mut HashMap<String, DateTime<Utc>>,
+    project_id: &str,
+    until: DateTime<Utc>,
+) {
+    let entry = backoff.entry(project_id.to_string()).or_insert(until);
+    if *entry < until {
+        *entry = until;
+    }
+}
+
 impl SymphonyOrchestrator {
     pub async fn new(
         storage: Storage,
@@ -2709,11 +2723,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     // wait GitHub named is over.
                     if let Some(wait) = symphony_trackers::rate_limit_retry_after(&e) {
                         if let Ok(wait) = chrono::Duration::from_std(wait) {
-                            self.memory
-                                .write()
-                                .await
-                                .tracker_backoff
-                                .insert(before.project_id.clone(), Utc::now() + wait);
+                            let mut mem = self.memory.write().await;
+                            extend_tracker_backoff(
+                                &mut mem.tracker_backoff,
+                                &before.project_id,
+                                Utc::now() + wait,
+                            );
                         }
                         limited.insert(before.project_id.clone());
                     }
@@ -3464,7 +3479,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     let mut mem = self.memory.write().await;
                     if let Some(wait) = wait {
                         if let Ok(wait) = chrono::Duration::from_std(wait) {
-                            mem.tracker_backoff.insert(project.id.clone(), now + wait);
+                            extend_tracker_backoff(
+                                &mut mem.tracker_backoff,
+                                &project.id,
+                                now + wait,
+                            );
                         }
                     }
                     mem.tracker_sync_errors
@@ -6910,6 +6929,23 @@ rl.on('line', (line) => {
             .await
             .retry_attempts
             .contains_key(&task.id));
+    }
+
+    #[test]
+    fn a_shorter_rate_limit_never_cuts_a_longer_tracker_wait_short() {
+        let mut backoff: HashMap<String, DateTime<Utc>> = HashMap::new();
+        let now = Utc::now();
+        extend_tracker_backoff(&mut backoff, "p", now + chrono::Duration::seconds(600));
+        extend_tracker_backoff(&mut backoff, "p", now + chrono::Duration::seconds(60));
+        assert_eq!(
+            backoff["p"],
+            now + chrono::Duration::seconds(600),
+            "the longer wait stays"
+        );
+        extend_tracker_backoff(&mut backoff, "p", now + chrono::Duration::seconds(900));
+        assert_eq!(backoff["p"], now + chrono::Duration::seconds(900));
+        extend_tracker_backoff(&mut backoff, "q", now + chrono::Duration::seconds(5));
+        assert_eq!(backoff.len(), 2, "projects are independent");
     }
 
     #[tokio::test]
