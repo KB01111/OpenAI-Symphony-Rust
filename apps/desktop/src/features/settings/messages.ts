@@ -174,7 +174,14 @@ export const settingsMessages = defineMessages({
       lastSucceededTitle: "Last restore applied",
       lastFailedTitle: "Last restore failed",
       lastSucceeded: "{id} was restored. The data it replaced was kept as .pre-restore-<time> in the data folder.",
-      lastFailed: "{id} could not be restored and your data was left as it was: {error}"
+      lastFailed: "{id} could not be restored and your data was left as it was: {error}",
+      lastIncompleteTitle: "Last restore left your data partly replaced",
+      lastIncomplete: "{id} could not be restored, and putting your previous data back did not finish: {error}",
+      lastIncompleteFiles: "These files still hold your previous data. Close Symphony and rename each back to its original name (remove the .pre-restore-<time> part):",
+      statusFailedTitle: "Could not check for a waiting restore",
+      statusFailedBody: "Restoring is switched off until this is known, so that a request that is already waiting is not replaced unseen.",
+      statusLoading: "Checking whether a restore is already waiting…",
+      withdrawFailed: "The restore could not be withdrawn"
     },
     diagnostics: {
       intro: "Export a redacted JSON bundle (settings, runtime state, recent errors) to attach to a bug report. Secrets are masked by the runtime before export.",
@@ -422,7 +429,14 @@ export const settingsMessages = defineMessages({
       lastSucceededTitle: "Senaste återställningen tillämpades",
       lastFailedTitle: "Senaste återställningen misslyckades",
       lastSucceeded: "{id} återställdes. Data som ersattes sparades som .pre-restore-<tid> i datamappen.",
-      lastFailed: "{id} kunde inte återställas och dina data lämnades som de var: {error}"
+      lastFailed: "{id} kunde inte återställas och dina data lämnades som de var: {error}",
+      lastIncompleteTitle: "Senaste återställningen lämnade dina data delvis ersatta",
+      lastIncomplete: "{id} kunde inte återställas, och återställningen av dina tidigare data blev inte klar: {error}",
+      lastIncompleteFiles: "De här filerna innehåller fortfarande dina tidigare data. Stäng Symphony och döp om varje fil till sitt ursprungliga namn (ta bort delen .pre-restore-<tid>):",
+      statusFailedTitle: "Kunde inte kontrollera om en återställning väntar",
+      statusFailedBody: "Återställning är avstängd tills detta är känt, så att en begäran som redan väntar inte ersätts utan att du ser den.",
+      statusLoading: "Kontrollerar om en återställning redan väntar…",
+      withdrawFailed: "Återställningen kunde inte dras tillbaka"
     },
     diagnostics: {
       intro: "Exportera ett maskerat JSON-paket (inställningar, körtidstillstånd, senaste fel) att bifoga en felrapport. Hemligheter maskeras av körtiden före export.",

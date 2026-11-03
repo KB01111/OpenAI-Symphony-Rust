@@ -146,8 +146,14 @@ impl HardwareMonitor {
             policy.max_concurrent_on_ac
         };
 
-        let mut effective = configured_max.min(base_recommended.max(1));
+        let mut effective = base_concurrency(configured_max, base_recommended, power.on_battery);
         let mut delay_reason = None;
+        if effective == 0 && configured_max > 0 {
+            delay_reason = Some(
+                "On battery power with an agent limit of 0: new agent dispatches are paused"
+                    .to_string(),
+            );
+        }
 
         if mem_pct >= policy.high_memory_threshold_percent {
             effective = 0;
@@ -155,7 +161,7 @@ impl HardwareMonitor {
                 "High memory pressure ({mem_pct:.1}% >= {:.1}%): delaying new agent dispatches",
                 policy.high_memory_threshold_percent
             ));
-        } else if policy.reduce_on_thermal_throttle && thermal_throttling {
+        } else if effective > 0 && policy.reduce_on_thermal_throttle && thermal_throttling {
             effective = (effective / 2).max(1);
             delay_reason = Some(format!(
                 "High CPU load ({cpu_usage:.1}%): throttling concurrent agent dispatches to {effective}"
@@ -184,6 +190,18 @@ impl HardwareMonitor {
             dispatch_delayed_reason: delay_reason,
             captured_at: Utc::now(),
         }
+    }
+}
+
+/// The number of agents the power source allows, before memory and CPU pressure are applied. On
+/// battery the configured limit is taken as it is: 0 pauses dispatching there (the setting says so),
+/// and the power mode shown in the UI names that same number. On AC power at least one agent always
+/// runs.
+fn base_concurrency(configured_max: u32, recommended: u32, on_battery: bool) -> u32 {
+    if on_battery {
+        configured_max.min(recommended)
+    } else {
+        configured_max.min(recommended.max(1))
     }
 }
 
@@ -401,20 +419,39 @@ pub enum AutostartFix {
     Remove,
 }
 
-/// The executable named by a registered autostart command: the quoted path, or the first word.
-fn registered_executable(command: &str) -> Option<PathBuf> {
+/// A registered autostart command split into the executable (the quoted path, or the first word)
+/// and what follows it.
+fn split_registered_command(command: &str) -> Option<(&str, &str)> {
     let command = command.trim();
-    let path = match command.strip_prefix('"') {
-        Some(rest) => rest.split('"').next()?,
-        None => command.split_whitespace().next()?,
+    let (exe, rest) = match command.strip_prefix('"') {
+        Some(rest) => {
+            let end = rest.find('"')?;
+            (&rest[..end], &rest[end + 1..])
+        }
+        None => {
+            let end = command.find(char::is_whitespace).unwrap_or(command.len());
+            (&command[..end], &command[end..])
+        }
     };
-    (!path.is_empty()).then(|| PathBuf::from(path))
+    (!exe.is_empty()).then_some((exe, rest.trim()))
+}
+
+/// The file name of a Windows (or Unix) path written as text, lower-cased. Done on the text:
+/// the registry holds Windows paths whichever platform this runs on.
+fn program_name(path: &str) -> String {
+    path.rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase()
 }
 
 /// Decide whether the registry entry needs fixing. A missing entry (a new Windows profile, a
 /// cleaned registry) or one that launches a program that no longer exists (the app moved or was
-/// reinstalled elsewhere) is registered again for `exe_path`; an entry that launches another
-/// existing copy is left to that copy. With the setting off, any entry is removed.
+/// reinstalled elsewhere) is registered again for `exe_path`. An entry is left to another copy
+/// only when it really is a Symphony autostart entry of an existing copy: the same program name,
+/// started with exactly `--background` (without it the sign-in opens a window instead of the
+/// hidden runtime). Anything else, such as an unrelated program or a command that lost its
+/// argument, is replaced. With the setting off, any entry is removed.
 pub fn autostart_fix(
     wanted: bool,
     registered: Option<&str>,
@@ -427,8 +464,14 @@ pub fn autostart_fix(
             if command == autostart_command(exe_path) {
                 return AutostartFix::InSync;
             }
-            match registered_executable(command) {
-                Some(other) if exists(&other) => AutostartFix::InSync,
+            match split_registered_command(command) {
+                Some((other, args))
+                    if args == "--background"
+                        && program_name(other) == program_name(&exe_path.to_string_lossy())
+                        && exists(Path::new(other)) =>
+                {
+                    AutostartFix::InSync
+                }
                 _ => AutostartFix::Register,
             }
         }
@@ -703,6 +746,30 @@ mod tests {
             autostart_fix(true, Some(stale), exe, everywhere),
             AutostartFix::InSync
         );
+        // An existing program is not enough: a command that lost `--background` would open a
+        // window at sign-in, and one that launches something else is not Symphony's at all.
+        for broken in [
+            r#""C:\Other\Symphony\symphony.exe""#,
+            r#""C:\Other\Symphony\symphony.exe" --minimized"#,
+            r#""C:\Other\Symphony\symphony.exe" --background --extra"#,
+            r#""C:\Windows\notepad.exe" --background"#,
+        ] {
+            assert_eq!(
+                autostart_fix(true, Some(broken), exe, everywhere),
+                AutostartFix::Register,
+                "{broken}"
+            );
+        }
+        // The program name is compared without regard to case or to the directory.
+        assert_eq!(
+            autostart_fix(
+                true,
+                Some(r#""D:\Dev\SYMPHONY.EXE" --background"#),
+                exe,
+                everywhere
+            ),
+            AutostartFix::InSync
+        );
         // Off: an entry is removed, no entry is fine.
         assert_eq!(
             autostart_fix(false, Some(&ours), exe, everywhere),
@@ -715,17 +782,44 @@ mod tests {
     }
 
     #[test]
-    fn the_registered_executable_is_read_from_a_quoted_or_a_plain_command() {
+    fn a_registered_command_is_split_into_its_program_and_arguments() {
         assert_eq!(
-            registered_executable(r#""C:\Program Files\Symphony\symphony.exe" --background"#),
-            Some(PathBuf::from(r"C:\Program Files\Symphony\symphony.exe"))
+            split_registered_command(r#""C:\Program Files\Symphony\symphony.exe" --background"#),
+            Some((r"C:\Program Files\Symphony\symphony.exe", "--background"))
         );
         assert_eq!(
-            registered_executable(r"C:\Symphony\symphony.exe --background"),
-            Some(PathBuf::from(r"C:\Symphony\symphony.exe"))
+            split_registered_command(r"C:\Symphony\symphony.exe --background"),
+            Some((r"C:\Symphony\symphony.exe", "--background"))
         );
-        assert_eq!(registered_executable(""), None);
-        assert_eq!(registered_executable("   "), None);
+        // No arguments, and extra whitespace around them.
+        assert_eq!(
+            split_registered_command(r#"  "C:\Symphony\symphony.exe"  "#),
+            Some((r"C:\Symphony\symphony.exe", ""))
+        );
+        assert_eq!(
+            split_registered_command(r"C:\Symphony\symphony.exe   --background  "),
+            Some((r"C:\Symphony\symphony.exe", "--background"))
+        );
+        // An unterminated quote or nothing at all names no program.
+        assert_eq!(
+            split_registered_command(r#""C:\Symphony\symphony.exe"#),
+            None
+        );
+        assert_eq!(split_registered_command(""), None);
+        assert_eq!(split_registered_command("   "), None);
+    }
+
+    #[test]
+    fn a_battery_limit_of_zero_pauses_dispatching_on_battery_only() {
+        // The label and the scheduler agree: 0 on battery means no agents.
+        assert_eq!(base_concurrency(10, 0, true), 0);
+        assert_eq!(base_concurrency(10, 1, true), 1);
+        assert_eq!(base_concurrency(4, 8, true), 4);
+        // On AC power the policy never goes below one agent.
+        assert_eq!(base_concurrency(10, 0, false), 1);
+        assert_eq!(base_concurrency(10, 2, false), 2);
+        // A workflow that allows nothing allows nothing, whatever the power source.
+        assert_eq!(base_concurrency(0, 2, false), 0);
     }
 
     #[test]

@@ -2097,8 +2097,13 @@ pub struct RestoreOutcomeInfo {
     /// Why it failed, when it did.
     pub error: Option<String>,
     /// The files the restore replaced; they are kept as `<name>.pre-restore-<time>` next to the
-    /// restored ones, never deleted.
+    /// restored ones, never deleted. After a failure with `rollback_incomplete`: the files that are
+    /// still displaced and have to be moved back by hand.
     pub previous_files: Vec<String>,
+    /// The restore failed and putting the previous data back did not finish (or the restore was
+    /// interrupted too often to tell): the data folder is not as it was, unlike after any other
+    /// failed restore.
+    pub rollback_incomplete: bool,
 }
 
 /// The restore requested from the application: waiting for the next start, and the last one applied.
@@ -2124,6 +2129,7 @@ fn restore_status(root: &std::path::Path) -> RestoreStatus {
                 .into_iter()
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect(),
+            rollback_incomplete: o.rollback_incomplete,
         }),
     }
 }
@@ -2156,8 +2162,8 @@ async fn get_restore_status_handler(State(state): State<ServerState>) -> Respons
     params(("id" = String, Path, description = "Directory name of the backup, as listed by `GET /backups`")),
     responses(
         (status = 202, description = "The restore will be applied on the next start", body = RestoreStatus),
-        (status = 404, description = "No such backup"),
-        (status = 422, description = "The backup is damaged or cannot be read by this version")
+        (status = 404, description = "No such backup", body = ApiErrorBody),
+        (status = 422, description = "The backup is damaged or cannot be read by this version", body = ApiErrorBody)
     )
 )]
 async fn schedule_restore_handler(
@@ -2169,9 +2175,14 @@ async fn schedule_restore_handler(
     };
     match symphony_storage::backup::schedule_restore(root, &id).await {
         Ok(_) => (StatusCode::ACCEPTED, Json(restore_status(root))).into_response(),
-        Err(e @ (SymphonyError::NotFound(_) | SymphonyError::InvalidConfig(_))) => {
-            error_response(e)
-        }
+        // A request for a backup that does not exist or a name that is not one, and a failure to
+        // record the request on this machine (`IoError`: a read-only backups folder) are answered
+        // as what they are.
+        Err(
+            e @ (SymphonyError::NotFound(_)
+            | SymphonyError::InvalidConfig(_)
+            | SymphonyError::IoError(_)),
+        ) => error_response(e),
         // A backup that fails its checks is the caller's to fix (choose another), not a server fault.
         Err(e) => api_error(
             StatusCode::UNPROCESSABLE_ENTITY,

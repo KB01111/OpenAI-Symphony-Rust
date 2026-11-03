@@ -15,7 +15,7 @@
 //! Serena works in its own copy of the indexed commit (`<knowledge>/serena/<project>`), because it
 //! writes a `.serena` directory next to the code it reads.
 
-use crate::engine::command_for;
+use crate::engine::{absolute, command_for};
 use crate::model::{SymbolReference, SymbolReferences};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -118,14 +118,16 @@ pub async fn ensure_project(
     if existing.is_some() {
         let _ = std::fs::remove_file(&config);
     }
+    // Serena runs from `dir` (a snapshot under the data directory, never a user's repository), so
+    // the path it is given must not depend on that directory.
+    let dir = absolute(dir);
     let mut cmd = command_for(command);
     cmd.arg("project")
         .arg("create")
-        .arg(dir)
+        .arg(&dir)
         .arg("--name")
         .arg(name)
-        // `dir` is a snapshot under the data directory, never a user's repository.
-        .current_dir(dir);
+        .current_dir(&dir);
     for language in languages {
         cmd.arg("--language").arg(language);
     }
@@ -176,11 +178,13 @@ impl SerenaSession {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(mode_file, mode_file_contents())?;
+        let project_dir = absolute(project_dir);
+        let mode_file = absolute(mode_file);
         let mut cmd = command_for(command);
         cmd.arg("start-mcp-server")
-            .current_dir(project_dir)
+            .current_dir(&project_dir)
             .arg("--project")
-            .arg(project_dir)
+            .arg(&project_dir)
             .args(["--context", "ide", "--mode"])
             .arg(mode_file)
             .args([

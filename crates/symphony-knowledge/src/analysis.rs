@@ -18,8 +18,9 @@ use symphony_core::{redact_secrets, ProviderKind, SymphonyError, SymphonyResult}
 
 /// Bump when the prompt or the output schema changes; cached analyses are keyed by it.
 /// Part of the cache key of a stored analysis: bump it whenever the prompt changes, so analyses made
-/// with the old one are recomputed. (2: redacted metadata, bounded lists with a note.)
-pub const ANALYSIS_PROMPT_VERSION: u32 = 2;
+/// with the old one are recomputed. (2: redacted metadata, bounded lists with a note. 3: the diff is
+/// redacted as a whole and then cut at a line boundary, with the truncation stated.)
+pub const ANALYSIS_PROMPT_VERSION: u32 = 3;
 /// The most of a diff that goes into a prompt.
 pub const MAX_DIFF_BYTES: usize = 60 * 1024;
 /// The most of a diff that is read from git. It is deliberately larger than [`MAX_DIFF_BYTES`]: the

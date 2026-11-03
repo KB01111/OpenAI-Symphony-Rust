@@ -119,9 +119,16 @@ pub fn find_executable(name: &str, override_command: Option<&str>) -> Option<Pat
 /// directory; callers set the directory they really work in (a snapshot or the engine's output
 /// directory under the data directory) with `current_dir`.
 pub(crate) fn command_for(path: &Path) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(path);
-    // Only for an absolute path: a relative program path would be resolved against the new directory.
-    if let Some(dir) = path.parent().filter(|_| path.is_absolute()) {
+    // A path with directories (`tools/graphify`) is anchored where the host runs *now*: once the
+    // child's working directory is changed, it would be looked up from there. A bare name is left
+    // to the `PATH` search.
+    let program: PathBuf = if path.is_relative() && path.components().count() > 1 {
+        absolute(path)
+    } else {
+        path.to_path_buf()
+    };
+    let mut cmd = tokio::process::Command::new(&program);
+    if let Some(dir) = program.parent().filter(|_| program.is_absolute()) {
         cmd.current_dir(dir);
     }
     for var in SECRET_ENV_VARS_TO_STRIP {
@@ -134,6 +141,13 @@ pub(crate) fn command_for(path: &Path) -> tokio::process::Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd
+}
+
+/// `path` made absolute against the current directory (not resolved: no symlinks followed, nothing
+/// has to exist). Paths handed to an engine whose working directory is then changed must not depend
+/// on that directory.
+pub(crate) fn absolute(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// First line of `<exe> --version`, with a leading program name removed (`graphify 0.9.97`).
@@ -292,15 +306,19 @@ impl GraphifyEngine {
         out_dir: &Path,
         timeout: Duration,
     ) -> SymphonyResult<PathBuf> {
-        std::fs::create_dir_all(out_dir)?;
+        // Graphify runs from `out_dir` (below), so a relative `--data-dir` would make both paths
+        // point somewhere else for it than for the host.
+        let snapshot = absolute(snapshot);
+        let out_dir = absolute(out_dir);
+        std::fs::create_dir_all(&out_dir)?;
         let mut cmd = command_for(&self.path);
         cmd.arg("extract")
-            .arg(snapshot)
+            .arg(&snapshot)
             .args(["--code-only", "--no-cluster", "--out"])
-            .arg(out_dir)
+            .arg(&out_dir)
             // Anything Graphify writes relative to where it runs lands in its own output directory:
             // not in the snapshot (which stays an exact copy of the commit) and not in a repository.
-            .current_dir(out_dir)
+            .current_dir(&out_dir)
             .env("GRAPHIFY_BACKEND", "none");
         for var in LLM_ENV_VARS {
             cmd.env_remove(var);
@@ -668,9 +686,26 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         let cmd = command_for(&exe);
         assert_eq!(cmd.as_std().get_current_dir(), exe.parent());
-        // A relative path would be resolved against the new directory, so it is left alone.
+        // A relative path with directories would be looked up from the new directory, so it is
+        // anchored where the host runs; a bare name is left to the PATH search.
         let relative = command_for(Path::new("tools/graphify"));
-        assert_eq!(relative.as_std().get_current_dir(), None);
+        let anchored = absolute(Path::new("tools/graphify"));
+        assert!(anchored.is_absolute());
+        assert_eq!(relative.as_std().get_program(), anchored.as_os_str());
+        assert_eq!(relative.as_std().get_current_dir(), anchored.parent());
+        let bare = command_for(Path::new("graphify"));
+        assert_eq!(bare.as_std().get_current_dir(), None);
+    }
+
+    #[test]
+    fn paths_given_to_an_engine_do_not_depend_on_its_working_directory() {
+        let relative = Path::new("data/knowledge/snapshots/abc");
+        let anchored = absolute(relative);
+        assert!(anchored.is_absolute());
+        assert!(anchored.ends_with(relative));
+        // Already absolute: unchanged.
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(absolute(&exe), exe);
     }
 
     #[test]

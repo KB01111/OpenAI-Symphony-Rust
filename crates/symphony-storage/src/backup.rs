@@ -151,14 +151,18 @@ pub fn scheduled_backup_due(
 
 /// Delete automatic backups beyond the newest `keep` of them and return the ids removed. Backups
 /// made by hand, incomplete (`.partial`) directories and anything that is not a backup are never
-/// touched; `keep` is at least 1, so the newest automatic backup always stays.
+/// touched; `keep` is at least 1, so the newest automatic backup always stays. The backup a pending
+/// restore request names stays too, however old: it is deleted only after the restore was applied
+/// or withdrawn, or the requested restore would fail on the next start.
 pub fn prune_scheduled_backups(root: &Path, keep: u32) -> SymphonyResult<Vec<String>> {
     let keep = keep.max(1) as usize;
+    let requested = pending_restore(root).map(|p| p.backup_id);
     let mut removed = Vec::new();
     for backup in list_backups(root)?
         .into_iter()
         .filter(|b| b.scheduled)
         .skip(keep)
+        .filter(|b| requested.as_deref() != Some(b.id.as_str()))
     {
         std::fs::remove_dir_all(&backup.path)?;
         removed.push(backup.id);
@@ -355,6 +359,33 @@ fn aside(path: &Path, stamp: &str) -> SymphonyResult<Option<PathBuf>> {
     Ok(Some(target))
 }
 
+/// Why a restore failed, and whether it left the data directory as it found it.
+#[derive(Debug)]
+struct RestoreFailure {
+    error: SymphonyError,
+    /// Putting the previous files back did not finish: some of them still lie under their
+    /// `.pre-restore-…` names (`displaced`) and the data directory is not as it was.
+    rollback_incomplete: bool,
+    /// The files that are still displaced.
+    displaced: Vec<PathBuf>,
+}
+
+impl From<SymphonyError> for RestoreFailure {
+    fn from(error: SymphonyError) -> Self {
+        Self {
+            error,
+            rollback_incomplete: false,
+            displaced: Vec::new(),
+        }
+    }
+}
+
+impl From<std::io::Error> for RestoreFailure {
+    fn from(error: std::io::Error) -> Self {
+        SymphonyError::from(error).into()
+    }
+}
+
 /// Replace the database (and `WORKFLOW.md`, when the backup has one) in `data_dir` with the
 /// backup's. **Offline operation**: the caller must hold the data directory's runtime lock, so no
 /// runtime has the database open.
@@ -363,6 +394,15 @@ fn aside(path: &Path, stamp: &str) -> SymphonyResult<Option<PathBuf>> {
 /// are put back if the restored database cannot be opened and migrated. A backup from an older
 /// version is migrated forward on the way.
 pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResult<RestoreReport> {
+    restore_detailed(backup_dir, data_dir)
+        .await
+        .map_err(|failure| failure.error)
+}
+
+async fn restore_detailed(
+    backup_dir: &Path,
+    data_dir: &Path,
+) -> Result<RestoreReport, RestoreFailure> {
     let manifest = verify_backup(backup_dir).await?;
     std::fs::create_dir_all(data_dir)?;
 
@@ -380,7 +420,7 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
         .unwrap_or_default();
     if sha256_of(&staged)?.1 != expected {
         let _ = std::fs::remove_file(&staged);
-        return Err(storage_err("the database copy does not match the backup"));
+        return Err(storage_err("the database copy does not match the backup").into());
     }
 
     // (original, moved-aside) pairs and every file the restore wrote, to undo on failure.
@@ -425,6 +465,7 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
             // reported with the path that still holds the data: "put back" is only claimed when it
             // is true.
             let mut problems: Vec<String> = Vec::new();
+            let mut displaced: Vec<PathBuf> = Vec::new();
             let mut remove = |path: &Path| match std::fs::remove_file(path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -440,6 +481,7 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
             }
             for (original, target) in moved.iter().rev() {
                 if let Err(e) = std::fs::rename(target, original) {
+                    displaced.push(target.clone());
                     problems.push(format!(
                         "{} could not be moved back to {} ({e})",
                         target.display(),
@@ -448,14 +490,19 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
                 }
             }
             if !problems.is_empty() {
-                return Err(storage_err(format!(
-                    "the restore failed ({err}) and putting the previous data back was incomplete: {}. Nothing was deleted: inspect the files named above (those named `.pre-restore-…` hold the previous data).",
-                    problems.join("; ")
-                )));
+                return Err(RestoreFailure {
+                    error: storage_err(format!(
+                        "the restore failed ({err}) and putting the previous data back was incomplete: {}. Nothing was deleted: inspect the files named above (those named `.pre-restore-…` hold the previous data).",
+                        problems.join("; ")
+                    )),
+                    rollback_incomplete: true,
+                    displaced,
+                });
             }
             Err(storage_err(format!(
                 "the restore failed and the previous data was put back: {err}"
-            )))
+            ))
+            .into())
         }
     }
 }
@@ -482,9 +529,20 @@ pub struct PendingRestore {
     /// Directory name of the backup (see [`BackupInfo::id`]).
     pub backup_id: String,
     pub requested_at: DateTime<Utc>,
+    /// How many starts began applying this request. The request stays in place while it is being
+    /// applied, so a process that dies half-way tries again on the next start, up to
+    /// [`MAX_RESTORE_ATTEMPTS`] times; a restore that kills its host every time is then given up
+    /// instead of keeping the application from starting.
+    #[serde(default)]
+    pub attempts: u32,
 }
 
-/// What applying a [`PendingRestore`] did. A failed restore leaves the previous data in place.
+/// The most starts that try to apply one restore request (the first, and one retry after a start
+/// that was interrupted while applying it).
+pub const MAX_RESTORE_ATTEMPTS: u32 = 2;
+
+/// What applying a [`PendingRestore`] did. A failed restore leaves the previous data in place,
+/// unless `rollback_incomplete` says otherwise.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RestoreOutcome {
     pub backup_id: String,
@@ -493,7 +551,13 @@ pub struct RestoreOutcome {
     /// Why it failed, when it did.
     pub error: Option<String>,
     /// The files the restore replaced, kept as `<name>.pre-restore-<time>` (see [`RestoreReport`]).
+    /// After a failure with `rollback_incomplete`: the files that are still displaced.
     pub previous_files: Vec<PathBuf>,
+    /// The restore failed *and* putting the previous data back did not finish (or the restore was
+    /// interrupted too often to tell): the data directory is not as it was. The files in
+    /// `previous_files` hold the previous data and have to be moved back by hand.
+    #[serde(default)]
+    pub rollback_incomplete: bool,
 }
 
 /// The directory of backup `backup_id` under `root`. The id is untrusted (it comes from a request
@@ -530,10 +594,16 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> SymphonyResult<()>
 /// is already pending is replaced.
 pub async fn schedule_restore(root: &Path, backup_id: &str) -> SymphonyResult<PendingRestore> {
     let dir = backup_dir_for(root, backup_id)?;
-    verify_backup(&dir).await?;
+    // A backup that cannot be read is a problem with the backup; only recording the request is a
+    // problem with this machine (`IoError`), which callers tell apart.
+    verify_backup(&dir).await.map_err(|e| match e {
+        SymphonyError::IoError(message) => storage_err(message),
+        other => other,
+    })?;
     let pending = PendingRestore {
         backup_id: backup_id.to_string(),
         requested_at: Utc::now(),
+        attempts: 0,
     };
     write_json_atomic(&root.join(PENDING_RESTORE_FILE), &pending)?;
     Ok(pending)
@@ -562,9 +632,13 @@ pub fn last_restore(root: &Path) -> Option<RestoreOutcome> {
 
 /// Apply the restore requested with [`schedule_restore`], if any. **Call it at startup**, once the
 /// data directory's runtime lock is held and before the database is opened ([`restore_backup`] is an
-/// offline operation). The request is removed before anything else, so a restore that cannot finish
-/// is reported once and not attempted again on every start; the previous data stays in place when
-/// it fails ([`restore_backup`] puts everything back). `Ok(None)` when nothing was requested.
+/// offline operation). The request stays in place while it is applied and is removed once the
+/// restore has finished, or has failed and been rolled back: a process that dies half-way, with
+/// the database already set aside, finds the request again on the next start and finishes the job
+/// instead of starting on an empty database. A request that has been started
+/// [`MAX_RESTORE_ATTEMPTS`] times is given up (reported, with `rollback_incomplete`, because what
+/// the interrupted attempts left behind is unknown). The previous data stays in place when a
+/// restore fails ([`restore_backup`] puts everything back). `Ok(None)` when nothing was requested.
 pub async fn apply_pending_restore(
     root: &Path,
     data_dir: &Path,
@@ -576,18 +650,43 @@ pub async fn apply_pending_restore(
     let pending: Option<PendingRestore> = std::fs::read(&marker)
         .ok()
         .and_then(|raw| serde_json::from_slice(&raw).ok());
-    std::fs::remove_file(&marker)?;
 
     let backup_id = pending
         .as_ref()
         .map(|p| p.backup_id.clone())
         .unwrap_or_default();
-    let result = match &pending {
-        Some(pending) => match backup_dir_for(root, &pending.backup_id) {
-            Ok(dir) => restore_backup(&dir, data_dir).await,
-            Err(err) => Err(err),
-        },
-        None => Err(storage_err("the restore request could not be read")),
+    let failed = |failure: RestoreFailure| RestoreOutcome {
+        backup_id: backup_id.clone(),
+        applied_at: Utc::now(),
+        succeeded: false,
+        error: Some(failure.error.to_string()),
+        previous_files: failure.displaced,
+        rollback_incomplete: failure.rollback_incomplete,
+    };
+    let result: Result<RestoreReport, RestoreFailure> = match pending {
+        None => Err(storage_err("the restore request could not be read").into()),
+        Some(pending) if pending.attempts >= MAX_RESTORE_ATTEMPTS => Err(RestoreFailure {
+            error: storage_err(format!(
+                "the restore was interrupted {} times and was given up. Look for files named `.pre-restore-…` in the data folder: they hold the data that was replaced.",
+                pending.attempts
+            )),
+            rollback_incomplete: true,
+            displaced: Vec::new(),
+        }),
+        Some(pending) => {
+            // Counted before anything is touched, and the request kept: see above.
+            let started = PendingRestore {
+                attempts: pending.attempts + 1,
+                ..pending.clone()
+            };
+            match write_json_atomic(&marker, &started) {
+                Err(err) => Err(err.into()),
+                Ok(()) => match backup_dir_for(root, &pending.backup_id) {
+                    Ok(dir) => restore_detailed(&dir, data_dir).await,
+                    Err(err) => Err(err.into()),
+                },
+            }
+        }
     };
     let outcome = match result {
         Ok(report) => RestoreOutcome {
@@ -596,15 +695,13 @@ pub async fn apply_pending_restore(
             succeeded: true,
             error: None,
             previous_files: report.previous_files,
+            rollback_incomplete: false,
         },
-        Err(err) => RestoreOutcome {
-            backup_id,
-            applied_at: Utc::now(),
-            succeeded: false,
-            error: Some(err.to_string()),
-            previous_files: Vec::new(),
-        },
+        Err(failure) => failed(failure),
     };
+    // Finished, or failed and rolled back: the request is spent. A request that cannot be removed
+    // would be applied again on every start, so that is an error.
+    cancel_pending_restore(root)?;
     // Best effort: the restore itself is done (or has failed); losing the note about it is a lesser
     // problem than refusing to start.
     if let Err(err) = write_json_atomic(&root.join(LAST_RESTORE_FILE), &outcome) {

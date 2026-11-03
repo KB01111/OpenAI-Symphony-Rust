@@ -305,6 +305,59 @@ describe("BackupsSection", () => {
       expect(await screen.findByText(m.lastFailedTitle)).toBeInTheDocument();
       expect(screen.getByText(/your data was left as it was: the backup is damaged/)).toBeInTheDocument();
     });
+
+    it("does not say the data was left as it was when putting it back did not finish", async () => {
+      const displaced = "C:\\data\\symphony.sqlite.pre-restore-20261023T080500Z";
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => ({
+          pending: null,
+          last: {
+            backup_id: id,
+            applied_at: "2026-10-23T08:05:00Z",
+            succeeded: false,
+            error: "the restore failed and putting the previous data back was incomplete",
+            previous_files: [displaced],
+            rollback_incomplete: true
+          }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+      expect(await screen.findByText(m.lastIncompleteTitle)).toBeInTheDocument();
+      // The files that still hold the previous data are named, so they can be moved back by hand.
+      expect(screen.getByText(displaced)).toBeInTheDocument();
+      expect(screen.queryByText(/left as it was/)).not.toBeInTheDocument();
+      expect(screen.queryByText(m.lastFailedTitle)).not.toBeInTheDocument();
+    });
+
+    it("does not offer a restore while it cannot tell whether one is already waiting", async () => {
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => ({
+          status: 500,
+          body: { error: { code: "storage_error", message: "the restore status is unreadable" } }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+      expect(await screen.findByText(m.statusFailedTitle)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: `Restore ${id}` })).toBeDisabled();
+    });
+
+    it("says so when a waiting restore could not be withdrawn", async () => {
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => ({ pending: { backup_id: id, requested_at: "2026-10-23T08:00:00Z" }, last: null }),
+        "DELETE /backups/restore": () => ({
+          status: 500,
+          body: { error: { code: "io_error", message: "the request file is locked" } }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+      fireEvent.click(await screen.findByRole("button", { name: m.pendingWithdraw }));
+      expect(await screen.findByText(m.withdrawFailed)).toBeInTheDocument();
+      // It is still waiting, and still shown as waiting.
+      expect(screen.getByText(m.pendingTitle)).toBeInTheDocument();
+    });
   });
 
   it("reports a failed backup instead of pretending it succeeded", async () => {

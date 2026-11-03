@@ -77,6 +77,16 @@ request that is still waiting. The request is local administration only (`POST /
 `GET`/`DELETE /api/v1/backups/restore`); the remote companion cannot reach it. When the window is attached to a
 `symphony-cli` runtime, it is that runtime that must be restarted.
 
+While a request waits, the backup it names is **kept** by the automatic retention, however old it is. The request
+file stays in place while the restore is applied and is removed when the restore has finished, or has failed and
+been rolled back; if the process dies half-way (the database already set aside), the next start finishes the job
+instead of opening an empty database. A request that was started twice without finishing is given up and reported
+as *left your data partly replaced*, with the `.pre-restore-<time>` files that hold the previous data. A restore
+that fails and cannot put everything back is reported the same way, never as "left as it was". Restoring from the
+application replaces the database and the `WORKFLOW.md` **in the data directory**; a workflow file the runtime
+reads from elsewhere (`--workflow`, or `WORKFLOW.md` in the working directory) is yours and is not touched, and
+still takes precedence.
+
 **From the command line, while nothing runs.** This needs the `symphony-cli` executable from the release
 assets (the installer ships the desktop app only).
 
@@ -86,6 +96,9 @@ assets (the installer ships the desktop app only).
    read, SQLite `integrity_check`).
 3. Restore: `symphony-cli --data-dir "%LOCALAPPDATA%\symphony-desktop" restore-backup "<backup folder>"`.
 4. Start Symphony again.
+
+A restore that was requested from the application and is still waiting is withdrawn by the command (the backup
+restored here is the later request); the command says so.
 
 Either way, the replaced `symphony.sqlite` (with its `-wal`/`-shm`) and `WORKFLOW.md` are renamed
 `<name>.pre-restore-<time>`; nothing is deleted. If the restored database cannot be opened and migrated, the

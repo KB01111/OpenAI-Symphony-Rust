@@ -20,7 +20,11 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   are kept as `.pre-restore-<time>`, a restore that cannot be applied leaves your data as it was and is reported
   on the page, and a waiting request can be withdrawn. Previously restoring needed `symphony-cli restore-backup`
   with nothing running (still available). New: `GET`/`DELETE /api/v1/backups/restore` and
-  `POST /api/v1/backups/{id}/restore` (local only). **API:** additive only. See `docs/DATA_BACKUP.md`.
+  `POST /api/v1/backups/{id}/restore` (local only). **API:** additive only (the restore outcome also says
+  when putting the previous data back did not finish). The backup a waiting request names is kept by the
+  automatic retention; an interrupted restore is finished by the next start (and given up after two) instead
+  of leaving an empty database; an offline `restore-backup` withdraws a waiting request. See
+  `docs/DATA_BACKUP.md`.
 - **Repository Knowledge Base** (`/knowledge`, crate `symphony-knowledge`): an intelligence view per
   repository that joins a code graph, live worktrees, a deduplicated commit timeline and AI analysis.
   *Worktrees* lists every git worktree (not only Symphony's) with HEAD, uncommitted files, commits ahead of the
@@ -181,6 +185,23 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   repositories could not be loaded (with *Retry*) instead of asking you to register one.
 - `pnpm --filter @symphony/desktop e2e` no longer rewrites the committed `docs/screenshots` and
   `docs/perf/perf-results.json` (they go to `target/e2e-evidence/`; `SYMPHONY_UPDATE_DOCS=1` refreshes them).
+- Review follow-ups: **a Linear endpoint or GitHub Enterprise URL in `WORKFLOW.md` also reaches the agent's
+  `github_api`/`linear_graphql` tools** (they used the public servers while polling used the configured
+  ones); a Linear project no longer inherits another tracker's terminal states; a closed issue no longer uses
+  up the free slot of a tick, due retries are checked against the tracker like new candidates, a Linear
+  issue moved out of the active states is not started, and a rate-limited project is not asked about
+  running or queued issues either (a 429 without `Retry-After` now backs off for a minute); an approval is
+  claimed and recorded under one lock, so two simultaneous decisions cannot disagree with what the agent
+  received, and a failed write leaves the request answerable; a stall is not declared when the pending
+  approvals cannot be read; a refusal option such as "Do not deny" is never taken for a refusal, and a
+  one-time approval never picks an "always"/"session" option; a worktree branch created between the check and
+  `git worktree add` is checked out instead of failing, and a fallback branch is created, never reset;
+  Graphify and Serena get absolute paths (a relative `--data-dir` broke indexing); AI analyses are made again
+  with the new diff handling (prompt version 3); `.js`/`.vbs` entries of `PATHEXT` are not mistaken for a
+  provider CLI; a battery limit of `0` now pauses dispatching on battery, as Settings says; the login
+  autostart entry is repaired only when it is a `--background` entry of a Symphony copy, also when the
+  window is attached to `symphony-cli`, and never from settings that could not be read; uninstalling one
+  copy leaves the login entry of another copy alone.
 
 ### Security
 

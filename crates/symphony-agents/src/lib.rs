@@ -2506,6 +2506,7 @@ fn pick_option_label(labels: &[&str], decision: &str) -> String {
     let words = |label: &str| -> Vec<String> {
         label
             .to_lowercase()
+            .replace('\u{2019}', "'")
             .split(|c: char| !c.is_alphanumeric() && c != '\'')
             .filter(|w| !w.is_empty())
             .map(str::to_string)
@@ -2515,40 +2516,75 @@ fn pick_option_label(labels: &[&str], decision: &str) -> String {
         let label_words = words(label);
         wanted.iter().any(|w| label_words.iter().any(|lw| lw == w))
     };
-    let affirmative = |l: &&str| {
-        has_any(
-            l,
-            &["approve", "allow", "accept", "yes", "ok", "run", "proceed"],
-        )
+    // What a label means is read from its first word that carries a meaning, and a negation before
+    // it turns it around ("Don't allow" refuses). A label that denies a refusal ("Do not deny") or
+    // cancels a negation means nothing reliable, so no decision ever selects it.
+    let meaning = |label: &str| -> Option<Meaning> {
+        let mut negated = false;
+        for word in words(label) {
+            let word = word.as_str();
+            if matches!(
+                word,
+                "not" | "don't" | "dont" | "never" | "cannot" | "can't" | "won't"
+            ) {
+                negated = true;
+                continue;
+            }
+            let found =
+                if ["approve", "allow", "accept", "yes", "ok", "run", "proceed"].contains(&word) {
+                    Meaning::Affirm
+                } else if ["deny", "denied", "decline", "reject", "no"].contains(&word) {
+                    Meaning::Refuse
+                } else if ["cancel", "abort", "stop"].contains(&word) {
+                    Meaning::Cancel
+                } else {
+                    continue;
+                };
+            return match (negated, found) {
+                (false, found) => Some(found),
+                (true, Meaning::Affirm) => Some(Meaning::Refuse),
+                (true, _) => None,
+            };
+        }
+        // "Never", "Don't": a refusal without a verb.
+        negated.then_some(Meaning::Refuse)
     };
-    let negative = |l: &&str| {
-        has_any(
-            l,
-            &[
-                "deny", "denied", "decline", "reject", "no", "don't", "never",
-            ],
-        )
-    };
-    let cancelling = |l: &&str| has_any(l, &["cancel", "abort", "stop"]);
-    let broad = |l: &&str| has_any(l, &["session", "always"]);
+    let is = |wanted: Meaning| move |l: &&str| meaning(l) == Some(wanted);
+    let broad = |l: &&str| has_any(l, &["session", "always", "again", "remember"]);
     let pick = |matching: &dyn Fn(&&str) -> bool| labels.iter().find(|l| matching(l)).copied();
 
     let (chosen, fallback) = match decision {
         "acceptForSession" => (
-            pick(&|l| affirmative(l) && has_any(l, &["session"]))
-                .or_else(|| pick(&|l| affirmative(l) && !broad(l)))
-                .or_else(|| pick(&affirmative)),
+            pick(&|l| is(Meaning::Affirm)(l) && has_any(l, &["session"]))
+                .or_else(|| pick(&|l| is(Meaning::Affirm)(l) && !broad(l)))
+                .or_else(|| pick(&is(Meaning::Affirm))),
             "Approve this Session",
         ),
+        // A one-time approval never selects an option that also grants more (the session, always):
+        // when only such options exist, the plain label is sent instead.
         "accept" => (
-            pick(&|l| affirmative(l) && !broad(l)).or_else(|| pick(&affirmative)),
+            pick(&|l| is(Meaning::Affirm)(l) && !broad(l)),
             "Approve Once",
         ),
-        "cancel" => (pick(&cancelling).or_else(|| pick(&negative)), "Cancel"),
+        "cancel" => (
+            pick(&is(Meaning::Cancel)).or_else(|| pick(&is(Meaning::Refuse))),
+            "Cancel",
+        ),
         // Anything else is a refusal: never fall back to an affirmative option.
-        _ => (pick(&negative).or_else(|| pick(&cancelling)), "Deny"),
+        _ => (
+            pick(&is(Meaning::Refuse)).or_else(|| pick(&is(Meaning::Cancel))),
+            "Deny",
+        ),
     };
     chosen.unwrap_or(fallback).to_string()
+}
+
+/// What an answer option stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Meaning {
+    Affirm,
+    Refuse,
+    Cancel,
 }
 
 #[cfg(test)]
@@ -2661,6 +2697,40 @@ mod tests {
             user_input_question_text(&json!({})),
             "Codex asks for permission to use a tool"
         );
+    }
+
+    #[test]
+    fn negated_option_labels_are_read_by_what_they_mean() {
+        // "Do not deny" is not a refusal, and "Not OK" is not an approval.
+        let tricky = ["Do not deny", "Deny"];
+        assert_eq!(pick_option_label(&tricky, "decline"), "Deny");
+        let negations = ["Not OK", "Do not run", "Allow"];
+        assert_eq!(pick_option_label(&negations, "decline"), "Not OK");
+        assert_eq!(pick_option_label(&negations, "accept"), "Allow");
+        // Only labels that deny a refusal: nothing is selected, the plain label is sent.
+        assert_eq!(pick_option_label(&["Do not deny"], "decline"), "Deny");
+        assert_eq!(
+            pick_option_label(&["Do not deny"], "accept"),
+            "Approve Once"
+        );
+        // A typographic apostrophe reads like a plain one.
+        assert_eq!(
+            pick_option_label(&["Allow", "Don\u{2019}t allow"], "decline"),
+            "Don\u{2019}t allow"
+        );
+    }
+
+    #[test]
+    fn a_one_time_approval_never_picks_an_option_that_grants_more() {
+        let broad_only = ["Yes, don't ask again", "Allow always", "Deny"];
+        assert_eq!(pick_option_label(&broad_only, "accept"), "Approve Once");
+        // The session approval a person granted may use them (narrowest first).
+        assert_eq!(
+            pick_option_label(&broad_only, "acceptForSession"),
+            "Yes, don't ask again"
+        );
+        let with_once = ["Allow always", "Allow once", "Deny"];
+        assert_eq!(pick_option_label(&with_once, "accept"), "Allow once");
     }
 
     #[test]

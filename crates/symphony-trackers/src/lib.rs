@@ -47,17 +47,32 @@ fn rate_limit_wait(headers: &reqwest::header::HeaderMap, now: DateTime<Utc>) -> 
     Some(Duration::from_secs(seconds.max(1) as u64).min(MAX_RATE_LIMIT_WAIT))
 }
 
+/// The wait applied to a 429 answer that names none (no usable `Retry-After`): the status alone
+/// says the client is asking too often.
+const DEFAULT_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
+
+/// How long to wait after an answer with this status, if it is a rate limit. A 429 always is (with
+/// [`DEFAULT_RATE_LIMIT_WAIT`] when the headers name no wait); a 403 only when the headers say so,
+/// because a 403 is also what a missing permission looks like.
+fn rate_limit_wait_for_status(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    now: DateTime<Utc>,
+) -> Option<Duration> {
+    match status {
+        429 => Some(rate_limit_wait(headers, now).unwrap_or(DEFAULT_RATE_LIMIT_WAIT)),
+        403 => rate_limit_wait(headers, now),
+        _ => None,
+    }
+}
+
 /// The error for a GitHub answer that is not a success. A rate limit becomes
 /// [`GITHUB_RATE_LIMITED`] with the wait in the message (read it back with
 /// [`rate_limit_retry_after`]), so the caller can back off instead of asking again at once; anything
 /// else is `github_http_<status>` with the body.
 async fn github_http_error(resp: reqwest::Response) -> SymphonyError {
     let status = resp.status().as_u16();
-    let wait = if status == 403 || status == 429 {
-        rate_limit_wait(resp.headers(), Utc::now())
-    } else {
-        None
-    };
+    let wait = rate_limit_wait_for_status(status, resp.headers(), Utc::now());
     let body = resp.text().await.unwrap_or_default();
     match wait {
         Some(wait) => SymphonyError::TrackerError {
@@ -1625,6 +1640,35 @@ mod tests {
         assert_eq!(rate_limit_wait(&headers(&[]), now), None);
         assert_eq!(
             rate_limit_wait(&headers(&[("x-ratelimit-remaining", "4999")]), now),
+            None
+        );
+    }
+
+    #[test]
+    fn a_429_is_a_rate_limit_even_without_usable_headers() {
+        let now = DateTime::<Utc>::from_timestamp(1_800_000_000, 0).unwrap();
+        // No headers, or headers that do not parse: a bounded default wait.
+        assert_eq!(
+            rate_limit_wait_for_status(429, &headers(&[]), now),
+            Some(DEFAULT_RATE_LIMIT_WAIT)
+        );
+        assert_eq!(
+            rate_limit_wait_for_status(429, &headers(&[("retry-after", "soon")]), now),
+            Some(DEFAULT_RATE_LIMIT_WAIT)
+        );
+        // Headers that do name a wait win over the default.
+        assert_eq!(
+            rate_limit_wait_for_status(429, &headers(&[("retry-after", "7")]), now),
+            Some(Duration::from_secs(7))
+        );
+        // A 403 without evidence is a permission problem, not a rate limit; other statuses never are.
+        assert_eq!(rate_limit_wait_for_status(403, &headers(&[]), now), None);
+        assert_eq!(
+            rate_limit_wait_for_status(403, &headers(&[("retry-after", "30")]), now),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            rate_limit_wait_for_status(500, &headers(&[("retry-after", "30")]), now),
             None
         );
     }

@@ -3262,10 +3262,24 @@
             }
           },
           "404": {
-            "description": "No such backup"
+            "description": "No such backup",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           },
           "422": {
-            "description": "The backup is damaged or cannot be read by this version"
+            "description": "The backup is damaged or cannot be read by this version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           },
           "default": {
             "description": "Error (`ApiErrorBody`)",
@@ -7256,7 +7270,8 @@
           "applied_at",
           "succeeded",
           "error",
-          "previous_files"
+          "previous_files",
+          "rollback_incomplete"
         ],
         "properties": {
           "backup_id": {
@@ -7281,7 +7296,11 @@
             "items": {
               "type": "string"
             },
-            "description": "The files the restore replaced; they are kept as `<name>.pre-restore-<time>` next to the\nrestored ones, never deleted."
+            "description": "The files the restore replaced; they are kept as `<name>.pre-restore-<time>` next to the\nrestored ones, never deleted. After a failure with `rollback_incomplete`: the files that are\nstill displaced and have to be moved back by hand."
+          },
+          "rollback_incomplete": {
+            "type": "boolean",
+            "description": "The restore failed and putting the previous data back did not finish (or the restore was\ninterrupted too often to tell): the data folder is not as it was, unlike after any other\nfailed restore."
           }
         }
       },

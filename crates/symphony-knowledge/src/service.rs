@@ -93,8 +93,10 @@ fn restrict_to_owner(dir: &Path) {
 
 impl KnowledgePaths {
     pub fn new(data_dir: &Path) -> Self {
+        // Absolute from the start: the engines run from directories of their own, where a path
+        // relative to the host's working directory (`--data-dir data`) would point elsewhere.
         Self {
-            root: data_dir.join("knowledge"),
+            root: crate::engine::absolute(data_dir).join("knowledge"),
         }
     }
     pub fn root(&self) -> &Path {

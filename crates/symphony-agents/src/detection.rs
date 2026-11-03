@@ -43,16 +43,35 @@ pub fn provider_binary_name(kind: ProviderKind) -> Option<&'static str> {
     }
 }
 
-/// Locate an executable on `PATH` (honouring `PATHEXT` on Windows).
+/// The extensions Symphony starts a provider CLI through on Windows: a program, or the batch shim
+/// npm writes next to a package's own entry point.
+const LAUNCHABLE_EXTENSIONS: [&str; 4] = [".exe", ".cmd", ".bat", ".com"];
+
+/// The `PATHEXT` entries a provider CLI can be started through. `PATHEXT` also lists script types
+/// (`.JS`, `.VBS`, `.WSH`, `.MSC`) that are not programs and that a file named like a provider
+/// would otherwise be taken for; those are left out, whatever the environment says.
+fn launchable_extensions(pathext: &str) -> Vec<String> {
+    let listed: Vec<String> = pathext
+        .split(';')
+        .map(|e| e.trim().to_lowercase())
+        .filter(|e| LAUNCHABLE_EXTENSIONS.contains(&e.as_str()))
+        .collect();
+    if listed.is_empty() {
+        LAUNCHABLE_EXTENSIONS
+            .iter()
+            .map(|e| e.to_string())
+            .collect()
+    } else {
+        listed
+    }
+}
+
+/// Locate an executable on `PATH` (honouring `PATHEXT` on Windows, restricted to the extensions a
+/// provider CLI is actually launched through).
 pub fn find_on_path(binary: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     let extensions: Vec<String> = if cfg!(windows) {
-        std::env::var("PATHEXT")
-            .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string())
-            .split(';')
-            .filter(|e| !e.is_empty())
-            .map(|e| e.to_lowercase())
-            .collect()
+        launchable_extensions(&std::env::var("PATHEXT").unwrap_or_default())
     } else {
         vec![String::new()]
     };
@@ -636,6 +655,22 @@ pub async fn detect_provider_statuses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_program_extensions_of_pathext_are_used_to_find_a_provider() {
+        // Script types in PATHEXT are not programs, and are never looked for.
+        assert_eq!(
+            launchable_extensions(".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"),
+            vec![".com", ".exe", ".bat", ".cmd"]
+        );
+        assert_eq!(launchable_extensions(".JS;.VBS"), launchable_extensions(""));
+        assert_eq!(
+            launchable_extensions(""),
+            vec![".exe", ".cmd", ".bat", ".com"]
+        );
+        // Whitespace and case do not matter.
+        assert_eq!(launchable_extensions(" .Cmd ; ;.JS"), vec![".cmd"]);
+    }
 
     #[tokio::test]
     async fn simulated_provider_is_always_installed_without_auth() {

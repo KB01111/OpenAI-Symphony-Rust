@@ -548,53 +548,79 @@ impl WorkspaceManager {
         let mut checked_out = branch_name.to_string();
         // An existing branch is checked out as it is. `-B` would reset it to the base branch, and
         // the commits of an earlier attempt, or of the branch the tracker names (which can be the
-        // user's own), would be left reachable only through the reflog.
-        let branch_exists =
-            Self::git_ref_exists(repo_path, &format!("refs/heads/{branch_name}")).await;
-        let mut add = git_command();
-        add.arg("-C").arg(repo_path).arg("worktree").arg("add");
-        if branch_exists {
-            add.arg(worktree_path).arg(branch_name);
-        } else {
-            add.arg("-b")
-                .arg(branch_name)
-                .arg(worktree_path)
-                .arg(&base_ref);
+        // user's own), would be left reachable only through the reflog. A branch somebody creates
+        // between the check and the `add` makes the first `add` fail with "already exists"; the
+        // second round then checks it out as an existing branch.
+        let mut last_error = String::new();
+        let mut added = false;
+        for _ in 0..2 {
+            let branch_exists =
+                Self::git_ref_exists(repo_path, &format!("refs/heads/{branch_name}")).await;
+            let output = Self::worktree_add(
+                repo_path,
+                worktree_path,
+                branch_name,
+                &base_ref,
+                !branch_exists,
+            )
+            .await?;
+            if output.status.success() {
+                added = true;
+                break;
+            }
+            last_error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if branch_exists || !last_error.contains("already exists") {
+                break;
+            }
         }
-        let output = add
-            .output()
-            .await
-            .map_err(|e| SymphonyError::GitWorktreeError(e.to_string()))?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // If branch is already checked out elsewhere, fallback to detached or unique branch suffix
-            if stderr.contains("already checked out") || stderr.contains("already used by worktree")
+        if !added {
+            // If the branch is already checked out elsewhere, work on a branch of its own. It is
+            // created (`-b`, never `-B`), so no earlier branch of that name is ever reset, and the
+            // name is searched for a free one: another task, or an earlier run of this process
+            // ID, may already hold it.
+            if last_error.contains("already checked out")
+                || last_error.contains("already used by worktree")
             {
-                let fallback_branch = format!("{branch_name}-{}", std::process::id());
-                let retry_out = git_command()
-                    .arg("-C")
-                    .arg(repo_path)
-                    .arg("worktree")
-                    .arg("add")
-                    .arg("-B")
-                    .arg(&fallback_branch)
-                    .arg(worktree_path)
-                    .arg(&base_ref)
-                    .output()
-                    .await
-                    .map_err(|e| SymphonyError::GitWorktreeError(e.to_string()))?;
-
-                if !retry_out.status.success() {
-                    return Err(SymphonyError::GitWorktreeError(
-                        String::from_utf8_lossy(&retry_out.stderr)
-                            .trim()
-                            .to_string(),
-                    ));
+                let mut fallback_error = last_error.clone();
+                let mut fallback_added = false;
+                for n in 0..8 {
+                    let fallback_branch = if n == 0 {
+                        format!("{branch_name}-{}", std::process::id())
+                    } else {
+                        format!("{branch_name}-{}-{n}", std::process::id())
+                    };
+                    if Self::git_ref_exists(repo_path, &format!("refs/heads/{fallback_branch}"))
+                        .await
+                    {
+                        continue;
+                    }
+                    let retry_out = Self::worktree_add(
+                        repo_path,
+                        worktree_path,
+                        &fallback_branch,
+                        &base_ref,
+                        true,
+                    )
+                    .await?;
+                    if retry_out.status.success() {
+                        checked_out = fallback_branch;
+                        fallback_added = true;
+                        break;
+                    }
+                    fallback_error = String::from_utf8_lossy(&retry_out.stderr)
+                        .trim()
+                        .to_string();
+                    // Lost a race for the name: the next one. Anything else is final.
+                    if !fallback_error.contains("already exists") {
+                        break;
+                    }
                 }
-                checked_out = fallback_branch;
+                if !fallback_added {
+                    return Err(SymphonyError::GitWorktreeError(fallback_error));
+                }
             } else {
-                return Err(SymphonyError::GitWorktreeError(stderr.trim().to_string()));
+                return Err(SymphonyError::GitWorktreeError(last_error));
             }
         }
 
@@ -605,6 +631,27 @@ impl WorkspaceManager {
             "Created isolated Git worktree"
         );
         Ok(checked_out)
+    }
+
+    /// `git worktree add` for `branch`: a new branch off `base_ref` when `create` is set, else the
+    /// existing branch as it is.
+    async fn worktree_add(
+        repo_path: &Path,
+        worktree_path: &Path,
+        branch: &str,
+        base_ref: &str,
+        create: bool,
+    ) -> SymphonyResult<std::process::Output> {
+        let mut add = git_command();
+        add.arg("-C").arg(repo_path).arg("worktree").arg("add");
+        if create {
+            add.arg("-b").arg(branch).arg(worktree_path).arg(base_ref);
+        } else {
+            add.arg(worktree_path).arg(branch);
+        }
+        add.output()
+            .await
+            .map_err(|e| SymphonyError::GitWorktreeError(e.to_string()))
     }
 
     async fn git_ref_exists(repo_path: &Path, git_ref: &str) -> bool {
@@ -2612,6 +2659,38 @@ mod tests {
             .unwrap();
         assert_eq!(allocated.branch_name, head.trim());
         assert_ne!(allocated.branch_name, "task");
+    }
+
+    #[tokio::test]
+    async fn a_fallback_branch_never_resets_a_branch_that_already_has_that_name() {
+        let dir = tempdir().unwrap();
+        let (repo, wt) = repo_with_worktree(dir.path());
+        // An earlier run left work on the very name the fallback would choose.
+        let stale = format!("task-{}", std::process::id());
+        git(&wt, &["commit", "--allow-empty", "-m", "earlier attempt"]);
+        git(&repo, &["branch", &stale, "task"]);
+        let stale_tip = git_stdout(&repo, &["rev-parse", &stale]).await.unwrap();
+
+        let allocated = WorkspaceManager::new()
+            .prepare_workspace(
+                "SYM-10",
+                &dir.path().join("workspaces"),
+                Some(&repo),
+                "main",
+                Some("task"),
+                &HooksConfig::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(allocated.branch_name, "task");
+        assert_ne!(
+            allocated.branch_name, stale,
+            "the stale branch is not reused"
+        );
+        assert!(allocated.branch_name.starts_with(&stale));
+        let after = git_stdout(&repo, &["rev-parse", &stale]).await.unwrap();
+        assert_eq!(after, stale_tip, "the earlier branch keeps its commits");
     }
 
     #[tokio::test]

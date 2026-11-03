@@ -42,6 +42,45 @@ fn is_loopback_url(base_url: &str) -> bool {
     }
 }
 
+/// Whether the runtime at `base_url` has "start on login" switched on (`GET /api/v1/settings`).
+///
+/// An `Err` means the answer could not be read; the caller must not take that for "off", or a
+/// runtime that is merely busy would get its login entry removed.
+pub async fn fetch_start_on_login(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+) -> SymphonyResult<bool> {
+    if !is_loopback_url(base_url) {
+        return Err(tracker_error(
+            "the runtime is not on this machine; its token is not sent",
+        ));
+    }
+    let url = format!("{}/api/v1/settings", base_url.trim_end_matches('/'));
+    let response = client
+        .get(&url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| tracker_error(format!("could not reach the runtime's settings: {e}")))?;
+    if !response.status().is_success() {
+        return Err(tracker_error(format!(
+            "the runtime's settings answered {}",
+            response.status()
+        )));
+    }
+    let settings: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| tracker_error(format!("the runtime's settings are unreadable: {e}")))?;
+    settings
+        .get("start_background_runtime_on_login")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            tracker_error("the runtime's settings do not say whether Symphony starts on login")
+        })
+}
+
 /// Read `GET {base_url}/api/v1/events` with `token` and call `on_event` for every event until the
 /// stream ends (the runtime stopped, or the token was rotated). Only what happens from now on is
 /// asked for: no `Last-Event-ID`, so no history is replayed into a notification.
@@ -196,6 +235,42 @@ mod tests {
         assert!(head.contains("authorization: bearer local-token"), "{head}");
         assert!(head.contains("accept: text/event-stream"), "{head}");
         assert!(!head.contains("last-event-id"), "no history replay: {head}");
+    }
+
+    #[tokio::test]
+    async fn the_login_setting_is_read_from_the_runtime_and_unreadable_answers_are_errors() {
+        let client = reqwest::Client::new();
+        let (base, head) = serve_once(
+            "200 OK",
+            serde_json::json!({ "start_background_runtime_on_login": true }).to_string(),
+        )
+        .await;
+        assert!(fetch_start_on_login(&client, &base, "local-token")
+            .await
+            .unwrap());
+        let head = head.lock().unwrap().clone();
+        assert!(head.starts_with("get /api/v1/settings "), "{head}");
+        assert!(head.contains("authorization: bearer local-token"), "{head}");
+
+        // Off is an answer; everything else is "unknown", never "off".
+        let (base, _) = serve_once(
+            "200 OK",
+            serde_json::json!({ "start_background_runtime_on_login": false }).to_string(),
+        )
+        .await;
+        assert!(!fetch_start_on_login(&client, &base, "t").await.unwrap());
+        let (base, _) = serve_once("500 Internal Server Error", String::new()).await;
+        assert!(fetch_start_on_login(&client, &base, "t").await.is_err());
+        let (base, _) = serve_once("200 OK", "{}".to_string()).await;
+        assert!(fetch_start_on_login(&client, &base, "t").await.is_err());
+        let (base, _) = serve_once("200 OK", "not json".to_string()).await;
+        assert!(fetch_start_on_login(&client, &base, "t").await.is_err());
+        // The token is not sent off this machine.
+        assert!(
+            fetch_start_on_login(&client, "http://example.com:4780", "t")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

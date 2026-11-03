@@ -9,7 +9,8 @@ use symphony_storage::backup::{
     apply_pending_restore, apply_requested_restore, cancel_pending_restore, create_backup,
     create_scheduled_backup, last_restore, list_backups, pending_restore, prune_scheduled_backups,
     restore_backup, schedule_restore, scheduled_backup_due, verify_backup, BackupManifest,
-    DATABASE_FILE, MANIFEST_FILE, PENDING_RESTORE_FILE, WORKFLOW_FILE,
+    PendingRestore, RestoreOutcome, DATABASE_FILE, MANIFEST_FILE, MAX_RESTORE_ATTEMPTS,
+    PENDING_RESTORE_FILE, WORKFLOW_FILE,
 };
 use symphony_storage::{Storage, SCHEMA_VERSION};
 
@@ -772,6 +773,147 @@ async fn a_restore_that_fails_at_start_is_reported_once_and_leaves_the_data_alon
         live.get_task(&task.id).await.unwrap().unwrap().issue.title,
         "Live"
     );
+}
+
+#[tokio::test]
+async fn the_backup_a_pending_restore_names_survives_retention() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, _) = storage_with_task(&data, "Retention").await;
+    let mut automatic = Vec::new();
+    for _ in 0..3 {
+        automatic.push(
+            create_scheduled_backup(&storage, &root, None)
+                .await
+                .unwrap(),
+        );
+    }
+    // The oldest automatic backup is the one the user chose to restore.
+    let chosen = automatic[0].id.clone();
+    schedule_restore(&root, &chosen).await.unwrap();
+
+    let removed = prune_scheduled_backups(&root, 1).unwrap();
+    assert!(!removed.contains(&chosen), "the requested backup is kept");
+    assert_eq!(removed.len(), 1, "the other old one is still pruned");
+    assert!(root.join(&chosen).is_dir());
+
+    // Once the request is gone, it is an ordinary old backup again.
+    cancel_pending_restore(&root).unwrap();
+    let removed = prune_scheduled_backups(&root, 1).unwrap();
+    assert_eq!(removed, vec![chosen]);
+}
+
+#[tokio::test]
+async fn a_restore_interrupted_with_the_database_set_aside_is_finished_by_the_next_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, task) = storage_with_task(&data, "Before").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    let mut changed = storage.get_task(&task.id).await.unwrap().unwrap();
+    changed.issue.title = "After".into();
+    storage.upsert_task(&changed).await.unwrap();
+    schedule_restore(&root, &backup.id).await.unwrap();
+    storage.pool().close().await;
+
+    // A start began the restore, set the database aside and died: the request is still there with
+    // its attempt counted, and there is no database.
+    let started = PendingRestore {
+        attempts: 1,
+        ..pending_restore(&root).unwrap()
+    };
+    std::fs::write(
+        root.join(PENDING_RESTORE_FILE),
+        serde_json::to_vec(&started).unwrap(),
+    )
+    .unwrap();
+    let aside = data.join(format!("{DATABASE_FILE}.pre-restore-crashed"));
+    std::fs::rename(data.join(DATABASE_FILE), &aside).unwrap();
+    for sidecar in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(data.join(format!("{DATABASE_FILE}{sidecar}")));
+    }
+
+    let outcome = apply_pending_restore(&root, &data)
+        .await
+        .unwrap()
+        .expect("the request was still pending");
+
+    assert!(outcome.succeeded, "{outcome:?}");
+    assert!(pending_restore(&root).is_none());
+    assert!(
+        aside.is_file(),
+        "the data set aside by the first try is kept"
+    );
+    let restored = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    assert_eq!(
+        restored
+            .get_task(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .issue
+            .title,
+        "Before"
+    );
+}
+
+#[tokio::test]
+async fn a_restore_interrupted_too_often_is_given_up_and_reported_as_unfinished() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, task) = storage_with_task(&data, "Live").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    schedule_restore(&root, &backup.id).await.unwrap();
+    storage.pool().close().await;
+    let exhausted = PendingRestore {
+        attempts: MAX_RESTORE_ATTEMPTS,
+        ..pending_restore(&root).unwrap()
+    };
+    std::fs::write(
+        root.join(PENDING_RESTORE_FILE),
+        serde_json::to_vec(&exhausted).unwrap(),
+    )
+    .unwrap();
+
+    let outcome = apply_pending_restore(&root, &data)
+        .await
+        .unwrap()
+        .expect("a request was pending");
+
+    // Not retried again and again, and not reported as "the data is as it was": what the
+    // interrupted starts left behind is unknown.
+    assert!(!outcome.succeeded);
+    assert!(outcome.rollback_incomplete, "{outcome:?}");
+    assert!(
+        outcome.error.as_deref().unwrap().contains("pre-restore"),
+        "{outcome:?}"
+    );
+    assert!(!root.join(PENDING_RESTORE_FILE).exists());
+    assert_eq!(last_restore(&root), Some(outcome));
+    assert!(apply_pending_restore(&root, &data).await.unwrap().is_none());
+    // Nothing was touched by the given-up attempt.
+    let live = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    assert_eq!(
+        live.get_task(&task.id).await.unwrap().unwrap().issue.title,
+        "Live"
+    );
+}
+
+#[test]
+fn an_outcome_written_by_an_earlier_version_still_reads() {
+    // Neither `rollback_incomplete` nor `attempts` existed then.
+    let outcome: RestoreOutcome = serde_json::from_str(
+        r#"{"backup_id":"symphony-backup-1","applied_at":"2026-11-03T00:00:00Z","succeeded":false,"error":"x","previous_files":[]}"#,
+    )
+    .unwrap();
+    assert!(!outcome.rollback_incomplete);
+    let pending: PendingRestore = serde_json::from_str(
+        r#"{"backup_id":"symphony-backup-1","requested_at":"2026-11-03T00:00:00Z"}"#,
+    )
+    .unwrap();
+    assert_eq!(pending.attempts, 0);
 }
 
 #[tokio::test]

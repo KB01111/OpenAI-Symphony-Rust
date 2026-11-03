@@ -439,6 +439,24 @@ fn notify_for_event(app: &AppHandle, event: &symphony_core::domain::AgentEvent) 
         .show();
 }
 
+/// Bring the "start on login" registry entry in line with the stored setting (`wanted`), for this
+/// executable (never the CLI's). Failures are logged: a login entry that cannot be repaired must not
+/// keep the window from opening.
+fn reconcile_login_autostart(wanted: bool) {
+    match std::env::current_exe() {
+        Ok(exe) => match symphony_platform::reconcile_autostart(wanted, &exe) {
+            Ok(symphony_platform::AutostartFix::InSync) => {}
+            Ok(fix) => tracing::info!(?fix, "Login autostart registration repaired"),
+            Err(err) => {
+                tracing::warn!(error = %err, "Could not reconcile the login autostart registration")
+            }
+        },
+        Err(err) => {
+            tracing::warn!(error = %err, "Could not locate the executable to reconcile autostart")
+        }
+    }
+}
+
 async fn start_embedded_runtime(
     app: &AppHandle,
     data_dir: PathBuf,
@@ -450,7 +468,14 @@ async fn start_embedded_runtime(
     let storage = Storage::connect(&data_dir.join("symphony.sqlite"))
         .await
         .map_err(|e| format!("Failed to initialize SQLite storage: {e}"))?;
-    let mut settings = storage.get_settings().await.unwrap_or_default();
+    let stored_settings = storage.get_settings().await;
+    // Whether the stored settings could be read at all: defaults stand in for them below, and the
+    // default for "start on login" is off, which must not be mistaken for the user's choice.
+    let settings_known = stored_settings.is_ok();
+    if let Err(err) = &stored_settings {
+        tracing::warn!(error = %err, "Could not read the stored settings; using defaults");
+    }
+    let mut settings = stored_settings.unwrap_or_default();
     if let Some(ui) = app.try_state::<NativeUi>() {
         ui.set_locale(NativeLocale::from_setting(&settings.locale));
     }
@@ -468,22 +493,10 @@ async fn start_embedded_runtime(
     // The "start on login" registry entry can be missing (a new Windows profile, a cleaned
     // registry) or point at a program that moved while the stored setting says it is on. Bring it
     // back in line, so the switch in Settings tells the truth.
-    match std::env::current_exe() {
-        Ok(exe) => {
-            match symphony_platform::reconcile_autostart(
-                settings.start_background_runtime_on_login,
-                &exe,
-            ) {
-                Ok(symphony_platform::AutostartFix::InSync) => {}
-                Ok(fix) => tracing::info!(?fix, "Login autostart registration repaired"),
-                Err(err) => {
-                    tracing::warn!(error = %err, "Could not reconcile the login autostart registration")
-                }
-            }
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "Could not locate the executable to reconcile autostart")
-        }
+    if settings_known {
+        reconcile_login_autostart(settings.start_background_runtime_on_login);
+    } else {
+        tracing::warn!("Login autostart left as it is: the stored setting could not be read");
     }
 
     let wf_path = [PathBuf::from("WORKFLOW.md"), data_dir.join("WORKFLOW.md")]
@@ -703,6 +716,36 @@ fn main() {
                         move |event| notify_for_event(&notifier, &event),
                     ),
                 );
+
+                // The login entry is this app's, whoever runs the runtime: repair it from the
+                // setting the attached runtime holds. An unreadable answer leaves the entry alone.
+                let (base_url, token) = {
+                    let attached = app.state::<DesktopAppState>();
+                    (attached.base_url.clone(), attached.token.clone())
+                };
+                tauri::async_runtime::spawn(async move {
+                    let client = match reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(10))
+                        .build()
+                    {
+                        Ok(client) => client,
+                        Err(err) => {
+                            tracing::warn!(error = %err, "Login autostart left as it is");
+                            return;
+                        }
+                    };
+                    match symphony_platform::runtime_events::fetch_start_on_login(
+                        &client, &base_url, &token,
+                    )
+                    .await
+                    {
+                        Ok(wanted) => reconcile_login_autostart(wanted),
+                        Err(err) => tracing::warn!(
+                            error = %err,
+                            "Login autostart left as it is: the attached runtime's setting could not be read"
+                        ),
+                    }
+                });
             }
 
             if start_hidden {

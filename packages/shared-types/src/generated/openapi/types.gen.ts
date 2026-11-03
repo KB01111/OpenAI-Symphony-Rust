@@ -1180,9 +1180,16 @@ export type RestoreOutcomeInfo = {
     error: string | null;
     /**
      * The files the restore replaced; they are kept as `<name>.pre-restore-<time>` next to the
-     * restored ones, never deleted.
+     * restored ones, never deleted. After a failure with `rollback_incomplete`: the files that are
+     * still displaced and have to be moved back by hand.
      */
     previous_files: Array<string>;
+    /**
+     * The restore failed and putting the previous data back did not finish (or the restore was
+     * interrupted too often to tell): the data folder is not as it was, unlike after any other
+     * failed restore.
+     */
+    rollback_incomplete: boolean;
 };
 
 /**
@@ -3572,11 +3579,11 @@ export type ScheduleRestoreErrors = {
     /**
      * No such backup
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * The backup is damaged or cannot be read by this version
      */
-    422: unknown;
+    422: ApiErrorBody;
     /**
      * Error (`ApiErrorBody`)
      */
