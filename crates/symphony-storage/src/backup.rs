@@ -743,6 +743,22 @@ pub async fn apply_pending_restore(
         .ok()
         .and_then(|raw| serde_json::from_slice(&raw).ok());
 
+    // A request that already has its outcome is settled, whatever is left of its file: the start
+    // that applied it could not remove the file (a locked or read-only folder), and applying it
+    // again would put the backup over everything done since.
+    if let (Some(request), Some(last)) = (&pending, last_restore(root)) {
+        if last.backup_id == request.backup_id && last.applied_at >= request.requested_at {
+            tracing::warn!(
+                backup = %request.backup_id,
+                "A restore request that was already settled was still on disk; it is not applied again"
+            );
+            if let Err(err) = cancel_pending_restore(root) {
+                tracing::error!(error = %err, "could not remove the settled restore request");
+            }
+            return Ok(None);
+        }
+    }
+
     let backup_id = pending
         .as_ref()
         .map(|p| p.backup_id.clone())
@@ -827,13 +843,25 @@ pub async fn apply_pending_restore(
         },
         Err(failure) => failed(failure),
     };
-    // Finished, or failed and rolled back: the request is spent. A request that cannot be removed
-    // would be applied again on every start, so that is an error.
-    cancel_pending_restore(root)?;
-    // Best effort: the restore itself is done (or has failed); losing the note about it is a lesser
-    // problem than refusing to start.
-    if let Err(err) = write_json_atomic(&root.join(LAST_RESTORE_FILE), &outcome) {
+    // Finished, or failed and rolled back: the request is spent. The outcome is recorded first, so
+    // that a request file which then cannot be removed is still recognised as settled (see above)
+    // and is not applied over newer data by the next start.
+    let recorded = write_json_atomic(&root.join(LAST_RESTORE_FILE), &outcome);
+    if let Err(err) = &recorded {
         tracing::warn!(error = %err, "could not record the outcome of the restore");
+    }
+    if let Err(err) = cancel_pending_restore(root) {
+        if recorded.is_err() {
+            // Neither the note nor the removal worked: nothing prevents a replay. Say so loudly;
+            // the host still starts, and the folder needs attention.
+            tracing::error!(
+                error = %err,
+                path = %marker.display(),
+                "the restore request could not be removed and its outcome could not be recorded; delete this file or the restore may be applied again at the next start"
+            );
+        } else {
+            tracing::warn!(error = %err, "could not remove the settled restore request");
+        }
     }
     Ok(Some(outcome))
 }

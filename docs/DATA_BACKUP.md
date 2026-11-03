@@ -82,7 +82,9 @@ file stays in place while the restore is applied and is removed when the restore
 been rolled back; if the process dies half-way (the database already set aside), the next start finishes the job
 instead of opening an empty database. A request that was started twice without finishing is given up and reported
 as *left your data partly replaced*, with the `.pre-restore-<time>` files that hold the previous data. A restore
-that fails and cannot put everything back is reported the same way, never as "left as it was". Restoring from the
+that fails and cannot put everything back is reported the same way, never as "left as it was". A request that already has its
+outcome is never applied a second time, even if its file could not be removed (a locked or read-only folder).
+Restoring from the
 application replaces the database and the `WORKFLOW.md` **in the data directory**; a workflow file the runtime
 reads from elsewhere (`--workflow`, or `WORKFLOW.md` in the working directory) is yours and is not touched, and
 still takes precedence.

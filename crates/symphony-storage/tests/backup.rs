@@ -952,6 +952,50 @@ async fn a_failed_retry_after_an_interrupted_start_never_claims_the_data_is_as_i
 }
 
 #[tokio::test]
+async fn a_settled_request_that_could_not_be_removed_is_not_applied_a_second_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, task) = storage_with_task(&data, "Before").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    let mut changed = storage.get_task(&task.id).await.unwrap().unwrap();
+    changed.issue.title = "After".into();
+    storage.upsert_task(&changed).await.unwrap();
+    schedule_restore(&root, &backup.id).await.unwrap();
+    let request = std::fs::read(root.join(PENDING_RESTORE_FILE)).unwrap();
+    storage.pool().close().await;
+
+    let outcome = apply_pending_restore(&root, &data).await.unwrap().unwrap();
+    assert!(outcome.succeeded, "{outcome:?}");
+
+    // Work done after the restore...
+    let live = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    let mut newer = live.get_task(&task.id).await.unwrap().unwrap();
+    newer.issue.title = "Newer work".into();
+    live.upsert_task(&newer).await.unwrap();
+    live.pool().close().await;
+    // ...and the request file is back, as if its removal had failed.
+    std::fs::write(root.join(PENDING_RESTORE_FILE), request).unwrap();
+
+    assert!(
+        apply_pending_restore(&root, &data).await.unwrap().is_none(),
+        "a settled request is not applied again"
+    );
+
+    assert!(!root.join(PENDING_RESTORE_FILE).exists());
+    let live = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    assert_eq!(
+        live.get_task(&task.id).await.unwrap().unwrap().issue.title,
+        "Newer work",
+        "the restore did not run over the newer work"
+    );
+    // A new request for the same backup is a new request.
+    schedule_restore(&root, &backup.id).await.unwrap();
+    live.pool().close().await;
+    assert!(apply_pending_restore(&root, &data).await.unwrap().is_some());
+}
+
+#[tokio::test]
 async fn a_restore_interrupted_too_often_is_given_up_and_reported_as_unfinished() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
