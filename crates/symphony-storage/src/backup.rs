@@ -756,7 +756,16 @@ pub async fn apply_pending_restore(
     // that applied it could not remove the file (a locked or read-only folder), and applying it
     // again would put the backup over everything done since.
     if let (Some(request), Some(last)) = (&pending, last_restore(root)) {
-        if !request.request_id.is_empty() && last.request_id == request.request_id {
+        let settled = if request.request_id.is_empty() {
+            // A request file from before ids existed can only be told apart by backup and time. This
+            // is kept to those files: a request with an id is never judged by the clock.
+            last.request_id.is_empty()
+                && last.backup_id == request.backup_id
+                && last.applied_at >= request.requested_at
+        } else {
+            last.request_id == request.request_id
+        };
+        if settled {
             tracing::warn!(
                 backup = %request.backup_id,
                 "A restore request that was already settled was still on disk; it is not applied again"

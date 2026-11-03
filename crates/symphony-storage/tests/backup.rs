@@ -996,6 +996,42 @@ async fn a_settled_request_that_could_not_be_removed_is_not_applied_a_second_tim
 }
 
 #[tokio::test]
+async fn a_request_file_from_before_ids_existed_is_still_recognised_as_settled() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, task) = storage_with_task(&data, "Before").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    storage.pool().close().await;
+    // A request written without an id, applied (its outcome has no id either)...
+    let legacy = format!(
+        r#"{{"backup_id":"{}","requested_at":"{}"}}"#,
+        backup.id,
+        (Utc::now() - chrono::Duration::minutes(1)).to_rfc3339()
+    );
+    std::fs::write(root.join(PENDING_RESTORE_FILE), &legacy).unwrap();
+    let outcome = apply_pending_restore(&root, &data).await.unwrap().unwrap();
+    assert!(
+        outcome.succeeded && outcome.request_id.is_empty(),
+        "{outcome:?}"
+    );
+    let live = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    let mut newer = live.get_task(&task.id).await.unwrap().unwrap();
+    newer.issue.title = "Newer work".into();
+    live.upsert_task(&newer).await.unwrap();
+    live.pool().close().await;
+
+    // ...whose file then survives: it is not applied over the newer work.
+    std::fs::write(root.join(PENDING_RESTORE_FILE), &legacy).unwrap();
+    assert!(apply_pending_restore(&root, &data).await.unwrap().is_none());
+    let live = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    assert_eq!(
+        live.get_task(&task.id).await.unwrap().unwrap().issue.title,
+        "Newer work"
+    );
+}
+
+#[tokio::test]
 async fn a_new_request_is_not_taken_for_settled_when_the_clock_was_set_back() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
