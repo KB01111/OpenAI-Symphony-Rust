@@ -187,6 +187,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Changed
 
+- **Merge readiness needs a passing CI for the top rating.** A review without any CI result (a local review
+  before a pull request exists, a pull request whose checks were not read yet, a repository without CI) now
+  stops at 4, "Strong Candidate", like an unchecked merge always did; 5, "Ready for Human Approval & Merge",
+  needs a passing CI behind it. Nothing is merged either way.
 - **Agent runs is now a view of Tasks**: *Board*, *Table* and *Runs* sit side by side on the Tasks page, and
   the separate *Agent runs* sidebar entry is gone (its running/approval badge moved to *Tasks*). `/runs`
   still works and opens the Runs view; task threads stay at `/runs/<id>`.

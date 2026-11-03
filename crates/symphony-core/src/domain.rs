@@ -1068,6 +1068,9 @@ impl MergeReadinessReport {
             }
         }
 
+        // Like an unverified merge, a missing CI result can never be the top rating: "Ready for
+        // Human Approval & Merge" needs a passing CI behind it.
+        let mut ceiling = 5;
         match ci_status.to_lowercase().as_str() {
             "success" | "passed" => {
                 evidence.push("Remote CI checks passed.".to_string());
@@ -1080,10 +1083,15 @@ impl MergeReadinessReport {
                 score -= 1;
                 evidence.push("Remote CI checks are still in progress.".to_string());
             }
-            "none" | "not_applicable" => {
+            "not_applicable" => {
+                evidence.push("Remote CI does not apply to this review.".to_string());
+            }
+            "none" => {
+                ceiling = 4;
                 evidence.push("No remote CI run is associated with this local review.".to_string());
             }
             _ => {
+                ceiling = 4;
                 evidence.push(format!("CI status: {ci_status}."));
             }
         }
@@ -1097,7 +1105,7 @@ impl MergeReadinessReport {
             ));
         }
 
-        let clamped = score.clamp(1, 5) as u8;
+        let clamped = score.min(ceiling).clamp(1, 5) as u8;
         let label = match clamped {
             5 => "Ready for Human Approval & Merge".to_string(),
             4 => "Strong Candidate (Minor Pending Items)".to_string(),

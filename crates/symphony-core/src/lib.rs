@@ -59,6 +59,39 @@ mod tests {
     }
 
     #[test]
+    fn merge_readiness_needs_a_passing_ci_for_the_top_rating() {
+        let score = |ci: &str| {
+            MergeReadinessReport::evaluate(
+                ConflictCheck::Clean,
+                ci,
+                &[passing_validation()],
+                &[],
+                1,
+            )
+        };
+        // Everything else in order: only a passing CI earns the top rating.
+        assert_eq!(score("passed").score, 5);
+        assert_eq!(score("success").score, 5);
+        for missing in ["none", "unknown", "something-new"] {
+            let report = score(missing);
+            assert_eq!(report.score, 4, "{missing}");
+            assert_ne!(
+                report.label, "Ready for Human Approval & Merge",
+                "{missing}"
+            );
+            assert!(
+                report.blockers.is_empty(),
+                "{missing}: not a blocker, just not proven"
+            );
+        }
+        // A review for which CI explicitly does not apply is not held back by its absence.
+        assert_eq!(score("not_applicable").score, 5);
+        // Lower scores are unaffected by the ceiling.
+        assert_eq!(score("pending").score, 4);
+        assert_eq!(score("failed").score, 3);
+    }
+
+    #[test]
     fn merge_readiness_penalises_conflicts_and_failed_ci() {
         let clean = MergeReadinessReport::evaluate(
             ConflictCheck::Clean,
