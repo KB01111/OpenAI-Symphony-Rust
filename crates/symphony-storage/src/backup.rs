@@ -554,8 +554,10 @@ pub struct PendingRestore {
     pub backup_id: String,
     pub requested_at: DateTime<Utc>,
     /// Identifies this one request, and is copied into its [`RestoreOutcome`]: the outcome of a
-    /// request is recognised by it, never by comparing clock times (a clock can be set back). Empty
-    /// in a request file written before ids existed, which is then never taken for settled.
+    /// request is recognised by it, never by comparing clock times (a clock can be set back). A
+    /// request file written before ids existed has none; it gets one when its restore starts (the
+    /// file is rewritten then to count the attempt), so a file that outlives its restore always
+    /// carries the id of its outcome.
     #[serde(default)]
     pub request_id: String,
     /// How many starts began applying this request. The request stays in place while it is being
@@ -756,15 +758,7 @@ pub async fn apply_pending_restore(
     // that applied it could not remove the file (a locked or read-only folder), and applying it
     // again would put the backup over everything done since.
     if let (Some(request), Some(last)) = (&pending, last_restore(root)) {
-        let settled = if request.request_id.is_empty() {
-            // A request file from before ids existed can only be told apart by backup and time. This
-            // is kept to those files: a request with an id is never judged by the clock.
-            last.request_id.is_empty()
-                && last.backup_id == request.backup_id
-                && last.applied_at >= request.requested_at
-        } else {
-            last.request_id == request.request_id
-        };
+        let settled = !request.request_id.is_empty() && last.request_id == request.request_id;
         if settled {
             tracing::warn!(
                 backup = %request.backup_id,
@@ -781,9 +775,17 @@ pub async fn apply_pending_restore(
         .as_ref()
         .map(|p| p.backup_id.clone())
         .unwrap_or_default();
+    // The id the outcome will carry. A request from before ids existed is given one now, and the
+    // rewrite below (which counts the attempt) writes it into the file before anything is touched.
     let request_id = pending
         .as_ref()
-        .map(|p| p.request_id.clone())
+        .map(|p| {
+            if p.request_id.is_empty() {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                p.request_id.clone()
+            }
+        })
         .unwrap_or_default();
     let failed = |failure: RestoreFailure| RestoreOutcome {
         backup_id: backup_id.clone(),
@@ -810,6 +812,7 @@ pub async fn apply_pending_restore(
             // Counted before anything is touched, and the request kept: see above.
             let started = PendingRestore {
                 attempts: pending.attempts + 1,
+                request_id: request_id.clone(),
                 ..pending.clone()
             };
             match write_json_atomic(&marker, &started) {
