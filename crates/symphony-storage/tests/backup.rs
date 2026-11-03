@@ -927,6 +927,54 @@ async fn a_retry_that_fails_puts_the_database_an_interrupted_attempt_set_aside_b
 }
 
 #[tokio::test]
+async fn an_early_recovery_that_cannot_put_everything_back_names_what_is_still_displaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, _task) = storage_with_task(&data, "Live").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    schedule_restore(&root, &backup.id).await.unwrap();
+    storage.pool().close().await;
+
+    // The interrupted attempt set the database and its WAL aside. Putting the WAL back is
+    // impossible: a folder with that name is in the way. The database itself can be put back.
+    let started = PendingRestore {
+        attempts: 1,
+        ..pending_restore(&root).unwrap()
+    };
+    std::fs::write(
+        root.join(PENDING_RESTORE_FILE),
+        serde_json::to_vec(&started).unwrap(),
+    )
+    .unwrap();
+    let suffix = "20261103T020000Z";
+    let aside_db = data.join(format!("{DATABASE_FILE}.pre-restore-{suffix}"));
+    let aside_wal = data.join(format!("{DATABASE_FILE}-wal.pre-restore-{suffix}"));
+    std::fs::rename(data.join(DATABASE_FILE), &aside_db).unwrap();
+    std::fs::write(&aside_wal, b"changes that were only in the WAL").unwrap();
+    let blocker = data.join(format!("{DATABASE_FILE}-wal"));
+    std::fs::create_dir_all(&blocker).unwrap();
+    std::fs::write(blocker.join("in-the-way"), b"x").unwrap();
+
+    let outcome = apply_pending_restore(&root, &data)
+        .await
+        .unwrap()
+        .expect("the request was still pending");
+
+    assert!(!outcome.succeeded, "{outcome:?}");
+    assert!(
+        outcome.rollback_incomplete,
+        "the data folder is not claimed to be as it was: {outcome:?}"
+    );
+    assert!(
+        outcome.previous_files.contains(&aside_wal),
+        "the WAL that holds data is named: {:?}",
+        outcome.previous_files
+    );
+    assert!(aside_wal.is_file(), "and it was not touched");
+}
+
+#[tokio::test]
 async fn a_damaged_backup_after_an_interrupted_start_reports_the_database_as_put_back() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");

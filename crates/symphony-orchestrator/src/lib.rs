@@ -654,6 +654,17 @@ impl TrackerSettings {
     }
 }
 
+/// Forget a project's tracker back-off once it has run out. A wait that is still running stays:
+/// the pull request sweep can set one while an issue sync is in flight, and the sync's success
+/// must not erase it.
+fn clear_expired_tracker_backoff(
+    backoff: &mut HashMap<String, DateTime<Utc>>,
+    project_id: &str,
+    now: DateTime<Utc>,
+) {
+    backoff.retain(|id, until| id != project_id || *until > now);
+}
+
 /// Keep a project's tracker quiet until `until`, never shortening a wait that is already running:
 /// the issue sync and the pull request sweep can both meet a rate limit, and the later, shorter
 /// answer must not cut the longer one short.
@@ -3449,7 +3460,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
             Ok(_) => {
                 let recovered = {
                     let mut mem = self.memory.write().await;
-                    mem.tracker_backoff.remove(&project.id);
+                    // A wait that the pull request sweep set while this sync ran is still running.
+                    clear_expired_tracker_backoff(
+                        &mut mem.tracker_backoff,
+                        &project.id,
+                        Utc::now(),
+                    );
                     mem.tracker_sync_errors.remove(&project.id).is_some()
                 };
                 if recovered {
@@ -6929,6 +6945,24 @@ rl.on('line', (line) => {
             .await
             .retry_attempts
             .contains_key(&task.id));
+    }
+
+    #[test]
+    fn a_successful_sync_keeps_a_tracker_wait_that_is_still_running() {
+        let now = Utc::now();
+        let mut backoff: HashMap<String, DateTime<Utc>> = HashMap::new();
+        backoff.insert("running".into(), now + chrono::Duration::seconds(300));
+        backoff.insert("expired".into(), now - chrono::Duration::seconds(1));
+        backoff.insert("other".into(), now + chrono::Duration::seconds(300));
+
+        clear_expired_tracker_backoff(&mut backoff, "running", now);
+        assert!(backoff.contains_key("running"), "a running wait stays");
+        clear_expired_tracker_backoff(&mut backoff, "expired", now);
+        assert!(!backoff.contains_key("expired"), "an expired one goes");
+        assert!(
+            backoff.contains_key("other"),
+            "other projects are untouched"
+        );
     }
 
     #[test]

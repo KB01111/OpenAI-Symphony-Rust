@@ -825,13 +825,15 @@ pub async fn apply_pending_restore(
                     // lists it with the others, instead of leaving it behind under a name that no
                     // report mentions.
                     Ok(dir) => match interrupted_before.then(|| recover_displaced_database(data_dir)) {
-                        Some(Recovery::Failed(_)) => Err(RestoreFailure {
+                        Some(Recovery::Failed(files)) => Err(RestoreFailure {
                             error: storage_err(
                                 "the restore was not applied: the database that an interrupted attempt set aside could not be put back first",
                             ),
-                            rollback_incomplete: false,
-                            // The recovery below names the files that are still displaced.
-                            displaced: Vec::new(),
+                            // Part of it (the database, say) may be back while its `-wal` is not:
+                            // the files that still hold data are named in the outcome, and the
+                            // data folder is not claimed to be as it was.
+                            rollback_incomplete: true,
+                            displaced: files,
                         }),
                         early => {
                             recovered_early = matches!(early, Some(Recovery::Recovered));

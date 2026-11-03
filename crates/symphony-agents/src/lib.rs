@@ -2566,11 +2566,13 @@ fn pick_option_label(labels: &[&str], decision: &str) -> String {
                 "every",
             ],
         ) || (
-            // "All" widens the grant, unless the option says it is for this one time ("Allow all
-            // requested changes once"): that still only answers the question that was asked.
-            // "Once per day" is a standing grant, not a one-time one.
+            // "All" widens the grant. It is exempt only when the label both scopes the grant to the
+            // request in front of the user ("all requested changes", "all of this") and says it is
+            // for this one time. "Allow all commands once" does not: "once" limits how often, not
+            // what is granted. "Once per day" is a standing grant.
             has_any(l, &["all"])
                 && !(has_any(l, &["once", "onetime"])
+                    && has_any(l, &["requested", "this", "current", "proposed", "these"])
                     && !has_any(
                         l,
                         &[
@@ -2740,6 +2742,11 @@ mod tests {
         // Without "once", "all" does widen the grant, so a one-time answer does not select it.
         let wide = ["Allow all", "Deny"];
         assert_eq!(pick_option_label(&wide, "accept"), "Approve Once");
+        // "Once" alone does not scope "all commands" to the request: it stays broad.
+        let unscoped = ["Allow all commands once", "Allow once"];
+        assert_eq!(pick_option_label(&unscoped, "accept"), "Allow once");
+        let only_unscoped = ["Allow all commands once", "Deny"];
+        assert_eq!(pick_option_label(&only_unscoped, "accept"), "Approve Once");
         // "Once" with a recurrence is a standing grant, not a one-time one.
         let recurring = ["Allow all commands once per day", "Allow once"];
         assert_eq!(pick_option_label(&recurring, "accept"), "Allow once");

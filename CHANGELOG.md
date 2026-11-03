@@ -211,7 +211,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   set aside back first, so the retry lists it with the other replaced files (and, when that retry then fails on
   a damaged backup, reports the database as put back rather than the data folder as partly replaced); a rate limit
   met while refreshing pull requests pauses that project's sweep for the wait GitHub named; "Allow all commands
-  once per day" is not taken for a one-time approval.
+  once per day" is not taken for a one-time approval, and neither is "Allow all commands once" (only a label that
+  also scopes the grant to the request, such as "all requested changes once", is); a successful issue sync keeps a
+  tracker wait that the pull request sweep set meanwhile; a restore whose early recovery cannot put every file back
+  names the files that still hold data and does not claim the data folder is as it was.
 
 ### Security
 
