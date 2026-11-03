@@ -664,6 +664,19 @@ enum Recovery {
     Failed(Vec<PathBuf>),
 }
 
+/// A set-aside suffix as something that sorts by when it was made: the `%Y%m%dT%H%M%SZ` stamp, and
+/// the collision number `shared_aside_stamp` appends (`-2`, `-3`, … `-10`); no number is the first.
+fn suffix_order(suffix: &str) -> (String, u32) {
+    match suffix.rsplit_once('-') {
+        Some((stamp, number))
+            if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            (stamp.to_string(), number.parse().unwrap_or(u32::MAX))
+        }
+        _ => (suffix.to_string(), 1),
+    }
+}
+
 /// Put back the database an *interrupted* restore attempt set aside. An attempt that dies after it
 /// renamed `symphony.sqlite` to `symphony.sqlite.pre-restore-<time>` leaves no database behind, and
 /// a start that then fails for another reason (the backup is gone, say) would open a new, empty one
@@ -685,8 +698,8 @@ fn recover_displaced_database(data_dir: &Path) -> Recovery {
                     .strip_prefix(&prefix)
                     .map(str::to_string)
             })
-            // Stamps are `%Y%m%dT%H%M%SZ` (with `-<n>` when taken): they sort by time.
-            .max()
+            // Newest by time, then by the collision number: `-10` is later than `-9`.
+            .max_by_key(|suffix| suffix_order(suffix))
     });
     let Some(suffix) = newest else {
         return Recovery::NotNeeded;
@@ -881,6 +894,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(shared_aside_stamp(data, stamp), format!("{stamp}-3"));
+    }
+
+    #[test]
+    fn set_aside_suffixes_sort_by_time_and_then_numerically() {
+        let mut suffixes = vec![
+            "20261103T020000Z-10",
+            "20261103T020000Z-2",
+            "20261103T020000Z",
+            "20261103T020000Z-9",
+            "20261103T020001Z",
+            "20261103T015959Z-12",
+        ];
+        suffixes.sort_by_key(|s| suffix_order(s));
+        assert_eq!(
+            suffixes,
+            [
+                "20261103T015959Z-12",
+                "20261103T020000Z",
+                "20261103T020000Z-2",
+                "20261103T020000Z-9",
+                "20261103T020000Z-10",
+                "20261103T020001Z",
+            ]
+        );
     }
 
     #[test]

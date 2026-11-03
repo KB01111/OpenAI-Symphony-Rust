@@ -164,10 +164,20 @@ async fn main() -> anyhow::Result<()> {
         }
         // A restore requested from the application and still waiting for the next start would
         // replace what was just restored with another backup: this restore is the later request.
-        if symphony_storage::backup::cancel_pending_restore(&data_dir.join("backups"))? {
-            println!(
+        let backups = data_dir.join("backups");
+        match symphony_storage::backup::cancel_pending_restore(&backups) {
+            Ok(true) => println!(
                 "A restore requested from the application was still waiting; it was withdrawn, since the backup restored here replaces it."
-            );
+            ),
+            Ok(false) => {}
+            // The restore above is done; only the stale request could not be removed, and the next
+            // start would apply it over what was just restored. Say so, and which file to delete.
+            Err(err) => anyhow::bail!(
+                "The backup was restored, but an older restore request from the application could not be withdrawn ({err}). Delete {} before starting Symphony, or that older backup will replace this one.",
+                backups
+                    .join(symphony_storage::backup::PENDING_RESTORE_FILE)
+                    .display()
+            ),
         }
         println!(
             "Credentials were not touched. Start Symphony Desktop again to use the restored data."
