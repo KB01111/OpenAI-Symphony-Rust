@@ -2738,6 +2738,22 @@ mod tests {
     }
 
     #[test]
+    fn a_label_that_mixes_yes_and_no_is_read_by_its_first_meaning_word() {
+        // "Yes, and don't ask again" says yes: a refusal must not choose it.
+        let yes_labels = ["Yes", "Yes, and don't ask again"];
+        assert_eq!(pick_option_label(&yes_labels, "decline"), "Deny");
+        // "Don't allow" says no: an approval must not choose it, even when it comes first.
+        let mixed = ["Don't allow", "Allow"];
+        assert_eq!(pick_option_label(&mixed, "accept"), "Allow");
+        assert_eq!(pick_option_label(&mixed, "decline"), "Don't allow");
+        // "Do not allow" is a refusal too, though no word in it is "deny".
+        assert_eq!(
+            pick_option_label(&["Do not allow", "Allow"], "decline"),
+            "Do not allow"
+        );
+    }
+
+    #[test]
     fn a_one_time_approval_never_picks_an_option_that_grants_more() {
         let broad_only = ["Yes, don't ask again", "Allow always", "Deny"];
         assert_eq!(pick_option_label(&broad_only, "accept"), "Approve Once");
