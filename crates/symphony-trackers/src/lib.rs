@@ -66,6 +66,14 @@ fn rate_limit_wait_for_status(
     }
 }
 
+/// Whether the body of a 403 is GitHub's *secondary* rate limit, which it may answer without any
+/// rate-limit header ("You have exceeded a secondary rate limit", formerly "abuse detection").
+/// An ordinary permission-denied 403 does not say so.
+fn is_secondary_rate_limit_body(body: &str) -> bool {
+    let body = body.to_lowercase();
+    body.contains("secondary rate limit") || body.contains("abuse detection")
+}
+
 /// The error for a GitHub answer that is not a success. A rate limit becomes
 /// [`GITHUB_RATE_LIMITED`] with the wait in the message (read it back with
 /// [`rate_limit_retry_after`]), so the caller can back off instead of asking again at once; anything
@@ -74,6 +82,10 @@ async fn github_http_error(resp: reqwest::Response) -> SymphonyError {
     let status = resp.status().as_u16();
     let wait = rate_limit_wait_for_status(status, resp.headers(), Utc::now());
     let body = resp.text().await.unwrap_or_default();
+    // GitHub asks for at least a minute after a secondary limit, and may name no wait.
+    let wait = wait.or_else(|| {
+        (status == 403 && is_secondary_rate_limit_body(&body)).then_some(DEFAULT_RATE_LIMIT_WAIT)
+    });
     match wait {
         Some(wait) => SymphonyError::TrackerError {
             code: GITHUB_RATE_LIMITED.to_string(),
@@ -535,22 +547,38 @@ impl GitHubTracker {
         self.fetch_pull_request_details(pr_number).await
     }
 
-    /// Fetch full Pull Request details, CI status, changed files, and review comments (evaluating agent vs human comments)
     /// Every item of a paginated GitHub list, 100 per page, up to [`MAX_PULL_REQUEST_LIST_PAGES`]
-    /// pages. A page that cannot be read ends the listing with what was read so far: the callers
-    /// show a partial answer rather than none, as they did when only the first page was asked for.
-    async fn fetch_all_pages(&self, base_url: &str) -> Vec<Value> {
+    /// pages. A page that cannot be read fails the whole listing: a partial list saved as the
+    /// pull request's files or review comments would replace the complete one already stored (and
+    /// label comments on files of the lost page as not part of the diff), so the refresh fails and
+    /// is reported instead. A rate limit keeps its own error, so the caller backs off.
+    async fn fetch_all_pages(&self, base_url: &str) -> SymphonyResult<Vec<Value>> {
         let mut out = Vec::new();
         for page in 1..=MAX_PULL_REQUEST_LIST_PAGES {
             let url = format!("{base_url}?per_page={GITHUB_PAGE_SIZE}&page={page}");
-            let Ok(resp) = self.apply_headers(self.client.get(&url)).send().await else {
-                break;
-            };
+            let resp = self
+                .apply_headers(self.client.get(&url))
+                .send()
+                .await
+                .map_err(|e| SymphonyError::TrackerError {
+                    code: "github_pr_fetch_failed".to_string(),
+                    message: e.to_string(),
+                })?;
             if !resp.status().is_success() {
-                break;
+                return Err(github_http_error(resp).await);
             }
-            let Ok(Value::Array(items)) = resp.json::<Value>().await else {
-                break;
+            let Value::Array(items) =
+                resp.json::<Value>()
+                    .await
+                    .map_err(|e| SymphonyError::TrackerError {
+                        code: "github_pr_decode_failed".to_string(),
+                        message: e.to_string(),
+                    })?
+            else {
+                return Err(SymphonyError::TrackerError {
+                    code: "github_pr_decode_failed".to_string(),
+                    message: format!("{base_url} did not answer with a list"),
+                });
             };
             let count = items.len();
             out.extend(items);
@@ -558,9 +586,10 @@ impl GitHubTracker {
                 break;
             }
         }
-        out
+        Ok(out)
     }
 
+    /// Fetch full Pull Request details, CI status, changed files, and review comments (evaluating agent vs human comments)
     pub async fn fetch_pull_request_details(
         &self,
         pr_number: u64,
@@ -643,7 +672,7 @@ impl GitHubTracker {
             self.api_url, self.repo
         );
         let mut changed_files = Vec::new();
-        for item in self.fetch_all_pages(&files_url).await {
+        for item in self.fetch_all_pages(&files_url).await? {
             if let Some(path) = item.get("filename").and_then(|v| v.as_str()) {
                 changed_files.push(ChangedFileSummary {
                     path: path.to_string(),
@@ -712,7 +741,7 @@ impl GitHubTracker {
             self.api_url, self.repo
         );
         let mut review_comments = Vec::new();
-        for item in self.fetch_all_pages(&comments_url).await {
+        for item in self.fetch_all_pages(&comments_url).await? {
             let author = item
                 .get("user")
                 .and_then(|u| u.get("login"))
@@ -1675,6 +1704,24 @@ mod tests {
             "assignees": [{ "login": "bob" }, { "login": "alice" }]
         });
         assert!(tracker.normalize_issue(&only_list).unwrap().dispatchable);
+    }
+
+    #[test]
+    fn a_secondary_rate_limit_is_recognised_by_its_body_when_no_header_says_so() {
+        for body in [
+            r#"{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}"#,
+            r#"{"message":"You have triggered an abuse detection mechanism. Please wait a few minutes."}"#,
+        ] {
+            assert!(is_secondary_rate_limit_body(body), "{body}");
+        }
+        // A missing permission is a 403 as well, and is not a reason to back off.
+        for body in [
+            r#"{"message":"Resource not accessible by integration"}"#,
+            r#"{"message":"Must have admin rights to Repository."}"#,
+            "",
+        ] {
+            assert!(!is_secondary_rate_limit_body(body), "{body}");
+        }
     }
 
     #[test]

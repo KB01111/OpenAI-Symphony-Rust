@@ -16,10 +16,15 @@ allowBuilds:
 #   4.3.2). Build-time only; `pnpm generate:api` output is unchanged.
 # - lodash, xml2js: @codesandbox/sdk (CodeSandbox runner) -> blessed-contrib, the terminal UI of its own CLI.
 #   The patched lines (lodash 4.18, xml2js 0.6) are drop-in for it.
+# - minimatch: @sentry/node 9.x (via @codesandbox/sdk) asks for ^9.0.0 (GHSA-g3hv-75wg-m249, denial
+#   of service through globparts amplification of a crafted glob; fixed in 11.0.1). It calls
+#   minimatch in one place, its Fastify instrumentation (`minimatch.minimatch(url, glob)`), and
+#   minimatch 11 ships CommonJS next to ESM with the same named export, so it is drop-in there.
 overrides:
   "js-yaml@>=4.0.0 <4.3.2": "^4.3.2"
   "lodash@<=4.17.23": "^4.18.0"
   "xml2js@<0.5.0": "^0.6.2"
+  "minimatch@<11.0.1": "^11.0.1"
 
 # Advisories that are reported but cannot be fixed by an override and do not apply here. Each is
 # reachable only through @codesandbox/sdk -> @sentry/node, whose OpenTelemetry packages are several
@@ -30,15 +35,8 @@ overrides:
 #   inbound headers.
 # - GHSA-qqmp-wf37-98f9: @opentelemetry/instrumentation-{knex,mongoose,mysql,mysql2,pg,tedious}, the
 #   database username is recorded as a span attribute by those database instrumentations.
-# - GHSA-g3hv-75wg-m249: minimatch < 11.0.1, denial of service through globparts amplification of a
-#   crafted glob pattern. @sentry/node 9.x calls minimatch in exactly one place, its Fastify
-#   instrumentation, to match route URLs against the `ignorePaths` glob that the application itself
-#   (or OTEL_FASTIFY_IGNORE_PATHS) configures; the runner does not use Fastify and no pattern ever
-#   comes from outside. The patched minimatch 11 is ESM-only and breaks @sentry/node's CommonJS
-#   `require`, so an override is not possible.
 # Remove these entries when @codesandbox/sdk (or its @sentry/node) moves past the affected versions.
 auditConfig:
   ignoreGhsas:
     - GHSA-8988-4f7v-96qf
-    - GHSA-g3hv-75wg-m249
     - GHSA-qqmp-wf37-98f9

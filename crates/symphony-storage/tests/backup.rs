@@ -854,10 +854,20 @@ async fn a_restore_interrupted_with_the_database_set_aside_is_finished_by_the_ne
 
     assert!(outcome.succeeded, "{outcome:?}");
     assert!(pending_restore(&root).is_none());
-    assert!(
-        aside.is_file(),
-        "the data set aside by the first try is kept"
-    );
+    // The database the first try set aside is put back and set aside again by this one, so it is
+    // reported with the other replaced files instead of being left behind unmentioned.
+    assert!(!aside.exists(), "it was renamed back before the retry");
+    let kept: Vec<_> = outcome
+        .previous_files
+        .iter()
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&format!("{DATABASE_FILE}.pre-restore-")))
+        })
+        .collect();
+    assert_eq!(kept.len(), 1, "{:?}", outcome.previous_files);
+    assert!(kept[0].is_file(), "the replaced data is kept: {kept:?}");
     let restored = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
     assert_eq!(
         restored

@@ -2564,8 +2564,11 @@ fn pick_option_label(labels: &[&str], decision: &str) -> String {
                 "permanent",
                 "future",
                 "every",
-                "all",
             ],
+        ) || (
+            // "All" widens the grant, unless the option says it is for this one time ("Allow all
+            // requested changes once"): that still only answers the question that was asked.
+            has_any(l, &["all"]) && !has_any(l, &["once", "onetime"])
         )
     };
     let pick = |matching: &dyn Fn(&&str) -> bool| labels.iter().find(|l| matching(l)).copied();
@@ -2714,6 +2717,23 @@ mod tests {
             user_input_question_text(&json!({})),
             "Codex asks for permission to use a tool"
         );
+    }
+
+    #[test]
+    fn a_one_time_option_that_mentions_all_is_still_a_one_time_approval() {
+        // "All" describes what is approved ("all requested changes"), "once" for how long.
+        let labels = ["Allow all requested changes once", "Deny"];
+        assert_eq!(
+            pick_option_label(&labels, "accept"),
+            "Allow all requested changes once"
+        );
+        assert_eq!(pick_option_label(&labels, "decline"), "Deny");
+        // Without "once", "all" does widen the grant, so a one-time answer does not select it.
+        let wide = ["Allow all", "Deny"];
+        assert_eq!(pick_option_label(&wide, "accept"), "Approve Once");
+        // And an option that is persistent in another word stays so, whatever else it says.
+        let always = ["Always allow all once more", "Allow once"];
+        assert_eq!(pick_option_label(&always, "accept"), "Allow once");
     }
 
     #[test]

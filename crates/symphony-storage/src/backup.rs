@@ -818,7 +818,21 @@ pub async fn apply_pending_restore(
             match write_json_atomic(&marker, &started) {
                 Err(err) => Err(err.into()),
                 Ok(()) => match backup_dir_for(root, &pending.backup_id) {
-                    Ok(dir) => restore_detailed(&dir, data_dir).await,
+                    // An earlier start may have set the database aside and died. It is put back
+                    // first, so that this attempt sets it aside again like any replaced file and
+                    // lists it with the others, instead of leaving it behind under a name that no
+                    // report mentions.
+                    Ok(dir) => match interrupted_before.then(|| recover_displaced_database(data_dir)) {
+                        Some(Recovery::Failed(_)) => Err(RestoreFailure {
+                            error: storage_err(
+                                "the restore was not applied: the database that an interrupted attempt set aside could not be put back first",
+                            ),
+                            rollback_incomplete: false,
+                            // The recovery below names the files that are still displaced.
+                            displaced: Vec::new(),
+                        }),
+                        _ => restore_detailed(&dir, data_dir).await,
+                    },
                     Err(err) => Err(err.into()),
                 },
             }

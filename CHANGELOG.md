@@ -203,6 +203,12 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   autostart entry is repaired only when it is a `--background` entry of a Symphony copy, also when the
   window is attached to `symphony-cli`, and never from settings that could not be read; uninstalling one
   copy leaves the login entry of another copy alone.
+- A queued task whose issue is no longer handed to the worker (another assignee, a new unresolved blocker) stays
+  queued instead of starting; a GitHub secondary rate limit that names no wait (a 403 with no header) is
+  recognised from its body and waited out for a minute; a pull request page that cannot be read fails the refresh
+  instead of replacing the stored files and review comments with a partial list; a one-time answer can pick
+  "Allow all requested changes once"; a restore retried after an interrupted start puts the database that attempt
+  set aside back first, so the retry lists it with the other replaced files.
 
 ### Security
 
@@ -217,6 +223,8 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   database, the event stream and diagnostics exports. Every string of a payload, and the live
   session's last message in `/state`, is now redacted first.
 - `ctutils` 0.4.3 → 0.4.4 (RUSTSEC-2026-0385, non-constant-time comparisons; pulled in by `digest`).
+- `minimatch` is resolved to 11.0.x for `@sentry/node` (GHSA-g3hv-75wg-m249, denial of service through globparts
+  amplification of a crafted glob; reached only through the CodeSandbox runner's SDK), which clears `pnpm audit`.
 
 ### Changed
 

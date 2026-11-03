@@ -9,15 +9,21 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 type Handler = dyn Fn(&str, &str) -> Value + Send + Sync;
+type StatusHandler = dyn Fn(&str, &str) -> (u16, Value) + Send + Sync;
 
 /// A one-request-per-connection HTTP server answering every request with `handler(target, body)`
 /// as JSON. Returns its base URL and the requests it received (`target` and body).
 async fn serve(handler: Box<Handler>) -> (String, Arc<Mutex<Vec<(String, String)>>>) {
+    serve_status(Box::new(move |target, body| (200, handler(target, body)))).await
+}
+
+/// Like [`serve`], for a handler that also chooses the HTTP status of its answer.
+async fn serve_status(handler: Box<StatusHandler>) -> (String, Arc<Mutex<Vec<(String, String)>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let requests = Arc::new(Mutex::new(Vec::new()));
     let seen = requests.clone();
-    let handler: Arc<Handler> = handler.into();
+    let handler: Arc<StatusHandler> = handler.into();
     tokio::spawn(async move {
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -47,10 +53,11 @@ async fn serve(handler: Box<Handler>) -> (String, Arc<Mutex<Vec<(String, String)
                 let head = String::from_utf8_lossy(&raw[..head_len]).to_string();
                 let target = head.split_whitespace().nth(1).unwrap_or("").to_string();
                 let body = String::from_utf8_lossy(&raw[head_len..]).to_string();
-                let response = handler(&target, &body).to_string();
+                let (status, response) = handler(&target, &body);
+                let response = response.to_string();
                 seen.lock().unwrap().push((target, body));
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                    "HTTP/1.1 {status} Answer\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
                     response.len()
                 );
                 stream.write_all(reply.as_bytes()).await.unwrap();
@@ -170,6 +177,44 @@ async fn a_pull_request_reads_every_page_of_its_files_and_review_comments() {
     };
     assert_eq!(pages("/files"), vec![Some(1), Some(2), Some(3)]);
     assert_eq!(pages("/comments"), vec![Some(1), Some(2)]);
+}
+
+#[tokio::test]
+async fn a_pull_request_whose_later_page_cannot_be_read_fails_instead_of_returning_a_partial_list()
+{
+    // The second page of review comments is refused: a list with only the first page would replace
+    // the stored comments as if it were complete.
+    let (base, _requests) = serve_status(Box::new(|target, _| {
+        let page = query_param(target, "page").unwrap_or(1);
+        let path = target.split('?').next().unwrap_or("");
+        if path.ends_with("/pulls/7/files") {
+            (200, json!([]))
+        } else if path.ends_with("/pulls/7/comments") && page == 1 {
+            (
+                200,
+                Value::Array(
+                    (0..100)
+                        .map(|n| json!({ "user": { "login": "reviewer", "type": "User" }, "body": format!("comment {n}"), "path": "src/a.rs" }))
+                        .collect(),
+                ),
+            )
+        } else if path.ends_with("/pulls/7/comments") {
+            (500, json!({ "message": "Server Error" }))
+        } else if path.ends_with("/pulls/7") {
+            (
+                200,
+                json!({ "title": "T", "state": "open", "head": { "ref": "task", "sha": "" }, "base": { "ref": "main" }, "mergeable": true }),
+            )
+        } else {
+            (200, json!({}))
+        }
+    }))
+    .await;
+    let tracker = GitHubTracker::new(Some(base), "owner/repo".into(), None, None);
+
+    let err = tracker.fetch_pull_request_details(7).await.unwrap_err();
+
+    assert!(err.to_string().contains("500"), "{err}");
 }
 
 #[tokio::test]

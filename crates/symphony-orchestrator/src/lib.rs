@@ -444,7 +444,8 @@ enum TrackerVerdict {
     Dispatch,
     /// The issue is closed: the task was cancelled.
     Cancelled,
-    /// The issue is open but no longer in an active state: leave the task queued.
+    /// The issue is open but cannot start now (no longer in an active state, assigned to someone
+    /// else, blocked): leave the task queued.
     Skip,
 }
 
@@ -3526,6 +3527,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 .cancel_task(&task.id, "Tracker issue is no longer active")
                 .await;
             return TrackerVerdict::Cancelled;
+        }
+        // The tracker no longer hands the issue to this worker (another assignee, a new unresolved
+        // blocker): the task stays queued and starts again if that changes, as it does for a retry.
+        if !issue.dispatchable {
+            return TrackerVerdict::Skip;
         }
         // Linear states are matched by name. GitHub has only open and closed, which the workflow's
         // state names are mapped onto when listing, so the names cannot be compared there. And the
@@ -6794,6 +6800,58 @@ rl.on('line', (line) => {
         assert_eq!(
             orch.get_task(&task.id).await.unwrap().status,
             TaskStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_queued_issue_the_tracker_no_longer_assigns_to_the_worker_stays_queued() {
+        let temp = TempDir::new().unwrap();
+        let (api, _seen) = github_mock_with(Arc::new(|_method: &str, target: &str| {
+            let assignee = if target.starts_with("/repos/acme/widgets/issues/7") {
+                "someone-else"
+            } else {
+                "octocat"
+            };
+            (
+                "200 OK".to_string(),
+                json!({
+                    "number": 7, "title": "Reassigned", "state": "open", "labels": [],
+                    "assignees": [{ "login": assignee }]
+                }),
+            )
+        }))
+        .await;
+        let (orch, project) = github_tracked_orchestrator(&temp, &api).await;
+        orch.memory
+            .write()
+            .await
+            .active_config
+            .tracker_provider
+            .insert("assignee".into(), json!("octocat"));
+        let queued = |number: &str, identifier: &str| {
+            let mut task = task_in(&project.id, "open", identifier);
+            task.issue.id = number.into();
+            task.status = TaskStatus::Queued;
+            task
+        };
+        let reassigned = queued("7", "GH-7");
+        let still_ours = queued("8", "GH-8");
+        orch.storage.upsert_task(&reassigned).await.unwrap();
+        orch.storage.upsert_task(&still_ours).await.unwrap();
+
+        assert_eq!(
+            orch.tracker_verdict(&reassigned, Some(&project)).await,
+            TrackerVerdict::Skip,
+            "an issue handed to someone else is not started"
+        );
+        assert_eq!(
+            orch.get_task(&reassigned.id).await.unwrap().status,
+            TaskStatus::Queued,
+            "and it is neither cancelled nor lost: it starts again if the assignment comes back"
+        );
+        assert_eq!(
+            orch.tracker_verdict(&still_ours, Some(&project)).await,
+            TrackerVerdict::Dispatch
         );
     }
 
