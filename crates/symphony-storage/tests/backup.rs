@@ -996,6 +996,56 @@ async fn a_settled_request_that_could_not_be_removed_is_not_applied_a_second_tim
 }
 
 #[tokio::test]
+async fn a_new_request_is_not_taken_for_settled_when_the_clock_was_set_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, task) = storage_with_task(&data, "Before").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    schedule_restore(&root, &backup.id).await.unwrap();
+    storage.pool().close().await;
+    let first = apply_pending_restore(&root, &data).await.unwrap().unwrap();
+    assert!(first.succeeded && !first.request_id.is_empty());
+
+    // The clock is corrected backwards, and the same backup is requested again: the new request
+    // is stamped *earlier* than the outcome of the old one.
+    let live = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    let mut newer = live.get_task(&task.id).await.unwrap().unwrap();
+    newer.issue.title = "Work after the first restore".into();
+    live.upsert_task(&newer).await.unwrap();
+    live.pool().close().await;
+    let again = schedule_restore(&root, &backup.id).await.unwrap();
+    assert_ne!(again.request_id, first.request_id);
+    let earlier = PendingRestore {
+        requested_at: first.applied_at - chrono::Duration::hours(1),
+        ..again
+    };
+    std::fs::write(
+        root.join(PENDING_RESTORE_FILE),
+        serde_json::to_vec(&earlier).unwrap(),
+    )
+    .unwrap();
+
+    let outcome = apply_pending_restore(&root, &data)
+        .await
+        .unwrap()
+        .expect("a request with another id is not the settled one");
+    assert!(outcome.succeeded, "{outcome:?}");
+    assert_ne!(outcome.request_id, first.request_id);
+    let restored = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    assert_eq!(
+        restored
+            .get_task(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .issue
+            .title,
+        "Before"
+    );
+}
+
+#[tokio::test]
 async fn a_restore_interrupted_too_often_is_given_up_and_reported_as_unfinished() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");

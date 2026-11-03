@@ -553,6 +553,11 @@ pub struct PendingRestore {
     /// Directory name of the backup (see [`BackupInfo::id`]).
     pub backup_id: String,
     pub requested_at: DateTime<Utc>,
+    /// Identifies this one request, and is copied into its [`RestoreOutcome`]: the outcome of a
+    /// request is recognised by it, never by comparing clock times (a clock can be set back). Empty
+    /// in a request file written before ids existed, which is then never taken for settled.
+    #[serde(default)]
+    pub request_id: String,
     /// How many starts began applying this request. The request stays in place while it is being
     /// applied, so a process that dies half-way tries again on the next start, up to
     /// [`MAX_RESTORE_ATTEMPTS`] times; a restore that kills its host every time is then given up
@@ -570,6 +575,9 @@ pub const MAX_RESTORE_ATTEMPTS: u32 = 2;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RestoreOutcome {
     pub backup_id: String,
+    /// The [`PendingRestore::request_id`] this is the outcome of (empty for an older request).
+    #[serde(default)]
+    pub request_id: String,
     pub applied_at: DateTime<Utc>,
     pub succeeded: bool,
     /// Why it failed, when it did.
@@ -627,6 +635,7 @@ pub async fn schedule_restore(root: &Path, backup_id: &str) -> SymphonyResult<Pe
     let pending = PendingRestore {
         backup_id: backup_id.to_string(),
         requested_at: Utc::now(),
+        request_id: uuid::Uuid::new_v4().to_string(),
         attempts: 0,
     };
     write_json_atomic(&root.join(PENDING_RESTORE_FILE), &pending)?;
@@ -747,7 +756,7 @@ pub async fn apply_pending_restore(
     // that applied it could not remove the file (a locked or read-only folder), and applying it
     // again would put the backup over everything done since.
     if let (Some(request), Some(last)) = (&pending, last_restore(root)) {
-        if last.backup_id == request.backup_id && last.applied_at >= request.requested_at {
+        if !request.request_id.is_empty() && last.request_id == request.request_id {
             tracing::warn!(
                 backup = %request.backup_id,
                 "A restore request that was already settled was still on disk; it is not applied again"
@@ -763,8 +772,13 @@ pub async fn apply_pending_restore(
         .as_ref()
         .map(|p| p.backup_id.clone())
         .unwrap_or_default();
+    let request_id = pending
+        .as_ref()
+        .map(|p| p.request_id.clone())
+        .unwrap_or_default();
     let failed = |failure: RestoreFailure| RestoreOutcome {
         backup_id: backup_id.clone(),
+        request_id: request_id.clone(),
         applied_at: Utc::now(),
         succeeded: false,
         error: Some(failure.error.to_string()),
@@ -835,6 +849,7 @@ pub async fn apply_pending_restore(
     let outcome = match result {
         Ok(report) => RestoreOutcome {
             backup_id,
+            request_id,
             applied_at: Utc::now(),
             succeeded: true,
             error: None,
