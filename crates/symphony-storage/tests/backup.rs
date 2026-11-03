@@ -859,6 +859,51 @@ async fn a_restore_interrupted_with_the_database_set_aside_is_finished_by_the_ne
 }
 
 #[tokio::test]
+async fn a_retry_that_fails_puts_the_database_an_interrupted_attempt_set_aside_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, task) = storage_with_task(&data, "Live").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    schedule_restore(&root, &backup.id).await.unwrap();
+    storage.pool().close().await;
+
+    // The first start set the database aside and died; before the second start the backup was
+    // removed, so the retry fails before it replaces anything.
+    let started = PendingRestore {
+        attempts: 1,
+        ..pending_restore(&root).unwrap()
+    };
+    std::fs::write(
+        root.join(PENDING_RESTORE_FILE),
+        serde_json::to_vec(&started).unwrap(),
+    )
+    .unwrap();
+    let aside = data.join(format!("{DATABASE_FILE}.pre-restore-20261103T020000Z"));
+    std::fs::rename(data.join(DATABASE_FILE), &aside).unwrap();
+    std::fs::remove_dir_all(&backup.path).unwrap();
+
+    let outcome = apply_pending_restore(&root, &data)
+        .await
+        .unwrap()
+        .expect("the request was still pending");
+
+    assert!(!outcome.succeeded);
+    assert!(!root.join(PENDING_RESTORE_FILE).exists());
+    assert!(
+        outcome.error.as_deref().unwrap().contains("put back"),
+        "{outcome:?}"
+    );
+    // The runtime that starts next finds its own data, not a new empty database.
+    assert!(!aside.exists(), "the displaced database was moved back");
+    let live = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    assert_eq!(
+        live.get_task(&task.id).await.unwrap().unwrap().issue.title,
+        "Live"
+    );
+}
+
+#[tokio::test]
 async fn a_restore_interrupted_too_often_is_given_up_and_reported_as_unfinished() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");

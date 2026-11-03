@@ -584,7 +584,7 @@ impl WorkspaceManager {
             {
                 let mut fallback_error = last_error.clone();
                 let mut fallback_added = false;
-                for n in 0..8 {
+                for n in 0..1000 {
                     let fallback_branch = if n == 0 {
                         format!("{branch_name}-{}", std::process::id())
                     } else {
@@ -2691,6 +2691,32 @@ mod tests {
         assert!(allocated.branch_name.starts_with(&stale));
         let after = git_stdout(&repo, &["rev-parse", &stale]).await.unwrap();
         assert_eq!(after, stale_tip, "the earlier branch keeps its commits");
+    }
+
+    #[tokio::test]
+    async fn fallback_branches_keep_being_found_after_many_have_been_used() {
+        let dir = tempdir().unwrap();
+        let (repo, _wt) = repo_with_worktree(dir.path());
+        // Fallback branches of earlier tasks stay behind after their worktrees are gone.
+        let pid = std::process::id();
+        git(&repo, &["branch", &format!("task-{pid}"), "task"]);
+        for n in 1..12 {
+            git(&repo, &["branch", &format!("task-{pid}-{n}"), "task"]);
+        }
+
+        let allocated = WorkspaceManager::new()
+            .prepare_workspace(
+                "SYM-11",
+                &dir.path().join("workspaces"),
+                Some(&repo),
+                "main",
+                Some("task"),
+                &HooksConfig::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(allocated.branch_name, format!("task-{pid}-12"));
     }
 
     #[tokio::test]

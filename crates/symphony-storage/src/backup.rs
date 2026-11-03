@@ -630,6 +630,61 @@ pub fn last_restore(root: &Path) -> Option<RestoreOutcome> {
     serde_json::from_slice(&raw).ok()
 }
 
+/// What [`recover_displaced_database`] found and did.
+enum Recovery {
+    /// The database is in place, or no earlier attempt displaced one.
+    NotNeeded,
+    /// The database an interrupted attempt set aside was put back.
+    Recovered,
+    /// Putting it back failed; these files still hold the data.
+    Failed(Vec<PathBuf>),
+}
+
+/// Put back the database an *interrupted* restore attempt set aside. An attempt that dies after it
+/// renamed `symphony.sqlite` to `symphony.sqlite.pre-restore-<time>` leaves no database behind, and
+/// a start that then fails for another reason (the backup is gone, say) would open a new, empty one
+/// with the real data stranded under that name. The newest displaced database, with its `-wal` and
+/// `-shm`, is renamed back; nothing is deleted. Only called when an earlier attempt began, so a
+/// leftover from some older, finished restore is never mistaken for it.
+fn recover_displaced_database(data_dir: &Path) -> Recovery {
+    if data_dir.join(DATABASE_FILE).exists() {
+        return Recovery::NotNeeded;
+    }
+    let prefix = format!("{DATABASE_FILE}.pre-restore-");
+    let newest = std::fs::read_dir(data_dir).ok().and_then(|entries| {
+        entries
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .strip_prefix(&prefix)
+                    .map(str::to_string)
+            })
+            // Stamps are `%Y%m%dT%H%M%SZ` (with `-<n>` when taken): they sort by time.
+            .max()
+    });
+    let Some(suffix) = newest else {
+        return Recovery::NotNeeded;
+    };
+    let mut still_displaced = Vec::new();
+    for base in [
+        DATABASE_FILE.to_string(),
+        format!("{DATABASE_FILE}-wal"),
+        format!("{DATABASE_FILE}-shm"),
+    ] {
+        let from = data_dir.join(format!("{base}.pre-restore-{suffix}"));
+        if from.exists() && std::fs::rename(&from, data_dir.join(&base)).is_err() {
+            still_displaced.push(from);
+        }
+    }
+    if still_displaced.is_empty() {
+        Recovery::Recovered
+    } else {
+        Recovery::Failed(still_displaced)
+    }
+}
+
 /// Apply the restore requested with [`schedule_restore`], if any. **Call it at startup**, once the
 /// data directory's runtime lock is held and before the database is opened ([`restore_backup`] is an
 /// offline operation). The request stays in place while it is applied and is removed once the
@@ -663,6 +718,8 @@ pub async fn apply_pending_restore(
         previous_files: failure.displaced,
         rollback_incomplete: failure.rollback_incomplete,
     };
+    // Whether an earlier start already began applying this request.
+    let interrupted_before = pending.as_ref().is_some_and(|p| p.attempts >= 1);
     let result: Result<RestoreReport, RestoreFailure> = match pending {
         None => Err(storage_err("the restore request could not be read").into()),
         Some(pending) if pending.attempts >= MAX_RESTORE_ATTEMPTS => Err(RestoreFailure {
@@ -687,6 +744,31 @@ pub async fn apply_pending_restore(
                 },
             }
         }
+    };
+    // A failure after an interrupted attempt must not leave the runtime to open a new, empty
+    // database: the one that attempt set aside is put back first.
+    let result = match result {
+        Err(mut failure) if interrupted_before => {
+            match recover_displaced_database(data_dir) {
+                Recovery::NotNeeded => {}
+                Recovery::Recovered => {
+                    failure.error = storage_err(format!(
+                        "{}. The database that an interrupted attempt had set aside was put back.",
+                        failure.error
+                    ));
+                }
+                Recovery::Failed(files) => {
+                    failure.error = storage_err(format!(
+                        "{}. The database that an interrupted attempt had set aside could not be put back.",
+                        failure.error
+                    ));
+                    failure.rollback_incomplete = true;
+                    failure.displaced.extend(files);
+                }
+            }
+            Err(failure)
+        }
+        other => other,
     };
     let outcome = match result {
         Ok(report) => RestoreOutcome {
