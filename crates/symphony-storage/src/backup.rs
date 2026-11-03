@@ -339,6 +339,30 @@ async fn check_integrity(db: &Path) -> SymphonyResult<()> {
     Ok(())
 }
 
+/// One suffix for everything a restore sets aside: the database, its `-wal` and `-shm`, and the
+/// workflow. `aside` alone picks a free name per file, which can leave a database under `…-T-2` and
+/// its WAL under `…-T`; recovering by one suffix would then restore the database without the
+/// transactions that were only committed to the WAL. With a shared suffix they always match.
+fn shared_aside_stamp(data_dir: &Path, stamp: &str) -> String {
+    let names = [
+        DATABASE_FILE.to_string(),
+        format!("{DATABASE_FILE}-wal"),
+        format!("{DATABASE_FILE}-shm"),
+        WORKFLOW_FILE.to_string(),
+    ];
+    let mut candidate = stamp.to_string();
+    let mut attempt = 1;
+    while names.iter().any(|name| {
+        data_dir
+            .join(format!("{name}.pre-restore-{candidate}"))
+            .exists()
+    }) {
+        attempt += 1;
+        candidate = format!("{stamp}-{attempt}");
+    }
+    candidate
+}
+
 /// Rename `path` to `<name>.pre-restore-<stamp>`, or `…-2`, `…-3` when that name is taken: a
 /// file kept by an earlier restore is never replaced.
 fn aside(path: &Path, stamp: &str) -> SymphonyResult<Option<PathBuf>> {
@@ -406,7 +430,7 @@ async fn restore_detailed(
     let manifest = verify_backup(backup_dir).await?;
     std::fs::create_dir_all(data_dir)?;
 
-    let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let stamp = shared_aside_stamp(data_dir, &Utc::now().format("%Y%m%dT%H%M%SZ").to_string());
     let live_db = data_dir.join(DATABASE_FILE);
     let staged = data_dir.join(format!("{DATABASE_FILE}.restoring"));
     let _ = std::fs::remove_file(&staged);
@@ -820,5 +844,77 @@ pub async fn apply_requested_restore(data_dir: &Path) -> Option<RestoreOutcome> 
             tracing::error!(error = %err, "Could not process the requested restore; starting with the existing data");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn everything_set_aside_by_one_restore_shares_one_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        let stamp = "20261103T020000Z";
+        assert_eq!(shared_aside_stamp(data, stamp), stamp);
+
+        // A file kept by an earlier restore under the plain stamp moves the whole set to `-2`,
+        // even if it is only the workflow, so the database and its WAL still match by name.
+        std::fs::write(
+            data.join(format!("{WORKFLOW_FILE}.pre-restore-{stamp}")),
+            "w",
+        )
+        .unwrap();
+        assert_eq!(shared_aside_stamp(data, stamp), format!("{stamp}-2"));
+        std::fs::write(
+            data.join(format!("{DATABASE_FILE}-wal.pre-restore-{stamp}-2")),
+            "wal",
+        )
+        .unwrap();
+        assert_eq!(shared_aside_stamp(data, stamp), format!("{stamp}-3"));
+    }
+
+    #[test]
+    fn a_database_and_its_wal_set_aside_together_are_recovered_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        // An earlier restore left a database under the plain stamp; the interrupted one used the
+        // shared suffix for the database and the WAL alike.
+        let stamp = "20261103T020000Z";
+        std::fs::write(
+            data.join(format!("{DATABASE_FILE}.pre-restore-{stamp}")),
+            "old",
+        )
+        .unwrap();
+        let shared = shared_aside_stamp(data, stamp);
+        assert_eq!(shared, format!("{stamp}-2"));
+        std::fs::write(
+            data.join(format!("{DATABASE_FILE}.pre-restore-{shared}")),
+            "db",
+        )
+        .unwrap();
+        std::fs::write(
+            data.join(format!("{DATABASE_FILE}-wal.pre-restore-{shared}")),
+            "wal",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            recover_displaced_database(data),
+            Recovery::Recovered
+        ));
+        assert_eq!(
+            std::fs::read_to_string(data.join(DATABASE_FILE)).unwrap(),
+            "db"
+        );
+        assert_eq!(
+            std::fs::read_to_string(data.join(format!("{DATABASE_FILE}-wal"))).unwrap(),
+            "wal",
+            "the WAL comes back with its database"
+        );
+        // The older leftover is untouched.
+        assert!(data
+            .join(format!("{DATABASE_FILE}.pre-restore-{stamp}"))
+            .is_file());
     }
 }
