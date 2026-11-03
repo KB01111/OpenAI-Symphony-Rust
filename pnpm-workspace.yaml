@@ -30,8 +30,15 @@ overrides:
 #   inbound headers.
 # - GHSA-qqmp-wf37-98f9: @opentelemetry/instrumentation-{knex,mongoose,mysql,mysql2,pg,tedious}, the
 #   database username is recorded as a span attribute by those database instrumentations.
+# - GHSA-g3hv-75wg-m249: minimatch < 11.0.1, denial of service through globparts amplification of a
+#   crafted glob pattern. @sentry/node 9.x calls minimatch in exactly one place, its Fastify
+#   instrumentation, to match route URLs against the `ignorePaths` glob that the application itself
+#   (or OTEL_FASTIFY_IGNORE_PATHS) configures; the runner does not use Fastify and no pattern ever
+#   comes from outside. The patched minimatch 11 is ESM-only and breaks @sentry/node's CommonJS
+#   `require`, so an override is not possible.
 # Remove these entries when @codesandbox/sdk (or its @sentry/node) moves past the affected versions.
 auditConfig:
   ignoreGhsas:
     - GHSA-8988-4f7v-96qf
+    - GHSA-g3hv-75wg-m249
     - GHSA-qqmp-wf37-98f9
