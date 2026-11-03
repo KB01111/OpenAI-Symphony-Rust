@@ -554,8 +554,7 @@ impl WorkspaceManager {
         let mut last_error = String::new();
         let mut added = false;
         for _ in 0..2 {
-            let branch_exists =
-                Self::git_ref_exists(repo_path, &format!("refs/heads/{branch_name}")).await;
+            let branch_exists = Self::local_branch_exists(repo_path, branch_name).await;
             let output = Self::worktree_add(
                 repo_path,
                 worktree_path,
@@ -590,9 +589,7 @@ impl WorkspaceManager {
                     } else {
                         format!("{branch_name}-{}-{n}", std::process::id())
                     };
-                    if Self::git_ref_exists(repo_path, &format!("refs/heads/{fallback_branch}"))
-                        .await
-                    {
+                    if Self::local_branch_exists(repo_path, &fallback_branch).await {
                         continue;
                     }
                     let retry_out = Self::worktree_add(
@@ -652,6 +649,23 @@ impl WorkspaceManager {
         add.output()
             .await
             .map_err(|e| SymphonyError::GitWorktreeError(e.to_string()))
+    }
+
+    /// Whether `refs/heads/<branch>` exists as exactly that ref. `rev-parse --verify` also accepts
+    /// revision syntax (`main~1`, `main^`, `main@{1}`), which would take a tracker-supplied name for
+    /// an existing branch and check out a commit instead.
+    async fn local_branch_exists(repo_path: &Path, branch: &str) -> bool {
+        git_command()
+            .arg("-C")
+            .arg(repo_path)
+            .args(["show-ref", "--verify", "--quiet"])
+            .arg(format!("refs/heads/{branch}"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
     async fn git_ref_exists(repo_path: &Path, git_ref: &str) -> bool {

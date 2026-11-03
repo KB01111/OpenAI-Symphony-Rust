@@ -2054,7 +2054,7 @@ async fn list_backups_handler(State(state): State<ServerState>) -> Response {
 /// Create a backup now: a transactionally consistent copy of the database (SQLite `VACUUM INTO`,
 /// WAL included) plus the active `WORKFLOW.md`, with a checksum manifest. Credentials are not
 /// included. A backup is restored by the next start of the runtime
-/// ([`POST /backups/{id}/restore`](schedule_restore_handler)) or offline with
+/// (`POST /backups/{id}/restore`) or offline with
 /// `symphony-cli restore-backup <folder>`.
 #[utoipa::path(
     post,

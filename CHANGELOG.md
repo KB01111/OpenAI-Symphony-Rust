@@ -17,8 +17,9 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   the runtime restarts.
 - **Restore a backup from the application** (Settings → Backups → *Restore…*). The backup is verified at once
   and the restore is applied the next time Symphony starts, before the database is opened; the replaced files
-  are kept as `.pre-restore-<time>`, a restore that cannot be applied leaves your data as it was and is reported
-  on the page, and a waiting request can be withdrawn. Previously restoring needed `symphony-cli restore-backup`
+  are kept as `.pre-restore-<time>`, a restore that cannot be applied is reported on the page (saying whether
+  your previous data was put back completely, and which `.pre-restore-<time>` files still hold it if not), and a
+  waiting request can be withdrawn. Previously restoring needed `symphony-cli restore-backup`
   with nothing running (still available). New: `GET`/`DELETE /api/v1/backups/restore` and
   `POST /api/v1/backups/{id}/restore` (local only). **API:** additive only (the restore outcome also says
   when putting the previous data back did not finish). The backup a waiting request names is kept by the
@@ -219,10 +220,11 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Changed
 
-- **Merge readiness needs a passing CI for the top rating.** A review without any CI result (a local review
-  before a pull request exists, a pull request whose checks were not read yet, a repository without CI) now
-  stops at 4, "Strong Candidate", like an unchecked merge always did; 5, "Ready for Human Approval & Merge",
-  needs a passing CI behind it. Nothing is merged either way.
+- **Merge readiness needs a passing CI for the top rating.** A review without any CI result, or with one
+  that is not recognised (a local review before a pull request exists, a pull request whose checks were not
+  read yet, a repository without CI) now stops at 4, "Strong Candidate", like an unchecked merge always did;
+  5, "Ready for Human Approval & Merge", needs a passing CI behind it, or a CI that is explicitly
+  `not_applicable`. Nothing is merged either way.
 - **Agent runs is now a view of Tasks**: *Board*, *Table* and *Runs* sit side by side on the Tasks page, and
   the separate *Agent runs* sidebar entry is gone (its running/approval badge moved to *Tasks*). `/runs`
   still works and opens the Runs view; task threads stay at `/runs/<id>`.

@@ -3514,7 +3514,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
             let mem = self.memory.read().await;
             let cfg = &mem.active_config;
             (
-                cfg.terminal_states.clone(),
+                // The project's own tracker's terminal states, not another tracker's workflow's:
+                // a GitHub issue is `closed` whatever a Linear workflow lists as done.
+                TrackerSettings::resolve(cfg, &project.tracker_kind).terminal_states,
                 cfg.active_states.clone(),
                 cfg.tracker_kind.eq_ignore_ascii_case(&project.tracker_kind),
             )
@@ -4611,7 +4613,6 @@ Please implement the requested changes cleanly in the current Git workspace, run
             reviewed_commit: None,
             unpushed_changes: continued_pr.is_some(),
         };
-        let _ = self.storage.upsert_pr_review(&pr_review).await;
 
         // 9. Transition task to HumanReview (or Completed if all validations passed and no review gate)
         let elapsed_secs = (Utc::now() - attempt_start).num_milliseconds().max(0) as f64 / 1000.0;
@@ -4634,6 +4635,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     .await;
                 return;
             }
+            // The review is written here too, after the ownership check: a task cancelled while the
+            // diff and the credential scan ran must keep the review it had, not get this run's.
+            let _ = self.storage.upsert_pr_review(&pr_review).await;
             let _ = self.storage.upsert_task(&task).await;
             mem.running.remove(&task.id);
             mem.claimed_issue_ids.remove(&task.issue.id);
@@ -6756,6 +6760,41 @@ rl.on('line', (line) => {
             .iter()
             .any(|(method, target, _, _)| method == "GET" && target.contains("/issues/8"));
         assert!(looked_up_next, "the next candidate was considered");
+    }
+
+    #[tokio::test]
+    async fn test_a_closed_github_issue_is_closed_whatever_another_trackers_workflow_calls_done() {
+        let temp = TempDir::new().unwrap();
+        let (api, _seen) = github_mock_with(Arc::new(|_method: &str, target: &str| {
+            if target.starts_with("/repos/acme/widgets/issues/7") {
+                (
+                    "200 OK".to_string(),
+                    json!({ "number": 7, "title": "Closed meanwhile", "state": "closed", "labels": [] }),
+                )
+            } else {
+                ("200 OK".to_string(), json!([]))
+            }
+        }))
+        .await;
+        let (orch, project) = github_tracked_orchestrator(&temp, &api).await;
+        {
+            // The loaded workflow is a Linear one with its own idea of "finished".
+            let mut mem = orch.memory.write().await;
+            mem.active_config.tracker_kind = "linear".into();
+            mem.active_config.terminal_states = vec!["Shipped".into()];
+        }
+        let mut task = task_in(&project.id, "open", "GH-7");
+        task.issue.id = "7".into();
+        task.status = TaskStatus::Queued;
+        orch.storage.upsert_task(&task).await.unwrap();
+
+        let verdict = orch.tracker_verdict(&task, Some(&project)).await;
+
+        assert_eq!(verdict, TrackerVerdict::Cancelled);
+        assert_eq!(
+            orch.get_task(&task.id).await.unwrap().status,
+            TaskStatus::Cancelled
+        );
     }
 
     #[tokio::test]

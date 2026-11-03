@@ -106,6 +106,14 @@ fn cap(text: &str, max: usize) -> String {
 /// provider gets is shorter than the real diff, either because git's output was already cut or
 /// because it is cut here.
 fn redact_then_cut_diff(diff: &str, already_truncated: bool) -> (String, bool) {
+    // Git cut its output at the fetch limit, possibly in the middle of a line and so of a secret:
+    // the redaction patterns do not recognise a fragment. The partial last line never goes through
+    // (and a diff that is one endless line with no newline is not sent at all).
+    let diff = if already_truncated {
+        diff.rfind('\n').map_or("", |newline| &diff[..=newline])
+    } else {
+        diff
+    };
     let redacted = redact_secrets(diff, &[]);
     if redacted.len() <= MAX_DIFF_BYTES {
         return (redacted, already_truncated);
@@ -731,6 +739,31 @@ mod tests {
         assert!(cut.len() <= MAX_DIFF_BYTES);
         assert!(cut.ends_with('\n'), "ends on a whole line");
         assert!(cut.lines().all(|l| l == line.trim_end()));
+    }
+
+    #[test]
+    fn a_secret_that_git_cut_in_half_is_not_sent_as_a_fragment() {
+        let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let whole = format!("+fine line\n+token = {token}\n");
+        // Git's fetch limit fell inside the token: what is left no longer looks like one.
+        let cut_at = whole.find(token).unwrap() + 12;
+        let fetched = &whole[..cut_at];
+        assert!(fetched.contains("ghp_abcdefgh"));
+
+        let (sent, truncated) = redact_then_cut_diff(fetched, true);
+        assert!(truncated);
+        assert_eq!(sent, "+fine line\n", "the partial last line is dropped");
+        assert!(!sent.contains("ghp_"));
+
+        // One endless line has no safe place to cut: nothing of it is sent.
+        let endless = format!("+{token}");
+        let (sent, truncated) = redact_then_cut_diff(&endless[..20], true);
+        assert!(truncated);
+        assert!(sent.is_empty());
+
+        // A diff git did not cut is untouched, even without a final newline.
+        let (sent, truncated) = redact_then_cut_diff("+small", false);
+        assert_eq!((sent.as_str(), truncated), ("+small", false));
     }
 
     #[test]

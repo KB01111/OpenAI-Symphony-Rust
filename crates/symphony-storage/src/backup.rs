@@ -774,7 +774,16 @@ pub async fn apply_pending_restore(
     let result = match result {
         Err(mut failure) if interrupted_before => {
             match recover_displaced_database(data_dir) {
-                Recovery::NotNeeded => {}
+                // The database is in place, but an earlier start was interrupted while applying
+                // this request: it may have installed the restored database (or moved the
+                // workflow) before it died, so "left as it was" cannot be claimed.
+                Recovery::NotNeeded => {
+                    failure.error = storage_err(format!(
+                        "{}. An earlier start was interrupted while applying this restore, so the data folder may be partly replaced. Look for files named `.pre-restore-…` in it: they hold the data that was replaced.",
+                        failure.error
+                    ));
+                    failure.rollback_incomplete = true;
+                }
                 Recovery::Recovered => {
                     failure.error = storage_err(format!(
                         "{}. The database that an interrupted attempt had set aside was put back.",

@@ -187,7 +187,20 @@ async fn restore_replaces_the_data_and_keeps_the_previous_files() {
                 .starts_with("symphony.sqlite.pre-restore-")
         })
         .expect("database kept");
-    let previous = Storage::connect(kept_db).await.unwrap();
+    // The set-aside database comes with its own WAL, under a name of its own: when SQLite did not
+    // checkpoint at close (it does not under load), the rows only exist there. Read the pair
+    // together, as SQLite would have.
+    let probe = dir.path().join("previous.sqlite");
+    std::fs::copy(kept_db, &probe).unwrap();
+    if let Some(wal) = report.previous_files.iter().find(|p| {
+        p.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("symphony.sqlite-wal.pre-restore-")
+    }) {
+        std::fs::copy(wal, dir.path().join("previous.sqlite-wal")).unwrap();
+    }
+    let previous = Storage::connect(&probe).await.unwrap();
     assert_eq!(
         previous
             .get_task(&task.id)
@@ -900,6 +913,41 @@ async fn a_retry_that_fails_puts_the_database_an_interrupted_attempt_set_aside_b
     assert_eq!(
         live.get_task(&task.id).await.unwrap().unwrap().issue.title,
         "Live"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_retry_after_an_interrupted_start_never_claims_the_data_is_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, _task) = storage_with_task(&data, "Live").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    schedule_restore(&root, &backup.id).await.unwrap();
+    storage.pool().close().await;
+    // An earlier start began applying the request and died; a database is in place (it may be
+    // the restored one), and the backup is gone before the retry.
+    let started = PendingRestore {
+        attempts: 1,
+        ..pending_restore(&root).unwrap()
+    };
+    std::fs::write(
+        root.join(PENDING_RESTORE_FILE),
+        serde_json::to_vec(&started).unwrap(),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(&backup.path).unwrap();
+
+    let outcome = apply_pending_restore(&root, &data)
+        .await
+        .unwrap()
+        .expect("the request was still pending");
+
+    assert!(!outcome.succeeded);
+    assert!(outcome.rollback_incomplete, "{outcome:?}");
+    assert!(
+        outcome.error.as_deref().unwrap().contains("interrupted"),
+        "{outcome:?}"
     );
 }
 

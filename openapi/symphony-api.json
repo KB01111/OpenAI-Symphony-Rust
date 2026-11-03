@@ -3128,7 +3128,7 @@
         "tags": [
           "backups"
         ],
-        "summary": "Create a backup now: a transactionally consistent copy of the database (SQLite `VACUUM INTO`,\nWAL included) plus the active `WORKFLOW.md`, with a checksum manifest. Credentials are not\nincluded. A backup is restored by the next start of the runtime\n([`POST /backups/{id}/restore`](schedule_restore_handler)) or offline with\n`symphony-cli restore-backup <folder>`.",
+        "summary": "Create a backup now: a transactionally consistent copy of the database (SQLite `VACUUM INTO`,\nWAL included) plus the active `WORKFLOW.md`, with a checksum manifest. Credentials are not\nincluded. A backup is restored by the next start of the runtime\n(`POST /backups/{id}/restore`) or offline with\n`symphony-cli restore-backup <folder>`.",
         "operationId": "createBackup",
         "responses": {
           "201": {

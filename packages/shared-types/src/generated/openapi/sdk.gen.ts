@@ -484,7 +484,7 @@ export const listBackups = <ThrowOnError extends boolean = false>(options?: Opti
  * Create a backup now: a transactionally consistent copy of the database (SQLite `VACUUM INTO`,
  * WAL included) plus the active `WORKFLOW.md`, with a checksum manifest. Credentials are not
  * included. A backup is restored by the next start of the runtime
- * ([`POST /backups/{id}/restore`](schedule_restore_handler)) or offline with
+ * (`POST /backups/{id}/restore`) or offline with
  * `symphony-cli restore-backup <folder>`.
  */
 export const createBackup = <ThrowOnError extends boolean = false>(options?: Options<CreateBackupData, ThrowOnError>): RequestResult<CreateBackupResponses, CreateBackupErrors, ThrowOnError> => (options?.client ?? client).post<CreateBackupResponses, CreateBackupErrors, ThrowOnError>({

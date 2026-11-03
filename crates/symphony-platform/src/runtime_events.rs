@@ -135,6 +135,8 @@ pub async fn follow_attached_runtime(
 ) {
     let client = match reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        // Only ever talks to this machine: a system proxy must not see the runtime's token.
+        .no_proxy()
         .build()
     {
         Ok(client) => client,

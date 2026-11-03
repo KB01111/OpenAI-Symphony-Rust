@@ -726,6 +726,8 @@ fn main() {
                 tauri::async_runtime::spawn(async move {
                     let client = match reqwest::Client::builder()
                         .timeout(std::time::Duration::from_secs(10))
+                        // Loopback only: a system proxy must not see the runtime's token.
+                        .no_proxy()
                         .build()
                     {
                         Ok(client) => client,

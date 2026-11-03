@@ -2550,7 +2550,24 @@ fn pick_option_label(labels: &[&str], decision: &str) -> String {
         negated.then_some(Meaning::Refuse)
     };
     let is = |wanted: Meaning| move |l: &&str| meaning(l) == Some(wanted);
-    let broad = |l: &&str| has_any(l, &["session", "always", "again", "remember"]);
+    let broad = |l: &&str| {
+        has_any(
+            l,
+            &[
+                "session",
+                "sessions",
+                "always",
+                "again",
+                "remember",
+                "forever",
+                "permanently",
+                "permanent",
+                "future",
+                "every",
+                "all",
+            ],
+        )
+    };
     let pick = |matching: &dyn Fn(&&str) -> bool| labels.iter().find(|l| matching(l)).copied();
 
     let (chosen, fallback) = match decision {
@@ -2731,6 +2748,20 @@ mod tests {
         );
         let with_once = ["Allow always", "Allow once", "Deny"];
         assert_eq!(pick_option_label(&with_once, "accept"), "Allow once");
+        // Other ways of saying "more than this once" are not a one-time approval either.
+        for wider in [
+            "Allow for all sessions",
+            "Allow permanently",
+            "Allow forever",
+            "Allow in future",
+            "Allow every time",
+        ] {
+            assert_eq!(
+                pick_option_label(&[wider, "Deny"], "accept"),
+                "Approve Once",
+                "{wider}"
+            );
+        }
     }
 
     #[test]
