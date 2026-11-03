@@ -447,6 +447,22 @@ export class SymphonyClient {
   createBackup() {
     return this.call((o) => api.createBackup(o));
   }
+  /** The restore waiting for the next start of the runtime, and what the last applied one did. */
+  getRestoreStatus(signal?: AbortSignal) {
+    return this.call((o) => api.getRestoreStatus(o), signal);
+  }
+  /**
+   * Restore a backup the next time the runtime starts: the database cannot be replaced while it is
+   * open, so the request is checked and recorded now and applied before the database is opened. The
+   * replaced files are kept; credentials are not part of a backup.
+   */
+  scheduleRestore(id: string) {
+    return this.call((o) => api.scheduleRestore({ ...o, path: { id } }));
+  }
+  /** Withdraw the restore that was waiting for the next start. */
+  cancelRestore() {
+    return this.call((o) => api.cancelRestore(o));
+  }
 
   // --------------------------------------------------------------------------------------------
   // Remote companion access (local administration only)

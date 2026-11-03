@@ -6,9 +6,10 @@ use chrono::Utc;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use symphony_core::{Project, ProviderKind, Task};
 use symphony_storage::backup::{
-    create_backup, create_scheduled_backup, list_backups, prune_scheduled_backups, restore_backup,
-    scheduled_backup_due, verify_backup, BackupManifest, DATABASE_FILE, MANIFEST_FILE,
-    WORKFLOW_FILE,
+    apply_pending_restore, apply_requested_restore, cancel_pending_restore, create_backup,
+    create_scheduled_backup, last_restore, list_backups, pending_restore, prune_scheduled_backups,
+    restore_backup, schedule_restore, scheduled_backup_due, verify_backup, BackupManifest,
+    DATABASE_FILE, MANIFEST_FILE, PENDING_RESTORE_FILE, WORKFLOW_FILE,
 };
 use symphony_storage::{Storage, SCHEMA_VERSION};
 
@@ -610,4 +611,212 @@ fn a_manifest_written_before_the_schedule_reads_as_made_by_hand() {
     }))
     .unwrap();
     assert!(!manifest.scheduled);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Restoring from inside the application: scheduled now, applied by the next start
+// ---------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_scheduled_restore_is_applied_by_the_next_start_and_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, task) = storage_with_task(&data, "Before the mistake").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    let mut changed = storage.get_task(&task.id).await.unwrap().unwrap();
+    changed.issue.title = "After the mistake".into();
+    storage.upsert_task(&changed).await.unwrap();
+
+    // The running application asks for the restore; nothing is replaced yet.
+    let pending = schedule_restore(&root, &backup.id).await.unwrap();
+    assert_eq!(pending.backup_id, backup.id);
+    assert_eq!(pending_restore(&root), Some(pending));
+    assert_eq!(
+        storage
+            .get_task(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .issue
+            .title,
+        "After the mistake",
+        "scheduling changes nothing"
+    );
+    assert!(last_restore(&root).is_none());
+
+    // The runtime stops; the next start applies the request before it opens the database.
+    storage.pool().close().await;
+    let outcome = apply_pending_restore(&root, &data)
+        .await
+        .unwrap()
+        .expect("a restore was pending");
+
+    assert!(outcome.succeeded, "{outcome:?}");
+    assert_eq!(outcome.backup_id, backup.id);
+    assert!(
+        !outcome.previous_files.is_empty(),
+        "the replaced data is kept"
+    );
+    assert!(pending_restore(&root).is_none(), "the request is consumed");
+    assert!(!root.join(PENDING_RESTORE_FILE).exists());
+    assert_eq!(last_restore(&root), Some(outcome));
+    let restored = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    assert_eq!(
+        restored
+            .get_task(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .issue
+            .title,
+        "Before the mistake"
+    );
+    // Nothing more to do on the start after that.
+    assert!(apply_pending_restore(&root, &data).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_restore_request_is_refused_for_anything_but_a_valid_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, _task) = storage_with_task(&data, "Live").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    // A directory next to the backups must not be reachable through a crafted name.
+    std::fs::create_dir_all(data.join("elsewhere")).unwrap();
+
+    for bad in [
+        "../elsewhere",
+        "..",
+        ".",
+        "",
+        "elsewhere",
+        "symphony-backup-../elsewhere",
+        "symphony-backup-20200101T000000Z/../x",
+        r"symphony-backup-a\b",
+        "symphony-backup-does-not-exist",
+    ] {
+        assert!(
+            schedule_restore(&root, bad).await.is_err(),
+            "{bad:?} must be refused"
+        );
+        assert!(pending_restore(&root).is_none(), "{bad:?} left a request");
+    }
+
+    // A damaged backup is refused now, not after a restart.
+    let db = backup.path.join(DATABASE_FILE);
+    let mut bytes = std::fs::read(&db).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    std::fs::write(&db, bytes).unwrap();
+    let err = schedule_restore(&root, &backup.id)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("checksum"), "{err}");
+    assert!(pending_restore(&root).is_none());
+}
+
+#[tokio::test]
+async fn a_pending_restore_can_be_withdrawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, _task) = storage_with_task(&data, "Live").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+
+    assert!(
+        !cancel_pending_restore(&root).unwrap(),
+        "nothing to withdraw"
+    );
+    schedule_restore(&root, &backup.id).await.unwrap();
+    assert!(cancel_pending_restore(&root).unwrap());
+    assert!(pending_restore(&root).is_none());
+    storage.pool().close().await;
+    assert!(apply_pending_restore(&root, &data).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_restore_that_fails_at_start_is_reported_once_and_leaves_the_data_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, task) = storage_with_task(&data, "Live").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    schedule_restore(&root, &backup.id).await.unwrap();
+    storage.pool().close().await;
+
+    // The backup is damaged between the request and the restart.
+    let db = backup.path.join(DATABASE_FILE);
+    let mut bytes = std::fs::read(&db).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    std::fs::write(&db, bytes).unwrap();
+
+    let outcome = apply_pending_restore(&root, &data)
+        .await
+        .unwrap()
+        .expect("a restore was pending");
+    assert!(!outcome.succeeded);
+    assert!(
+        outcome.error.as_deref().unwrap().contains("checksum"),
+        "{outcome:?}"
+    );
+    assert_eq!(last_restore(&root), Some(outcome));
+    // Not retried on every start, and the live data is as it was.
+    assert!(pending_restore(&root).is_none());
+    assert!(apply_pending_restore(&root, &data).await.unwrap().is_none());
+    let live = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    assert_eq!(
+        live.get_task(&task.id).await.unwrap().unwrap().issue.title,
+        "Live"
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_restore_request_is_discarded_and_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join(PENDING_RESTORE_FILE), "{ not json").unwrap();
+
+    let outcome = apply_pending_restore(&root, &data)
+        .await
+        .unwrap()
+        .expect("there was a request file");
+    assert!(!outcome.succeeded);
+    assert!(!root.join(PENDING_RESTORE_FILE).exists());
+}
+
+#[tokio::test]
+async fn the_host_start_hook_applies_a_request_and_ignores_the_absence_of_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let root = data.join("backups");
+    let (storage, task) = storage_with_task(&data, "Before").await;
+    let backup = create_backup(&storage, &root, None).await.unwrap();
+    let mut changed = storage.get_task(&task.id).await.unwrap().unwrap();
+    changed.issue.title = "After".into();
+    storage.upsert_task(&changed).await.unwrap();
+    storage.pool().close().await;
+
+    // Nothing requested: a start is not affected.
+    assert!(apply_requested_restore(&data).await.is_none());
+
+    schedule_restore(&root, &backup.id).await.unwrap();
+    let outcome = apply_requested_restore(&data).await.expect("applied");
+    assert!(outcome.succeeded);
+    let restored = Storage::connect(data.join(DATABASE_FILE)).await.unwrap();
+    assert_eq!(
+        restored
+            .get_task(&task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .issue
+            .title,
+        "Before"
+    );
 }

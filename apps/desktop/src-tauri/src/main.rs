@@ -444,6 +444,9 @@ async fn start_embedded_runtime(
     data_dir: PathBuf,
     guard: SingleInstanceGuard,
 ) -> Result<DesktopAppState, String> {
+    // A restore requested from Settings → Backups is applied now, with the runtime lock held and
+    // before the database is opened (a restore replaces the database file).
+    symphony_storage::backup::apply_requested_restore(&data_dir).await;
     let storage = Storage::connect(&data_dir.join("symphony.sqlite"))
         .await
         .map_err(|e| format!("Failed to initialize SQLite storage: {e}"))?;

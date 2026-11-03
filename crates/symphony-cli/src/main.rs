@@ -158,6 +158,11 @@ async fn main() -> anyhow::Result<()> {
     // Only a database that is really elsewhere cannot be restored by `restore-backup`.
     let custom_database = cli.db_path.as_ref().is_some_and(|p| *p != default_database);
     let db_path = cli.db_path.unwrap_or(default_database);
+    // A restore requested from the application (Settings → Backups) is applied now: this is the
+    // first moment the database is not open. It replaces the default database only.
+    if !custom_database {
+        symphony_storage::backup::apply_requested_restore(&data_dir).await;
+    }
     let storage = Storage::connect(&db_path).await?;
     // `--quarantine-credential-vault` only acts on a vault that cannot be opened; a readable
     // vault is used as is, so leaving the flag in a service definition is harmless.

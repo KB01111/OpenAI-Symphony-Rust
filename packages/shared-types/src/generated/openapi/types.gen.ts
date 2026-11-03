@@ -937,6 +937,17 @@ export type OrchestratorStateSnapshot = {
 };
 
 /**
+ * A restore that the next start of the runtime will apply.
+ */
+export type PendingRestoreInfo = {
+    /**
+     * Directory name of the backup that will be restored.
+     */
+    backup_id: string;
+    requested_at: string;
+};
+
+/**
  * How exactly a changed line range was mapped onto a symbol.
  */
 export type Precision = 'start_to_next';
@@ -1154,6 +1165,32 @@ export type ResourcePolicy = {
     high_memory_threshold_percent: number;
     high_cpu_threshold_percent: number;
     reduce_on_thermal_throttle: boolean;
+};
+
+/**
+ * What the last applied restore did. A failed restore leaves the previous data in place.
+ */
+export type RestoreOutcomeInfo = {
+    backup_id: string;
+    applied_at: string;
+    succeeded: boolean;
+    /**
+     * Why it failed, when it did.
+     */
+    error: string | null;
+    /**
+     * The files the restore replaced; they are kept as `<name>.pre-restore-<time>` next to the
+     * restored ones, never deleted.
+     */
+    previous_files: Array<string>;
+};
+
+/**
+ * The restore requested from the application: waiting for the next start, and the last one applied.
+ */
+export type RestoreStatus = {
+    pending: PendingRestoreInfo | null;
+    last: RestoreOutcomeInfo | null;
 };
 
 /**
@@ -3468,6 +3505,94 @@ export type CreateBackupResponses = {
 };
 
 export type CreateBackupResponse = CreateBackupResponses[keyof CreateBackupResponses];
+
+export type CancelRestoreData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/backups/restore';
+};
+
+export type CancelRestoreErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type CancelRestoreError = CancelRestoreErrors[keyof CancelRestoreErrors];
+
+export type CancelRestoreResponses = {
+    /**
+     * OK
+     */
+    200: RestoreStatus;
+};
+
+export type CancelRestoreResponse = CancelRestoreResponses[keyof CancelRestoreResponses];
+
+export type GetRestoreStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/backups/restore';
+};
+
+export type GetRestoreStatusErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type GetRestoreStatusError = GetRestoreStatusErrors[keyof GetRestoreStatusErrors];
+
+export type GetRestoreStatusResponses = {
+    /**
+     * OK
+     */
+    200: RestoreStatus;
+};
+
+export type GetRestoreStatusResponse = GetRestoreStatusResponses[keyof GetRestoreStatusResponses];
+
+export type ScheduleRestoreData = {
+    body?: never;
+    path: {
+        /**
+         * Directory name of the backup, as listed by `GET /backups`
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/backups/{id}/restore';
+};
+
+export type ScheduleRestoreErrors = {
+    /**
+     * No such backup
+     */
+    404: unknown;
+    /**
+     * The backup is damaged or cannot be read by this version
+     */
+    422: unknown;
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ScheduleRestoreError = ScheduleRestoreErrors[keyof ScheduleRestoreErrors];
+
+export type ScheduleRestoreResponses = {
+    /**
+     * The restore will be applied on the next start
+     */
+    202: RestoreStatus;
+};
+
+export type ScheduleRestoreResponse = ScheduleRestoreResponses[keyof ScheduleRestoreResponses];
 
 export type GetIssueDetailData = {
     body?: never;

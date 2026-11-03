@@ -595,6 +595,8 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(delete_credential_handler))
         .routes(routes!(export_diagnostics_handler))
         .routes(routes!(list_backups_handler, create_backup_handler))
+        .routes(routes!(get_restore_status_handler, cancel_restore_handler))
+        .routes(routes!(schedule_restore_handler))
         .routes(routes!(issue_detail_handler))
         .routes(routes!(get_remote_access_handler))
         .routes(routes!(
@@ -2051,7 +2053,9 @@ async fn list_backups_handler(State(state): State<ServerState>) -> Response {
 
 /// Create a backup now: a transactionally consistent copy of the database (SQLite `VACUUM INTO`,
 /// WAL included) plus the active `WORKFLOW.md`, with a checksum manifest. Credentials are not
-/// included. Restoring is an offline operation (`symphony-cli restore-backup <folder>`).
+/// included. A backup is restored by the next start of the runtime
+/// ([`POST /backups/{id}/restore`](schedule_restore_handler)) or offline with
+/// `symphony-cli restore-backup <folder>`.
 #[utoipa::path(
     post,
     path = "/backups",
@@ -2072,6 +2076,125 @@ async fn create_backup_handler(State(state): State<ServerState>) -> Response {
     .await
     {
         Ok(info) => (StatusCode::CREATED, Json(BackupSummary::from(info))).into_response(),
+        Err(e) => error_response(e),
+    }
+}
+
+/// A restore that the next start of the runtime will apply.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct PendingRestoreInfo {
+    /// Directory name of the backup that will be restored.
+    pub backup_id: String,
+    pub requested_at: DateTime<Utc>,
+}
+
+/// What the last applied restore did. A failed restore leaves the previous data in place.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RestoreOutcomeInfo {
+    pub backup_id: String,
+    pub applied_at: DateTime<Utc>,
+    pub succeeded: bool,
+    /// Why it failed, when it did.
+    pub error: Option<String>,
+    /// The files the restore replaced; they are kept as `<name>.pre-restore-<time>` next to the
+    /// restored ones, never deleted.
+    pub previous_files: Vec<String>,
+}
+
+/// The restore requested from the application: waiting for the next start, and the last one applied.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RestoreStatus {
+    pub pending: Option<PendingRestoreInfo>,
+    pub last: Option<RestoreOutcomeInfo>,
+}
+
+fn restore_status(root: &std::path::Path) -> RestoreStatus {
+    RestoreStatus {
+        pending: symphony_storage::backup::pending_restore(root).map(|p| PendingRestoreInfo {
+            backup_id: p.backup_id,
+            requested_at: p.requested_at,
+        }),
+        last: symphony_storage::backup::last_restore(root).map(|o| RestoreOutcomeInfo {
+            backup_id: o.backup_id,
+            applied_at: o.applied_at,
+            succeeded: o.succeeded,
+            error: o.error,
+            previous_files: o
+                .previous_files
+                .into_iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+        }),
+    }
+}
+
+/// The restore waiting for the next start, and what the last applied restore did.
+#[utoipa::path(
+    get,
+    path = "/backups/restore",
+    operation_id = "getRestoreStatus",
+    tag = "backups",
+    responses((status = 200, body = RestoreStatus))
+)]
+async fn get_restore_status_handler(State(state): State<ServerState>) -> Response {
+    let Some(root) = &state.backup_root else {
+        return backups_unavailable();
+    };
+    Json(restore_status(root)).into_response()
+}
+
+/// Restore a backup the next time the runtime starts. The database cannot be replaced while it is
+/// open, so nothing changes now: the request is checked (the backup's manifest, checksums, schema
+/// and SQLite integrity) and recorded, and the runtime applies it before it opens the database. The
+/// replaced files are kept as `<name>.pre-restore-<time>`. Credentials are not part of a backup and
+/// are not touched. A pending request is replaced; withdraw it with `DELETE /backups/restore`.
+#[utoipa::path(
+    post,
+    path = "/backups/{id}/restore",
+    operation_id = "scheduleRestore",
+    tag = "backups",
+    params(("id" = String, Path, description = "Directory name of the backup, as listed by `GET /backups`")),
+    responses(
+        (status = 202, description = "The restore will be applied on the next start", body = RestoreStatus),
+        (status = 404, description = "No such backup"),
+        (status = 422, description = "The backup is damaged or cannot be read by this version")
+    )
+)]
+async fn schedule_restore_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(root) = &state.backup_root else {
+        return backups_unavailable();
+    };
+    match symphony_storage::backup::schedule_restore(root, &id).await {
+        Ok(_) => (StatusCode::ACCEPTED, Json(restore_status(root))).into_response(),
+        Err(e @ (SymphonyError::NotFound(_) | SymphonyError::InvalidConfig(_))) => {
+            error_response(e)
+        }
+        // A backup that fails its checks is the caller's to fix (choose another), not a server fault.
+        Err(e) => api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "backup_not_restorable",
+            e.to_string(),
+        ),
+    }
+}
+
+/// Withdraw the restore that was waiting for the next start.
+#[utoipa::path(
+    delete,
+    path = "/backups/restore",
+    operation_id = "cancelRestore",
+    tag = "backups",
+    responses((status = 200, body = RestoreStatus))
+)]
+async fn cancel_restore_handler(State(state): State<ServerState>) -> Response {
+    let Some(root) = &state.backup_root else {
+        return backups_unavailable();
+    };
+    match symphony_storage::backup::cancel_pending_restore(root) {
+        Ok(_) => Json(restore_status(root)).into_response(),
         Err(e) => error_response(e),
     }
 }

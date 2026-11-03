@@ -459,3 +459,187 @@ pub async fn restore_backup(backup_dir: &Path, data_dir: &Path) -> SymphonyResul
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Restoring from inside the application
+// ---------------------------------------------------------------------------------------------
+//
+// A restore replaces the database file, so it can only happen while no runtime has it open. The
+// application therefore does not restore a backup in place: it records the request (a small marker
+// file next to the backups) and the host applies it on its next start, after it owns the data
+// directory's runtime lock and before it opens the database. The result is kept in a second file
+// for the application to show. `symphony-cli restore-backup <folder>` stays the way to restore
+// while nothing runs.
+
+/// The request to restore a backup on the next start, written into the backups directory.
+pub const PENDING_RESTORE_FILE: &str = "pending-restore.json";
+/// What the last applied request did, written into the backups directory.
+pub const LAST_RESTORE_FILE: &str = "last-restore.json";
+
+/// A restore that will be applied when the runtime starts next.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRestore {
+    /// Directory name of the backup (see [`BackupInfo::id`]).
+    pub backup_id: String,
+    pub requested_at: DateTime<Utc>,
+}
+
+/// What applying a [`PendingRestore`] did. A failed restore leaves the previous data in place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreOutcome {
+    pub backup_id: String,
+    pub applied_at: DateTime<Utc>,
+    pub succeeded: bool,
+    /// Why it failed, when it did.
+    pub error: Option<String>,
+    /// The files the restore replaced, kept as `<name>.pre-restore-<time>` (see [`RestoreReport`]).
+    pub previous_files: Vec<PathBuf>,
+}
+
+/// The directory of backup `backup_id` under `root`. The id is untrusted (it comes from a request
+/// and from a file on disk): only the plain name of a backup directory is accepted.
+fn backup_dir_for(root: &Path, backup_id: &str) -> SymphonyResult<PathBuf> {
+    let plain = backup_id.starts_with(DIR_PREFIX)
+        && !backup_id.contains(['/', '\\', '\0'])
+        && Path::new(backup_id).components().count() == 1;
+    if !plain {
+        return Err(SymphonyError::InvalidConfig(format!(
+            "`{backup_id}` is not the name of a backup"
+        )));
+    }
+    let dir = root.join(backup_id);
+    if !dir.is_dir() {
+        return Err(SymphonyError::NotFound(format!(
+            "backup `{backup_id}` does not exist"
+        )));
+    }
+    Ok(dir)
+}
+
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> SymphonyResult<()> {
+    let json = serde_json::to_vec_pretty(value).map_err(|e| storage_err(e.to_string()))?;
+    let temp = path.with_extension("json.tmp");
+    std::fs::write(&temp, json)?;
+    std::fs::rename(&temp, path)?;
+    Ok(())
+}
+
+/// Ask for backup `backup_id` (under `root`) to be restored on the next start. The backup is
+/// verified first (manifest, checksums, a schema this build reads, SQLite's integrity check), so a
+/// request for a damaged backup is refused now instead of failing after a restart. A request that
+/// is already pending is replaced.
+pub async fn schedule_restore(root: &Path, backup_id: &str) -> SymphonyResult<PendingRestore> {
+    let dir = backup_dir_for(root, backup_id)?;
+    verify_backup(&dir).await?;
+    let pending = PendingRestore {
+        backup_id: backup_id.to_string(),
+        requested_at: Utc::now(),
+    };
+    write_json_atomic(&root.join(PENDING_RESTORE_FILE), &pending)?;
+    Ok(pending)
+}
+
+/// The restore that will be applied on the next start, if one was requested.
+pub fn pending_restore(root: &Path) -> Option<PendingRestore> {
+    let raw = std::fs::read(root.join(PENDING_RESTORE_FILE)).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
+/// Withdraw a requested restore. Returns whether there was one.
+pub fn cancel_pending_restore(root: &Path) -> SymphonyResult<bool> {
+    match std::fs::remove_file(root.join(PENDING_RESTORE_FILE)) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// What the last applied restore request did, if any was applied.
+pub fn last_restore(root: &Path) -> Option<RestoreOutcome> {
+    let raw = std::fs::read(root.join(LAST_RESTORE_FILE)).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
+/// Apply the restore requested with [`schedule_restore`], if any. **Call it at startup**, once the
+/// data directory's runtime lock is held and before the database is opened ([`restore_backup`] is an
+/// offline operation). The request is removed before anything else, so a restore that cannot finish
+/// is reported once and not attempted again on every start; the previous data stays in place when
+/// it fails ([`restore_backup`] puts everything back). `Ok(None)` when nothing was requested.
+pub async fn apply_pending_restore(
+    root: &Path,
+    data_dir: &Path,
+) -> SymphonyResult<Option<RestoreOutcome>> {
+    let marker = root.join(PENDING_RESTORE_FILE);
+    if !marker.is_file() {
+        return Ok(None);
+    }
+    let pending: Option<PendingRestore> = std::fs::read(&marker)
+        .ok()
+        .and_then(|raw| serde_json::from_slice(&raw).ok());
+    std::fs::remove_file(&marker)?;
+
+    let backup_id = pending
+        .as_ref()
+        .map(|p| p.backup_id.clone())
+        .unwrap_or_default();
+    let result = match &pending {
+        Some(pending) => match backup_dir_for(root, &pending.backup_id) {
+            Ok(dir) => restore_backup(&dir, data_dir).await,
+            Err(err) => Err(err),
+        },
+        None => Err(storage_err("the restore request could not be read")),
+    };
+    let outcome = match result {
+        Ok(report) => RestoreOutcome {
+            backup_id,
+            applied_at: Utc::now(),
+            succeeded: true,
+            error: None,
+            previous_files: report.previous_files,
+        },
+        Err(err) => RestoreOutcome {
+            backup_id,
+            applied_at: Utc::now(),
+            succeeded: false,
+            error: Some(err.to_string()),
+            previous_files: Vec::new(),
+        },
+    };
+    // Best effort: the restore itself is done (or has failed); losing the note about it is a lesser
+    // problem than refusing to start.
+    if let Err(err) = write_json_atomic(&root.join(LAST_RESTORE_FILE), &outcome) {
+        tracing::warn!(error = %err, "could not record the outcome of the restore");
+    }
+    Ok(Some(outcome))
+}
+
+/// What a host calls at startup, once it holds the data directory's runtime lock and before it opens
+/// the database: apply the restore requested from the application (`<data dir>/backups`), if any,
+/// and log what happened. It never fails the start: a restore that cannot be applied is reported
+/// (log, and [`last_restore`] for the application) and the runtime starts on the data it has.
+pub async fn apply_requested_restore(data_dir: &Path) -> Option<RestoreOutcome> {
+    let root = data_dir.join("backups");
+    match apply_pending_restore(&root, data_dir).await {
+        Ok(Some(outcome)) if outcome.succeeded => {
+            tracing::info!(
+                backup = %outcome.backup_id,
+                kept = outcome.previous_files.len(),
+                "Restored the requested backup; the replaced files were kept"
+            );
+            Some(outcome)
+        }
+        Ok(Some(outcome)) => {
+            tracing::error!(
+                backup = %outcome.backup_id,
+                error = outcome.error.as_deref().unwrap_or("unknown"),
+                "The requested restore could not be applied; starting with the existing data"
+            );
+            Some(outcome)
+        }
+        Ok(None) => None,
+        Err(err) => {
+            tracing::error!(error = %err, "Could not process the requested restore; starting with the existing data");
+            None
+        }
+    }
+}

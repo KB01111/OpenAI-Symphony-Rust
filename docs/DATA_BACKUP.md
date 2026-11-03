@@ -64,8 +64,21 @@ Settings → Integrations. There is no migration mechanism for the vault between
 
 ## Verify and restore
 
-Restoring replaces the database, so it is an **offline** operation. It needs the `symphony-cli` executable
-from the release assets (the installer ships the desktop app only).
+Restoring replaces the database, which cannot happen while a runtime has it open. There are two ways:
+
+**From the application (Settings → Backups → *Restore…*).** The backup is checked right away (manifest,
+checksums, a schema this version can read, SQLite `integrity_check`), so a damaged backup is refused with a
+reason instead of failing later. Nothing is replaced yet: the request is recorded
+(`backups\pending-restore.json`) and **applied the next time the runtime starts**, after it holds the data
+directory's lock and before it opens the database. Quit Symphony (the page offers *Quit Symphony*) and start it
+again. The page then shows what happened (`backups\last-restore.json`): a restore that cannot be applied is
+reported once, leaves the existing data as it was and is not retried on every start. *Withdraw* cancels a
+request that is still waiting. The request is local administration only (`POST /api/v1/backups/{id}/restore`,
+`GET`/`DELETE /api/v1/backups/restore`); the remote companion cannot reach it. When the window is attached to a
+`symphony-cli` runtime, it is that runtime that must be restarted.
+
+**From the command line, while nothing runs.** This needs the `symphony-cli` executable from the release
+assets (the installer ships the desktop app only).
 
 1. Quit Symphony (tray menu → *Stop runtime and exit*, in Swedish *Stoppa körtiden och avsluta*). The command refuses to run while a runtime owns the
    data directory.
@@ -74,10 +87,10 @@ from the release assets (the installer ships the desktop app only).
 3. Restore: `symphony-cli --data-dir "%LOCALAPPDATA%\symphony-desktop" restore-backup "<backup folder>"`.
 4. Start Symphony again.
 
-The replaced `symphony.sqlite` (with its `-wal`/`-shm`) and `WORKFLOW.md` are renamed
+Either way, the replaced `symphony.sqlite` (with its `-wal`/`-shm`) and `WORKFLOW.md` are renamed
 `<name>.pre-restore-<time>`; nothing is deleted. If the restored database cannot be opened and migrated, the
 previous files are put back and the command fails. A backup made by an older version is migrated forward on
-restore; a backup from a **newer** version is refused.
+restore; a backup from a **newer** version is refused. Credentials are not part of a backup and are never touched.
 
 ## Migrations and failure recovery
 
