@@ -972,6 +972,9 @@ async fn an_early_recovery_that_cannot_put_everything_back_names_what_is_still_d
         outcome.previous_files
     );
     assert!(aside_wal.is_file(), "and it was not touched");
+    // The database itself was put back; only the WAL could not be.
+    assert!(!aside_db.exists(), "the database is no longer set aside");
+    assert!(data.join(DATABASE_FILE).is_file(), "and is in place again");
 }
 
 #[tokio::test]
