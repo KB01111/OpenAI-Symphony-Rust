@@ -10,6 +10,17 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Added
 
+- **Native notifications when the desktop is attached to `symphony-cli`.** Approval requests and failed runs
+  raised a Windows notification only when the runtime was embedded in the app; a window attached to a runtime
+  that runs on its own showed none. It now follows that runtime's event stream (only from the moment of
+  connecting, never replaying history, and only ever to a loopback address) and reconnects with a backoff when
+  the runtime restarts.
+- **Restore a backup from the application** (Settings → Backups → *Restore…*). The backup is verified at once
+  and the restore is applied the next time Symphony starts, before the database is opened; the replaced files
+  are kept as `.pre-restore-<time>`, a restore that cannot be applied leaves your data as it was and is reported
+  on the page, and a waiting request can be withdrawn. Previously restoring needed `symphony-cli restore-backup`
+  with nothing running (still available). New: `GET`/`DELETE /api/v1/backups/restore` and
+  `POST /api/v1/backups/{id}/restore` (local only). **API:** additive only. See `docs/DATA_BACKUP.md`.
 - **Repository Knowledge Base** (`/knowledge`, crate `symphony-knowledge`): an intelligence view per
   repository that joins a code graph, live worktrees, a deduplicated commit timeline and AI analysis.
   *Worktrees* lists every git worktree (not only Symphony's) with HEAD, uncommitted files, commits ahead of the

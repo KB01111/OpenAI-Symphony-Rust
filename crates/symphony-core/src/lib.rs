@@ -1,6 +1,7 @@
 pub mod domain;
 pub mod error;
 pub mod redaction;
+pub mod sse;
 pub mod tool_calls;
 pub mod usage;
 pub mod workflow;

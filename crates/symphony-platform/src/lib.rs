@@ -9,6 +9,7 @@ use sysinfo::System;
 use tracing::info;
 
 pub mod logging;
+pub mod runtime_events;
 pub mod secure_fs;
 mod vault;
 

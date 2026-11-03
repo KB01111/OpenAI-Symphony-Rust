@@ -692,6 +692,19 @@ fn main() {
             app.manage(state);
             setup_tray(app.handle(), embedded, native_locale(app.handle()))?;
 
+            if !embedded {
+                // Attached to a runtime that runs on its own (`symphony-cli`): its events do not pass
+                // through this process, so read its event stream to raise the same native
+                // notifications (approvals, failed runs) while the window is in the background.
+                let notifier = app.handle().clone();
+                tauri::async_runtime::spawn(
+                    symphony_platform::runtime_events::follow_attached_runtime(
+                        data_dir.clone(),
+                        move |event| notify_for_event(&notifier, &event),
+                    ),
+                );
+            }
+
             if start_hidden {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
                     let _ = window.hide();
