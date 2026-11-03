@@ -251,19 +251,18 @@ impl GitHubTracker {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let assignee_id = obj
-            .get("assignee")
-            .and_then(|a| a.get("login"))
-            .and_then(|l| l.as_str())
-            .map(|s| s.to_string())
-            .or_else(|| {
-                obj.get("assignees")
-                    .and_then(|arr| arr.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|a| a.get("login"))
-                    .and_then(|l| l.as_str())
-                    .map(|s| s.to_string())
-            });
+        // GitHub allows several assignees: `assignee` is the first of them, `assignees` all of them.
+        let login_of = |a: &Value| {
+            a.get("login")
+                .and_then(|l| l.as_str())
+                .map(|s| s.to_string())
+        };
+        let mut assignee_logins: Vec<String> =
+            obj.get("assignee").and_then(login_of).into_iter().collect();
+        if let Some(all) = obj.get("assignees").and_then(|arr| arr.as_array()) {
+            assignee_logins.extend(all.iter().filter_map(login_of));
+        }
+        let assignee_id = assignee_logins.first().cloned();
 
         let labels: Vec<String> = obj
             .get("labels")
@@ -296,10 +295,10 @@ impl GitHubTracker {
 
         let assigned_to_worker = match &self.assignee {
             None => true,
-            Some(expected) => assignee_id
-                .as_ref()
-                .map(|actual| actual.eq_ignore_ascii_case(expected))
-                .unwrap_or(false),
+            // Assigned to the worker when the worker is any one of the assignees.
+            Some(expected) => assignee_logins
+                .iter()
+                .any(|actual| actual.eq_ignore_ascii_case(expected)),
         };
 
         Some(Issue {
@@ -1642,6 +1641,40 @@ mod tests {
             rate_limit_wait(&headers(&[("x-ratelimit-remaining", "4999")]), now),
             None
         );
+    }
+
+    #[test]
+    fn an_issue_is_the_workers_when_the_worker_is_any_of_its_assignees() {
+        let tracker = GitHubTracker::new(None, "o/r".into(), None, Some("Alice".into()));
+        let issue = |assignees: serde_json::Value| {
+            let first = assignees.get(0).cloned().unwrap_or(Value::Null);
+            json!({
+                "number": 7, "title": "t", "state": "open", "labels": [],
+                "assignee": first, "assignees": assignees
+            })
+        };
+        let dispatchable = |raw: Value| tracker.normalize_issue(&raw).unwrap().dispatchable;
+        // The worker is not the first assignee: still the worker's issue.
+        assert!(dispatchable(issue(
+            json!([{ "login": "bob" }, { "login": "alice" }])
+        )));
+        assert!(dispatchable(issue(json!([{ "login": "alice" }]))));
+        // Nobody, or only other people: not the worker's.
+        assert!(!dispatchable(issue(json!([]))));
+        assert!(!dispatchable(issue(
+            json!([{ "login": "bob" }, { "login": "carol" }])
+        )));
+        // The first assignee stays the issue's `assignee_id`.
+        let normalized = tracker
+            .normalize_issue(&issue(json!([{ "login": "bob" }, { "login": "alice" }])))
+            .unwrap();
+        assert_eq!(normalized.assignee_id.as_deref(), Some("bob"));
+        // Payloads with only `assignees` (no `assignee`) still work.
+        let only_list = json!({
+            "number": 8, "title": "t", "state": "open", "labels": [],
+            "assignees": [{ "login": "bob" }, { "login": "alice" }]
+        });
+        assert!(tracker.normalize_issue(&only_list).unwrap().dispatchable);
     }
 
     #[test]
