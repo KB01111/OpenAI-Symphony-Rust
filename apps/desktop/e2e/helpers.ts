@@ -1,8 +1,22 @@
 import { expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const fixtureRepo = () => process.env.SYMPHONY_E2E_REPO!;
+
+/**
+ * Where a run writes the screenshots and the performance numbers it produces. A normal run writes
+ * under `target/` (git-ignored), so running the tests never rewrites the documentation committed
+ * under `docs/` and leaves the working tree clean. `SYMPHONY_UPDATE_DOCS=1` refreshes the committed
+ * `docs/screenshots` and `docs/perf` on purpose.
+ */
+export function evidenceDir(kind: "screenshots" | "perf"): string {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  return process.env.SYMPHONY_UPDATE_DOCS === "1"
+    ? resolve(repoRoot, "docs", kind)
+    : resolve(repoRoot, "target", "e2e-evidence", kind);
+}
 
 /** Direct runtime access for test setup (same discovery file the dev server uses). */
 export function runtime(): { baseUrl: string; token: string } {
@@ -33,7 +47,7 @@ export async function prepareRuntime(overrides: Record<string, unknown> = {}) {
 export async function openApp(
   page: Page,
   route = "/overview",
-  opts: { theme?: "dark" | "light"; locale?: "en" | "sv"; /** `null`: first launch, the app picks the layout. */ inspectorOpen?: boolean | null } = {}
+  opts: { theme?: "dark" | "light"; locale?: "en" | "sv" } = {}
 ) {
   // Runtime settings are the persisted source of truth for theme/locale (the UI adopts them on
   // load), so set both the runtime and the local store.
@@ -44,18 +58,17 @@ export async function openApp(
     await api("PUT", "/settings", { ...settings, theme, locale });
   }
   await page.addInitScript(
-    ([theme, locale, inspectorOpen]) => {
+    ([theme, locale]) => {
       try {
-        const layout = inspectorOpen === null ? {} : { inspectorOpen };
         window.localStorage.setItem(
           "symphony.ui.v2",
-          JSON.stringify({ state: { themeMode: theme, locale, sidebarCollapsed: false, ...layout, drawerOpen: true, lastRoute: "/overview" }, version: 1 })
+          JSON.stringify({ state: { themeMode: theme, locale, sidebarCollapsed: false, manageOpen: true }, version: 1 })
         );
       } catch {
         /* ignore */
       }
     },
-    [opts.theme ?? "dark", opts.locale ?? "en", opts.inspectorOpen === undefined ? true : opts.inspectorOpen] as const
+    [opts.theme ?? "dark", opts.locale ?? "en"] as const
   );
   await page.goto(`/#${route}`);
   await expect(page.getByRole("navigation", { name: opts.locale === "sv" ? "Huvudnavigering" : "Primary navigation" })).toBeVisible();

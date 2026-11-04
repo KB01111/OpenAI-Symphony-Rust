@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Button, Combobox, Field, Option, Spinner, Tooltip } from "@fluentui/react-components";
 import { Check, Star, X } from "lucide-react";
 import { formatMessage, type AppSettings, type ProviderKind, type ProviderStatus } from "@symphony/shared-types";
-import { KeyValueList, Panel, SdkBadge, TimeAgo, cn, useNotify } from "@symphony/ui";
+import { Badge, Button, Combobox, Field, cn, Hint, KeyValueList, Panel, Spinner, TimeAgo, useNotify } from "@symphony/ui";
 import { useMessages, useT } from "../../lib/i18n.js";
 import { useSaveSettings } from "../../lib/queries.js";
 import { CredentialRow } from "./CredentialControls.js";
@@ -11,14 +10,17 @@ import { providerMessages } from "./messages.js";
 /** Vault key each provider CLI reads, when it supports API-key authentication. */
 export const PROVIDER_CREDENTIAL_KEYS: Partial<Record<ProviderKind, string>> = {
   codex: "OPENAI_API_KEY",
-  claude_code: "ANTHROPIC_API_KEY"
+  claude_code: "ANTHROPIC_API_KEY",
+  // Token of the CodeSandbox account that hosts the cloud sandboxes (codesandbox.io/t/api).
+  codesandbox: "CSB_API_KEY"
 };
 
 /** Install commands shown when a CLI is not on PATH (commands, not prose; not translated). */
 const INSTALL_HINTS: Partial<Record<ProviderKind, string>> = {
   codex: "npm install -g @openai/codex",
   claude_code: "npm install -g @anthropic-ai/claude-code",
-  opencode: "npm install -g opencode-ai"
+  opencode: "npm install -g opencode-ai",
+
 };
 
 type CapabilityKey = keyof (typeof providerMessages)["en"]["capability"];
@@ -36,8 +38,8 @@ const CAPABILITY_FIELDS: ReadonlyArray<{ key: CapabilityKey; pick: (p: ProviderS
 const AUTH_COLORS = {
   authenticated: "success",
   unauthenticated: "warning",
-  unknown: "secondary",
-  not_required: "secondary"
+  unknown: "neutral",
+  not_required: "neutral"
 } as const;
 
 const Section: React.FC<{ title: string; children: React.ReactNode; className?: string }> = ({ title, children, className }) => (
@@ -116,17 +118,18 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
 
   return (
     <Panel
+      className="@container"
       aria-label={provider.display_name}
       title={
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate">{provider.display_name}</span>
-          <SdkBadge size="sm" pill variant="soft" color={provider.installed ? "success" : "danger"}>
-            {provider.installed ? m.installed : m.notFound}
-          </SdkBadge>
+          <Badge tone={provider.installed ? "success" : "danger"}>
+            {provider.installed ? m.installed : kind === "codesandbox" ? m.cloud.unavailable : m.notFound}
+          </Badge>
           {isGlobalDefault ? (
-            <SdkBadge size="sm" pill variant="outline" color="info">
+            <Badge tone="info">
               {m.globalDefault}
-            </SdkBadge>
+            </Badge>
           ) : null}
         </span>
       }
@@ -135,7 +138,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
           {m.detectedAt} <TimeAgo iso={provider.detected_at} />
         </span>
       }
-      bodyClassName="grid gap-4 p-3 md:grid-cols-2"
+      bodyClassName="grid gap-4 p-3 @2xl:grid-cols-2"
     >
       <Section title={m.installation}>
         {provider.installed ? (
@@ -147,13 +150,14 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
           />
         ) : (
           <div className="space-y-1.5 text-sm">
-            <p className="text-destructive">{m.notFound}</p>
+            <p className="text-destructive">{kind === "codesandbox" ? m.cloud.unavailable : m.notFound}</p>
             {INSTALL_HINTS[kind] ? (
               <p className="text-xs text-muted-foreground">
                 {m.installHint}:{" "}
                 <code className="rounded bg-code px-1 py-0.5 font-mono text-foreground">{INSTALL_HINTS[kind]}</code>
               </p>
             ) : null}
+            {kind === "codesandbox" ? <p className="text-xs text-muted-foreground">{m.cloud.runnerHint}</p> : null}
           </div>
         )}
         {provider.capabilities.status_message ? (
@@ -163,9 +167,9 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
 
       <Section title={m.authentication}>
         <div className="flex flex-wrap items-center gap-2">
-          <SdkBadge size="sm" pill variant="soft" color={AUTH_COLORS[provider.auth_state]}>
+          <Badge tone={AUTH_COLORS[provider.auth_state]}>
             {t.authState[provider.auth_state]}
-          </SdkBadge>
+          </Badge>
           {provider.auth_detail ? <span className="text-xs text-muted-foreground">{provider.auth_detail}</span> : null}
         </div>
         {provider.auth_state === "unknown" ? <p className="text-xs text-muted-foreground">{m.authUnknownHelp}</p> : null}
@@ -177,81 +181,100 @@ export const ProviderCard: React.FC<ProviderCardProps> = React.memo(function Pro
         ) : null}
       </Section>
 
-      <Section title={m.capabilities}>
-        <ul
-          aria-label={formatMessage(m.capabilitiesLabel, { provider: provider.display_name })}
-          className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2"
-        >
-          {capabilities.map(({ key, supported }) => (
-            <li key={key} className="flex items-center gap-1.5 text-sm">
-              {supported ? (
-                <Check className="size-4 shrink-0 text-success" aria-hidden />
-              ) : (
-                <X className="size-4 shrink-0 text-subtle-foreground" aria-hidden />
-              )}
-              <span className={supported ? "text-foreground" : "text-muted-foreground"}>{m.capability[key]}</span>
-              <span className="sr-only">: {supported ? m.supported : m.unsupported}</span>
-            </li>
-          ))}
-        </ul>
-      </Section>
-
-      <Section title={m.models}>
-        {models.length > 0 ? (
-          <ul className="flex flex-wrap gap-1.5" aria-label={m.models}>
-            {models.map((name) => (
-              <li key={name}>
-                <SdkBadge size="sm" variant="outline" color="secondary" className="font-mono">
-                  {name}
-                </SdkBadge>
-              </li>
-            ))}
+      {kind === "codesandbox" ? (
+        <Section title={m.cloud.title} className="@2xl:col-span-2">
+          <p className="text-sm text-muted-foreground">{m.cloud.body}</p>
+          <ul className="list-disc space-y-0.5 ps-5 text-xs text-muted-foreground">
+            <li>{m.cloud.needToken}</li>
+            <li>{m.cloud.needGithub}</li>
+            <li>{m.cloud.needTemplate}</li>
           </ul>
-        ) : (
-          <p className="text-xs text-muted-foreground">{m.noModels}</p>
-        )}
-      </Section>
+          <p className="text-xs text-muted-foreground">
+            {m.cloud.templateHint}:{" "}
+            <code className="rounded bg-code px-1 py-0.5 font-mono text-foreground">
+              pnpm --filter @symphony/codesandbox-runner build:template
+            </code>
+          </p>
+          <p className="text-xs text-muted-foreground">{m.cloud.templateEnv}</p>
+        </Section>
+      ) : null}
 
-      <div className="space-y-2 border-t border-border pt-3 md:col-span-2">
+      {/* Reference detail: one click away instead of two more sections on every card. */}
+      <details className="rounded-md border border-border @2xl:col-span-2">
+        <summary className="cursor-pointer select-none px-3 py-2 text-xs font-semibold uppercase tracking-wide text-subtle-foreground">
+          {m.moreDetails}
+        </summary>
+        <div className="grid gap-4 border-t border-border p-3 @2xl:grid-cols-2">
+          <Section title={m.capabilities}>
+            <ul
+              aria-label={formatMessage(m.capabilitiesLabel, { provider: provider.display_name })}
+              className="grid grid-cols-1 gap-x-4 gap-y-1 @md:grid-cols-2"
+            >
+              {capabilities.map(({ key, supported }) => (
+                <li key={key} className="flex items-center gap-1.5 text-sm">
+                  {supported ? (
+                    <Check className="size-4 shrink-0 text-success" aria-hidden />
+                  ) : (
+                    <X className="size-4 shrink-0 text-subtle-foreground" aria-hidden />
+                  )}
+                  <span className={supported ? "text-foreground" : "text-muted-foreground"}>{m.capability[key]}</span>
+                  <span className="sr-only">: {supported ? m.supported : m.unsupported}</span>
+                </li>
+              ))}
+            </ul>
+          </Section>
+
+          <Section title={m.models}>
+            {models.length > 0 ? (
+              <ul className="flex flex-wrap gap-1.5" aria-label={m.models}>
+                {models.map((name) => (
+                  <li key={name}>
+                    <Badge tone="outline" className="font-mono">
+                      {name}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">{m.noModels}</p>
+            )}
+          </Section>
+        </div>
+      </details>
+
+      <div className="space-y-2 border-t border-border pt-3 @2xl:col-span-2">
         <div className="flex flex-wrap items-end gap-2">
           <Field label={m.defaultModel} hint={m.defaultModelHint} className="min-w-64 flex-1">
             <Combobox
-              freeform
               value={model}
-              selectedOptions={models.includes(model) ? [model] : []}
+              options={models}
               placeholder={placeholder}
               disabled={!settings}
-              onChange={(e) => setModel(e.target.value)}
-              onOptionSelect={(_, data) => setModel(data.optionValue ?? data.optionText ?? "")}
+              onValueChange={setModel}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && modelDirty) saveDefaultModel();
               }}
-            >
-              {models.map((name) => (
-                <Option key={name} value={name}>
-                  {name}
-                </Option>
-              ))}
-            </Combobox>
+            />
           </Field>
           <Button
-            appearance="primary"
+            variant="default"
             disabled={!settings || !modelDirty || busy}
-            icon={saveModel.isPending ? <Spinner size="tiny" /> : undefined}
             onClick={saveDefaultModel}
           >
+            {saveModel.isPending ? <Spinner /> : undefined}
             {m.saveDefault}
           </Button>
           {!isGlobalDefault ? (
-            <Tooltip content={provider.installed ? m.makeGlobalDefaultHint : m.unavailable} relationship="description">
+            <Hint label={provider.installed ? m.makeGlobalDefaultHint : m.unavailable}>
               <Button
-                icon={saveGlobal.isPending ? <Spinner size="tiny" /> : <Star className="size-4" />}
+               
                 disabled={!settings || busy || !provider.installed}
                 onClick={makeGlobal}
               >
+                {saveGlobal.isPending ? <Spinner /> : <Star className="size-4" />}
                 {m.makeGlobalDefault}
               </Button>
-            </Tooltip>
+            </Hint>
           ) : null}
         </div>
       </div>

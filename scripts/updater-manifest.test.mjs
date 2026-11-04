@@ -23,7 +23,9 @@ const minisign = ({ id = "ED", signature = 72, global = 64, comments = ["untrust
       ""
     ].join("\n")
   ).toString("base64");
-const SIGNATURE = minisign();
+// `tauri signer sign --app-version <v>` records the version as a tab-separated field of the trusted comment.
+const signedFor = (version) => minisign({ comments: ["untrusted comment: signature from tauri secret key", `trusted comment: timestamp:1\tfile:setup.exe\tversion:${version}`] });
+const SIGNATURE = signedFor("2.1.0");
 const input = { tag: "v2.1.0", repo: "KB01111/OpenAI-Symphony-Rust", installer: "Symphony-Desktop_2.1.0_x64-setup.exe", signature: `${SIGNATURE}\n`, notes: "  Faster startup\n" };
 
 test("builds the manifest the updater expects", () => {
@@ -42,7 +44,7 @@ test("builds the manifest the updater expects", () => {
 });
 
 test("keeps pre-release tags and refuses anything that is not v<semver>", () => {
-  assert.equal(buildManifest({ ...input, tag: "v2.1.0-rc.1" }).version, "2.1.0-rc.1");
+  assert.equal(buildManifest({ ...input, tag: "v2.1.0-rc.1", signature: signedFor("2.1.0-rc.1") }).version, "2.1.0-rc.1");
   for (const tag of ["2.1.0", "vnext", "v2.1", "v2.1.0/../x"]) {
     assert.throws(() => buildManifest({ ...input, tag }), /tag/);
   }
@@ -71,6 +73,18 @@ test("refuses a missing or foreign signature", () => {
     `${SIGNATURE}!`
   ];
   for (const signature of bad) assert.throws(() => checkSignature(signature), /minisign/);
+});
+
+test("refuses a signature that does not name the released version", () => {
+  // The app rejects these (requireSignedVersion), so they must never reach a release.
+  assert.throws(() => buildManifest({ ...input, signature: minisign() }), /no version/);
+  assert.throws(() => buildManifest({ ...input, signature: signedFor("2.0.0") }), /signed for version 2\.0\.0, not 2\.1\.0/);
+  assert.throws(() => buildManifest({ ...input, signature: signedFor("2.1.0-rc.1") }), /not 2\.1\.0/);
+  // The version may be the first field of the comment.
+  const first = minisign({ comments: ["untrusted comment: x", "trusted comment: version:2.1.0\tfile:a"] });
+  assert.doesNotThrow(() => checkSignature(first, "2.1.0"));
+  // Without a version to compare, only the structure is checked.
+  assert.doesNotThrow(() => checkSignature(minisign()));
 });
 
 test("the command line writes the manifest and fails with a message on bad input", () => {

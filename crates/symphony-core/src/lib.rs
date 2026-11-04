@@ -1,6 +1,7 @@
 pub mod domain;
 pub mod error;
 pub mod redaction;
+pub mod sse;
 pub mod tool_calls;
 pub mod usage;
 pub mod workflow;
@@ -14,8 +15,8 @@ pub use tool_calls::{
 pub use usage::{ReportOrigin, ThreadUsageLedger};
 pub use workflow::{
     compute_backoff_delay_ms, expand_path_value, render_continuation_prompt,
-    render_workflow_prompt, resolve_env_token, AgentConfig, CodexConfig, HooksConfig,
-    ServiceConfig, WorkflowDefinition, DEFAULT_PROMPT_TEMPLATE,
+    render_workflow_prompt, resolve_env_token, AgentConfig, CodeSandboxConfig, CodexConfig,
+    HooksConfig, ServiceConfig, WorkflowDefinition, DEFAULT_PROMPT_TEMPLATE,
 };
 
 #[cfg(test)]
@@ -56,6 +57,39 @@ mod tests {
         // An unverified merge is never the top rating, with everything else in order.
         assert_eq!(report.score, 4);
         assert_ne!(report.label, "Ready for Human Approval & Merge");
+    }
+
+    #[test]
+    fn merge_readiness_needs_a_passing_ci_for_the_top_rating() {
+        let score = |ci: &str| {
+            MergeReadinessReport::evaluate(
+                ConflictCheck::Clean,
+                ci,
+                &[passing_validation()],
+                &[],
+                1,
+            )
+        };
+        // Everything else in order: only a passing CI earns the top rating.
+        assert_eq!(score("passed").score, 5);
+        assert_eq!(score("success").score, 5);
+        for missing in ["none", "unknown", "something-new"] {
+            let report = score(missing);
+            assert_eq!(report.score, 4, "{missing}");
+            assert_ne!(
+                report.label, "Ready for Human Approval & Merge",
+                "{missing}"
+            );
+            assert!(
+                report.blockers.is_empty(),
+                "{missing}: not a blocker, just not proven"
+            );
+        }
+        // A review for which CI explicitly does not apply is not held back by its absence.
+        assert_eq!(score("not_applicable").score, 5);
+        // Lower scores are unaffected by the ceiling.
+        assert_eq!(score("pending").score, 4);
+        assert_eq!(score("failed").score, 3);
     }
 
     #[test]
@@ -100,6 +134,20 @@ mod tests {
         let non_map = "---\n- item1\n- item2\n---\nPrompt";
         let err = WorkflowDefinition::parse(non_map, None).unwrap_err();
         assert_eq!(err.code(), "workflow_front_matter_not_a_map");
+    }
+
+    #[test]
+    fn a_workflow_file_written_with_a_byte_order_mark_and_crlf_keeps_its_settings() {
+        // Notepad and Windows PowerShell write exactly this; the settings must not turn into prompt text.
+        let raw = "\u{feff}---\r\ntracker:\r\n  kind: github\r\nagent:\r\n  max_concurrent_agents: 3\r\n---\r\nHello {{ issue.identifier }}\r\n";
+        let wf = WorkflowDefinition::parse(raw, None).expect("should parse");
+        assert_eq!(wf.prompt_template, "Hello {{ issue.identifier }}");
+        assert!(wf.config.contains_key("tracker"));
+        let cfg = ServiceConfig::from_workflow(&wf).expect("valid config");
+        assert_eq!(cfg.tracker_kind, "github");
+        assert_eq!(cfg.agent.max_concurrent_agents, 3);
+        // The original text, byte order mark included, is kept so an editor round-trips the file.
+        assert!(wf.raw_source.starts_with('\u{feff}'));
     }
 
     #[test]
@@ -226,5 +274,154 @@ mod tests {
         assert!(!redacted.contains("ghp_1234"));
         assert!(!redacted.contains("sk-proj-"));
         assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn a_codesandbox_token_in_an_added_line_is_found_by_the_credential_scan() {
+        // Log redaction is not enough: a committed key must also block publishing the branch.
+        // The fixture is assembled at run time: written out whole, this very file would trip the scan
+        // whenever a task branch of this repository adds it.
+        let key = format!("csb_v1_{}", "AbCdEf0123456789AbCdEf0123456789");
+        let diff = format!("+CSB_API_KEY={key}\n context line\n");
+        let findings = detect_secrets_in_added_lines(&diff);
+        assert!(findings.contains(&"CodeSandbox API token"), "{findings:?}");
+        // Removed and unchanged lines are not findings.
+        let removed = format!("-CSB_API_KEY={key}\n");
+        assert!(detect_secrets_in_added_lines(&removed).is_empty());
+    }
+
+    #[test]
+    fn codesandbox_secrets_are_redacted() {
+        let text = format!(
+            "key csb_v1_{} in the log",
+            "AbCdEf0123456789AbCdEf0123456789"
+        );
+        let redacted = redact_secrets(&text, &[]);
+        assert!(!redacted.contains("csb_v1_"), "{redacted}");
+        assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn cloud_agent_and_codesandbox_provider_names_round_trip() {
+        use std::str::FromStr;
+        for agent in [
+            CloudAgentKind::MiniSweAgent,
+            CloudAgentKind::Pi,
+            CloudAgentKind::PiDurable,
+        ] {
+            assert_eq!(CloudAgentKind::from_str(agent.as_str()).unwrap(), agent);
+            // The wire format is the same snake_case name.
+            assert_eq!(
+                serde_json::to_value(agent).unwrap(),
+                serde_json::json!(agent.as_str())
+            );
+        }
+        // Friendly spellings are accepted; mini-swe-agent is the default.
+        assert_eq!(
+            CloudAgentKind::from_str("Pi-Durable").unwrap(),
+            CloudAgentKind::PiDurable
+        );
+        assert_eq!(
+            CloudAgentKind::from_str("mini").unwrap(),
+            CloudAgentKind::MiniSweAgent
+        );
+        assert_eq!(CloudAgentKind::default(), CloudAgentKind::MiniSweAgent);
+        assert!(CloudAgentKind::from_str("gpt-engineer").is_err());
+
+        assert_eq!(
+            ProviderKind::from_str("codesandbox").unwrap(),
+            ProviderKind::CodeSandbox
+        );
+        assert_eq!(ProviderKind::CodeSandbox.as_str(), "codesandbox");
+        assert_eq!(
+            serde_json::to_value(ProviderKind::CodeSandbox).unwrap(),
+            serde_json::json!("codesandbox")
+        );
+        // Persisted spellings from the other direction still parse.
+        assert_eq!(
+            serde_json::from_value::<ProviderKind>(serde_json::json!("code_sandbox")).unwrap(),
+            ProviderKind::CodeSandbox
+        );
+        let capabilities = ProviderKind::CodeSandbox.default_capabilities();
+        assert!(capabilities.supports_session_resume && capabilities.supports_cancel);
+        assert!(
+            !capabilities.supports_approvals,
+            "a sandboxed agent has no approval round trip"
+        );
+    }
+
+    #[test]
+    fn the_runner_path_expands_a_home_directory_like_other_workflow_paths() {
+        let raw = "---\ncodesandbox:\n  runner_path: ~/symphony/bridge.mjs\n---\nx";
+        let cfg =
+            ServiceConfig::from_workflow(&WorkflowDefinition::parse(raw, None).unwrap()).unwrap();
+        let path = cfg.codesandbox.runner_path.unwrap();
+        assert!(!path.starts_with('~'), "{path}");
+        assert!(
+            path.replace('\\', "/").ends_with("/symphony/bridge.mjs"),
+            "{path}"
+        );
+        assert!(std::path::Path::new(&path).is_absolute(), "{path}");
+    }
+
+    #[test]
+    fn an_unset_runner_path_variable_means_no_override() {
+        // Resolved before the empty check: it must not become an explicit path (the temp-dir fallback of
+        // `expand_path_value`) that the launch would then treat as authoritative.
+        // A name no environment can already hold: unique to this process and moment, so the test does not
+        // depend on (or have to change) the environment it runs in.
+        let unset = format!(
+            "SYMPHONY_UNSET_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        assert!(std::env::var_os(&unset).is_none());
+        let raw = format!("---\ncodesandbox:\n  runner_path: ${unset}\n---\nx");
+        let cfg =
+            ServiceConfig::from_workflow(&WorkflowDefinition::parse(&raw, None).unwrap()).unwrap();
+        assert_eq!(cfg.codesandbox.runner_path, None);
+    }
+
+    #[test]
+    fn the_codesandbox_section_is_optional_and_validated() {
+        let none =
+            WorkflowDefinition::parse("---\ntracker:\n  kind: github\n---\nx", None).unwrap();
+        let cfg = ServiceConfig::from_workflow(&none).unwrap();
+        assert_eq!(cfg.codesandbox.default_agent, CloudAgentKind::MiniSweAgent);
+        assert_eq!(cfg.codesandbox.template_id, "symphony-agents");
+        assert_eq!(cfg.codesandbox.vm_tier, "small");
+        cfg.validate_for_dispatch().unwrap();
+
+        let raw = "---\ncodesandbox:\n  template_id: tpl-123\n  default_agent: pi_durable\n  vm_tier: Medium\n  hibernation_timeout_secs: 600\n  cost_limit_usd: 1.5\n  runner_path: C:/runner/bridge.mjs\n---\nx";
+        let cfg =
+            ServiceConfig::from_workflow(&WorkflowDefinition::parse(raw, None).unwrap()).unwrap();
+        assert_eq!(cfg.codesandbox.template_id, "tpl-123");
+        assert_eq!(cfg.codesandbox.default_agent, CloudAgentKind::PiDurable);
+        // Tier names are case-insensitive in the file and normalised.
+        assert_eq!(cfg.codesandbox.vm_tier, "medium");
+        assert_eq!(cfg.codesandbox.hibernation_timeout_secs, 600);
+        assert!((cfg.codesandbox.cost_limit_usd - 1.5).abs() < f64::EPSILON);
+        assert_eq!(
+            cfg.codesandbox.runner_path.as_deref(),
+            Some("C:/runner/bridge.mjs")
+        );
+        cfg.validate_for_dispatch().unwrap();
+
+        // An agent that does not exist is a configuration error, not a silent fallback.
+        let bad_agent = "---\ncodesandbox:\n  default_agent: gpt-engineer\n---\nx";
+        assert!(
+            ServiceConfig::from_workflow(&WorkflowDefinition::parse(bad_agent, None).unwrap())
+                .is_err()
+        );
+
+        // So is a VM tier the SDK does not have, found before any sandbox is started.
+        let bad_tier = "---\ncodesandbox:\n  vm_tier: gigantic\n---\nx";
+        let cfg = ServiceConfig::from_workflow(&WorkflowDefinition::parse(bad_tier, None).unwrap())
+            .unwrap();
+        let err = cfg.validate_for_dispatch().unwrap_err().to_string();
+        assert!(err.contains("gigantic") && err.contains("pico"), "{err}");
     }
 }

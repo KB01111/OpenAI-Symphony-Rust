@@ -1,9 +1,8 @@
-import { useCallback, useMemo, useState } from "react";
-import { Button, MessageBar, MessageBarBody, MessageBarTitle, Spinner } from "@fluentui/react-components";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { RotateCcw, Save } from "lucide-react";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage, type AppSettings, type Locale } from "@symphony/shared-types";
-import { ErrorState, LoadingRows, PageHeader, SdkBadge, cn, useDesign, useNotify, type ThemeMode } from "@symphony/ui";
+import { Alert, Badge, Button, cn, ErrorState, LoadingRows, PageHeader, Spinner, useNotify, type ThemeMode } from "@symphony/ui";
 import { useMessages } from "../../lib/i18n.js";
 import { useSaveSettings, useSettings } from "../../lib/queries.js";
 import { useUiStore } from "../../store/uiStore.js";
@@ -19,11 +18,25 @@ import {
   RemoteSection,
   SECTION_IDS,
   SchedulingSection,
-  sectionDomId,
   type SectionId
 } from "./sections.js";
 import { portOf, serverErrorFields, validateSettings, type SettingsErrors, type SettingsField } from "./validation.js";
 import { useRuntime } from "../../runtime/RuntimeProvider.js";
+
+/** The section each validated field lives in, so the nav can flag a section that has an error. */
+const SECTION_FIELDS: Partial<Record<SectionId, ReadonlyArray<SettingsField>>> = {
+  scheduling: [
+    "polling_interval_ms",
+    "max_concurrent_on_ac",
+    "max_concurrent_on_battery",
+    "high_memory_threshold_percent",
+    "high_cpu_threshold_percent",
+    "event_retention_days",
+    "pr_refresh_interval_minutes"
+  ],
+  remote: ["remote_bind_address", "remote_port", "remote_allowed_origins"],
+  backups: ["backup_interval_hours", "backup_keep"]
+};
 
 /** Fields edited through the draft form (theme/locale persist immediately; others are not edited here). */
 type EditableSettings = Pick<
@@ -32,6 +45,7 @@ type EditableSettings = Pick<
   | "start_background_runtime_on_login"
   | "default_provider"
   | "default_model"
+  | "default_cloud_agent"
   | "polling_interval_ms"
   | "event_retention_days"
   | "backup_interval_hours"
@@ -49,6 +63,8 @@ function editable(s: AppSettings): EditableSettings {
     start_background_runtime_on_login: s.start_background_runtime_on_login,
     default_provider: s.default_provider,
     default_model: s.default_model,
+    // null (never chosen) stays null: saving other settings must not pin the workflow's default.
+    default_cloud_agent: s.default_cloud_agent ?? null,
     polling_interval_ms: s.polling_interval_ms,
     event_retention_days: s.event_retention_days ?? 30,
     backup_interval_hours: s.backup_interval_hours ?? 24,
@@ -81,7 +97,6 @@ function sameEditable(a: AppSettings, b: AppSettings): boolean {
 export default function SettingsPage() {
   const m = useMessages(settingsMessages);
   const notify = useNotify();
-  const { reducedMotion } = useDesign();
   const settings = useSettings();
   const save = useSaveSettings();
   const themeMode = useUiStore((s) => s.themeMode);
@@ -152,9 +167,11 @@ export default function SettingsPage() {
   const onTheme = (mode: ThemeMode) => setThemeMode(mode);
   const onLocale = (next: Locale) => setLocale(next);
 
+  // One section at a time keeps the page short; edits live in the shared draft, so switching loses nothing.
+  const content = useRef<HTMLDivElement>(null);
   const goTo = (id: SectionId) => {
     setActive(id);
-    document.getElementById(sectionDomId(id))?.scrollIntoView({ block: "start", behavior: reducedMotion ? "auto" : "smooth" });
+    content.current?.scrollTo({ top: 0 });
   };
 
   return (
@@ -164,9 +181,9 @@ export default function SettingsPage() {
         description={m.description}
         meta={
           dirty ? (
-            <SdkBadge size="sm" pill variant="soft" color="warning">
+            <Badge tone="warning">
               {m.unsaved}
-            </SdkBadge>
+            </Badge>
           ) : null
         }
         actions={
@@ -176,23 +193,32 @@ export default function SettingsPage() {
                 {formatMessage(m.invalidCount, { count: errorCount })}
               </span>
             ) : null}
-            <Button icon={<RotateCcw className="size-4" />} disabled={!dirty || save.isPending} onClick={onReset}>
-              {m.reset}
-            </Button>
+            {/* Also after a failed save: the error alert stays until Reset (or the next edit) clears it. */}
+            {dirty || save.isError ? (
+              <Button disabled={save.isPending} onClick={onReset}>
+                <RotateCcw />
+                {m.reset}
+              </Button>
+            ) : null}
             <Button
-              appearance="primary"
-              icon={save.isPending ? <Spinner size="tiny" /> : <Save className="size-4" />}
+              variant="default"
               disabled={!dirty || errorCount > 0 || save.isPending}
               onClick={onSave}
             >
+              {save.isPending ? <Spinner /> : <Save className="size-4" />}
               {m.save}
             </Button>
           </>
         }
       />
-      <div className="flex min-h-0 flex-1">
-        <nav aria-label={m.sectionsNav} className="hidden w-52 shrink-0 overflow-auto border-e border-border bg-surface p-2 md:block">
-          <ul className="space-y-0.5">
+      {/* Container queries, not viewport breakpoints: the sidebar takes its share before this page is measured. */}
+      <div className="@container flex min-h-0 flex-1 flex-col @3xl:flex-row">
+        {/* A scrolling strip while the page is narrow, a side list once it has room. */}
+        <nav
+          aria-label={m.sectionsNav}
+          className="shrink-0 overflow-x-auto border-b border-border bg-surface p-2 @3xl:w-52 @3xl:overflow-y-auto @3xl:overflow-x-hidden @3xl:border-b-0 @3xl:border-e"
+        >
+          <ul className="flex gap-1 @3xl:block @3xl:space-y-0.5">
             {SECTION_IDS.map((id) => (
               <li key={id}>
                 <button
@@ -200,19 +226,22 @@ export default function SettingsPage() {
                   onClick={() => goTo(id)}
                   aria-current={active === id ? "location" : undefined}
                   className={cn(
-                    "flex h-row w-full items-center rounded-md px-2 text-start text-sm transition-colors",
+                    "flex h-row shrink-0 items-center whitespace-nowrap rounded-md px-2 text-start text-sm transition-colors @3xl:h-auto @3xl:min-h-row @3xl:w-full @3xl:whitespace-normal @3xl:py-1.5",
                     active === id
                       ? "bg-surface-selected font-medium text-foreground"
                       : "text-muted-foreground hover:bg-surface-hover hover:text-foreground"
                   )}
                 >
                   {m.sections[id]}
+                  {(SECTION_FIELDS[id] ?? []).some((field) => errors[field]) ? (
+                    <span className="ms-1.5 size-2 shrink-0 rounded-full bg-destructive @3xl:ms-auto" role="img" aria-label={m.invalidSection} />
+                  ) : null}
                 </button>
               </li>
             ))}
           </ul>
         </nav>
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div ref={content} className="min-h-0 flex-1 overflow-auto">
           <div className="mx-auto flex max-w-4xl flex-col gap-4 p-4">
             {settings.isPending ? (
               <LoadingRows rows={10} label={m.title} />
@@ -221,29 +250,29 @@ export default function SettingsPage() {
             ) : (
               <>
                 {serverMessage ? (
-                  <MessageBar intent="error" layout="multiline">
-                    <MessageBarBody>
-                      <MessageBarTitle>{m.saveFailed}</MessageBarTitle>
-                      {serverMessage}
-                    </MessageBarBody>
-                  </MessageBar>
+                  <Alert intent="error" title={m.saveFailed}>{serverMessage}</Alert>
                 ) : null}
-                <AppearanceSection
-                  themeMode={themeMode}
-                  locale={locale}
-                  density={density}
-                  onTheme={onTheme}
-                  onLocale={onLocale}
-                  onDensity={setDensity}
-                />
-                <DesktopSection draft={current} errors={errors} update={update} />
-                <SchedulingSection draft={current} errors={errors} update={update} />
-                <DefaultsSection draft={current} errors={errors} update={update} />
-                <RemoteSection draft={current} errors={errors} update={update} />
-                <IntegrationsSection />
-                <BackupsSection draft={current} errors={errors} update={update} />
-                <DiagnosticsSection />
-                <ApplicationSection />
+                {active === "appearance" ? (
+                  <AppearanceSection
+                    themeMode={themeMode}
+                    locale={locale}
+                    density={density}
+                    onTheme={onTheme}
+                    onLocale={onLocale}
+                    onDensity={setDensity}
+                  />
+                ) : null}
+                {active === "desktop" ? <DesktopSection draft={current} errors={errors} update={update} /> : null}
+                {active === "scheduling" ? <SchedulingSection draft={current} errors={errors} update={update} /> : null}
+                {active === "defaults" ? <DefaultsSection draft={current} errors={errors} update={update} /> : null}
+                {/* Stays mounted (hidden) so a one-time access token that was just issued survives switching sections. */}
+                <div hidden={active !== "remote"}>
+                  <RemoteSection draft={current} errors={errors} update={update} />
+                </div>
+                {active === "integrations" ? <IntegrationsSection /> : null}
+                {active === "backups" ? <BackupsSection draft={current} errors={errors} update={update} /> : null}
+                {active === "diagnostics" ? <DiagnosticsSection /> : null}
+                {active === "application" ? <ApplicationSection /> : null}
               </>
             )}
           </div>

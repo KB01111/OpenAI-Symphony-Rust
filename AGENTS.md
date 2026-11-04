@@ -9,6 +9,7 @@ When operating inside this repository (whether dispatched by Symphony Desktop it
 - `crates/symphony-core`: Core domain types, state transitions (`TaskStatus::can_transition_to`), `WORKFLOW.md` YAML/Liquid parser (`WorkflowDefinition`, `ServiceConfig`), and secret redaction.
 - `crates/symphony-storage`: SQLite WAL storage, versioned migrations (`migrations/NNNN_*.sql`, listed in `MIGRATIONS`; never edit an applied one) and backups (`backup.rs`).
 - `crates/symphony-workspaces`: Git worktree isolation, workspace key sanitization (`workspace_key_for_identifier`), path containment (`validate_workspace_path`), and validation command execution.
+- `crates/symphony-knowledge`: the Repository Knowledge Base (read-only git, snapshots, Graphify/Serena adapters, graph, commit impact, evidence-bound AI prompts, `knowledge.db`); see `docs/KNOWLEDGE_BASE.md`. Its endpoints are local-only.
 - `crates/symphony-platform`: Windows 11 power/CPU/memory telemetry (`HardwareMonitor`), single-instance lock, owner-only secret files (`secure_fs`), the DPAPI-backed credential vault (`SecretStore`), runtime discovery and HKCU autostart.
 - `crates/symphony-trackers`: GitHub Issues REST adapter, Linear GraphQL adapter, and host-side dynamic tools (`github_api`, `linear_graphql`) whose scope is an allowlist (`tool_policy.rs`).
 - `crates/symphony-agents`: `CodexAppServerDriver` (stdio JSON-RPC 2.0), `ClaudeCodeDriver`, `OpenCodeDriver`, and `SimulatedAgentDriver`.
@@ -17,7 +18,7 @@ When operating inside this repository (whether dispatched by Symphony Desktop it
 - `tools/api-generator`: the Hey API generator behind `pnpm generate:api`; kept on TypeScript 6 because the generator needs the TypeScript 6 compiler API (see `docs/PRODUCTION_READINESS.md` §5).
 - `packages/shared-types`: generated API contracts (never hand-edit `src/generated/`): Hey API types/SDK/fetch client from the OpenAPI document (`@symphony/shared-types/api`) and the Rust task state machine; state-machine helpers, EN/SV translations.
 - `packages/api-client`: `SymphonyClient` (wraps the generated SDK), the central API configuration for desktop/local/remote runtimes (`src/config/apiConfig.ts`), authenticated SSE streaming, Tauri IPC bridge; integration tests run against `symphony-cli`.
-- `packages/ui`: Symphony design system (tokens, `SymphonyDesignProvider`, Fluent v9 + shadcn/ui primitives + Apps SDK UI AI components). See `docs/DESIGN_SYSTEM.md` for component ownership.
+- `packages/ui`: Symphony design system (tokens, `SymphonyDesignProvider`, shadcn/ui + Radix primitives and AI components; Fluent only in `legacy.tsx` for the mobile companion). See `docs/DESIGN_SYSTEM.md` for component ownership.
 - `apps/desktop`: Tauri 2 Windows 11 desktop application (`src/app`, `src/layouts`, `src/features/*`; see `docs/UI_ARCHITECTURE.md`).
 - `apps/mobile`: iOS/Mobile remote companion application.
 
@@ -46,9 +47,10 @@ succeeded (see `CONTRIBUTING.md`, "Native Windows vs. Browser Testing").
 
 - Never weaken `validate_workspace_path` or `workspace_key_for_identifier` in `crates/symphony-workspaces`.
 - Never remove tracker environment variable scrubbing (`SECRET_ENV_VARS_TO_STRIP`) when spawning agent subprocesses.
-- Preserve full compatibility with `@openai/apps-sdk-ui` and `@fluentui/react-components` in `packages/ui` and `apps/desktop`.
+- Build desktop UI only from `packages/ui` (shadcn/ui + Radix + Tailwind tokens); do not add Fluent UI or another component library to `apps/desktop`. Lay out forms and tables with container queries, not viewport breakpoints (see `docs/DESIGN_SYSTEM.md` §3).
 - Never weaken API authentication, the CORS allowlist, the credential key allowlist, or the Tauri capability allow-list; never add an IPC command that runs arbitrary commands or touches arbitrary paths.
 - Never widen `tool_policy.rs` (agent tools run with the host's tokens, outside the approval gate) without tests that show what the new operation can do; there is deliberately no merge operation anywhere.
 - Never weaken the credential vault (no plaintext/XOR fallback, no silent replacement of an unreadable vault) or `secure_fs` (owner-only DACL / `0600`); write secret-bearing files only through it.
 - Keep the remote companion listener restricted: add an endpoint to `REMOTE_OPERATIONS` only deliberately, keep it loopback-only and never accept the local token there (or the remote token locally).
+- Knowledge Base: never run Graphify or Serena inside a user's repository or worktree (only on the snapshot directories under `<data_dir>/knowledge`), never bundle or link Serena (GPL-3.0), never call a Serena tool outside `serena::ALLOWED_TOOLS`, never give the AI analysis a Symphony host tool or direct access to the repository (it gets only the bounded, redacted evidence in its prompt), keep every built-in tool of the supported providers denied through their own controls (`write_tool_restrictions` for Claude Code and OpenCode, `codex_analysis_command` for Codex, which refuses a command that is not `codex ... app-server`), and redact everything that reaches the provider, not only the diff; keep its endpoints out of `REMOTE_OPERATIONS`.
 - Use only semantic design tokens in feature code (no hard-coded colours) and add EN + SV strings for every user-visible text.

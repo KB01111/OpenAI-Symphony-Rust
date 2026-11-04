@@ -1,6 +1,4 @@
 import React, { useMemo, useState } from "react";
-import { Button } from "@openai/apps-sdk-ui/components/Button";
-import { CopyButton } from "@openai/apps-sdk-ui/components/Button";
 import { formatMessage, type AgentEvent } from "@symphony/shared-types";
 import {
   AlertTriangle,
@@ -18,7 +16,8 @@ import { cn } from "../lib/utils.js";
 import { useUiStrings } from "../i18n.js";
 import { formatAgentEvent, runtimeEventTemplate, type AgentEventKind, type EventTone } from "./eventFormat.js";
 import { PhaseBadge } from "./badges.js";
-import { CodeBlock, Markdown } from "./codeBlocks.js";
+import { CodeBlock, CopyButton, Markdown } from "./codeBlocks.js";
+import { Button } from "../primitives/button.js";
 
 const KIND_ICONS: Record<AgentEventKind, React.ComponentType<{ className?: string }>> = {
   message: Bot,
@@ -95,13 +94,13 @@ export const AiEventStreamCard = React.memo(function AiEventStreamCard({
             {time}
           </time>
           <span className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-            <CopyButton copyValue={formatted.text} color="secondary" variant="ghost" size="2xs" aria-label={ui.copyEvent} />
+            <CopyButton value={formatted.text} label={ui.copyEvent} />
           </span>
         </header>
 
         {formatted.kind === "message" ? (
           <div className="text-sm leading-relaxed text-foreground">
-            <Markdown breakNewLines copyableCodeBlocks>
+            <Markdown breakNewLines>
               {formatted.text}
             </Markdown>
           </div>
@@ -136,7 +135,7 @@ export const AiEventStreamCard = React.memo(function AiEventStreamCard({
 
         {technical && event.payload != null ? (
           <div>
-            <Button size="2xs" color="secondary" variant="ghost" onClick={() => setShowRaw((v) => !v)} aria-expanded={showRaw}>
+            <Button size="sm" variant="subtle" className="h-6 px-1.5" onClick={() => setShowRaw((v) => !v)} aria-expanded={showRaw}>
               {showRaw ? ui.hidePayload : ui.rawPayload}
             </Button>
             {showRaw ? <CodeBlock language="json">{JSON.stringify(event.payload, null, 2)}</CodeBlock> : null}

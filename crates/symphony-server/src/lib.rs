@@ -11,6 +11,7 @@
 //! - The optional remote companion listener ([`remote`]) uses its own token and serves only a
 //!   restricted subset of operations ([`remote::REMOTE_OPERATIONS`]).
 
+mod knowledge;
 pub mod remote;
 
 pub use remote::{
@@ -49,11 +50,12 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use symphony_core::{
     domain::{
-        AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, LocalePreference,
-        OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus, PullRequestReview,
-        RepositoryValidation, RunAttempt, RuntimeInfo, Task, TaskDiff, TaskStatus, ThemePreference,
-        ValidationResult, WorktreeInfo, MAX_BACKUP_INTERVAL_HOURS, MAX_BACKUP_KEEP,
-        MAX_EVENT_RETENTION_DAYS, MAX_PR_REFRESH_INTERVAL_MINUTES, MIN_PR_REFRESH_INTERVAL_MINUTES,
+        AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, CloudAgentKind,
+        LocalePreference, OrchestratorStateSnapshot, Project, ProviderKind, ProviderStatus,
+        PullRequestReview, RepositoryValidation, RunAttempt, RuntimeInfo, Task, TaskDiff,
+        TaskStatus, ThemePreference, ValidationResult, WorktreeInfo, MAX_BACKUP_INTERVAL_HOURS,
+        MAX_BACKUP_KEEP, MAX_EVENT_RETENTION_DAYS, MAX_PR_REFRESH_INTERVAL_MINUTES,
+        MIN_PR_REFRESH_INTERVAL_MINUTES,
     },
     error::{Result, SymphonyError},
     ToolCallRecord,
@@ -64,7 +66,7 @@ use symphony_orchestrator::{
 };
 
 /// API contract version reported by `GET /api/v1/runtime`. Bump on breaking changes.
-pub const API_VERSION: u32 = 2;
+pub const API_VERSION: u32 = 3;
 
 /// Credential keys that may be stored through the API. Anything else is rejected so the endpoint
 /// can never be used to inject arbitrary process environment variables (e.g. `PATH`).
@@ -75,6 +77,9 @@ pub const ALLOWED_CREDENTIAL_KEYS: &[&str] = &[
     "LINEAR_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    // CodeSandbox API token for cloud agents. Only the CodeSandbox bridge receives it (never an
+    // agent subprocess), so it is deliberately not in `PROVIDER_ENV_CREDENTIALS`.
+    "CSB_API_KEY",
 ];
 
 /// Provider API keys that are exported into the runtime environment so agent subprocesses can
@@ -232,6 +237,10 @@ pub struct CreateTaskRequest {
     pub priority: Option<i32>,
     pub provider: Option<ProviderKind>,
     pub model: Option<String>,
+    /// Agent that runs in the sandbox for a `codesandbox` task (`mini_swe_agent`, `pi` or
+    /// `pi_durable`); omit it to use the default from settings.
+    #[serde(default)]
+    pub cloud_agent: Option<CloudAgentKind>,
     pub labels: Option<Vec<String>>,
     /// Dispatch the task to an agent immediately after creation.
     /// `dispatch_immediately` is accepted as an alias for older clients.
@@ -369,6 +378,7 @@ pub struct StreamControlEvent {
         (name = "approvals", description = "Agent approval requests"),
         (name = "reviews", description = "Pull request reviews and merge readiness"),
         (name = "worktrees", description = "Agent workspaces"),
+        (name = "knowledge", description = "Repository Knowledge Base: worktrees, commit timeline, code graph, commit impact and AI analysis"),
         (name = "workflow", description = "WORKFLOW.md editing and validation"),
         (name = "settings", description = "Application settings"),
         (name = "providers", description = "Coding agent providers"),
@@ -405,6 +415,8 @@ const OPTIONAL_FIELD_SCHEMAS: &[&str] = &[
     "CancelTaskRequest",
     "PreviewWorkflowRequest",
     "ProjectUpdate",
+    "StartKnowledgeIndexRequest",
+    "StartKnowledgeAnalysisRequest",
 ];
 
 /// Individual properties added after 2.0 that older clients may omit from request bodies
@@ -415,6 +427,7 @@ const OPTIONAL_PROPERTIES: &[(&str, &str)] = &[
     ("AppSettings", "backup_interval_hours"),
     ("AppSettings", "backup_keep"),
     ("AppSettings", "pr_refresh_interval_minutes"),
+    ("AppSettings", "default_cloud_agent"),
 ];
 
 /// OpenAPI extension that marks whether an operation is available on the remote listener.
@@ -553,6 +566,27 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(create_pull_request_handler))
         .routes(routes!(refresh_pull_request_handler))
         .routes(routes!(list_worktrees_handler))
+        .routes(routes!(knowledge::engines_handler))
+        .routes(routes!(knowledge::overview_handler))
+        .routes(routes!(knowledge::start_index_handler))
+        .routes(routes!(knowledge::graph_handler))
+        .routes(routes!(knowledge::search_handler))
+        .routes(routes!(knowledge::node_handler))
+        .routes(routes!(knowledge::node_references_handler))
+        .routes(routes!(knowledge::worktrees_handler))
+        .routes(routes!(knowledge::commits_handler))
+        .routes(routes!(knowledge::commit_handler))
+        .routes(routes!(knowledge::commit_diff_handler))
+        .routes(routes!(knowledge::commit_impact_handler))
+        .routes(routes!(
+            knowledge::commit_analysis_handler,
+            knowledge::start_analysis_handler
+        ))
+        .routes(routes!(
+            knowledge::chat_list_handler,
+            knowledge::ask_handler,
+            knowledge::chat_clear_handler
+        ))
         .routes(routes!(get_workflow_handler, update_workflow_handler))
         .routes(routes!(preview_workflow_handler))
         .routes(routes!(get_settings_handler, put_settings_handler))
@@ -561,6 +595,8 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(delete_credential_handler))
         .routes(routes!(export_diagnostics_handler))
         .routes(routes!(list_backups_handler, create_backup_handler))
+        .routes(routes!(get_restore_status_handler, cancel_restore_handler))
+        .routes(routes!(schedule_restore_handler))
         .routes(routes!(issue_detail_handler))
         .routes(routes!(get_remote_access_handler))
         .routes(routes!(
@@ -1236,7 +1272,7 @@ async fn create_task_handler(
     }
     match state
         .orchestrator
-        .create_manual_task(
+        .create_manual_task_with_agent(
             req.project_id,
             req.identifier,
             req.title.trim().to_string(),
@@ -1244,6 +1280,7 @@ async fn create_task_handler(
             req.priority,
             req.provider,
             req.model.filter(|m| !m.trim().is_empty()),
+            req.cloud_agent,
             req.labels.unwrap_or_default(),
             req.auto_start.unwrap_or(false),
         )
@@ -1769,6 +1806,7 @@ async fn put_settings_handler(
         || settings.backup_interval_hours.is_none()
         || settings.backup_keep.is_none()
         || settings.pr_refresh_interval_minutes.is_none()
+        || settings.default_cloud_agent.is_none()
     {
         let stored = match state.orchestrator.storage().get_settings().await {
             Ok(stored) => stored,
@@ -1784,6 +1822,7 @@ async fn put_settings_handler(
         settings.pr_refresh_interval_minutes = settings
             .pr_refresh_interval_minutes
             .or(stored.pr_refresh_interval_minutes);
+        settings.default_cloud_agent = settings.default_cloud_agent.or(stored.default_cloud_agent);
     }
     match state.orchestrator.storage().save_settings(&settings).await {
         Ok(()) => {
@@ -2014,7 +2053,9 @@ async fn list_backups_handler(State(state): State<ServerState>) -> Response {
 
 /// Create a backup now: a transactionally consistent copy of the database (SQLite `VACUUM INTO`,
 /// WAL included) plus the active `WORKFLOW.md`, with a checksum manifest. Credentials are not
-/// included. Restoring is an offline operation (`symphony-cli restore-backup <folder>`).
+/// included. A backup is restored by the next start of the runtime
+/// (`POST /backups/{id}/restore`) or offline with
+/// `symphony-cli restore-backup <folder>`.
 #[utoipa::path(
     post,
     path = "/backups",
@@ -2035,6 +2076,136 @@ async fn create_backup_handler(State(state): State<ServerState>) -> Response {
     .await
     {
         Ok(info) => (StatusCode::CREATED, Json(BackupSummary::from(info))).into_response(),
+        Err(e) => error_response(e),
+    }
+}
+
+/// A restore that the next start of the runtime will apply.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct PendingRestoreInfo {
+    /// Directory name of the backup that will be restored.
+    pub backup_id: String,
+    pub requested_at: DateTime<Utc>,
+}
+
+/// What the last applied restore did. A failed restore leaves the previous data in place.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RestoreOutcomeInfo {
+    pub backup_id: String,
+    pub applied_at: DateTime<Utc>,
+    pub succeeded: bool,
+    /// Why it failed, when it did.
+    pub error: Option<String>,
+    /// The files the restore replaced; they are kept as `<name>.pre-restore-<time>` next to the
+    /// restored ones, never deleted. After a failure with `rollback_incomplete`: the files that are
+    /// still displaced and have to be moved back by hand.
+    pub previous_files: Vec<String>,
+    /// The restore failed and putting the previous data back did not finish (or the restore was
+    /// interrupted too often to tell): the data folder is not as it was, unlike after any other
+    /// failed restore.
+    pub rollback_incomplete: bool,
+}
+
+/// The restore requested from the application: waiting for the next start, and the last one applied.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RestoreStatus {
+    pub pending: Option<PendingRestoreInfo>,
+    pub last: Option<RestoreOutcomeInfo>,
+}
+
+fn restore_status(root: &std::path::Path) -> RestoreStatus {
+    RestoreStatus {
+        pending: symphony_storage::backup::pending_restore(root).map(|p| PendingRestoreInfo {
+            backup_id: p.backup_id,
+            requested_at: p.requested_at,
+        }),
+        last: symphony_storage::backup::last_restore(root).map(|o| RestoreOutcomeInfo {
+            backup_id: o.backup_id,
+            applied_at: o.applied_at,
+            succeeded: o.succeeded,
+            error: o.error,
+            previous_files: o
+                .previous_files
+                .into_iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+            rollback_incomplete: o.rollback_incomplete,
+        }),
+    }
+}
+
+/// The restore waiting for the next start, and what the last applied restore did.
+#[utoipa::path(
+    get,
+    path = "/backups/restore",
+    operation_id = "getRestoreStatus",
+    tag = "backups",
+    responses((status = 200, body = RestoreStatus))
+)]
+async fn get_restore_status_handler(State(state): State<ServerState>) -> Response {
+    let Some(root) = &state.backup_root else {
+        return backups_unavailable();
+    };
+    Json(restore_status(root)).into_response()
+}
+
+/// Restore a backup the next time the runtime starts. The database cannot be replaced while it is
+/// open, so nothing changes now: the request is checked (the backup's manifest, checksums, schema
+/// and SQLite integrity) and recorded, and the runtime applies it before it opens the database. The
+/// replaced files are kept as `<name>.pre-restore-<time>`. Credentials are not part of a backup and
+/// are not touched. A pending request is replaced; withdraw it with `DELETE /backups/restore`.
+#[utoipa::path(
+    post,
+    path = "/backups/{id}/restore",
+    operation_id = "scheduleRestore",
+    tag = "backups",
+    params(("id" = String, Path, description = "Directory name of the backup, as listed by `GET /backups`")),
+    responses(
+        (status = 202, description = "The restore will be applied on the next start", body = RestoreStatus),
+        (status = 404, description = "No such backup", body = ApiErrorBody),
+        (status = 422, description = "The backup is damaged or cannot be read by this version", body = ApiErrorBody)
+    )
+)]
+async fn schedule_restore_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(root) = &state.backup_root else {
+        return backups_unavailable();
+    };
+    match symphony_storage::backup::schedule_restore(root, &id).await {
+        Ok(_) => (StatusCode::ACCEPTED, Json(restore_status(root))).into_response(),
+        // A request for a backup that does not exist or a name that is not one, and a failure to
+        // record the request on this machine (`IoError`: a read-only backups folder) are answered
+        // as what they are.
+        Err(
+            e @ (SymphonyError::NotFound(_)
+            | SymphonyError::InvalidConfig(_)
+            | SymphonyError::IoError(_)),
+        ) => error_response(e),
+        // A backup that fails its checks is the caller's to fix (choose another), not a server fault.
+        Err(e) => api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "backup_not_restorable",
+            e.to_string(),
+        ),
+    }
+}
+
+/// Withdraw the restore that was waiting for the next start.
+#[utoipa::path(
+    delete,
+    path = "/backups/restore",
+    operation_id = "cancelRestore",
+    tag = "backups",
+    responses((status = 200, body = RestoreStatus))
+)]
+async fn cancel_restore_handler(State(state): State<ServerState>) -> Response {
+    let Some(root) = &state.backup_root else {
+        return backups_unavailable();
+    };
+    match symphony_storage::backup::cancel_pending_restore(root) {
+        Ok(_) => Json(restore_status(root)).into_response(),
         Err(e) => error_response(e),
     }
 }

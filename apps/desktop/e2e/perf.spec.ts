@@ -1,15 +1,15 @@
 /**
  * Performance evidence: initial load, view navigation latency, idle CPU, JS heap and long tasks while
- * simulated agents stream events. Results are written to docs/perf/perf-results.json.
+ * simulated agents stream events. Results are written to target/e2e-evidence/perf, or to
+ * docs/perf/perf-results.json when SYMPHONY_UPDATE_DOCS=1 (see `evidenceDir`).
  * These are measurements on the CI/dev machine running headless Chromium, not WebView2.
  */
 import { expect, test, type CDPSession, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { api, fixtureRepo, openApp, prepareRuntime } from "./helpers.js";
+import { resolve } from "node:path";
+import { api, evidenceDir, fixtureRepo, openApp, prepareRuntime } from "./helpers.js";
 
-const outDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../docs/perf");
+const outDir = evidenceDir("perf");
 
 async function metrics(cdp: CDPSession): Promise<Record<string, number>> {
   const { metrics: list } = await cdp.send("Performance.getMetrics");
@@ -49,7 +49,7 @@ test("collects performance measurements", async ({ page }) => {
   results.navigation_timing = nav;
 
   // View switching latency (client-side routing, includes lazy chunk load on first visit).
-  const views = ["Projects", "Tasks", "Agent runs", "Worktrees", "Pull requests", "Workflow Studio", "Providers", "Settings", "Overview"];
+  const views = ["Projects", "Tasks", "Worktrees", "Pull requests", "Workflow Studio", "Providers", "Settings", "Overview"];
   const navLatency: Record<string, number> = {};
   for (const label of views) {
     const start = Date.now();

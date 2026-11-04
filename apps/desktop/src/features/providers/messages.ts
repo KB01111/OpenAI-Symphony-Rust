@@ -17,12 +17,26 @@ export const providerMessages = defineMessages({
     binaryPath: "Binary",
     version: "Version",
     installHint: "Install hint",
+    cloud: {
+      title: "Cloud agents",
+      unavailable: "CodeSandbox runtime unavailable",
+      body: "Tasks run in a CodeSandbox microVM with mini-swe-agent (default), the Pi coding agent or Pi Durable. The agent commits and pushes to the task branch after every edit, and the worktree here follows.",
+      needToken: "A CodeSandbox API token (store it above as CSB_API_KEY).",
+      needGithub: "A GitHub token under Settings → Integrations, and a repository whose origin is an https://github.com URL.",
+      needTemplate: "A provisioned CodeSandbox template id in WORKFLOW.md (codesandbox.template_id). Template owners build it separately once.",
+      templateHint: "Build the template",
+      templateEnv:
+        "Set the token in the same terminal first. PowerShell: $env:CSB_API_KEY = \"…\"  ·  cmd.exe: set CSB_API_KEY=…  ·  macOS and Linux: export CSB_API_KEY=…",
+      runnerHint:
+        "Windows installers include the bridge and Node.js. If either is missing, reinstall Symphony Desktop. Source builds may use Node.js >=22.13.0 and SYMPHONY_CODESANDBOX_RUNNER (or codesandbox.runner_path in WORKFLOW.md)."
+    },
     builtin: "Built into the runtime",
     authentication: "Authentication",
     authUnknownHelp:
       "The runtime could not verify sign-in for this CLI. It may still be signed in through its own login; Symphony does not assume it is.",
     authUnauthenticatedHelp: "Sign in with the provider CLI or store an API key below before dispatching tasks.",
     capabilities: "Capabilities",
+    moreDetails: "Capabilities and models",
     capabilitiesLabel: "{provider} capabilities",
     supported: "Supported",
     unsupported: "Not supported",
@@ -88,12 +102,26 @@ export const providerMessages = defineMessages({
     binaryPath: "Binärfil",
     version: "Version",
     installHint: "Installationstips",
+    cloud: {
+      title: "Molnagenter",
+      unavailable: "CodeSandbox-körtiden är inte tillgänglig",
+      body: "Uppgifter körs i en CodeSandbox-mikroVM med mini-swe-agent (standard), kodagenten Pi eller Pi Durable. Agenten committar och pushar till uppgiftens gren efter varje ändring, och arbetsträdet här följer med.",
+      needToken: "En CodeSandbox API-token (spara den ovan som CSB_API_KEY).",
+      needGithub: "En GitHub-token under Inställningar → Integrationer och ett förråd vars origin är en https://github.com-adress.",
+      needTemplate: "Ett färdigt CodeSandbox-mall-id i WORKFLOW.md (codesandbox.template_id). Mallens ägare bygger den separat en gång.",
+      templateHint: "Bygg mallen",
+      templateEnv:
+        "Ange först token i samma terminal. PowerShell: $env:CSB_API_KEY = \"…\"  ·  cmd.exe: set CSB_API_KEY=…  ·  macOS och Linux: export CSB_API_KEY=…",
+      runnerHint:
+        "Windows-installationen innehåller bryggan och Node.js. Installera om Symphony Desktop om de saknas. Källkodsbyggen kan använda Node.js >=22.13.0 och SYMPHONY_CODESANDBOX_RUNNER (eller codesandbox.runner_path i WORKFLOW.md)."
+    },
     builtin: "Inbyggd i körtiden",
     authentication: "Autentisering",
     authUnknownHelp:
       "Körtiden kunde inte verifiera inloggningen för denna CLI. Den kan ändå vara inloggad via sin egen inloggning; Symphony antar inte det.",
     authUnauthenticatedHelp: "Logga in med leverantörens CLI eller spara en API-nyckel nedan innan du startar uppgifter.",
     capabilities: "Förmågor",
+    moreDetails: "Förmågor och modeller",
     capabilitiesLabel: "Förmågor för {provider}",
     supported: "Stöds",
     unsupported: "Stöds inte",

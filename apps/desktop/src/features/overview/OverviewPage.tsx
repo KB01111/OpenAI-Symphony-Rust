@@ -1,26 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button } from "@fluentui/react-components";
 import { Activity, Bot, CheckCircle2, Coins, FolderGit2, HeartPulse, Hourglass, ShieldQuestion, XCircle, Zap } from "lucide-react";
 import { formatMessage, getTranslations, type ApprovalDecision, type ApprovalRequest } from "@symphony/shared-types";
-import {
-  AiApprovalBanner,
-  AiEmptyView,
-  AiEventStreamCard,
-  Duration,
-  ErrorState,
-  LoadingRows,
-  MetricTile,
-  PageHeader,
-  Panel,
-  PhaseBadge,
-  ProviderBadge,
-  StreamingText,
-  TimeAgo,
-  formatCurrency,
-  formatDuration,
-  formatTokens
-} from "@symphony/ui";
+import { AiApprovalBanner, AiEmptyView, AiEventStreamCard, Button, Duration, ErrorState, formatCurrency, formatDuration, formatTokens, LoadingRows, MetricTile, PageHeader, Panel, PhaseBadge, ProviderBadge, StreamingText, TimeAgo, cn } from "@symphony/ui";
 import { paths } from "../../app/routes.js";
 import { useLocale, useMessages } from "../../lib/i18n.js";
 import { useApprovals, useDecideApproval, useProjects, useRecentEvents, useRuntimeState, useTasks } from "../../lib/queries.js";
@@ -29,6 +11,12 @@ import { useRuntime } from "../../runtime/RuntimeProvider.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { overviewMessages } from "./messages.js";
 import { computeOverviewMetrics, recentTimeline } from "./overviewLogic.js";
+
+/**
+ * Columns that only get room on a very wide page. The table shares its row with the approvals panel (it
+ * gets two thirds), and all eight columns need about 1000px, so they return at a 98rem page, not sooner.
+ */
+const OPTIONAL_COLUMN = "hidden @min-[98rem]:table-cell";
 
 const LiveSessions: React.FC = () => {
   const m = useMessages(overviewMessages);
@@ -48,7 +36,7 @@ const LiveSessions: React.FC = () => {
         title={m.live.empty}
         description={m.live.emptyDetail}
         action={
-          <Button appearance="primary" size="small" onClick={() => setNewTaskOpen(true)}>
+          <Button variant="default" size="sm" onClick={() => setNewTaskOpen(true)}>
             {m.live.newTask}
           </Button>
         }
@@ -61,9 +49,18 @@ const LiveSessions: React.FC = () => {
       <table className="w-full text-sm">
         <thead className="sticky top-0 bg-surface text-xs text-muted-foreground">
           <tr className="border-b border-border text-start">
-            {[m.live.task, m.live.project, m.live.provider, m.live.phase, m.live.operation, m.live.duration, m.live.tokens, m.live.lastActivity].map((h) => (
-              <th key={h} scope="col" className="h-8 whitespace-nowrap px-3 text-start font-medium">
-                {h}
+            {[
+              [m.live.task, ""],
+              [m.live.project, OPTIONAL_COLUMN],
+              [m.live.provider, ""],
+              [m.live.phase, ""],
+              [m.live.operation, ""],
+              [m.live.duration, ""],
+              [m.live.tokens, OPTIONAL_COLUMN],
+              [m.live.lastActivity, ""]
+            ].map(([label, extra]) => (
+              <th key={label} scope="col" className={cn("h-8 whitespace-nowrap px-3 text-start font-medium", extra)}>
+                {label}
               </th>
             ))}
           </tr>
@@ -81,7 +78,7 @@ const LiveSessions: React.FC = () => {
               className="h-row cursor-pointer border-b border-border last:border-0 hover:bg-surface-hover"
             >
               <td className="whitespace-nowrap px-3 font-mono text-xs font-medium text-foreground">{s.issue_identifier}</td>
-              <td className="max-w-40 truncate px-3 text-muted-foreground">{projectName.get(s.project_id) ?? "—"}</td>
+              <td className={cn("max-w-40 truncate px-3 text-muted-foreground", OPTIONAL_COLUMN)}>{projectName.get(s.project_id) ?? "—"}</td>
               <td className="px-3">
                 <ProviderBadge provider={s.provider} model={s.model} />
               </td>
@@ -94,7 +91,7 @@ const LiveSessions: React.FC = () => {
               <td className="whitespace-nowrap px-3 text-muted-foreground">
                 <Duration since={s.started_at} />
               </td>
-              <td className="px-3 tabular-nums text-muted-foreground">{formatTokens(s.tokens.total_tokens, locale)}</td>
+              <td className={cn("px-3 tabular-nums text-muted-foreground", OPTIONAL_COLUMN)}>{formatTokens(s.tokens.total_tokens, locale)}</td>
               <td className="px-3 text-muted-foreground">
                 <TimeAgo iso={s.last_event_at} />
               </td>
@@ -135,7 +132,7 @@ const PendingApprovals: React.FC = () => {
           pendingDecision={pending[a.id] ?? null}
           onDecide={onDecide}
           extra={
-            <Button size="small" appearance="subtle" onClick={() => navigate(paths.run(a.task_id))}>
+            <Button size="sm" variant="subtle" onClick={() => navigate(paths.run(a.task_id))}>
               {m.approvals.openTask}
             </Button>
           }
@@ -178,6 +175,7 @@ export default function OverviewPage() {
   const approvals = useApprovals(true);
   const setAddProjectOpen = useUiStore((s) => s.setAddProjectOpen);
   const setTaskFilters = useUiStore((s) => s.setTaskFilters);
+  const setActivityTab = useUiStore((s) => s.setDrawerTab);
 
   const metrics = useMemo(
     () => (state.data ? computeOverviewMetrics(state.data, tasks.data ?? [], streamStatus === "open") : null),
@@ -192,7 +190,7 @@ export default function OverviewPage() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader title={m.title} description={m.description} />
-      <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
+      <div className="@container min-h-0 flex-1 space-y-3 overflow-auto p-4">
         {state.isError ? <ErrorState title={m.metrics.health} message={state.error.message} onRetry={() => void state.refetch()} /> : null}
         {projects.data && projects.data.length === 0 ? (
           <AiEmptyView
@@ -200,7 +198,7 @@ export default function OverviewPage() {
             title={m.onboarding.title}
             description={m.onboarding.detail}
             action={
-              <Button appearance="primary" size="small" onClick={() => setAddProjectOpen(true)}>
+              <Button variant="default" size="sm" onClick={() => setAddProjectOpen(true)}>
                 {m.onboarding.action}
               </Button>
             }
@@ -210,7 +208,7 @@ export default function OverviewPage() {
         {!metrics ? (
           <LoadingRows rows={2} />
         ) : (
-          <section aria-label={m.title} className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5 xl:[&>*:last-child]:col-span-2 2xl:grid-cols-9 2xl:[&>*:last-child]:col-span-1">
+          <section aria-label={m.title} className="grid grid-cols-2 gap-2 @2xl:grid-cols-3 @5xl:grid-cols-5 @5xl:[&>*:last-child]:col-span-2 @7xl:grid-cols-9 @7xl:[&>*:last-child]:col-span-1">
             <MetricTile
               label={m.metrics.activeAgents}
               icon={<Bot className="size-3.5" aria-hidden />}
@@ -231,7 +229,10 @@ export default function OverviewPage() {
               icon={<ShieldQuestion className="size-3.5" aria-hidden />}
               value={approvals.data ? approvals.data.length : "—"}
               tone={(approvals.data?.length ?? 0) > 0 ? "warning" : "neutral"}
-              onClick={() => useUiStore.getState().setDrawerTab("approvals")}
+              onClick={() => {
+                setActivityTab("approvals");
+                navigate(paths.activity());
+              }}
             />
             <MetricTile
               label={m.metrics.failed}
@@ -276,7 +277,7 @@ export default function OverviewPage() {
           </section>
         )}
 
-        <div className="grid min-h-0 gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
+        <div className="grid min-h-0 gap-3 @5xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
           <Panel title={m.live.title} className="min-h-56">
             <LiveSessions />
           </Panel>

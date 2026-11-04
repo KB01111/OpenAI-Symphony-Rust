@@ -150,6 +150,7 @@ fn response_schemas_require_every_field() {
                 "backup_interval_hours",
                 "backup_keep",
                 "pr_refresh_interval_minutes",
+                "default_cloud_agent",
             ],
             _ => &[],
         };

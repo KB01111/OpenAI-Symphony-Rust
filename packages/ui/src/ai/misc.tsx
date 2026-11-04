@@ -1,12 +1,11 @@
 import React from "react";
-import { Button } from "@openai/apps-sdk-ui/components/Button";
-import { EmptyMessage } from "@openai/apps-sdk-ui/components/EmptyMessage";
-import { SegmentedControl } from "@openai/apps-sdk-ui/components/SegmentedControl";
-import { ShimmerText } from "@openai/apps-sdk-ui/components/ShimmerText";
-import { Textarea } from "@openai/apps-sdk-ui/components/Textarea";
 import { Sparkles } from "lucide-react";
 import { cn } from "../lib/utils.js";
 import { useUiStrings } from "../i18n.js";
+import { Button } from "../primitives/button.js";
+import { Spinner } from "../primitives/spinner.js";
+import { Textarea } from "../primitives/input.js";
+import { ToggleGroup, ToggleGroupItem } from "../primitives/toggle-group.js";
 
 export interface AiEmptyViewProps {
   title: string;
@@ -18,13 +17,15 @@ export interface AiEmptyViewProps {
 
 /** Empty state for agent-related surfaces (no runs, no events, no approvals…). */
 export const AiEmptyView: React.FC<AiEmptyViewProps> = ({ title, description, icon, action, className }) => (
-  <div className={cn("flex min-h-40 items-center justify-center rounded-md border border-dashed border-border p-6", className)}>
-    <EmptyMessage fill="none">
-      <EmptyMessage.Icon>{icon ?? <Sparkles className="size-6 text-accent" aria-hidden />}</EmptyMessage.Icon>
-      <EmptyMessage.Title>{title}</EmptyMessage.Title>
-      {description ? <EmptyMessage.Description>{description}</EmptyMessage.Description> : null}
-      {action ? <EmptyMessage.ActionRow>{action}</EmptyMessage.ActionRow> : null}
-    </EmptyMessage>
+  <div className={cn("flex min-h-40 items-center justify-center rounded-xl border border-dashed border-border p-6", className)}>
+    <div className="flex max-w-sm flex-col items-center gap-2 text-center">
+      <span className="flex size-10 items-center justify-center rounded-full bg-accent-subtle" aria-hidden>
+        {icon ?? <Sparkles className="size-5 text-accent" />}
+      </span>
+      <p className="text-sm font-medium text-foreground">{title}</p>
+      {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
+      {action ? <div className="mt-1 flex flex-wrap justify-center gap-2">{action}</div> : null}
+    </div>
   </div>
 );
 
@@ -33,18 +34,19 @@ export interface LogModeSwitchProps {
   onChange: (mode: "concise" | "technical") => void;
 }
 
+/** Concise / Technical toggle: a fixed-width segmented control that never overlaps its labels. */
 export const LogModeSwitch: React.FC<LogModeSwitchProps> = ({ value, onChange }) => {
   const { ui } = useUiStrings();
   return (
-    <SegmentedControl
+    <ToggleGroup
+      type="single"
       aria-label={`${ui.concise} / ${ui.technical}`}
       value={value}
-      onChange={(next) => onChange(next as "concise" | "technical")}
-      size="sm"
+      onValueChange={(next) => next && onChange(next as "concise" | "technical")}
     >
-      <SegmentedControl.Option value="concise">{ui.concise}</SegmentedControl.Option>
-      <SegmentedControl.Option value="technical">{ui.technical}</SegmentedControl.Option>
-    </SegmentedControl>
+      <ToggleGroupItem value="concise">{ui.concise}</ToggleGroupItem>
+      <ToggleGroupItem value="technical">{ui.technical}</ToggleGroupItem>
+    </ToggleGroup>
   );
 };
 
@@ -53,7 +55,7 @@ export const StreamingText: React.FC<{ children: React.ReactNode; active?: boole
   children,
   active = true,
   className
-}) => (active ? <ShimmerText as="span" className={className}>{children}</ShimmerText> : <span className={className}>{children}</span>);
+}) => <span className={cn(active && "animate-pulse", className)}>{children}</span>;
 
 export interface PromptComposerBoxProps {
   value: string;
@@ -92,13 +94,13 @@ export const PromptComposerBox: React.FC<PromptComposerBoxProps> = ({
       }}
       placeholder={placeholder}
       rows={rows}
-      autoResize
-      maxRows={14}
       disabled={disabled}
+      className="max-h-80 [field-sizing:content]"
     />
     {onSubmit && submitLabel ? (
       <div className="flex justify-end">
-        <Button color="primary" size="sm" onClick={onSubmit} disabled={disabled || submitting || !value.trim()} loading={submitting}>
+        <Button variant="default" size="sm" onClick={onSubmit} disabled={disabled || submitting || !value.trim()}>
+          {submitting ? <Spinner className="size-3.5 text-current" /> : null}
           {submitLabel}
         </Button>
       </div>

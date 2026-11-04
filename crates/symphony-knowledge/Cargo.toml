@@ -1,0 +1,27 @@
+[package]
+name = "symphony-knowledge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+utoipa.workspace = true
+symphony-core.workspace = true
+symphony-workspaces.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tracing.workspace = true
+notify.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+async-trait.workspace = true

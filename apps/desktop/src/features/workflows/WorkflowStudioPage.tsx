@@ -1,38 +1,10 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker } from "react-router-dom";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import {
-  Button,
-  MessageBar,
-  MessageBarActions,
-  MessageBarBody,
-  MessageBarTitle,
-  Spinner,
-  Tab,
-  TabList,
-  Toolbar,
-  ToolbarButton,
-  Tooltip
-} from "@fluentui/react-components";
 import { AlertCircle, CheckCircle2, RotateCcw, Save } from "lucide-react";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage, type ServiceConfig, type WorkflowValidation } from "@symphony/shared-types";
-import {
-  AiEmptyView,
-  ConfirmDialog,
-  ErrorState,
-  KeyValueList,
-  LoadingRows,
-  PageHeader,
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-  SdkCodeBlock,
-  SdkCopyButton,
-  SdkMarkdown,
-  useDefaultLayout,
-  useNotify
-} from "@symphony/ui";
+import { AiEmptyView, Alert, Button, CodeBlock, ConfirmDialog, CopyButton, ErrorState, Hint, KeyValueList, LoadingRows, Markdown, PageHeader, ResizableHandle, ResizablePanel, ResizablePanelGroup, Spinner, Tabs, TabsList, TabsTrigger, useDefaultLayout, useNotify } from "@symphony/ui";
 import { useMessages } from "../../lib/i18n.js";
 import { useSaveWorkflow, useWorkflow } from "../../lib/queries.js";
 import { useClient } from "../../runtime/RuntimeProvider.js";
@@ -88,22 +60,14 @@ const ValidationTab: React.FC<{
   if (!validation) return <LoadingRows className="p-3" rows={3} label={m.validation.validatingTitle} />;
   if (validation.valid) {
     return (
-      <MessageBar intent="success" className="m-3">
-        <MessageBarBody>
-          <MessageBarTitle>{m.validation.validTitle}</MessageBarTitle>
-          {m.validation.validBody}
-        </MessageBarBody>
-      </MessageBar>
+      <Alert intent="success" title={m.validation.validTitle} className="m-3">
+        {m.validation.validBody}
+      </Alert>
     );
   }
   return (
     <div className="space-y-2 p-3" aria-busy={validating}>
-      <MessageBar intent="error">
-        <MessageBarBody>
-          <MessageBarTitle>{m.validation.invalidTitle}</MessageBarTitle>
-          {m.validation.invalidBody}
-        </MessageBarBody>
-      </MessageBar>
+      <Alert intent="error" title={m.validation.invalidTitle}>{m.validation.invalidBody}</Alert>
       <ul className="space-y-2">
         {diagnostics.map((d, index) => (
           <li key={index} className="space-y-1 rounded-md border border-border bg-surface p-2 text-sm">
@@ -111,7 +75,7 @@ const ValidationTab: React.FC<{
               <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
               <p className="min-w-0 flex-1 text-foreground">{diagnosticText(m, d)}</p>
               {d.line !== null ? (
-                <Button size="small" appearance="subtle" onClick={() => onGoTo(d)}>
+                <Button size="sm" variant="subtle" onClick={() => onGoTo(d)}>
                   {formatMessage(m.validation.goToLine, { line: d.line })}
                 </Button>
               ) : null}
@@ -165,7 +129,7 @@ const ConfigTab: React.FC<{ m: Messages; config: ServiceConfig | null | undefine
       />
       <details>
         <summary className="cursor-pointer text-xs text-muted-foreground">{m.config.json}</summary>
-        <SdkCodeBlock language="json">{JSON.stringify(config, null, 2)}</SdkCodeBlock>
+        <CodeBlock language="json">{JSON.stringify(config, null, 2)}</CodeBlock>
       </details>
     </div>
   );
@@ -177,10 +141,10 @@ const PromptTab: React.FC<{ m: Messages; prompt: string | null | undefined }> = 
     <div className="space-y-2 p-3">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">{m.prompt.sampleNote}</p>
-        <SdkCopyButton copyValue={prompt} aria-label={m.prompt.copy} size="sm" variant="ghost" color="secondary" />
+        <CopyButton value={prompt} label={m.prompt.copy} />
       </div>
       <div className="rounded-md border border-border bg-surface p-3 text-sm">
-        <SdkMarkdown>{prompt}</SdkMarkdown>
+        <Markdown>{prompt}</Markdown>
       </div>
     </div>
   );
@@ -280,7 +244,7 @@ export default function WorkflowStudioPage() {
 
   const status = validating ? (
     <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-      <Spinner size="extra-tiny" /> {m.state.validating}
+      <Spinner /> {m.state.validating}
     </span>
   ) : preview.isError ? (
     <span className="text-xs text-warning">{m.state.previewFailed}</span>
@@ -306,23 +270,25 @@ export default function WorkflowStudioPage() {
           </span>
         }
         actions={
-          <Toolbar aria-label={m.toolbar.label} size="small">
-            <Tooltip content={saveBlockedReason ?? m.toolbar.saveHint} relationship="description">
-              <ToolbarButton
-                appearance="primary"
-                icon={save.isPending ? <Spinner size="extra-tiny" /> : <Save className="size-4" />}
-                disabledFocusable={Boolean(saveBlockedReason) || save.isPending}
+          <div role="toolbar" aria-label={m.toolbar.label} className="flex items-center gap-1.5">
+            <Hint label={saveBlockedReason ?? m.toolbar.saveHint}>
+              <Button
+                size="sm"
+                variant="default"
+                aria-disabled={Boolean(saveBlockedReason) || save.isPending ? true : undefined}
                 onClick={doSave}
               >
+                {save.isPending ? <Spinner className="text-current" /> : <Save />}
                 {save.isPending ? m.toolbar.saving : m.toolbar.save}
-              </ToolbarButton>
-            </Tooltip>
-            <Tooltip content={m.toolbar.revertHint} relationship="description">
-              <ToolbarButton icon={<RotateCcw className="size-4" />} disabled={!dirty || save.isPending} onClick={() => setConfirm("revert")}>
+              </Button>
+            </Hint>
+            <Hint label={m.toolbar.revertHint}>
+              <Button size="sm" disabled={!dirty || save.isPending} onClick={() => setConfirm("revert")}>
+                <RotateCcw />
                 {m.toolbar.revert}
-              </ToolbarButton>
-            </Tooltip>
-          </Toolbar>
+              </Button>
+            </Hint>
+          </div>
         }
       />
       <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface px-4 py-1 text-xs">
@@ -338,28 +304,22 @@ export default function WorkflowStudioPage() {
         )}
       </div>
       {diskVersion !== null ? (
-        <MessageBar intent="warning" className="mx-4 mt-2 shrink-0">
-          <MessageBarBody>
-            <MessageBarTitle>{m.external.title}</MessageBarTitle>
-            {m.external.body}
-          </MessageBarBody>
-          <MessageBarActions>
-            <Button size="small" onClick={() => setConfirm("reload")}>
+        <Alert intent="warning" title={m.external.title} className="mx-4 mt-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="min-w-0 flex-1">{m.external.body}</span>
+            <Button size="sm" onClick={() => setConfirm("reload")}>
               {m.external.reload}
             </Button>
-            <Button size="small" appearance="subtle" onClick={() => setDiskVersion(null)}>
+            <Button size="sm" variant="subtle" onClick={() => setDiskVersion(null)}>
               {m.external.keep}
             </Button>
-          </MessageBarActions>
-        </MessageBar>
+          </div>
+        </Alert>
       ) : null}
       {doc.data && !doc.data.valid && doc.data.error && !dirty ? (
-        <MessageBar intent="error" className="mx-4 mt-2 shrink-0">
-          <MessageBarBody>
-            <MessageBarTitle>{m.validation.runtimeWarningTitle}</MessageBarTitle>
-            {doc.data.error}
-          </MessageBarBody>
-        </MessageBar>
+        <Alert intent="error" title={m.validation.runtimeWarningTitle} className="mx-4 mt-2 shrink-0">
+          {doc.data.error}
+        </Alert>
       ) : null}
       <div className="min-h-0 flex-1 p-2">
         <ResizablePanelGroup orientation="horizontal" id="symphony-workflow" {...layout}>
@@ -375,11 +335,13 @@ export default function WorkflowStudioPage() {
           <ResizableHandle />
           <ResizablePanel id="inspect" defaultSize="42" minSize="24">
             <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-border bg-surface" aria-label={m.tabs.label}>
-              <TabList size="small" selectedValue={tab} onTabSelect={(_, d) => setTab(d.value as InspectTab)} aria-label={m.tabs.label} className="shrink-0 border-b border-border">
-                <Tab value="validation">{m.tabs.validation}</Tab>
-                <Tab value="config">{m.tabs.config}</Tab>
-                <Tab value="prompt">{m.tabs.prompt}</Tab>
-              </TabList>
+              <Tabs value={tab} onValueChange={(v) => setTab(v as InspectTab)} className="shrink-0">
+                <TabsList aria-label={m.tabs.label}>
+                  <TabsTrigger value="validation">{m.tabs.validation}</TabsTrigger>
+                  <TabsTrigger value="config">{m.tabs.config}</TabsTrigger>
+                  <TabsTrigger value="prompt">{m.tabs.prompt}</TabsTrigger>
+                </TabsList>
+              </Tabs>
               <div className="min-h-0 flex-1 overflow-auto">
                 {tab === "validation" ? (
                   <ValidationTab

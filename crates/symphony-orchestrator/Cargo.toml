@@ -10,6 +10,7 @@ utoipa.workspace = true
 symphony-core = { path = "../symphony-core" }
 symphony-storage = { path = "../symphony-storage" }
 symphony-workspaces = { path = "../symphony-workspaces" }
+symphony-knowledge = { path = "../symphony-knowledge" }
 symphony-trackers = { path = "../symphony-trackers" }
 symphony-agents = { path = "../symphony-agents" }
 symphony-platform = { path = "../symphony-platform" }

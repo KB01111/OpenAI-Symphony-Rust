@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Tooltip } from "@fluentui/react-components";
+import { Hint } from "../primitives/tooltip.js";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { formatMessage, getTranslations, type HardwareSnapshot } from "@symphony/shared-types";
 import { BatteryCharging, BatteryMedium, Cpu, Flame, MemoryStick, Plug } from "lucide-react";
@@ -212,18 +212,18 @@ export const HardwareTelemetryStrip: React.FC<{ hardware: HardwareSnapshot; clas
   const chip = "inline-flex items-center gap-1 px-1.5 tabular-nums";
   return (
     <div className={cn("flex items-center gap-2 text-xs text-muted-foreground", className)}>
-      <Tooltip content={hardware.cpu_brand || ui.cpu} relationship="description">
+      <Hint label={hardware.cpu_brand || ui.cpu}>
         <span className={chip}>
           <Cpu className="size-3.5" aria-hidden />
           {ui.cpu} {hardware.cpu_usage_percent.toFixed(0)}%
         </span>
-      </Tooltip>
-      <Tooltip content={memory} relationship="description">
+      </Hint>
+      <Hint label={memory}>
         <span className={cn(chip, hardware.memory_usage_percent > 85 && "text-warning")}>
           <MemoryStick className="size-3.5" aria-hidden />
           {ui.ram} {hardware.memory_usage_percent.toFixed(0)}%
         </span>
-      </Tooltip>
+      </Hint>
       <span className={chip}>
         {hardware.on_battery ? <BatteryMedium className="size-3.5" aria-hidden /> : hardware.battery_percent != null ? <BatteryCharging className="size-3.5" aria-hidden /> : <Plug className="size-3.5" aria-hidden />}
         {hardware.on_battery
@@ -238,9 +238,9 @@ export const HardwareTelemetryStrip: React.FC<{ hardware: HardwareSnapshot; clas
           {ui.throttled}
         </span>
       ) : null}
-      <Tooltip content={hardware.dispatch_delayed_reason ?? formatMessage(ui.maxAgents, { count: hardware.recommended_max_concurrency })} relationship="description">
+      <Hint label={hardware.dispatch_delayed_reason ?? formatMessage(ui.maxAgents, { count: hardware.recommended_max_concurrency })}>
         <span className={chip}>{formatMessage(ui.maxAgents, { count: hardware.effective_max_concurrency })}</span>
-      </Tooltip>
+      </Hint>
     </div>
   );
 };

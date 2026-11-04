@@ -1,19 +1,27 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button, Dropdown, Option, Tab, TabList, Tooltip } from "@fluentui/react-components";
 import { MonitorPlay, Play, RotateCcw, Square } from "lucide-react";
 import { ALL_PROVIDERS, formatMessage, isActivePhase, type ProviderCapabilities, type ProviderKind } from "@symphony/shared-types";
 import {
   AiEmptyView,
+  Badge,
+  Button,
   ConfirmDialog,
   Duration,
   ErrorState,
+  Hint,
   LoadingRows,
-  PageHeader,
   PhaseBadge,
   ProviderBadge,
-  SdkBadge,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   StreamingText,
+  Tabs,
+  TabsList,
+  TabsTrigger,
   TaskStatusBadge,
   TimeAgo,
   VirtualList,
@@ -34,7 +42,6 @@ import {
   useRuntimeState,
   useTasks
 } from "../../lib/queries.js";
-import { useUiStore } from "../../store/uiStore.js";
 import {
   AGENT_GROUP_BY,
   AGENT_SEGMENTS,
@@ -57,9 +64,7 @@ interface RowProps {
   row: AgentRow;
   projectName: string | null;
   capabilities: ProviderCapabilities | undefined;
-  selected: boolean;
   busy: boolean;
-  onSelect: (row: AgentRow) => void;
   onOpen: (row: AgentRow) => void;
   onDispatch: (row: AgentRow) => void;
   onRetry: (row: AgentRow) => void;
@@ -70,9 +75,7 @@ const AgentRunRow = React.memo(function AgentRunRow({
   row,
   projectName,
   capabilities,
-  selected,
   busy,
-  onSelect,
   onOpen,
   onDispatch,
   onRetry,
@@ -83,56 +86,47 @@ const AgentRunRow = React.memo(function AgentRunRow({
   const allowed = rowActions(row, capabilities);
   const finished = FINISHED_SEGMENTS.includes(row.segment);
   const iconButton = (label: string, icon: React.ReactElement, onClick: () => void, primary = false) => (
-    <Tooltip content={label} relationship="label">
+    <Hint label={label} asLabel>
       <Button
-        size="small"
-        appearance={primary ? "primary" : "subtle"}
-        icon={icon}
+        size="sm"
+        variant={primary ? "default" : "subtle"}
         disabled={busy}
         onClick={(e) => {
           e.stopPropagation();
           onClick();
-        }}
-      />
-    </Tooltip>
+        }}>{icon}</Button>
+    </Hint>
   );
 
   return (
     <div
       role="group"
       aria-label={`${row.identifier} ${row.title ?? ""}`.trim()}
-      aria-current={selected ? "true" : undefined}
-      tabIndex={0}
-      onClick={() => onSelect(row)}
-      onDoubleClick={() => onOpen(row)}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if (e.key === "Enter") {
-          e.preventDefault();
-          onOpen(row);
-        } else if (e.key === " ") {
-          e.preventDefault();
-          onSelect(row);
-        }
-      }}
-      className={cn(
-        "flex cursor-default items-start gap-3 border-b border-border px-4 py-2 outline-none hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:ring-1 focus-visible:ring-accent",
-        selected && "bg-surface-selected"
-      )}
+      onClick={() => onOpen(row)}
+      className="flex cursor-pointer items-start gap-3 border-b border-border px-4 py-2 hover:bg-surface-hover focus-within:bg-surface-hover"
     >
       <div className="min-w-0 flex-1 space-y-1">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           <span className="font-mono text-xs text-muted-foreground">{row.identifier}</span>
-          <span className="min-w-0 max-w-[32rem] truncate text-sm font-medium text-foreground" title={row.title ?? undefined}>
+          {/* The title is the keyboard and screen-reader target; clicking elsewhere on the row is a mouse shortcut. */}
+          <button
+            type="button"
+            className="min-w-0 max-w-[32rem] truncate rounded-sm text-start text-sm font-medium text-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent"
+            title={row.title ?? undefined}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen(row);
+            }}
+          >
             {row.title ?? m.row.unknownTitle}
-          </span>
+          </button>
           {row.status ? <TaskStatusBadge status={row.status} /> : null}
           {row.phase && (row.live || !finished) ? <PhaseBadge phase={row.phase} /> : null}
           {row.provider ? <ProviderBadge provider={row.provider} model={row.model} /> : null}
           {row.pendingApprovals > 0 ? (
-            <SdkBadge variant="soft" color="warning" size="sm" pill>
+            <Badge tone="warning">
               {formatMessage(m.row.pendingApprovals, { count: row.pendingApprovals })}
-            </SdkBadge>
+            </Badge>
           ) : null}
         </div>
         <dl className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
@@ -207,7 +201,13 @@ const AgentRunRow = React.memo(function AgentRunRow({
           </p>
         ) : null}
       </div>
-      <div role="toolbar" aria-label={formatMessage(m.actions.label, { identifier: row.identifier })} className="flex shrink-0 items-center gap-0.5">
+      {/* Clicks here never open the run: a disabled button (pointer-events: none) would otherwise let them fall through to the row. */}
+      <div
+        role="toolbar"
+        aria-label={formatMessage(m.actions.label, { identifier: row.identifier })}
+        className="flex shrink-0 items-center gap-0.5"
+        onClick={(e) => e.stopPropagation()}
+      >
         {allowed.dispatch ? iconButton(m.actions.dispatch, <Play className="size-4" />, () => onDispatch(row), true) : null}
         {allowed.retry ? iconButton(m.actions.retry, <RotateCcw className="size-4" />, () => onRetry(row)) : null}
         {allowed.cancel ? iconButton(m.actions.cancel, <Square className="size-4" />, () => onCancel(row)) : null}
@@ -217,8 +217,8 @@ const AgentRunRow = React.memo(function AgentRunRow({
   );
 });
 
-/** Agent Runs control center (`/runs`): live sessions, retry queue, queued and recently finished runs. */
-export default function AgentsPage() {
+/** The Runs view of the Tasks page: live sessions, retry queue, queued and recently finished runs. */
+export default function AgentRunsView({ onShowTasks }: { onShowTasks?: () => void } = {}) {
   const m = useMessages(agentsMessages);
   const t = useT();
   const navigate = useNavigate();
@@ -228,8 +228,6 @@ export default function AgentsPage() {
   const approvals = useApprovals(true);
   const projects = useProjects();
   const providers = useProviders();
-  const inspector = useUiStore((s) => s.inspector);
-  const inspect = useUiStore((s) => s.inspect);
   const dispatch = useDispatchTask();
   const retry = useRetryTask();
   const cancel = useCancelTask();
@@ -273,9 +271,7 @@ export default function AgentsPage() {
 
   const pendingTaskId =
     (dispatch.isPending && dispatch.variables) || (retry.isPending && retry.variables) || (cancel.isPending && cancel.variables) || null;
-  const selectedTaskId = inspector?.kind === "task" ? inspector.id : null;
 
-  const onSelect = useCallback((row: AgentRow) => inspect({ kind: "task", id: row.taskId }), [inspect]);
   const onOpen = useCallback((row: AgentRow) => navigate(paths.run(row.taskId)), [navigate]);
   const onDispatch = useCallback((row: AgentRow) => !dispatch.isPending && dispatch.mutate(row.taskId), [dispatch]);
   const onRetry = useCallback((row: AgentRow) => !retry.isPending && retry.mutate(row.taskId), [retry]);
@@ -316,7 +312,7 @@ export default function AgentsPage() {
           title={m.empty.title}
           description={m.empty.description}
           action={
-            <Button size="small" appearance="primary" onClick={() => navigate(paths.tasks())}>
+            <Button size="sm" variant="default" onClick={() => (onShowTasks ? onShowTasks() : navigate(paths.tasks()))}>
               {m.empty.cta}
             </Button>
           }
@@ -350,9 +346,7 @@ export default function AgentsPage() {
               row={item.row}
               projectName={item.row.projectId ? (projectNames.get(item.row.projectId) ?? null) : null}
               capabilities={item.row.provider ? capabilities.get(item.row.provider) : undefined}
-              selected={selectedTaskId === item.row.taskId}
               busy={pendingTaskId === item.row.taskId}
-              onSelect={onSelect}
               onOpen={onOpen}
               onDispatch={onDispatch}
               onRetry={onRetry}
@@ -366,48 +360,34 @@ export default function AgentsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader
-        title={m.title}
-        description={formatMessage(m.description, {
-          running: counts.running,
-          approval: counts.approval,
-          retrying: counts.retrying,
-          queued: counts.queued
-        })}
-      />
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface px-2 py-1">
-        <TabList
-          size="small"
-          selectedValue={filter}
-          onTabSelect={(_, d) => setFilter(d.value as SegmentFilter)}
-          aria-label={m.segmentTabs}
-          className="min-w-0 flex-1 flex-wrap"
-        >
-          <Tab value="all">
-            {m.all} <span className="tabular-nums text-subtle-foreground">{rows.length}</span>
-          </Tab>
-          {AGENT_SEGMENTS.map((s) => (
-            <Tab key={s} value={s}>
-              {m.segments[s]} <span className="tabular-nums text-subtle-foreground">{counts[s]}</span>
-            </Tab>
-          ))}
-        </TabList>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span id="agents-group-by">{m.groupByLabel}</span>
-          <Dropdown
-            size="small"
-            className="!min-w-0 w-32"
-            aria-labelledby="agents-group-by"
-            value={m.groupBy[groupBy]}
-            selectedOptions={[groupBy]}
-            onOptionSelect={(_, d) => d.optionValue && setGroupBy(d.optionValue as AgentGroupBy)}
-          >
-            {AGENT_GROUP_BY.map((g) => (
-              <Option key={g} value={g}>
-                {m.groupBy[g]}
-              </Option>
+        <Tabs value={filter} onValueChange={(v) => setFilter(v as SegmentFilter)} className="min-w-0 flex-1">
+          <TabsList aria-label={m.segmentTabs} className="flex-wrap border-b-0 px-0">
+            <TabsTrigger value="all">
+              {m.all} <span className="tabular-nums text-subtle-foreground">{rows.length}</span>
+            </TabsTrigger>
+            {/* Empty segments are noise; the selected one stays so the filter can be left. */}
+            {AGENT_SEGMENTS.filter((s) => counts[s] > 0 || s === filter).map((s) => (
+              <TabsTrigger key={s} value={s}>
+                {m.segments[s]} <span className="tabular-nums text-subtle-foreground">{counts[s]}</span>
+              </TabsTrigger>
             ))}
-          </Dropdown>
+          </TabsList>
+        </Tabs>
+        <div className={cn("flex items-center gap-2 text-xs text-muted-foreground", rows.length === 0 && "hidden")}>
+          <span id="agents-group-by">{m.groupByLabel}</span>
+          <Select value={groupBy} onValueChange={(v) => setGroupBy(v as AgentGroupBy)}>
+            <SelectTrigger className="w-36" aria-labelledby="agents-group-by">
+              <SelectValue>{m.groupBy[groupBy]}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {AGENT_GROUP_BY.map((g) => (
+                <SelectItem key={g} value={g}>
+                  {m.groupBy[g]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
       {FINISHED_SEGMENTS.includes(filter as AgentSegment) ? (

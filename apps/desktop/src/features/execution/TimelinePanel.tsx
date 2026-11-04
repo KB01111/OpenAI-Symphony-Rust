@@ -1,5 +1,4 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import { Button, ToggleButton } from "@fluentui/react-components";
 import { ArrowDownToLine, History } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { formatMessage, isActivePhase, type AgentEvent, type ApprovalDecision, type ApprovalRequest, type Task } from "@symphony/shared-types";
@@ -7,6 +6,7 @@ import {
   AiApprovalBanner,
   AiEmptyView,
   AiEventStreamCard,
+  Button,
   ErrorState,
   EVENT_KINDS,
   LoadingRows,
@@ -20,7 +20,7 @@ import { useApprovals, useDecideApproval, useOlderTaskEvents, useTaskEventHistor
 import { useEventStore } from "../../runtime/eventStore.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { executionMessages } from "./messages.js";
-import { buildTaskTimeline, countByKind, filterByKinds, toggleKind, unseenSince, type PauseAnchor } from "./timeline.js";
+import { buildTaskTimeline, countByKind, filterByKinds, isProtocolNoise, toggleKind, unseenSince, type PauseAnchor } from "./timeline.js";
 
 /** Pending approvals for one task, pinned above the timeline. One decision in flight per approval. */
 const TaskApprovals: React.FC<{ taskId: string }> = ({ taskId }) => {
@@ -100,7 +100,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
     () => (older.older.length > 0 ? [...(history.data ?? []), ...older.older] : history.data),
     [history.data, older.older]
   );
-  const all = useMemo(() => buildTaskTimeline(task.id, persisted, live), [task.id, persisted, live]);
+  const merged = useMemo(() => buildTaskTimeline(task.id, persisted, live), [task.id, persisted, live]);
+  const all = useMemo(() => (logMode === "concise" ? merged.filter((e) => !isProtocolNoise(e)) : merged), [merged, logMode]);
   const counts = useMemo(() => countByKind(all), [all]);
   const visible = useMemo(() => filterByKinds(all, hidden), [all, hidden]);
   // The pause baseline is taken from the unfiltered timeline, so changing kind filters while
@@ -134,19 +135,19 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
         <span className="text-xs tabular-nums text-muted-foreground">{formatMessage(m.timeline.events, { count: all.length })}</span>
         <div role="group" aria-label={m.timeline.filters} className="ms-auto flex flex-wrap items-center gap-1">
           {chips.map((kind) => (
-            <ToggleButton
+            <Button
               key={kind}
-              size="small"
-              shape="circular"
-              appearance={hidden.has(kind) ? "outline" : "secondary"}
-              checked={!hidden.has(kind)}
+              size="sm"
+              variant={hidden.has(kind) ? "outline" : "secondary"}
+              className="h-6 rounded-full px-2"
+              aria-pressed={!hidden.has(kind)}
               onClick={() => setHidden((h) => toggleKind(h, kind))}
             >
               {formatMessage(m.timeline.kindCount, { label: m.timeline.kinds[kind], count: counts[kind] })}
-            </ToggleButton>
+            </Button>
           ))}
           {hidden.size > 0 ? (
-            <Button size="small" appearance="subtle" onClick={() => setHidden(new Set())}>
+            <Button size="sm" variant="subtle" onClick={() => setHidden(new Set())}>
               {m.timeline.showAll}
             </Button>
           ) : null}
@@ -165,12 +166,12 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
       {older.hasMore && history.data ? (
         <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1 text-xs text-muted-foreground">
           <Button
-            size="small"
-            appearance="subtle"
-            icon={<History className="size-4" />}
+            size="sm"
+            variant="subtle"
             disabled={older.loading}
             onClick={() => void older.loadOlder()}
           >
+            <History />
             {older.loading ? m.timeline.loadingOlder : m.timeline.loadOlder}
           </Button>
           {older.error ? (
@@ -207,12 +208,12 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
           <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
             <Button
               className="pointer-events-auto shadow-md"
-              size="small"
-              appearance="primary"
-              shape="circular"
-              icon={<ArrowDownToLine className="size-4" />}
+              size="sm"
+              variant="default"
+             
               onClick={jumpToLatest}
             >
+              <ArrowDownToLine />
               {unseen > 0 ? formatMessage(m.timeline.jumpNew, { count: unseen }) : m.timeline.jump}
             </Button>
           </div>

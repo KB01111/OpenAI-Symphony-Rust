@@ -1,14 +1,15 @@
 /**
- * Captures the documentation screenshots (docs/screenshots) from the real UI and runtime with
- * seeded simulated-agent data, in light and dark themes and at several window sizes.
+ * Captures the documentation screenshots from the real UI and runtime with seeded simulated-agent
+ * data, in light and dark themes and at several window sizes. They go to
+ * target/e2e-evidence/screenshots, or to docs/screenshots when SYMPHONY_UPDATE_DOCS=1
+ * (see `evidenceDir`).
  */
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { api, fixtureRepo, openApp, prepareRuntime } from "./helpers.js";
+import { join } from "node:path";
+import { api, evidenceDir, fixtureRepo, openApp, prepareRuntime } from "./helpers.js";
 
-const outDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "docs", "screenshots");
+const outDir = evidenceDir("screenshots");
 
 interface Project {
   id: string;
@@ -69,6 +70,7 @@ const VIEWS: [string, () => string, (page: Page) => Promise<void>][] = [
   ["overview", () => "/overview", (p) => expect(p.getByText("Live agent activity")).toBeVisible()],
   ["projects", () => "/projects", (p) => expect(p.getByRole("main").getByText("E2E fixture").first()).toBeVisible()],
   ["task-board", () => "/tasks", (p) => expect(p.getByText("Speed up provider detection").first()).toBeVisible()],
+  ["task-runs", () => "/tasks?view=runs", (p) => expect(p.getByRole("button", { name: "Run the full test suite before merging" })).toBeVisible()],
   ["agent-execution", () => `/runs/${runningTask.id}`, (p) => expect(p.getByRole("button", { name: "Approve once" }).first()).toBeVisible()],
   ["pr-review", () => `/reviews/${reviewId}`, (p) => expect(p.getByRole("main").getByText(reviewTitle).first()).toBeVisible()],
   ["workflow-studio", () => "/workflow", (p) => expect(p.getByText("Workflow is valid").or(p.getByText("Workflow has errors")).first()).toBeVisible()],
@@ -97,10 +99,8 @@ for (const [width, height] of [
 
 test("task board at minimum window size (960x640)", async ({ page }) => {
   await page.setViewportSize({ width: 960, height: 640 });
-  // A first launch on a small window leaves the width to the board; the inspector opens on selection.
-  await openApp(page, "/tasks", { theme: "light", inspectorOpen: null });
-  const inspectorWidth = async () => (await page.getByRole("complementary", { name: "Inspector" }).boundingBox())?.width ?? 0;
-  await expect.poll(inspectorWidth).toBeLessThan(8);
+  await openApp(page, "/tasks", { theme: "light" });
+  await expect(page.getByText("Speed up provider detection").first()).toBeVisible();
   await page.waitForTimeout(600);
   await page.screenshot({ path: join(outDir, "task-board-960x640-light.png") });
 });

@@ -1,7 +1,6 @@
 import React from "react";
-import { Tooltip } from "@fluentui/react-components";
 import { formatMessage, type Task } from "@symphony/shared-types";
-import { PhaseBadge, ProviderBadge, TimeAgo, cn, formatTokens } from "@symphony/ui";
+import { cn, formatTokens, Hint, PhaseBadge, ProviderBadge, TimeAgo } from "@symphony/ui";
 import { Coins, RotateCcw } from "lucide-react";
 import { useLocale, useMessages } from "../../lib/i18n.js";
 import { taskMessages } from "./messages.js";
@@ -20,11 +19,11 @@ export const PriorityChip: React.FC<{ priority: number | null | undefined }> = (
   if (p === null) return <span className="text-xs text-subtle-foreground">—</span>;
   const name = m.priority[`p${p}` as "p1" | "p2" | "p3" | "p4"];
   return (
-    <Tooltip content={`${formatMessage(m.priority.full, { value: p })} · ${name}`} relationship="description">
+    <Hint label={`${formatMessage(m.priority.full, { value: p })} · ${name}`}>
       <span className={cn("inline-flex h-5 items-center rounded px-1.5 font-mono text-[11px] font-semibold", PRIORITY_TONE[p])}>
         {formatMessage(m.priority.label, { value: p })}
       </span>
-    </Tooltip>
+    </Hint>
   );
 };
 

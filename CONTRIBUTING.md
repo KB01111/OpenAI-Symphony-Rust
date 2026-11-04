@@ -91,7 +91,7 @@ The Axum route table in `crates/symphony-server` is the only source of truth for
 | --- | --- | --- |
 | Rust unit/integration tests | `cargo test --workspace` on `windows-latest` (ci.yml) and Linux | Vault (DPAPI on Windows), owner-only DACLs in world-writable directories, HKCU autostart round-trip (`crates/symphony-platform/tests/windows_native.rs`), CLI runtime lifecycle (`crates/symphony-cli/tests/runtime_lifecycle.rs`), remote access (`crates/symphony-server/tests/remote_access.rs`) |
 | Native smoke test | `scripts/windows-native-smoke.ps1` in desktop-native.yml and release.yml, against the release `symphony-desktop.exe` and `symphony-cli.exe` | Runtime start, DACLs, DPAPI persistence across restart, owner-only token-free desktop log, single instance / single scheduler, crash recovery without orphans, attach mode |
-| Browser E2E | Playwright (`pnpm --filter @symphony/desktop e2e`) against the Vite dev server and a real `symphony-cli` | UI flows and contracts; **not** native behaviour |
+| Browser E2E | Playwright (`pnpm --filter @symphony/desktop e2e`) against the Vite dev server and a real `symphony-cli`; screenshots and perf numbers go to `target/e2e-evidence/` (set `SYMPHONY_UPDATE_DOCS=1` to refresh the committed `docs/screenshots` and `docs/perf`) | UI flows and contracts; **not** native behaviour |
 | Manual | [`docs/WINDOWS_NATIVE_SMOKE_TEST.md`](./docs/WINDOWS_NATIVE_SMOKE_TEST.md) | Tray, folder picker, notifications, window-state restore, autostart at sign-in, unsigned installer |
 
 A successful Tauri build alone proves compilation, not runtime behaviour; say which layer verified a claim.
@@ -128,8 +128,8 @@ A successful Tauri build alone proves compilation, not runtime behaviour; say wh
 
 - **No Authoritative State in UI**: Keep all task scheduling, retry backoff, and state transitions inside `crates/symphony-orchestrator` and `crates/symphony-core`.
 - **Use Authentic Design System Components**:
-  - Use `@fluentui/react-components` for application shell, navigation, dialogs, and settings forms.
-  - Use `@openai/apps-sdk-ui` (`Alert`, `Badge`, `Button`, `CodeBlock`, `Markdown`, `Textarea`, `Tooltip`, `Popover`, `EmptyMessage`, `SegmentedControl`, `ShimmerText`) for AI-facing surfaces.
+  - Use the components exported by `@symphony/ui` (shadcn/ui on Radix: `Button`, `Field`, `Input`, `Select`, `Dialog`, `Sheet`, `Tabs`, `Alert`, `Badge`, `ToggleGroup`, …) for every desktop surface, including AI-facing ones (`AiApprovalBanner`, `AiEventStreamCard`, `Markdown`, `CodeBlock`).
+  - Size layouts from their container (`@container` + `@md:`), never from the viewport, so forms and tables fit side sheets and resizable panes.
 - **Database changes** are forward-only migrations: add `crates/symphony-storage/migrations/NNNN_name.sql`,
   list it in `MIGRATIONS` and raise `SCHEMA_VERSION`; never edit an applied migration. Add a test that opens a
   database in the previous schema (see `crates/symphony-storage/tests/migrations.rs`) and shows nothing is lost.

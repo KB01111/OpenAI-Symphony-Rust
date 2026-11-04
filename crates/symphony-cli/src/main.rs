@@ -96,6 +96,20 @@ enum Commands {
     },
 }
 
+/// `path` as the file system sees it, whether or not the file exists yet: made absolute, with the
+/// directory it is in resolved (`..` and links). Two spellings of the same database file compare
+/// equal; a lexical comparison would take `data/../data/symphony.sqlite` for another database.
+fn resolved(path: &std::path::Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    match (
+        absolute.parent().and_then(|dir| dir.canonicalize().ok()),
+        absolute.file_name(),
+    ) {
+        (Some(dir), Some(name)) => dir.join(name),
+        _ => absolute,
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -148,6 +162,23 @@ async fn main() -> anyhow::Result<()> {
         for previous in &report.previous_files {
             println!("Kept the replaced file: {}", previous.display());
         }
+        // A restore requested from the application and still waiting for the next start would
+        // replace what was just restored with another backup: this restore is the later request.
+        let backups = data_dir.join("backups");
+        match symphony_storage::backup::cancel_pending_restore(&backups) {
+            Ok(true) => println!(
+                "A restore requested from the application was still waiting; it was withdrawn, since the backup restored here replaces it."
+            ),
+            Ok(false) => {}
+            // The restore above is done; only the stale request could not be removed, and the next
+            // start would apply it over what was just restored. Say so, and which file to delete.
+            Err(err) => anyhow::bail!(
+                "The backup was restored, but an older restore request from the application could not be withdrawn ({err}). Delete {} before starting Symphony, or that older backup will replace this one.",
+                backups
+                    .join(symphony_storage::backup::PENDING_RESTORE_FILE)
+                    .display()
+            ),
+        }
         println!(
             "Credentials were not touched. Start Symphony Desktop again to use the restored data."
         );
@@ -156,8 +187,16 @@ async fn main() -> anyhow::Result<()> {
 
     let default_database = data_dir.join("symphony.sqlite");
     // Only a database that is really elsewhere cannot be restored by `restore-backup`.
-    let custom_database = cli.db_path.as_ref().is_some_and(|p| *p != default_database);
+    let custom_database = cli
+        .db_path
+        .as_ref()
+        .is_some_and(|p| resolved(p) != resolved(&default_database));
     let db_path = cli.db_path.unwrap_or(default_database);
+    // A restore requested from the application (Settings → Backups) is applied now: this is the
+    // first moment the database is not open. It replaces the default database only.
+    if !custom_database {
+        symphony_storage::backup::apply_requested_restore(&data_dir).await;
+    }
     let storage = Storage::connect(&db_path).await?;
     // `--quarantine-credential-vault` only acts on a vault that cannot be opened; a readable
     // vault is used as is, so leaving the flag in a service definition is harmless.
@@ -186,6 +225,10 @@ async fn main() -> anyhow::Result<()> {
     orchestrator
         .set_workflow_fallback_path(data_dir_workflow)
         .await;
+    if let Err(err) = orchestrator.enable_knowledge(&data_dir).await {
+        // The Knowledge Base is optional: the runtime works without it.
+        tracing::warn!(error = %err, "Knowledge Base unavailable");
+    }
     orchestrator.start_background_loops();
 
     if let Some(Commands::RunTask {
@@ -383,5 +426,27 @@ async fn wait_for_shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolved;
+
+    #[test]
+    fn two_spellings_of_the_same_database_file_resolve_alike() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(data.join("sub")).unwrap();
+        // The file does not exist yet, as before a first start.
+        let plain = data.join("symphony.sqlite");
+        let roundabout = data.join("sub").join("..").join("symphony.sqlite");
+        assert_eq!(resolved(&plain), resolved(&roundabout));
+        // Another file in the same folder, or in another folder, is another database.
+        assert_ne!(resolved(&plain), resolved(&data.join("other.sqlite")));
+        assert_ne!(
+            resolved(&plain),
+            resolved(&data.join("sub").join("symphony.sqlite"))
+        );
     }
 }

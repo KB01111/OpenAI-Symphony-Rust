@@ -1,25 +1,12 @@
 import React, { useCallback, useEffect, useRef } from "react";
-import {
-  Button,
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
-  MessageBar,
-  MessageBarActions,
-  MessageBarBody,
-  MessageBarTitle,
-  Spinner,
-  Toast,
-  ToastBody,
-  ToastTitle,
-  useToastController
-} from "@fluentui/react-components";
+import { toast } from "sonner";
 import { getTranslations } from "@symphony/shared-types";
 import { Skeleton } from "../primitives/skeleton.js";
-import { SYMPHONY_TOASTER_ID, useDesign } from "../providers/SymphonyDesignProvider.js";
+import { Button } from "../primitives/button.js";
+import { Spinner } from "../primitives/spinner.js";
+import { Alert } from "../primitives/alert.js";
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../primitives/dialog.js";
+import { useDesign } from "../providers/SymphonyDesignProvider.js";
 import { cn } from "../lib/utils.js";
 
 export interface ConfirmDialogProps {
@@ -35,7 +22,7 @@ export interface ConfirmDialogProps {
   children?: React.ReactNode;
 }
 
-/** Fluent confirmation dialog used for every destructive or irreversible action. */
+/** Confirmation dialog used for every destructive or irreversible action. */
 export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   open,
   title,
@@ -67,32 +54,25 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
     onConfirm();
   };
   return (
-    <Dialog open={open} onOpenChange={(_, data) => !pending && onOpenChange(data.open)} modalType="alert">
-      <DialogSurface aria-describedby={undefined}>
-        <DialogBody>
+    <Dialog open={open} onOpenChange={(next) => !pending && onOpenChange(next)}>
+      <DialogContent role="alertdialog" showClose={false} className="max-w-md" onInteractOutside={(e) => pending && e.preventDefault()}>
+        <DialogHeader className="pr-5">
           <DialogTitle>{title}</DialogTitle>
-          <DialogContent>
-            <div className="space-y-3 text-sm text-foreground">
-              <div>{description}</div>
-              {children}
-            </div>
-          </DialogContent>
-          <DialogActions>
-            <Button appearance="secondary" disabled={pending} onClick={() => onOpenChange(false)}>
-              {cancelLabel ?? t.common.cancel}
-            </Button>
-            <Button
-              appearance="primary"
-              disabled={pending}
-              icon={pending ? <Spinner size="tiny" /> : undefined}
-              onClick={confirm}
-              style={destructive ? { background: "var(--destructive)", color: "var(--accent-foreground)" } : undefined}
-            >
-              {confirmLabel}
-            </Button>
-          </DialogActions>
-        </DialogBody>
-      </DialogSurface>
+          <DialogDescription asChild>
+            <div>{description}</div>
+          </DialogDescription>
+        </DialogHeader>
+        {children ? <DialogBody className="space-y-3 text-sm">{children}</DialogBody> : null}
+        <DialogFooter>
+          <Button disabled={pending} onClick={() => onOpenChange(false)}>
+            {cancelLabel ?? t.common.cancel}
+          </Button>
+          <Button variant={destructive ? "destructive" : "default"} disabled={pending} onClick={confirm}>
+            {pending ? <Spinner className="text-current" /> : null}
+            {confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
     </Dialog>
   );
 };
@@ -106,24 +86,21 @@ export interface ErrorStateProps {
   className?: string;
 }
 
-/** Inline error/warning surface with optional retry (Fluent MessageBar). */
+/** Inline error/warning surface with optional retry. */
 export const ErrorState: React.FC<ErrorStateProps> = ({ title, message, onRetry, retryLabel, intent = "error", className }) => {
   const { locale } = useDesign();
   const t = getTranslations(locale);
   return (
-    <MessageBar intent={intent} className={className} layout="multiline">
-      <MessageBarBody>
-        <MessageBarTitle>{title}</MessageBarTitle>
-        {message}
-      </MessageBarBody>
-      {onRetry ? (
-        <MessageBarActions>
-          <Button size="small" onClick={onRetry}>
+    <Alert intent={intent} title={title} className={className}>
+      <div className="flex flex-wrap items-center gap-2">
+        {message ? <span className="min-w-0 flex-1 break-words">{message}</span> : null}
+        {onRetry ? (
+          <Button size="sm" onClick={onRetry}>
             {retryLabel ?? t.common.retry}
           </Button>
-        </MessageBarActions>
-      ) : null}
-    </MessageBar>
+        ) : null}
+      </div>
+    </Alert>
   );
 };
 
@@ -138,21 +115,15 @@ export const LoadingRows: React.FC<{ rows?: number; className?: string; label?: 
 
 export type NotifyIntent = "success" | "error" | "warning" | "info";
 
-/** App-wide toast notifications through the single Fluent toaster. */
+/** App-wide toast notifications through the single sonner toaster mounted by the design provider. */
 export function useNotify() {
-  const { dispatchToast } = useToastController(SYMPHONY_TOASTER_ID);
-  return useCallback(
-    (intent: NotifyIntent, title: string, body?: string) => {
-      dispatchToast(
-        <Toast>
-          <ToastTitle>{title}</ToastTitle>
-          {body ? <ToastBody>{body}</ToastBody> : null}
-        </Toast>,
-        { intent, timeout: intent === "error" ? 8000 : 4000, politeness: intent === "error" ? "assertive" : "polite" }
-      );
-    },
-    [dispatchToast]
-  );
+  return useCallback((intent: NotifyIntent, title: string, body?: string) => {
+    const options = { description: body, duration: intent === "error" ? 8000 : 4000 };
+    if (intent === "success") toast.success(title, options);
+    else if (intent === "error") toast.error(title, options);
+    else if (intent === "warning") toast.warning(title, options);
+    else toast.info(title, options);
+  }, []);
 }
 
 /** Visually hidden live region for screen-reader announcements. */

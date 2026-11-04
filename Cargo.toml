@@ -4,6 +4,7 @@ members = [
     "crates/symphony-core",
     "crates/symphony-storage",
     "crates/symphony-workspaces",
+    "crates/symphony-knowledge",
     "crates/symphony-trackers",
     "crates/symphony-agents",
     "crates/symphony-platform",
@@ -63,6 +64,7 @@ subtle = "2.6"
 symphony-core = { path = "crates/symphony-core" }
 symphony-storage = { path = "crates/symphony-storage" }
 symphony-workspaces = { path = "crates/symphony-workspaces" }
+symphony-knowledge = { path = "crates/symphony-knowledge" }
 symphony-trackers = { path = "crates/symphony-trackers" }
 symphony-agents = { path = "crates/symphony-agents" }
 symphony-platform = { path = "crates/symphony-platform" }

@@ -11,6 +11,7 @@ utoipa-axum.workspace = true
 symphony-core = { path = "../symphony-core" }
 symphony-storage = { path = "../symphony-storage" }
 symphony-workspaces = { path = "../symphony-workspaces" }
+symphony-knowledge = { path = "../symphony-knowledge" }
 symphony-orchestrator = { path = "../symphony-orchestrator" }
 symphony-platform = { path = "../symphony-platform" }
 axum.workspace = true

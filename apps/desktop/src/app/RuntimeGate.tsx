@@ -1,6 +1,5 @@
 import React from "react";
-import { Button, Spinner } from "@fluentui/react-components";
-import { ErrorState } from "@symphony/ui";
+import { Button, ErrorState, Spinner } from "@symphony/ui";
 import { useRuntime } from "../runtime/RuntimeProvider.js";
 import { useMessages } from "../lib/i18n.js";
 import { shellMessages } from "./messages.js";
@@ -16,14 +15,14 @@ export const RuntimeGate: React.FC<{ children: React.ReactNode }> = ({ children 
       <div className="w-full max-w-md space-y-4 text-center">
         {phase === "discovering" ? (
           <>
-            <Spinner size="medium" label={m.runtime.connecting} />
+            <Spinner className="mx-auto size-6" label={m.runtime.connecting} />
             <p className="text-sm text-muted-foreground">{m.runtime.connectingDetail}</p>
             {error ? <p className="font-mono text-xs text-subtle-foreground">{error}</p> : null}
           </>
         ) : (
           <>
             <ErrorState title={m.runtime.failed} message={`${m.runtime.failedDetail} ${error ?? ""}`} onRetry={retry} />
-            <Button appearance="subtle" onClick={retry}>
+            <Button variant="subtle" onClick={retry}>
               {m.runtime.connecting}
             </Button>
           </>

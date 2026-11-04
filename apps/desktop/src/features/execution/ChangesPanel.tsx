@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button, Tab, TabList } from "@fluentui/react-components";
 import { ExternalLink } from "lucide-react";
 import { formatMessage, getTranslations, type ChangedFileSummary, type Task, type ValidationResult } from "@symphony/shared-types";
 import {
@@ -10,8 +9,9 @@ import {
   KeyValueList,
   LoadingRows,
   MetricTile,
-  SdkBadge,
-  SdkCodeBlock,
+  Badge,
+  Button,
+  CodeBlock,
   TimeAgo,
   cn,
   formatCurrency,
@@ -24,9 +24,6 @@ import { useLocale, useMessages, useT } from "../../lib/i18n.js";
 import { usePullRequests, useTaskAttempts, useTaskDiff, useTaskValidations } from "../../lib/queries.js";
 import { hasPullRequest } from "../reviews/reviewHelpers.js";
 import { executionMessages } from "./messages.js";
-import { ToolCallsTab } from "./ToolCallsTab.js";
-
-type RightTab = "changes" | "validation" | "tools" | "usage" | "pr";
 
 /** Compact changed-files list with status and +/- counts. */
 export const ChangedFilesList: React.FC<{ files: ReadonlyArray<ChangedFileSummary>; label: string }> = ({ files, label }) => (
@@ -71,9 +68,7 @@ const ValidationItem = React.memo(function ValidationItem({ result }: { result: 
   return (
     <li className="space-y-1.5 rounded-md border border-border p-2">
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        <SdkBadge variant="soft" color={result.passed ? "success" : "danger"} size="sm" pill>
-          {result.passed ? m.changes.passed : m.changes.failed}
-        </SdkBadge>
+        <Badge tone={result.passed ? "success" : "danger"}>{result.passed ? m.changes.passed : m.changes.failed}</Badge>
         <code className="min-w-0 flex-1 truncate font-mono text-foreground" title={result.command}>
           {result.command}
         </code>
@@ -85,16 +80,16 @@ const ValidationItem = React.memo(function ValidationItem({ result }: { result: 
         </span>
         <span>{formatMessage(m.changes.attempt, { number: result.attempt_number })}</span>
         <TimeAgo iso={result.executed_at} />
-        <Button className="ms-auto" size="small" appearance="subtle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <Button className="ms-auto" size="sm" variant="subtle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
           {open ? m.changes.hideOutput : m.changes.showOutput}
         </Button>
       </div>
-      {open ? output ? <SdkCodeBlock language="text">{output}</SdkCodeBlock> : <p className="text-xs text-muted-foreground">{m.changes.noOutput}</p> : null}
+      {open ? output ? <CodeBlock language="text">{output}</CodeBlock> : <p className="text-xs text-muted-foreground">{m.changes.noOutput}</p> : null}
     </li>
   );
 });
 
-const ValidationTab: React.FC<{ taskId: string }> = ({ taskId }) => {
+export const ValidationTab: React.FC<{ taskId: string }> = ({ taskId }) => {
   const m = useMessages(executionMessages);
   const t = useT();
   const validations = useTaskValidations(taskId);
@@ -111,7 +106,7 @@ const ValidationTab: React.FC<{ taskId: string }> = ({ taskId }) => {
   );
 };
 
-const UsageTab: React.FC<{ task: Task; liveSince?: string | null }> = ({ task, liveSince }) => {
+export const UsageTab: React.FC<{ task: Task; liveSince?: string | null }> = ({ task, liveSince }) => {
   const m = useMessages(executionMessages);
   const t = useT();
   const locale = useLocale();
@@ -149,7 +144,7 @@ const UsageTab: React.FC<{ task: Task; liveSince?: string | null }> = ({ task, l
   );
 };
 
-const PullRequestTab: React.FC<{ task: Task }> = ({ task }) => {
+export const PullRequestTab: React.FC<{ task: Task }> = ({ task }) => {
   const m = useMessages(executionMessages);
   const t = useT();
   const navigate = useNavigate();
@@ -168,9 +163,7 @@ const PullRequestTab: React.FC<{ task: Task }> = ({ task }) => {
             {hasPullRequest(pr) ? formatMessage(m.changes.prNumber, { number: pr.pr_number }) : m.changes.localReview} · {pr.branch_name} → {pr.base_branch}
           </p>
         </div>
-        <SdkBadge variant="soft" color={score >= 4 ? "success" : score >= 3 ? "warning" : "danger"} size="sm" pill>
-          {score}/5
-        </SdkBadge>
+        <Badge tone={score >= 4 ? "success" : score >= 3 ? "warning" : "danger"}>{score}/5</Badge>
       </div>
       <KeyValueList
         items={[
@@ -183,47 +176,11 @@ const PullRequestTab: React.FC<{ task: Task }> = ({ task }) => {
           ...(pr.human_approved ? [{ label: m.changes.humanApproved, value: t.common.yes }] : [])
         ]}
       />
-      <Button size="small" appearance="primary" icon={<ExternalLink className="size-4" />} onClick={() => navigate(paths.review(pr.id))}>
+      <Button size="sm" variant="default" onClick={() => navigate(paths.review(pr.id))}>
+        <ExternalLink />
         {m.changes.openReview}
       </Button>
     </section>
   );
 };
 
-/** Right column: diff, validations, usage and pull request summary for the task. */
-export const ChangesPanel: React.FC<{ task: Task; liveSince?: string | null }> = ({ task, liveSince }) => {
-  const m = useMessages(executionMessages);
-  const [tab, setTab] = useState<RightTab>("changes");
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <TabList
-        size="small"
-        selectedValue={tab}
-        onTabSelect={(_, d) => setTab(d.value as RightTab)}
-        aria-label={m.changes.tabs}
-        className="shrink-0 flex-nowrap overflow-x-auto border-b border-border px-1 [scrollbar-width:none]"
-      >
-        <Tab value="changes">{m.changes.changes}</Tab>
-        <Tab value="validation">{m.changes.validation}</Tab>
-        <Tab value="tools">{m.toolCalls.tab}</Tab>
-        <Tab value="usage">{m.changes.usage}</Tab>
-        <Tab value="pr" aria-label={m.changes.pullRequest}>
-          {m.changes.pullRequestShort}
-        </Tab>
-      </TabList>
-      <div role="tabpanel" className="min-h-0 flex-1 overflow-auto p-2">
-        {tab === "changes" ? (
-          <TaskDiffView taskId={task.id} />
-        ) : tab === "validation" ? (
-          <ValidationTab taskId={task.id} />
-        ) : tab === "tools" ? (
-          <ToolCallsTab taskId={task.id} />
-        ) : tab === "usage" ? (
-          <UsageTab task={task} liveSince={liveSince} />
-        ) : (
-          <PullRequestTab task={task} />
-        )}
-      </div>
-    </div>
-  );
-};

@@ -37,6 +37,40 @@ describe("SymphonyClient", () => {
     await expect(pending).rejects.toMatchObject({ code: "aborted" });
   });
 
+  it("gives the slow Knowledge Base lookups a longer deadline than an ordinary request", async () => {
+    // Every answer takes 120 ms; the client's own deadline is 40 ms.
+    const slow = (body: unknown) =>
+      vi.fn(
+        (request: Request) =>
+          new Promise<Response>((resolve, reject) => {
+            const timer = setTimeout(() => resolve(jsonResponse(body)), 120);
+            request.signal.addEventListener("abort", () => {
+              clearTimeout(timer);
+              reject(new Error("aborted"));
+            });
+          })
+      );
+    const client = new SymphonyClient({
+      baseUrl: "http://h:1",
+      token: null,
+      timeoutMs: 40,
+      fetchImpl: slow({ node_id: "n", available: true, references: [], total: 0, truncated: false }) as unknown as typeof fetch
+    });
+    // An ordinary request is cut off at the client's deadline...
+    await expect(client.getState()).rejects.toMatchObject({ kind: "network" });
+    // ...while a cold language-server lookup and a commit impact are given the time they need.
+    await expect(client.getKnowledgeNodeReferences("p1", "n")).resolves.toMatchObject({ available: true });
+    await expect(client.getKnowledgeCommitImpact("p1", "a".repeat(40))).resolves.toBeDefined();
+    // The longer deadline never shortens a longer configured one.
+    const patient = new SymphonyClient({
+      baseUrl: "http://h:1",
+      token: null,
+      timeoutMs: 600_000,
+      fetchImpl: slow({}) as unknown as typeof fetch
+    });
+    await expect(patient.getKnowledgeCommitImpact("p1", "a".repeat(40))).resolves.toBeDefined();
+  });
+
   it("targets the real Axum routes with the right verbs", async () => {
     const seen: string[] = [];
     const fetchImpl = vi.fn(async (request: Request) => {

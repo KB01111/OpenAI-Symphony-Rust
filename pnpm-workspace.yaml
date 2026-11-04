@@ -3,18 +3,40 @@ packages:
   - "packages/*"
   - "tools/*"
 allowBuilds:
+  # Transitive dependencies of the CodeSandbox runner's Pi packages. The runner does not need their
+  # install scripts, so they are denied explicitly (an undecided build script fails `pnpm install`).
+  '@google/genai': false
+  bufferutil: false
   esbuild: true
+  protobufjs: false
+  utf-8-validate: false
 # Security overrides for exact transitive pins whose parents have no fixed release yet. Each one is
 # scoped to the vulnerable versions, so it disappears as soon as a parent moves on; remove it then.
-# - lodash: @openai/apps-sdk-ui@0.2.2 pins 4.17.21 (GHSA-xxjr-mmjv-4gpg and later advisories; fixed in
-#   4.18.x). The SDK only imports `lodash/clamp` and `lodash/round`.
 # - js-yaml: @hey-api/json-schema-ref-parser pins 4.2.0 (quadratic CPU on crafted YAML; fixed in
 #   4.3.2). Build-time only; `pnpm generate:api` output is unchanged.
-# - katex: @openai/apps-sdk-ui@0.2.2 (via rehype-katex / remark-math) resolves 0.16.x
-#   (GHSA-238p-pmpm-9mq7; fixed in 0.18.2). KaTeX 0.18 renames layout classes that the SDK's bundled
-#   0.16 stylesheet styles, so both apps also import KaTeX's own stylesheet after the SDK's
-#   (apps/*/src/styles/globals.css); keep that import while the override exists.
+# - lodash, xml2js: @codesandbox/sdk (CodeSandbox runner) -> blessed-contrib, the terminal UI of its own CLI.
+#   The patched lines (lodash 4.18, xml2js 0.6) are drop-in for it.
+# - minimatch: @sentry/node 9.x (via @codesandbox/sdk) asks for ^9.0.0 (GHSA-g3hv-75wg-m249, denial
+#   of service through globparts amplification of a crafted glob; fixed in 11.0.1). It calls
+#   minimatch in one place, its Fastify instrumentation (`minimatch.minimatch(url, glob)`), and
+#   minimatch 11 ships CommonJS next to ESM with the same named export, so it is drop-in there.
 overrides:
-  "lodash@<4.17.24": "^4.18.1"
   "js-yaml@>=4.0.0 <4.3.2": "^4.3.2"
-  "katex@>=0.11.0 <0.18.2": "^0.18.11"
+  "lodash@<=4.17.23": "^4.18.0"
+  "xml2js@<0.5.0": "^0.6.2"
+  "minimatch@<11.0.1": "^11.0.1"
+
+# Advisories that are reported but cannot be fixed by an override and do not apply here. Each is
+# reachable only through @codesandbox/sdk -> @sentry/node, whose OpenTelemetry packages are several
+# 0.x/major lines behind the patched ones (forcing them would pair mismatched instrumentation with
+# Sentry), and the conditions for each do not exist in the runner (a short-lived local process that
+# neither serves HTTP nor talks to MongoDB / MySQL / Postgres / Knex / Tedious):
+# - GHSA-8988-4f7v-96qf: @opentelemetry/core < 2.8.0, unbounded memory in W3C baggage extraction from
+#   inbound headers.
+# - GHSA-qqmp-wf37-98f9: @opentelemetry/instrumentation-{knex,mongoose,mysql,mysql2,pg,tedious}, the
+#   database username is recorded as a span attribute by those database instrumentations.
+# Remove these entries when @codesandbox/sdk (or its @sentry/node) moves past the affected versions.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-8988-4f7v-96qf
+    - GHSA-qqmp-wf37-98f9

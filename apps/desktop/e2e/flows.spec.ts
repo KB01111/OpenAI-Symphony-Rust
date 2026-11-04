@@ -88,7 +88,7 @@ test("shows inline validation for a path that is not a Git repository", async ({
   await expect(dialog.getByRole("button", { name: "Continue" })).toBeDisabled();
 });
 
-test("creates a task from the keyboard and shows it on the board", async ({ page }) => {
+test("creates a queued task from the composer dialog (Ctrl+N) and opens it as a thread", async ({ page }) => {
   project = await ensureProject();
   // Tasks use the simulated agent so no paid model is ever dispatched.
   await api("PATCH", `/projects/${project.id}`, { preferred_provider: "simulated" });
@@ -98,15 +98,36 @@ test("creates a task from the keyboard and shows it on the board", async ({ page
   const dialog = page.getByRole("dialog", { name: "New task" });
   await expect(dialog).toBeVisible();
   const title = `E2E create ${Date.now()}`;
-  await dialog.getByLabel("Title").fill(title);
-  await dialog.getByLabel("Description").fill("Created by the end-to-end suite.");
-  await dialog.getByRole("button", { name: "Create task" }).click();
+  await dialog.getByRole("textbox", { name: "Task prompt" }).fill(`${title}\n\nCreated by the end-to-end suite.`);
+  await dialog.getByRole("radio", { name: "Add to queue" }).click();
+  await dialog.getByRole("button", { name: "Queue task" }).click();
   await expect(dialog).toBeHidden();
 
-  await expect(page.getByRole("group", { name: /board/i }).getByText(title)).toBeVisible();
+  // The new task opens as a thread, with the prompt as its first message.
+  await expect(page).toHaveURL(/#\/runs\//);
+  await expect(page.getByRole("heading", { level: 1 })).toContainText(title);
+  await expect(page.getByRole("link", { name: new RegExp(title) })).toBeVisible();
   const tasks = await api<Task[]>("GET", "/tasks");
   const created = tasks.find((t) => t.issue.title === title);
   expect(created?.status).toBe("ready");
+
+  await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Tasks" }).click();
+  await expect(page.getByRole("group", { name: /board/i }).getByText(title)).toBeVisible();
+});
+
+test("runs a task straight from the home composer and follows it as a thread", async ({ page }) => {
+  project = await ensureProject();
+  await api("PATCH", `/projects/${project.id}`, { preferred_provider: "simulated" });
+  await openApp(page, "/");
+  const title = `E2E home run ${Date.now()}`;
+  await page.getByRole("textbox", { name: "Task prompt" }).fill(title);
+  await page.keyboard.press("Control+Enter");
+  await expect(page).toHaveURL(/#\/runs\//);
+  const id = page.url().split("/runs/")[1]!;
+  await waitForStatus(id, ["human_review", "completed"]);
+  await expect(page.getByText("SYMPHONY_TASK_NOTE.md").first()).toBeVisible({ timeout: 20_000 });
+  // A finished run accepts a follow-up in the same thread.
+  await expect(page.getByRole("textbox", { name: "Instructions for the agent" })).toBeEnabled();
 });
 
 test("moves a task with the board menu and refuses moves the state machine forbids", async ({ page }) => {

@@ -10,12 +10,15 @@ import type {
   AppSettings,
   ApprovalDecision,
   ApprovalRequest,
+  CloudAgentKind,
   CreateProjectRequest,
   CreateTaskRequest,
+  GraphLevel,
   ProjectUpdate,
   Task,
   TaskStatus
 } from "@symphony/shared-types";
+import { DEFAULT_CLOUD_AGENT } from "@symphony/shared-types";
 import { useNotify } from "@symphony/ui";
 import { useClient, useRuntime } from "../runtime/RuntimeProvider.js";
 import { qk } from "./queryKeys.js";
@@ -200,9 +203,222 @@ export function useWorktrees() {
   return useQuery({ queryKey: qk.worktrees, queryFn: ({ signal }) => client.listWorktrees(signal) });
 }
 
+// ---------------------------------------------------------------------------------------------
+// Repository Knowledge Base. Every query is scoped to one project and kept current by the
+// `knowledge/*` events (see runtime/invalidation.ts); polling is only the fallback.
+// ---------------------------------------------------------------------------------------------
+
+export function useKnowledgeEngines() {
+  const client = useClient();
+  return useQuery({ queryKey: qk.knowledgeEngines, queryFn: ({ signal }) => client.getKnowledgeEngines(signal), staleTime: 60_000 });
+}
+
+export function useKnowledgeOverview(projectId: string | null) {
+  const client = useClient();
+  const refetchInterval = usePoll(30_000);
+  return useQuery({
+    queryKey: qk.knowledgeOverview(projectId ?? ""),
+    queryFn: ({ signal }) => client.getKnowledgeOverview(projectId!, signal),
+    enabled: projectId !== null,
+    refetchInterval
+  });
+}
+
+export function useKnowledgeWorktrees(projectId: string | null) {
+  const client = useClient();
+  const refetchInterval = usePoll(30_000);
+  return useQuery({
+    queryKey: qk.knowledgeWorktrees(projectId ?? ""),
+    queryFn: ({ signal }) => client.listKnowledgeWorktrees(projectId!, signal),
+    enabled: projectId !== null,
+    refetchInterval
+  });
+}
+
+/**
+ * Keep the previous result on screen while a query for the same repository refetches (a longer
+ * list, another graph level), but never show one repository's rows under another's name: the
+ * project id is the second element of every Knowledge Base query key.
+ */
+function keepWithinProject(projectId: string | null) {
+  return <T>(previous: T | undefined, previousQuery?: { queryKey: readonly unknown[] }): T | undefined =>
+    previousQuery?.queryKey[1] === projectId ? previous : undefined;
+}
+
+export function useKnowledgeCommits(projectId: string | null, limit = 100) {
+  const client = useClient();
+  const refetchInterval = usePoll(30_000);
+  return useQuery({
+    queryKey: qk.knowledgeCommits(projectId ?? "", limit),
+    queryFn: ({ signal }) => client.listKnowledgeCommits(projectId!, limit, signal),
+    enabled: projectId !== null,
+    refetchInterval,
+    placeholderData: keepWithinProject(projectId)
+  });
+}
+
+export function useKnowledgeCommit(projectId: string | null, sha: string | null) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.knowledgeCommit(projectId ?? "", sha ?? ""),
+    queryFn: ({ signal }) => client.getKnowledgeCommit(projectId!, sha!, signal),
+    enabled: projectId !== null && sha !== null,
+    staleTime: 5 * 60_000
+  });
+}
+
+export function useKnowledgeCommitDiff(projectId: string | null, sha: string | null, enabled = true) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.knowledgeDiff(projectId ?? "", sha ?? ""),
+    queryFn: ({ signal }) => client.getKnowledgeCommitDiff(projectId!, sha!, signal),
+    enabled: enabled && projectId !== null && sha !== null,
+    staleTime: 5 * 60_000
+  });
+}
+
+export function useKnowledgeCommitImpact(projectId: string | null, sha: string | null, depth = 2, includeInferred = true) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.knowledgeImpact(projectId ?? "", sha ?? "", depth, includeInferred),
+    queryFn: ({ signal }) => client.getKnowledgeCommitImpact(projectId!, sha!, depth, includeInferred, signal),
+    enabled: projectId !== null && sha !== null,
+    staleTime: 5 * 60_000
+  });
+}
+
+/** The newest AI analysis of a commit; polls while one is running in case the event was missed. */
+export function useKnowledgeCommitAnalysis(projectId: string | null, sha: string | null) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.knowledgeAnalysis(projectId ?? "", sha ?? ""),
+    queryFn: ({ signal }) => client.getKnowledgeCommitAnalysis(projectId!, sha!, signal),
+    enabled: projectId !== null && sha !== null,
+    refetchInterval: (query) => (query.state.data?.analysis?.status === "running" ? 4_000 : false)
+  });
+}
+
+export interface KnowledgeGraphParams {
+  level: GraphLevel;
+  module?: string | null;
+  focus?: string | null;
+  depth?: number;
+  includeInferred?: boolean;
+  includeExternal?: boolean;
+}
+
+export function useKnowledgeGraph(projectId: string | null, params: KnowledgeGraphParams, enabled = true) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.knowledgeGraph(projectId ?? "", params),
+    queryFn: ({ signal }) => client.getKnowledgeGraph(projectId!, params, signal),
+    enabled: enabled && projectId !== null && (params.level !== "symbols" || Boolean(params.focus)),
+    staleTime: 60_000,
+    placeholderData: keepWithinProject(projectId)
+  });
+}
+
+export function useKnowledgeSearch(projectId: string | null, text: string) {
+  const client = useClient();
+  const trimmed = text.trim();
+  return useQuery({
+    queryKey: qk.knowledgeSearch(projectId ?? "", trimmed),
+    queryFn: ({ signal }) => client.searchKnowledge(projectId!, trimmed, 25, signal),
+    enabled: projectId !== null && trimmed.length >= 2,
+    staleTime: 60_000
+  });
+}
+
+export function useKnowledgeNode(projectId: string | null, nodeId: string | null) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.knowledgeNode(projectId ?? "", nodeId ?? ""),
+    queryFn: ({ signal }) => client.getKnowledgeNode(projectId!, nodeId!, signal),
+    enabled: projectId !== null && nodeId !== null,
+    staleTime: 60_000
+  });
+}
+
+/** Precise references of one symbol; only fetched once `enabled` (it can take a minute to start). */
+export function useKnowledgeNodeReferences(projectId: string | null, nodeId: string | null, enabled: boolean) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.knowledgeReferences(projectId ?? "", nodeId ?? ""),
+    queryFn: ({ signal }) => client.getKnowledgeNodeReferences(projectId!, nodeId!, signal),
+    enabled: enabled && projectId !== null && nodeId !== null,
+    staleTime: 5 * 60_000,
+    retry: false
+  });
+}
+
+export function useKnowledgeChat(projectId: string | null) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.knowledgeChat(projectId ?? ""),
+    queryFn: ({ signal }) => client.listKnowledgeChat(projectId!, signal),
+    enabled: projectId !== null,
+    refetchInterval: (query) => (query.state.data?.some((m) => m.status === "running") ? 4_000 : false)
+  });
+}
+
+export function useStartKnowledgeIndex(projectId: string | null) {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: (worktreeId?: string | null) => client.startKnowledgeIndex(projectId!, worktreeId),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.knowledgeOverview(projectId ?? "") }),
+    onError
+  });
+}
+
+export function useStartKnowledgeAnalysis(projectId: string | null) {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: ({ sha, force }: { sha: string; force?: boolean }) => client.startKnowledgeCommitAnalysis(projectId!, sha, force ?? false),
+    onSuccess: (_analysis, { sha }) => void qc.invalidateQueries({ queryKey: qk.knowledgeAnalysis(projectId ?? "", sha) }),
+    onError
+  });
+}
+
+export function useAskKnowledge(projectId: string | null) {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: (question: string) => client.askKnowledge(projectId!, question),
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.knowledgeChat(projectId ?? "") }),
+    onError
+  });
+}
+
+export function useClearKnowledgeChat(projectId: string | null) {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: () => client.clearKnowledgeChat(projectId!),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.knowledgeChat(projectId ?? "") }),
+    onError
+  });
+}
+
 export function useWorkflow() {
   const client = useClient();
   return useQuery({ queryKey: qk.workflow, queryFn: ({ signal }) => client.getWorkflow(signal), staleTime: Infinity });
+}
+
+/**
+ * The agent a CodeSandbox task runs when it picks none: the application setting if one was ever
+ * chosen, else `codesandbox.default_agent` of the active workflow, else mini-swe-agent. Mirrors the
+ * runtime's own order, so the picker marks the agent that would really run.
+ */
+export function useDefaultCloudAgent(): CloudAgentKind {
+  const settings = useSettings();
+  const workflow = useWorkflow();
+  return settings.data?.default_cloud_agent ?? workflow.data?.config?.codesandbox.default_agent ?? DEFAULT_CLOUD_AGENT;
 }
 
 export function useSettings() {

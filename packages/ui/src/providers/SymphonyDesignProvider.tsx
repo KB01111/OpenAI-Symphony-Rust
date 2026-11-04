@@ -1,16 +1,12 @@
 import React, { createContext, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
-import { FluentProvider, Toaster } from "@fluentui/react-components";
-import { AppsSDKUIProvider } from "@openai/apps-sdk-ui/components/AppsSDKUIProvider";
-import { applyDocumentTheme } from "@openai/apps-sdk-ui/theme";
+import { Toaster } from "sonner";
 import type { Locale } from "@symphony/shared-types";
-import { symphonyDarkTheme, symphonyLightTheme } from "../theme/fluentThemes.js";
+import { TooltipProvider } from "../primitives/tooltip.js";
 
 export type ThemeMode = "system" | "dark" | "light";
 export type ResolvedTheme = "dark" | "light";
 export type Density = "compact" | "comfortable";
 export type MotionPreference = "system" | "reduced" | "full";
-
-export const SYMPHONY_TOASTER_ID = "symphony-toaster";
 
 export interface DesignContextValue {
   themeMode: ThemeMode;
@@ -60,12 +56,11 @@ export interface SymphonyDesignProviderProps {
 }
 
 /**
- * Coordinates every visual system from one place:
- * - resolves `system` against the OS (Windows) colour preference and follows live changes;
+ * Coordinates the design system from one place:
+ * - resolves `system` against the OS colour preference and follows live changes;
  * - writes `data-theme`, `data-density`, `data-motion` and `lang` on `<html>`, which drive the
- *   Symphony tokens (Tailwind/shadcn) and Apps SDK UI (`applyDocumentTheme`);
- * - provides the matching Fluent theme, applied to portals so dialogs/menus/tooltips inherit it;
- * - mounts the single app-wide Fluent toaster.
+ *   Symphony tokens (Tailwind/shadcn);
+ * - provides the tooltip context and mounts the single app-wide toaster.
  */
 export const SymphonyDesignProvider: React.FC<SymphonyDesignProviderProps> = ({
   themeMode,
@@ -85,7 +80,7 @@ export const SymphonyDesignProvider: React.FC<SymphonyDesignProviderProps> = ({
 
   useEffect(() => {
     const html = document.documentElement;
-    applyDocumentTheme(resolvedTheme);
+    html.dataset.theme = resolvedTheme;
     html.dataset.density = density;
     html.dataset.motion = motion === "system" ? (systemReducedMotion ? "reduced" : "system") : motion;
     html.lang = locale;
@@ -95,20 +90,22 @@ export const SymphonyDesignProvider: React.FC<SymphonyDesignProviderProps> = ({
     () => ({ themeMode, resolvedTheme, density, reducedMotion, locale }),
     [themeMode, resolvedTheme, density, reducedMotion, locale]
   );
-  const fluentTheme = resolvedTheme === "dark" ? symphonyDarkTheme : symphonyLightTheme;
 
   return (
     <DesignContext.Provider value={value}>
-      <FluentProvider
-        theme={fluentTheme}
-        applyStylesToPortals
-        className="symphony-fluent-root"
-        style={{ background: "transparent", color: "inherit", height: "100%" }}
-      >
-        <AppsSDKUIProvider linkComponent="a">{children}</AppsSDKUIProvider>
-        <Toaster toasterId={SYMPHONY_TOASTER_ID} position="bottom-end" pauseOnHover limit={4} />
-      </FluentProvider>
+      <TooltipProvider>{children}</TooltipProvider>
+      <Toaster
+        theme={resolvedTheme}
+        position="bottom-right"
+        closeButton
+        visibleToasts={4}
+        toastOptions={{
+          classNames: {
+            toast: "!rounded-xl !border-border !bg-popover !text-popover-foreground !shadow-elevated",
+            description: "!text-muted-foreground"
+          }
+        }}
+      />
     </DesignContext.Provider>
   );
 };
-

@@ -1,22 +1,22 @@
 import React, { useState } from "react";
+import { errorMessage, isTauri, nativeHost } from "@symphony/api-client";
+import { formatMessage, type RepositoryValidation } from "@symphony/shared-types";
 import {
+  Alert,
   Button,
   Dialog,
-  DialogActions,
   DialogBody,
   DialogContent,
-  DialogSurface,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
   DialogTitle,
   Field,
   Input,
-  MessageBar,
-  MessageBarBody,
-  MessageBarTitle,
-  Spinner
-} from "@fluentui/react-components";
-import { errorMessage, isTauri, nativeHost } from "@symphony/api-client";
-import { formatMessage, type RepositoryValidation } from "@symphony/shared-types";
-import { cn, useNotify } from "@symphony/ui";
+  Spinner,
+  cn,
+  useNotify
+} from "@symphony/ui";
 import { CheckCircle2, CircleAlert, FolderOpen, XCircle } from "lucide-react";
 import { useMessages } from "../../lib/i18n.js";
 import { useCreateProject, useSettings, useValidateRepository } from "../../lib/queries.js";
@@ -54,7 +54,6 @@ export default function AddRepositoryDialog() {
   const notify = useNotify();
   const setAddProjectOpen = useUiStore((s) => s.setAddProjectOpen);
   const setActiveProject = useUiStore((s) => s.setActiveProject);
-  const inspect = useUiStore((s) => s.inspect);
   const settings = useSettings();
   const validate = useValidateRepository();
   const create = useCreateProject();
@@ -123,7 +122,6 @@ export default function AddRepositoryDialog() {
       onSuccess: (project) => {
         notify("success", formatMessage(m.add.created, { name: project.name }));
         setActiveProject(project.id);
-        inspect({ kind: "project", id: project.id });
         setAddProjectOpen(false);
       }
     });
@@ -142,51 +140,36 @@ export default function AddRepositoryDialog() {
     body = (
       <div className="flex flex-col gap-3">
         <p className="text-sm text-muted-foreground">{m.add.folderIntro}</p>
-        <Field
-          label={m.add.path}
-          required
-          hint={native ? undefined : m.add.pathHint}
-          validationMessage={pathError}
-          validationState={pathError ? "error" : "none"}
-        >
-          <div className="flex gap-2">
+        <div className="flex items-start gap-2">
+          <Field label={m.add.path} required hint={native ? undefined : m.add.pathHint} error={pathError} className="flex-1">
             <Input
               autoFocus
-              className="flex-1 font-mono"
+              className="font-mono"
               value={path}
               placeholder={m.add.pathPlaceholder}
               disabled={validate.isPending}
-              onChange={(_, d) => {
-                setPath(d.value);
+              onChange={(e) => {
+                setPath(e.target.value);
                 if (validate.isError) validate.reset();
               }}
             />
-            {native ? (
-              <Button
-                icon={browsing ? <Spinner size="tiny" /> : <FolderOpen className="size-4" aria-hidden />}
-                disabled={browsing || validate.isPending}
-                onClick={() => void browse()}
-              >
-                {m.add.browse}
-              </Button>
-            ) : null}
-          </div>
-        </Field>
+          </Field>
+          {native ? (
+            <Button className="mt-[1.375rem]" disabled={browsing || validate.isPending} onClick={() => void browse()}>
+              {browsing ? <Spinner /> : <FolderOpen />}
+              {m.add.browse}
+            </Button>
+          ) : null}
+        </div>
         {browseError ? (
-          <MessageBar intent="error" layout="multiline">
-            <MessageBarBody>
-              <MessageBarTitle>{m.add.browseError}</MessageBarTitle>
-              {browseError}
-            </MessageBarBody>
-          </MessageBar>
+          <Alert intent="error" title={m.add.browseError}>
+            {browseError}
+          </Alert>
         ) : null}
         {validate.isError ? (
-          <MessageBar intent="error" layout="multiline">
-            <MessageBarBody>
-              <MessageBarTitle>{m.add.validateError}</MessageBarTitle>
-              {errorMessage(validate.error)}
-            </MessageBarBody>
-          </MessageBar>
+          <Alert intent="error" title={m.add.validateError}>
+            {errorMessage(validate.error)}
+          </Alert>
         ) : null}
       </div>
     );
@@ -221,26 +204,17 @@ export default function AddRepositoryDialog() {
           </ul>
         </section>
         {validation.errors.length > 0 ? (
-          <MessageBar intent="error" layout="multiline">
-            <MessageBarBody>
-              <MessageBarTitle>{validation.is_git_repository ? m.add.validateError : m.add.notGit}</MessageBarTitle>
-              <ul className="list-disc pl-4">
-                {validation.errors.map((e) => (
-                  <li key={e}>{e}</li>
-                ))}
-              </ul>
-            </MessageBarBody>
-          </MessageBar>
+          <Alert intent="error" title={validation.is_git_repository ? m.add.validateError : m.add.notGit}>
+            <ul className="list-disc pl-4">
+              {validation.errors.map((e) => (
+                <li key={e}>{e}</li>
+              ))}
+            </ul>
+          </Alert>
         ) : !validation.is_git_repository ? (
-          <MessageBar intent="error" layout="multiline">
-            <MessageBarBody>{m.add.notGit}</MessageBarBody>
-          </MessageBar>
+          <Alert intent="error">{m.add.notGit}</Alert>
         ) : null}
-        {validation.is_git_repository && !validation.has_workflow_file ? (
-          <MessageBar intent="warning" layout="multiline">
-            <MessageBarBody>{m.add.workflowMissing}</MessageBarBody>
-          </MessageBar>
-        ) : null}
+        {validation.is_git_repository && !validation.has_workflow_file ? <Alert intent="warning">{m.add.workflowMissing}</Alert> : null}
       </div>
     );
   } else if (step === 3 && form && validation) {
@@ -248,12 +222,9 @@ export default function AddRepositoryDialog() {
       <div className="flex flex-col gap-3">
         <p className="break-all text-xs text-muted-foreground">{formatMessage(m.add.suggestedFrom, { path: validation.repo_path })}</p>
         {create.isError ? (
-          <MessageBar intent="error" layout="multiline" role="alert">
-            <MessageBarBody>
-              <MessageBarTitle>{m.add.createError}</MessageBarTitle>
-              {errorMessage(create.error)}
-            </MessageBarBody>
-          </MessageBar>
+          <Alert intent="error" title={m.add.createError}>
+            {errorMessage(create.error)}
+          </Alert>
         ) : null}
         <ProjectFormFields
           form={form}
@@ -269,7 +240,7 @@ export default function AddRepositoryDialog() {
                 disabled={create.isPending}
                 value={workspaceRoot}
                 placeholder={m.form.workspaceRootPlaceholder}
-                onChange={(_, d) => setWorkspaceRoot(d.value)}
+                onChange={(e) => setWorkspaceRoot(e.target.value)}
               />
             </Field>
           }
@@ -283,12 +254,8 @@ export default function AddRepositoryDialog() {
     actions = (
       <>
         <Button onClick={close}>{m.add.cancel}</Button>
-        <Button
-          type="submit"
-          appearance="primary"
-          disabled={validate.isPending}
-          icon={validate.isPending ? <Spinner size="tiny" /> : undefined}
-        >
+        <Button type="submit" variant="default" disabled={validate.isPending}>
+          {validate.isPending ? <Spinner className="text-current" /> : null}
           {validate.isPending ? m.add.validating : m.add.validate}
         </Button>
       </>
@@ -304,7 +271,7 @@ export default function AddRepositoryDialog() {
         >
           {validation?.is_git_repository ? m.add.back : m.add.changePath}
         </Button>
-        <Button type="submit" appearance="primary" disabled={!validation?.is_git_repository}>
+        <Button type="submit" variant="default" disabled={!validation?.is_git_repository}>
           {m.add.continue}
         </Button>
       </>
@@ -315,12 +282,8 @@ export default function AddRepositoryDialog() {
         <Button disabled={create.isPending} onClick={() => setStep(2)}>
           {m.add.back}
         </Button>
-        <Button
-          type="submit"
-          appearance="primary"
-          disabled={create.isPending}
-          icon={create.isPending ? <Spinner size="tiny" /> : undefined}
-        >
+        <Button type="submit" variant="default" disabled={create.isPending}>
+          {create.isPending ? <Spinner className="text-current" /> : null}
           {create.isPending ? m.add.creating : m.add.create}
         </Button>
       </>
@@ -328,10 +291,11 @@ export default function AddRepositoryDialog() {
   }
 
   return (
-    <Dialog open onOpenChange={(_, data) => !data.open && close()}>
-      <DialogSurface aria-describedby={undefined} className="!max-w-[640px]">
+    <Dialog open onOpenChange={(open) => !open && close()}>
+      <DialogContent className="max-w-xl" closeLabel={m.add.cancel}>
         <form
           noValidate
+          className="flex min-h-0 flex-1 flex-col"
           onSubmit={(e) => {
             e.preventDefault();
             if (step === 1) runValidation(path);
@@ -339,10 +303,12 @@ export default function AddRepositoryDialog() {
             else submit();
           }}
         >
-          <DialogBody>
+          <DialogHeader>
             <DialogTitle>{m.add.title}</DialogTitle>
-            <DialogContent>
-              <div className="flex flex-col gap-4">
+            <DialogDescription className="sr-only">{m.add.folderIntro}</DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+              <div className="flex flex-col gap-4 py-1">
                 <nav aria-label={m.add.progress}>
                   <ol className="flex items-center gap-2 text-xs">
                     {steps.map((s, i) => (
@@ -367,12 +333,11 @@ export default function AddRepositoryDialog() {
                 </nav>
                 {body}
               </div>
-            </DialogContent>
-            <DialogActions>{actions}</DialogActions>
           </DialogBody>
+          <DialogFooter>{actions}</DialogFooter>
         </form>
         {pending ? <span className="sr-only" aria-live="polite">{validate.isPending ? m.add.validating : m.add.creating}</span> : null}
-      </DialogSurface>
+      </DialogContent>
     </Dialog>
   );
 }

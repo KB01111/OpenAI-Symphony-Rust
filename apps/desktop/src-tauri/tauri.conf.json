@@ -90,7 +90,8 @@
         "headerImage": "installer/header.bmp",
         "sidebarImage": "installer/sidebar.bmp",
         "startMenuFolder": "Symphony Desktop",
-        "compression": "lzma"
+        "compression": "lzma",
+        "installerHooks": "installer/hooks.nsh"
       }
     },
     "license": "MIT",

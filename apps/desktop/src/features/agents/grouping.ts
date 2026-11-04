@@ -10,7 +10,7 @@
 import {
   canCancel,
   canDispatch,
-  canRetry,
+  canRetryTask,
   providerActions,
   type ApprovalRequest,
   type OrchestratorStateSnapshot,
@@ -315,7 +315,8 @@ export function rowActions(row: AgentRow, capabilities: ProviderCapabilities | n
   const status = row.status;
   return {
     dispatch: status !== null && row.segment === "queued" && canDispatch(status),
-    retry: status !== null && !row.live && canRetry(status),
+    // A ready task that never ran is started, not retried (the same rule as the thread and task menus).
+    retry: status !== null && !row.live && canRetryTask({ status, attempt_count: row.attempt ?? 0 }),
     // Stopping a live session requires provider support; queued/retrying work can always be cancelled.
     cancel: status !== null && canCancel(status) && (!row.live || providerActions(capabilities).cancel)
   };

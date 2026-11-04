@@ -40,6 +40,19 @@ const features = tableFeatures({
 type Features = typeof features;
 
 export type ColumnDef<T extends RowData, V extends CellData = CellData> = TableColumnDef<Features, T, V>;
+
+/**
+ * Responsive column visibility is driven by the width of the table's own container (not the
+ * viewport), so a table squeezed beside a detail pane drops low-priority columns instead of
+ * scrolling sideways. Put `className: "hidden @3xl:table-cell"` in a column's `meta`.
+ */
+export interface DataTableColumnMeta {
+  className?: string;
+}
+
+function columnClass(def: { meta?: unknown }): string | undefined {
+  return (def.meta as DataTableColumnMeta | undefined)?.className;
+}
 export type { SortingState } from "@tanstack/react-table";
 
 export interface DataTableProps<T extends RowData> {
@@ -121,7 +134,7 @@ export function DataTable<T extends RowData>({
         }}
       >
         {row.getAllCells().map((cell) => (
-          <TableCell key={cell.id} className="py-1">
+          <TableCell key={cell.id} className={cn("py-1", columnClass(cell.column.columnDef))}>
             {flexRender(cell.column.columnDef.cell, cell.getContext())}
           </TableCell>
         ))}
@@ -131,8 +144,9 @@ export function DataTable<T extends RowData>({
   };
 
   return (
-    <div ref={scrollRef} className={cn("relative min-h-0 overflow-auto", className)}>
-      <Table aria-label={ariaLabel}>
+    <div ref={scrollRef} className={cn("@container relative min-h-0 overflow-auto", className)}>
+      {/* One scroller only (this div): the table's own wrapper must not scroll or sticky headers break. */}
+      <Table aria-label={ariaLabel} containerClassName="overflow-visible">
         <TableHeader className="sticky top-0 z-10 bg-surface">
           {table.getHeaderGroups().map((group) => (
             <TableRow key={group.id}>
@@ -143,7 +157,7 @@ export function DataTable<T extends RowData>({
                   <TableHead
                     key={header.id}
                     aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
-                    className="h-8 text-xs"
+                    className={cn("h-8 text-xs", columnClass(header.column.columnDef))}
                   >
                     {header.isPlaceholder ? null : canSort ? (
                       <button

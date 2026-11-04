@@ -1,9 +1,8 @@
 import React from "react";
-import { Button, MessageBar, MessageBarBody, MessageBarTitle, ProgressBar, Spinner } from "@fluentui/react-components";
 import { Download, ExternalLink, RotateCcw } from "lucide-react";
 import { errorMessage, nativeHost, type UpdateCheck } from "@symphony/api-client";
 import { formatMessage } from "@symphony/shared-types";
-import { useNotify } from "@symphony/ui";
+import { Alert, Button, Progress, Spinner, useNotify } from "@symphony/ui";
 import { useMutation } from "@tanstack/react-query";
 import { useMessages } from "../../lib/i18n.js";
 import { useUiStore } from "../../store/uiStore.js";
@@ -27,7 +26,8 @@ export const UpdateActions: React.FC<{ update: UpdateCheck }> = ({ update }) => 
   if (!update.installable) {
     return (
       <div className="space-y-1">
-        <Button appearance="primary" icon={<ExternalLink className="size-4" />} disabled={openReleases.isPending} onClick={() => openReleases.mutate()}>
+        <Button variant="default" disabled={openReleases.isPending} onClick={() => openReleases.mutate()}>
+          <ExternalLink />
           {m.openReleases}
         </Button>
         <p className="text-xs text-muted-foreground">{m.manualOnly}</p>
@@ -43,26 +43,21 @@ export const UpdateActions: React.FC<{ update: UpdateCheck }> = ({ update }) => 
             <DownloadProgress downloaded={install.downloaded} total={install.total} />
           ) : (
             <p className="flex items-center gap-2 text-sm">
-              <Spinner size="tiny" />
+              <Spinner />
               {m.installing}
             </p>
           )}
         </div>
       ) : null}
       {install.phase === "error" ? (
-        <MessageBar intent="error" layout="multiline">
-          <MessageBarBody>
-            <MessageBarTitle>{m.installFailed}</MessageBarTitle>
-            {install.message}
-          </MessageBarBody>
-        </MessageBar>
+        <Alert intent="error" title={m.installFailed}>{install.message}</Alert>
       ) : null}
       {!busy ? (
         <Button
-          appearance="primary"
-          icon={install.phase === "error" ? <RotateCcw className="size-4" /> : <Download className="size-4" />}
+          variant="default"
           onClick={() => void startInstall(false)}
         >
+          {install.phase === "error" ? <RotateCcw className="size-4" /> : <Download className="size-4" />}
           {install.phase === "error" ? m.retry : m.install}
         </Button>
       ) : null}
@@ -76,7 +71,7 @@ const DownloadProgress: React.FC<{ downloaded: number; total: number | null }> =
   return (
     <>
       <p className="text-sm">{percent === null ? m.downloadingUnknown : formatMessage(m.downloading, { percent })}</p>
-      <ProgressBar aria-label={m.progressLabel} value={percent === null ? undefined : percent / 100} thickness="large" />
+      <Progress aria-label={m.progressLabel} value={percent} className="h-2" />
     </>
   );
 };

@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo } from "react";
-import { Button, Toolbar, ToolbarRadioButton, ToolbarRadioGroup } from "@fluentui/react-components";
+import React, { Suspense, lazy, useEffect, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage } from "@symphony/shared-types";
-import { AiEmptyView, ErrorState, LoadingRows, PageHeader } from "@symphony/ui";
-import { FilterX, FolderPlus, KanbanSquare, ListTodo, Plus, Table2 } from "lucide-react";
+import { AiEmptyView, Button, ErrorState, LoadingRows, PageHeader, ToggleGroup, ToggleGroupItem } from "@symphony/ui";
+import { Bot, FilterX, FolderPlus, KanbanSquare, ListTodo, Plus, Table2 } from "lucide-react";
 import { useMessages } from "../../lib/i18n.js";
 import { useProjects, useTasks } from "../../lib/queries.js";
 import { useUiStore, type TaskView } from "../../store/uiStore.js";
@@ -14,11 +14,21 @@ import { TaskTable } from "./TaskTable.js";
 import { TaskToolbar } from "./TaskToolbar.js";
 import { filterTasks, hasActiveFilters } from "./taskLogic.js";
 
-/** Task management: Kanban board or data table over the runtime's tasks, with shared filters. */
+// The Runs view (live sessions, retries, recent finishes) is its own chunk, loaded when first shown.
+const AgentRunsView = lazy(() => import("../agents/AgentRunsView.js"));
+
+/** Task management: Kanban board, data table or agent runs over the runtime's tasks. */
 export default function TasksPage() {
   const m = useMessages(taskMessages);
   const taskView = useUiStore((s) => s.taskView);
   const setTaskView = useUiStore((s) => s.setTaskView);
+  // The address is the source of truth for Runs (`/tasks?view=runs`, also what the old /runs page opens),
+  // so the view is shareable and follows Back/Forward. It is not a saved preference: a plain /tasks link
+  // shows the board or table.
+  const [search, setSearch] = useSearchParams();
+  const runsOpen = search.get("view") === "runs";
+  // A history entry each, so Back returns to the view you came from.
+  const showRuns = (open: boolean) => setSearch(open ? { view: "runs" } : {});
   const activeProjectId = useUiStore((s) => s.activeProjectId);
   const filters = useUiStore((s) => s.taskFilters);
   const resetTaskFilters = useUiStore((s) => s.resetTaskFilters);
@@ -44,35 +54,42 @@ export default function TasksPage() {
   const activeProject = projectList.find((p) => p.id === activeProjectId);
 
   const viewToggle = (
-    <Toolbar
-      size="small"
+    <ToggleGroup
+      type="single"
       aria-label={m.page.viewLabel}
-      checkedValues={{ view: [taskView] }}
-      onCheckedValueChange={(_, data) => {
-        const next = data.checkedItems[0] as TaskView | undefined;
-        if (data.name === "view" && next) setTaskView(next);
+      value={runsOpen ? "runs" : taskView}
+      onValueChange={(next) => {
+        if (!next) return;
+        // Board and Table are a saved preference and need no new address; only entering or leaving Runs does.
+        if ((next === "runs") !== runsOpen) showRuns(next === "runs");
+        if (next !== "runs") setTaskView(next as TaskView);
       }}
-      className="!p-0"
     >
-      <ToolbarRadioGroup>
-        <ToolbarRadioButton name="view" value="board" icon={<KanbanSquare className="size-4" aria-hidden />}>
-          {m.page.board}
-        </ToolbarRadioButton>
-        <ToolbarRadioButton name="view" value="table" icon={<Table2 className="size-4" aria-hidden />}>
-          {m.page.table}
-        </ToolbarRadioButton>
-      </ToolbarRadioGroup>
-    </Toolbar>
+      <ToggleGroupItem value="board" className="gap-1.5">
+        <KanbanSquare className="size-3.5" aria-hidden />
+        {m.page.board}
+      </ToggleGroupItem>
+      <ToggleGroupItem value="table" className="gap-1.5">
+        <Table2 className="size-3.5" aria-hidden />
+        {m.page.table}
+      </ToggleGroupItem>
+      <ToggleGroupItem value="runs" className="gap-1.5">
+        <Bot className="size-3.5" aria-hidden />
+        {m.page.runs}
+      </ToggleGroupItem>
+    </ToggleGroup>
   );
 
   const header = (
     <PageHeader
       title={m.page.title}
-      description={activeProject ? formatMessage(m.page.descriptionProject, { project: activeProject.name }) : m.page.description}
+      // Runs spans every project, so it never carries the selected project's name.
+      description={activeProject && !runsOpen ? formatMessage(m.page.descriptionProject, { project: activeProject.name }) : m.page.description}
       actions={
         <>
           {viewToggle}
-          <Button appearance="primary" size="small" icon={<Plus className="size-4" aria-hidden />} onClick={() => setNewTaskOpen(true)}>
+          <Button variant="default" size="sm" onClick={() => setNewTaskOpen(true)}>
+            <Plus />
             {m.page.newTask}
           </Button>
         </>
@@ -81,8 +98,17 @@ export default function TasksPage() {
   );
 
   let content: React.ReactNode;
-  if (projects.isError) {
+  if (projects.isError && !projects.data) {
+    // Runs groups ready tasks by their project's auto-dispatch setting, so it needs the projects too. A failed
+    // refresh with projects already loaded keeps showing the cached ones.
     content = <ErrorState className="m-4" title={m.page.projectsError} message={errorMessage(projects.error)} onRetry={() => void projects.refetch()} />;
+  } else if (runsOpen) {
+    // Runs has its own tabs, loading and empty states, so the task filters and lists stay out of the way.
+    content = (
+      <Suspense fallback={<LoadingRows className="p-4" rows={8} label={m.page.loading} />}>
+        <AgentRunsView onShowTasks={() => showRuns(false)} />
+      </Suspense>
+    );
   } else if (tasks.isError) {
     content = <ErrorState className="m-4" title={m.page.loadError} message={errorMessage(tasks.error)} onRetry={() => void tasks.refetch()} />;
   } else if (projects.isLoading || tasks.isLoading) {
@@ -95,7 +121,7 @@ export default function TasksPage() {
         title={m.empty.noProjectsTitle}
         description={m.empty.noProjectsBody}
         action={
-          <Button appearance="primary" onClick={() => setAddProjectOpen(true)}>
+          <Button variant="default" onClick={() => setAddProjectOpen(true)}>
             {m.empty.addRepository}
           </Button>
         }
@@ -109,7 +135,8 @@ export default function TasksPage() {
         title={m.empty.noTasksTitle}
         description={m.empty.noTasksBody}
         action={
-          <Button appearance="primary" icon={<Plus className="size-4" aria-hidden />} onClick={() => setNewTaskOpen(true)}>
+          <Button variant="default" onClick={() => setNewTaskOpen(true)}>
+            <Plus />
             {m.page.newTask}
           </Button>
         }
@@ -135,7 +162,7 @@ export default function TasksPage() {
     <TaskActionsProvider>
       <div className="flex h-full min-h-0 flex-col">
         {header}
-        {projectList.length > 0 ? <TaskToolbar projects={projectList} shown={visible.length} total={allTasks.length} /> : null}
+        {projectList.length > 0 && !runsOpen ? <TaskToolbar projects={projectList} shown={visible.length} total={allTasks.length} /> : null}
         <div className="min-h-0 flex-1 overflow-hidden">{content}</div>
       </div>
     </TaskActionsProvider>

@@ -556,4 +556,16 @@ mod tests {
             ok
         ));
     }
+
+    /// The manifest is unsigned; this setting is what binds its version to the signed installer
+    /// (docs/RELEASING.md), so it must not be dropped from the config by accident.
+    #[test]
+    fn the_updater_requires_the_signed_version() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            config["plugins"]["updater"]["requireSignedVersion"],
+            serde_json::json!(true)
+        );
+    }
 }

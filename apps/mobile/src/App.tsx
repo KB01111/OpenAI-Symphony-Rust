@@ -4,6 +4,7 @@ import { Button, Tooltip } from "@fluentui/react-components";
 import { Activity, Bot, ListChecks, LogOut, RefreshCw, ShieldQuestion } from "lucide-react";
 import { formatMessage, type Locale } from "@symphony/shared-types";
 import { StatusDot, SymphonyDesignProvider } from "@symphony/ui";
+import { FluentBridge } from "@symphony/ui/legacy";
 import { isSymphonyApiError } from "@symphony/api-client";
 import {
   browserStorage,
@@ -144,6 +145,7 @@ export default function MobileApp() {
 
   return (
     <SymphonyDesignProvider themeMode="system" density="comfortable" locale={locale}>
+      <FluentBridge>
       <LocaleProvider locale={locale}>
         <QueryClientProvider client={queryClient}>
           {connected && connection ? (
@@ -177,6 +179,7 @@ export default function MobileApp() {
           )}
         </QueryClientProvider>
       </LocaleProvider>
+      </FluentBridge>
     </SymphonyDesignProvider>
   );
 }

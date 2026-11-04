@@ -1,19 +1,8 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Button } from "@fluentui/react-components";
 import { GitPullRequest, SearchX } from "lucide-react";
 import { formatMessage, type Project } from "@symphony/shared-types";
-import {
-  AiEmptyView,
-  ErrorState,
-  LoadingRows,
-  PageHeader,
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-  SdkBadge,
-  useDefaultLayout
-} from "@symphony/ui";
+import { AiEmptyView, Badge, Button, ErrorState, LoadingRows, PageHeader, ResizableHandle, ResizablePanel, ResizablePanelGroup, useDefaultLayout } from "@symphony/ui";
 import { errorMessage } from "@symphony/api-client";
 import { paths } from "../../app/routes.js";
 import { useMessages } from "../../lib/i18n.js";
@@ -31,7 +20,6 @@ export default function ReviewsPage() {
   const { reviewId } = useParams<{ reviewId?: string }>();
   const navigate = useNavigate();
   const activeProjectId = useUiStore((s) => s.activeProjectId);
-  const inspect = useUiStore((s) => s.inspect);
   const prs = usePullRequests(activeProjectId);
   const projects = useProjects();
   const [filters, setFilters] = useState<ReviewFilters>(DEFAULT_REVIEW_FILTERS);
@@ -46,9 +34,8 @@ export default function ReviewsPage() {
   const select = useCallback(
     (id: string) => {
       navigate(paths.review(id));
-      inspect({ kind: "review", id });
     },
-    [navigate, inspect]
+    [navigate]
   );
 
   const header = (
@@ -57,9 +44,9 @@ export default function ReviewsPage() {
       description={m.description}
       meta={
         all ? (
-          <SdkBadge size="sm" variant="soft" color="secondary" pill>
+          <Badge tone="neutral">
             {formatMessage(m.count, { count: all.length })}
-          </SdkBadge>
+          </Badge>
         ) : null
       }
     />
@@ -82,7 +69,7 @@ export default function ReviewsPage() {
           description={m.empty.noReviewsBody}
           icon={<GitPullRequest className="size-6 text-accent" aria-hidden />}
           action={
-            <Button size="small" onClick={() => navigate(paths.runs())}>
+            <Button size="sm" onClick={() => navigate(paths.runs())}>
               {m.empty.openRuns}
             </Button>
           }
@@ -102,7 +89,7 @@ export default function ReviewsPage() {
                   description={m.empty.noMatchesBody}
                   icon={<SearchX className="size-6 text-muted-foreground" aria-hidden />}
                   action={
-                    <Button size="small" onClick={() => setFilters(DEFAULT_REVIEW_FILTERS)}>
+                    <Button size="sm" onClick={() => setFilters(DEFAULT_REVIEW_FILTERS)}>
                       {m.filters.clear}
                     </Button>
                   }

@@ -1,17 +1,24 @@
 import React, { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import {
-  Button,
-  CounterBadge,
-  MessageBar,
-  MessageBarBody,
-  MessageBarTitle,
-  Tab,
-  TabList
-} from "@fluentui/react-components";
-import { ExternalLink, GitBranch, GitPullRequest, ShieldAlert } from "lucide-react";
+import { ExternalLink, GitBranch, GitPullRequest } from "lucide-react";
 import { formatMessage, type Project, type PullRequestReview } from "@symphony/shared-types";
-import { AiEmptyView, ConfirmDialog, ErrorState, KeyValueList, LoadingRows, MergeReadinessCard, SdkBadge, SdkMarkdown, TimeAgo, useNotify } from "@symphony/ui";
+import {
+  AiEmptyView,
+  Alert,
+  Badge,
+  Button,
+  ConfirmDialog,
+  ErrorState,
+  KeyValueList,
+  LoadingRows,
+  Markdown,
+  MergeReadinessCard,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  TimeAgo,
+  useNotify
+} from "@symphony/ui";
 import { errorMessage, SymphonyApiError } from "@symphony/api-client";
 import { paths } from "../../app/routes.js";
 import { useMessages } from "../../lib/i18n.js";
@@ -25,7 +32,7 @@ type ReviewTab = "files" | "diff" | "validation" | "comments" | "security";
 const TabLabel: React.FC<{ label: string; count?: number; tone?: "danger" | "informative" }> = ({ label, count, tone = "informative" }) => (
   <span className="inline-flex items-center gap-1.5">
     {label}
-    {count ? <CounterBadge size="small" appearance={tone === "danger" ? "filled" : "ghost"} color={tone === "danger" ? "danger" : "informative"} count={count} /> : null}
+    {count ? <Badge tone={tone === "danger" ? "danger" : "neutral"}>{count}</Badge> : null}
   </span>
 );
 
@@ -110,9 +117,9 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
           <h2 id={`review-title-${review.id}`} className="min-w-0 flex-1 font-display text-lg font-semibold text-foreground">
             <span className="text-muted-foreground">{hasPullRequest(review) ? `#${review.pr_number}` : m.list.localReview}</span> {review.title}
           </h2>
-          <SdkBadge size="sm" variant="outline" color="secondary" pill>
+          <Badge tone="outline">
             {review.state}
-          </SdkBadge>
+          </Badge>
           <TimeAgo iso={review.updated_at} className="text-xs text-subtle-foreground" />
         </div>
         <KeyValueList
@@ -160,10 +167,11 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
       {canPublish ? (
         <div className="flex flex-wrap items-center gap-2">
           <Button
-            icon={<GitPullRequest className="size-4" aria-hidden />}
+           
             disabled={publish.isPending || publishBlocked !== null}
             onClick={() => setPublishOpen(true)}
           >
+            <GitPullRequest />
             {pushing ? formatMessage(m.publish.pushButton, { number: review.pr_number }) : m.publish.button}
           </Button>
           {publishBlocked ? <span className="text-xs text-muted-foreground">{publishBlocked}</span> : null}
@@ -180,60 +188,51 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
       ) : null}
 
       {review.has_conflicts ? (
-        <MessageBar intent="error">
-          <MessageBarBody>{m.detail.conflicts}</MessageBarBody>
-        </MessageBar>
+        <Alert intent="error">{m.detail.conflicts}</Alert>
       ) : null}
       {warnings.length > 0 ? (
-        <MessageBar intent="warning" layout="multiline" icon={<ShieldAlert className="size-4" aria-hidden />}>
-          <MessageBarBody>
-            <MessageBarTitle>{m.detail.securityTitle}</MessageBarTitle>
-            <ul className="list-disc ps-4">
-              {warnings.map((w, i) => (
-                <li key={`${i}-${w}`}>{w}</li>
-              ))}
-            </ul>
-          </MessageBarBody>
-        </MessageBar>
+        <Alert intent="warning" title={m.detail.securityTitle}>
+          <ul className="list-disc ps-4">
+            {warnings.map((w, i) => (
+              <li key={`${i}-${w}`}>{w}</li>
+            ))}
+          </ul>
+        </Alert>
       ) : null}
 
       {review.description.trim() ? (
         <details className="rounded-md border border-border bg-surface">
           <summary className="cursor-pointer px-3 py-1.5 text-sm font-medium text-foreground hover:bg-surface-hover">{m.detail.descriptionTitle}</summary>
           <div className="border-t border-border px-3 py-2 text-sm text-foreground">
-            <SdkMarkdown skipHtml>{review.description}</SdkMarkdown>
+            <Markdown skipHtml>{review.description}</Markdown>
           </div>
         </details>
       ) : null}
 
       <div className="rounded-md border border-border bg-surface">
-        <TabList
-          size="small"
-          aria-label={m.tabs.label}
-          selectedValue={tab}
-          onTabSelect={(_, data) => setTab(data.value as ReviewTab)}
-          className="border-b border-border px-1"
-        >
-          <Tab value="files">
-            <TabLabel label={m.tabs.files} count={review.changed_files.length} />
-          </Tab>
-          <Tab value="diff">
-            <TabLabel label={m.tabs.diff} />
-          </Tab>
-          <Tab value="validation">
-            <TabLabel
-              label={m.tabs.validation}
-              count={review.validation_results.length}
-              tone={review.validation_results.some((v) => !v.passed) ? "danger" : "informative"}
-            />
-          </Tab>
-          <Tab value="comments">
-            <TabLabel label={m.tabs.comments} count={review.review_comments.length} />
-          </Tab>
-          <Tab value="security">
-            <TabLabel label={m.tabs.security} count={warnings.length} tone="danger" />
-          </Tab>
-        </TabList>
+        <Tabs value={tab} onValueChange={(v) => setTab(v as ReviewTab)}>
+          <TabsList aria-label={m.tabs.label}>
+            <TabsTrigger value="files">
+              <TabLabel label={m.tabs.files} count={review.changed_files.length} />
+            </TabsTrigger>
+            <TabsTrigger value="diff">
+              <TabLabel label={m.tabs.diff} />
+            </TabsTrigger>
+            <TabsTrigger value="validation">
+              <TabLabel
+                label={m.tabs.validation}
+                count={review.validation_results.length}
+                tone={review.validation_results.some((v) => !v.passed) ? "danger" : "informative"}
+              />
+            </TabsTrigger>
+            <TabsTrigger value="comments">
+              <TabLabel label={m.tabs.comments} count={review.review_comments.length} />
+            </TabsTrigger>
+            <TabsTrigger value="security">
+              <TabLabel label={m.tabs.security} count={warnings.length} tone="danger" />
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
         <div role="tabpanel" aria-label={m.tabs[tab]} className="p-3">
           {tab === "files" ? (
             <FilesChangedTab
@@ -282,16 +281,11 @@ const ReviewContent: React.FC<{ review: PullRequestReview; project: Project | un
       >
         <p className="font-semibold">{m.approve.noMerge}</p>
         {blockers.length > 0 ? (
-          <MessageBar intent="warning" layout="multiline">
-            <MessageBarBody>
-              <MessageBarTitle>{formatMessage(m.approve.lowScore, { score: review.merge_readiness.score })}</MessageBarTitle>
-              <ul className="list-disc ps-4">
+          <Alert intent="warning" title={formatMessage(m.approve.lowScore, { score: review.merge_readiness.score })}><ul className="list-disc ps-4">
                 {blockers.map((b) => (
                   <li key={b}>{b}</li>
                 ))}
-              </ul>
-            </MessageBarBody>
-          </MessageBar>
+              </ul></Alert>
         ) : null}
       </ConfirmDialog>
     </div>
@@ -329,7 +323,7 @@ export const ReviewDetail: React.FC<{
           description={m.empty.notFoundBody}
           icon={<GitPullRequest className="size-6 text-muted-foreground" aria-hidden />}
           action={
-            <Button size="small" onClick={() => navigate(paths.reviews())}>
+            <Button size="sm" onClick={() => navigate(paths.reviews())}>
               {m.empty.backToList}
             </Button>
           }

@@ -6,6 +6,7 @@ import { settings } from "../../test/fixtures.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
 import { settingsMessages } from "./messages.js";
 import { BackupsSection, RemoteSection } from "./sections.js";
+import SettingsPage from "./SettingsPage.js";
 import { isLoopback, isValidRemoteOrigin, parseOrigins, portOf, serverErrorFields, validateSettings } from "./validation.js";
 
 const v = settingsMessages.en.validation;
@@ -207,11 +208,11 @@ describe("BackupsSection", () => {
     renderWithProviders(<Backups onDraft={(d) => (latest = d)} />, { runtime });
     expect(await screen.findByText(m.scheduled)).toBeInTheDocument();
     const interval = screen.getByRole("spinbutton", { name: m.interval });
-    expect(interval).toHaveValue("24");
+    expect(interval).toHaveValue(24);
     fireEvent.change(interval, { target: { value: "6" } });
     fireEvent.blur(interval);
     await waitFor(() => expect(latest?.backup_interval_hours).toBe(6));
-    expect(screen.getByRole("spinbutton", { name: m.keep })).toHaveValue("7");
+    expect(screen.getByRole("spinbutton", { name: m.keep })).toHaveValue(7);
   });
 
   it("creates a backup, lists it and states what is not included", async () => {
@@ -231,6 +232,132 @@ describe("BackupsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: m.create }));
     expect(await screen.findByText("symphony-backup-20261021T120000Z")).toBeInTheDocument();
     expect(runtime.calls.filter((c) => c.method === "POST")).toHaveLength(1);
+  });
+
+  describe("restoring a backup from the application", () => {
+    const id = "symphony-backup-20261020T100000Z";
+    const directory = "C:\\data\\backups";
+    const noStatus = { pending: null, last: null };
+
+    it("asks for confirmation, schedules the restore for the next start and can withdraw it", async () => {
+      let status: { pending: { backup_id: string; requested_at: string } | null; last: null } = noStatus;
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => status,
+        "POST /backups/:id/restore": () => {
+          status = { pending: { backup_id: id, requested_at: "2026-10-23T08:00:00Z" }, last: null };
+          return { status: 202, body: status };
+        },
+        "DELETE /backups/restore": () => {
+          status = noStatus;
+          return status;
+        }
+      });
+      renderWithProviders(<Backups />, { runtime });
+
+      // Nothing happens without the confirmation.
+      fireEvent.click(await screen.findByRole("button", { name: `Restore ${id}` }));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(within(dialog).getByText(m.confirmTitle)).toBeInTheDocument();
+      expect(within(dialog).getByText(/Nothing is replaced now/)).toBeInTheDocument();
+      expect(runtime.calls.filter((c) => c.method === "POST")).toHaveLength(0);
+
+      fireEvent.click(within(dialog).getByRole("button", { name: m.confirmAction }));
+      expect(await screen.findByText(m.pendingTitle)).toBeInTheDocument();
+      expect(screen.getByText(`${id} will be restored the next time Symphony starts. Quit Symphony and start it again to apply it.`)).toBeInTheDocument();
+      const posts = runtime.calls.filter((c) => c.method === "POST");
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.path).toBe(`/backups/${id}/restore`);
+
+      fireEvent.click(screen.getByRole("button", { name: m.pendingWithdraw }));
+      await waitFor(() => expect(screen.queryByText(m.pendingTitle)).not.toBeInTheDocument());
+      expect(runtime.calls.some((c) => c.method === "DELETE" && c.path === "/backups/restore")).toBe(true);
+    });
+
+    it("says why a backup cannot be restored and keeps the dialog open", async () => {
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => noStatus,
+        "POST /backups/:id/restore": () => ({
+          status: 422,
+          body: { error: { code: "backup_not_restorable", message: "backup file symphony.sqlite does not match its checksum; the backup is damaged" } }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+
+      fireEvent.click(await screen.findByRole("button", { name: `Restore ${id}` }));
+      const dialog = await screen.findByRole("alertdialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: m.confirmAction }));
+      expect(await within(dialog).findByText(m.restoreFailed)).toBeInTheDocument();
+      expect(within(dialog).getByText(/does not match its checksum/)).toBeInTheDocument();
+      expect(screen.queryByText(m.pendingTitle)).not.toBeInTheDocument();
+    });
+
+    it("reports what the last restore did, including a failure that left the data alone", async () => {
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => ({
+          pending: null,
+          last: { backup_id: id, applied_at: "2026-10-23T08:05:00Z", succeeded: false, error: "the backup is damaged", previous_files: [] }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+      expect(await screen.findByText(m.lastFailedTitle)).toBeInTheDocument();
+      expect(screen.getByText(/your data was left as it was: the backup is damaged/)).toBeInTheDocument();
+    });
+
+    it("does not say the data was left as it was when putting it back did not finish", async () => {
+      const displaced = "C:\\data\\symphony.sqlite.pre-restore-20261023T080500Z";
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => ({
+          pending: null,
+          last: {
+            backup_id: id,
+            applied_at: "2026-10-23T08:05:00Z",
+            succeeded: false,
+            error: "the restore failed and putting the previous data back was incomplete",
+            previous_files: [displaced],
+            rollback_incomplete: true
+          }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+      expect(await screen.findByText(m.lastIncompleteTitle)).toBeInTheDocument();
+      // The files that still hold the previous data are named, so they can be moved back by hand.
+      expect(screen.getByText(displaced)).toBeInTheDocument();
+      expect(screen.queryByText(/left as it was/)).not.toBeInTheDocument();
+      expect(screen.queryByText(m.lastFailedTitle)).not.toBeInTheDocument();
+    });
+
+    it("does not offer a restore while it cannot tell whether one is already waiting", async () => {
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => ({
+          status: 500,
+          body: { error: { code: "storage_error", message: "the restore status is unreadable" } }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+      expect(await screen.findByText(m.statusFailedTitle)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: `Restore ${id}` })).toBeDisabled();
+    });
+
+    it("says so when a waiting restore could not be withdrawn", async () => {
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => ({ pending: { backup_id: id, requested_at: "2026-10-23T08:00:00Z" }, last: null }),
+        "DELETE /backups/restore": () => ({
+          status: 500,
+          body: { error: { code: "io_error", message: "the request file is locked" } }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+      fireEvent.click(await screen.findByRole("button", { name: m.pendingWithdraw }));
+      expect(await screen.findByText(m.withdrawFailed)).toBeInTheDocument();
+      // It is still waiting, and still shown as waiting.
+      expect(screen.getByText(m.pendingTitle)).toBeInTheDocument();
+    });
   });
 
   it("reports a failed backup instead of pretending it succeeded", async () => {
@@ -259,5 +386,80 @@ describe("BackupsSection", () => {
     renderWithProviders(<Backups />, { runtime });
     expect(await screen.findByText(m.unavailable)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: m.create })).not.toBeInTheDocument();
+  });
+});
+
+describe("SettingsPage", () => {
+  const renderPage = () => {
+    const rt = createMockRuntime({ "GET /settings": () => settings(), "GET /providers": () => [] });
+    renderWithProviders(<SettingsPage />, { runtime: rt, route: "/settings" });
+  };
+  const openSection = (name: string) => fireEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name }));
+
+  it("shows one section at a time", async () => {
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Backups" })).not.toBeInTheDocument();
+    openSection("Backups");
+    expect(await screen.findByRole("heading", { name: "Backups" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Appearance" })).not.toBeInTheDocument();
+  });
+
+  it("keeps Remote access mounted while hidden, so an issued one-time token is not lost", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "Appearance" });
+    const hiddenHeading = screen.getByRole("heading", { name: "Remote access", hidden: true });
+    expect(hiddenHeading.closest("[hidden]")).not.toBeNull();
+    openSection("Remote access");
+    expect(screen.getByRole("heading", { name: "Remote access" }).closest("[hidden]")).toBeNull();
+  });
+
+  it("offers Reset only once something has been edited", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "Appearance" });
+    openSection("Scheduling & resources");
+    const polling = await screen.findByLabelText("Polling interval (ms)");
+    expect(screen.queryByRole("button", { name: "Reset" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    fireEvent.change(polling, { target: { value: "45000" } });
+    expect(await screen.findByRole("button", { name: "Reset" })).toBeEnabled();
+  });
+
+  it("saves the default cloud agent chosen for CodeSandbox tasks", async () => {
+    let stored = settings({ default_cloud_agent: "mini_swe_agent" });
+    const rt = createMockRuntime({
+      "GET /settings": () => stored,
+      "GET /providers": () => [],
+      "PUT /settings": ({ body }) => {
+        stored = body as typeof stored;
+        return stored;
+      }
+    });
+    renderWithProviders(<SettingsPage />, { runtime: rt, route: "/settings" });
+    await screen.findByRole("heading", { name: "Appearance" });
+    openSection("Default provider");
+
+    const select = await screen.findByRole("combobox", { name: "Default cloud agent" });
+    expect(select).toHaveTextContent("mini-swe-agent");
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    fireEvent.keyDown(select, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("option", { name: "Pi Durable" }));
+
+    const save = screen.getByRole("button", { name: "Save changes" });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    await waitFor(() => expect(stored.default_cloud_agent).toBe("pi_durable"));
+    expect(rt.calls.find((c) => c.method === "PUT" && c.path === "/settings")!.body).toMatchObject({ default_cloud_agent: "pi_durable" });
+  });
+
+  it("marks a section that has an invalid field even while another section is open", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "Appearance" });
+    openSection("Scheduling & resources");
+    fireEvent.change(await screen.findByLabelText("Polling interval (ms)"), { target: { value: "10" } });
+    openSection("Appearance");
+    const nav = screen.getByRole("navigation", { name: "Settings sections" });
+    expect(within(within(nav).getByRole("button", { name: /Scheduling & resources/ })).getByRole("img", { name: "Has a field that needs attention" })).toBeInTheDocument();
+    expect(within(within(nav).getByRole("button", { name: /Appearance/ })).queryByRole("img")).not.toBeInTheDocument();
   });
 });

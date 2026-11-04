@@ -37,20 +37,41 @@ pub fn provider_binary_name(kind: ProviderKind) -> Option<&'static str> {
         ProviderKind::Codex => Some("codex"),
         ProviderKind::ClaudeCode => Some("claude"),
         ProviderKind::OpenCode => Some("opencode"),
+        // The bridge runs on Node; the bundle itself is checked in `detect_provider_status`.
+        ProviderKind::CodeSandbox => Some("node"),
         ProviderKind::Simulated => None,
     }
 }
 
-/// Locate an executable on `PATH` (honouring `PATHEXT` on Windows).
+/// The extensions Symphony starts a provider CLI through on Windows: a program, or the batch shim
+/// npm writes next to a package's own entry point.
+const LAUNCHABLE_EXTENSIONS: [&str; 4] = [".exe", ".cmd", ".bat", ".com"];
+
+/// The `PATHEXT` entries a provider CLI can be started through. `PATHEXT` also lists script types
+/// (`.JS`, `.VBS`, `.WSH`, `.MSC`) that are not programs and that a file named like a provider
+/// would otherwise be taken for; those are left out, whatever the environment says.
+fn launchable_extensions(pathext: &str) -> Vec<String> {
+    let listed: Vec<String> = pathext
+        .split(';')
+        .map(|e| e.trim().to_lowercase())
+        .filter(|e| LAUNCHABLE_EXTENSIONS.contains(&e.as_str()))
+        .collect();
+    if listed.is_empty() {
+        LAUNCHABLE_EXTENSIONS
+            .iter()
+            .map(|e| e.to_string())
+            .collect()
+    } else {
+        listed
+    }
+}
+
+/// Locate an executable on `PATH` (honouring `PATHEXT` on Windows, restricted to the extensions a
+/// provider CLI is actually launched through).
 pub fn find_on_path(binary: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     let extensions: Vec<String> = if cfg!(windows) {
-        std::env::var("PATHEXT")
-            .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string())
-            .split(';')
-            .filter(|e| !e.is_empty())
-            .map(|e| e.to_lowercase())
-            .collect()
+        launchable_extensions(&std::env::var("PATHEXT").unwrap_or_default())
     } else {
         vec![String::new()]
     };
@@ -65,7 +86,7 @@ pub fn find_on_path(binary: &str) -> Option<PathBuf> {
     None
 }
 
-async fn probe_version(binary: &Path) -> Option<String> {
+pub(crate) async fn probe_version(binary: &Path) -> Option<String> {
     let mut cmd = Command::new(binary);
     cmd.arg("--version")
         .stdin(Stdio::null())
@@ -114,6 +135,26 @@ pub fn detect_auth(
     let home = home_dir();
     match kind {
         ProviderKind::Simulated => (ProviderAuthState::NotRequired, None),
+        ProviderKind::CodeSandbox => {
+            if in_vault("CSB_API_KEY") {
+                (
+                    ProviderAuthState::Authenticated,
+                    Some("CSB_API_KEY in Symphony credential vault".into()),
+                )
+            } else if env_present("CSB_API_KEY") {
+                (
+                    ProviderAuthState::Authenticated,
+                    Some("CSB_API_KEY environment variable".into()),
+                )
+            } else {
+                (
+                    ProviderAuthState::Unauthenticated,
+                    Some(
+                        "Add a CodeSandbox API token (codesandbox.io/t/api) as CSB_API_KEY".into(),
+                    ),
+                )
+            }
+        }
         ProviderKind::Codex => {
             if env_present("OPENAI_API_KEY") {
                 return (
@@ -438,7 +479,7 @@ async fn discover_models(
         ProviderKind::Codex => discover_codex_models(binary).await,
         ProviderKind::OpenCode => discover_opencode_models(binary).await,
         // Claude Code has no model listing; its aliases (`opus`, `sonnet`, …) never go stale.
-        ProviderKind::ClaudeCode | ProviderKind::Simulated => None,
+        ProviderKind::ClaudeCode | ProviderKind::CodeSandbox | ProviderKind::Simulated => None,
     };
     if let Ok(mut cache) = model_cache().lock() {
         // Cleared while probing (credentials changed): the answer may describe the old account.
@@ -530,22 +571,62 @@ pub async fn detect_provider_status(
     vault_keys: &[String],
     default_model: Option<String>,
     refresh_models: bool,
+    codesandbox_runner: Option<&str>,
 ) -> ProviderStatus {
     let mut capabilities = kind.default_capabilities();
-    let (installed, binary_path, version) = match provider_binary_name(kind) {
-        None => (
-            true,
-            capabilities.binary_path.clone(),
-            capabilities.version.clone(),
-        ),
-        Some(binary) => match find_on_path(binary) {
+    let bridge = (kind == ProviderKind::CodeSandbox)
+        .then(|| crate::codesandbox::find_runner_bundle(codesandbox_runner))
+        .flatten();
+    let (installed, binary_path, version) = if kind == ProviderKind::CodeSandbox {
+        // The installed desktop has a private Node runtime next to its packaged bridge.
+        // The CLI and developer checkouts retain PATH discovery as a fallback.
+        match crate::codesandbox::find_node_runtime(bridge.as_deref()) {
             Some(path) => {
                 let version = probe_version(&path).await;
-                (true, Some(path.to_string_lossy().to_string()), version)
+                let supported = version
+                    .as_deref()
+                    .is_some_and(crate::codesandbox::supports_node_version);
+                (supported, Some(path.to_string_lossy().to_string()), version)
             }
             None => (false, None, None),
-        },
+        }
+    } else {
+        match provider_binary_name(kind) {
+            None => (
+                true,
+                capabilities.binary_path.clone(),
+                capabilities.version.clone(),
+            ),
+            Some(binary) => match find_on_path(binary) {
+                Some(path) => {
+                    let version = probe_version(&path).await;
+                    (true, Some(path.to_string_lossy().to_string()), version)
+                }
+                None => (false, None, None),
+            },
+        }
     };
+    let bridge_missing = kind == ProviderKind::CodeSandbox && bridge.is_none();
+    if bridge_missing {
+        capabilities.status_message = format!(
+            "{} · CodeSandbox bridge missing: reinstall Symphony Desktop or set {} to a built bridge.",
+            capabilities.status_message,
+            crate::codesandbox::RUNNER_ENV
+        );
+    }
+    if kind == ProviderKind::CodeSandbox && binary_path.is_none() {
+        capabilities.status_message = format!(
+            "{} · Node.js runtime missing: reinstall Symphony Desktop or install Node.js >=22.13.0.",
+            capabilities.status_message
+        );
+    } else if kind == ProviderKind::CodeSandbox && !installed {
+        capabilities.status_message = format!(
+            "{} · Unsupported Node.js version ({}); requires >=22.13.0.",
+            capabilities.status_message,
+            version.as_deref().unwrap_or("unknown")
+        );
+    }
+    let installed = installed && !bridge_missing;
     capabilities.available = installed;
     capabilities.binary_path = binary_path.clone();
     capabilities.version = version.clone();
@@ -577,15 +658,23 @@ pub async fn detect_provider_statuses(
     vault_keys: &[String],
     default_model_for: impl Fn(ProviderKind) -> Option<String>,
     refresh_models: bool,
+    codesandbox_runner: Option<&str>,
 ) -> Vec<ProviderStatus> {
     let kinds = [
         ProviderKind::Codex,
         ProviderKind::ClaudeCode,
         ProviderKind::OpenCode,
+        ProviderKind::CodeSandbox,
         ProviderKind::Simulated,
     ];
     let futures = kinds.iter().map(|kind| {
-        detect_provider_status(*kind, vault_keys, default_model_for(*kind), refresh_models)
+        detect_provider_status(
+            *kind,
+            vault_keys,
+            default_model_for(*kind),
+            refresh_models,
+            codesandbox_runner,
+        )
     });
     futures::future::join_all(futures).await
 }
@@ -594,9 +683,25 @@ pub async fn detect_provider_statuses(
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_program_extensions_of_pathext_are_used_to_find_a_provider() {
+        // Script types in PATHEXT are not programs, and are never looked for.
+        assert_eq!(
+            launchable_extensions(".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"),
+            vec![".com", ".exe", ".bat", ".cmd"]
+        );
+        assert_eq!(launchable_extensions(".JS;.VBS"), launchable_extensions(""));
+        assert_eq!(
+            launchable_extensions(""),
+            vec![".exe", ".cmd", ".bat", ".com"]
+        );
+        // Whitespace and case do not matter.
+        assert_eq!(launchable_extensions(" .Cmd ; ;.JS"), vec![".cmd"]);
+    }
+
     #[tokio::test]
     async fn simulated_provider_is_always_installed_without_auth() {
-        let status = detect_provider_status(ProviderKind::Simulated, &[], None, false).await;
+        let status = detect_provider_status(ProviderKind::Simulated, &[], None, false, None).await;
         assert!(status.installed);
         assert_eq!(status.auth_state, ProviderAuthState::NotRequired);
         assert!(status.capabilities.available);

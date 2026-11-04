@@ -1,9 +1,12 @@
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { Route, Routes } from "react-router-dom";
+import ActivityPage from "../activity/ActivityPage.js";
 import OverviewPage from "./OverviewPage.js";
 import { computeOverviewMetrics, recentTimeline } from "./overviewLogic.js";
 import { createMockRuntime, renderWithProviders } from "../../test/renderWithProviders.js";
 import { approval, project, settings, snapshot, task } from "../../test/fixtures.js";
+import { useUiStore } from "../../store/uiStore.js";
 import type { AgentEvent } from "@symphony/shared-types";
 
 const ev = (id: string, ts: string): AgentEvent => ({
@@ -78,6 +81,34 @@ describe("OverviewPage", () => {
     expect(screen.getByText("Approval required · SYM-7")).toBeInTheDocument();
     expect(await screen.findByText("event e1")).toBeInTheDocument();
     expect(screen.getByText("Active agents").closest("button")).toHaveTextContent("1");
+  });
+
+  it("opens the approvals list in Activity from the Approvals tile", async () => {
+    const runtime = createMockRuntime({
+      "GET /state": () => snapshot(),
+      "GET /settings": () => settings(),
+      "GET /projects": () => [project()],
+      "GET /tasks": () => [task()],
+      "GET /approvals": () => [approval({ issue_identifier: "SYM-7" })],
+      "GET /events/recent": () => []
+    });
+    useUiStore.getState().setDrawerTab("events");
+    renderWithProviders(
+      <Routes>
+        <Route path="/overview" element={<OverviewPage />} />
+        <Route path="/activity" element={<ActivityPage />} />
+      </Routes>,
+      { runtime, route: "/overview" }
+    );
+    // The label also titles the approvals panel; the tile is the one inside a button.
+    await screen.findByText("Active agents");
+    const tile = screen.getAllByText("Pending approvals").map((el) => el.closest("button")).find(Boolean);
+    expect(tile).toBeTruthy();
+    fireEvent.click(tile!);
+    // It lands on the Activity page with its approvals tab selected, not just anywhere but Overview.
+    expect(await screen.findByRole("heading", { name: "Activity" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Approvals/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("Active agents")).not.toBeInTheDocument();
   });
 
   it("invites registering a repository when none exist", async () => {

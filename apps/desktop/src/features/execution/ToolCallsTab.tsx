@@ -1,12 +1,11 @@
 import React, { useState } from "react";
-import { Button } from "@fluentui/react-components";
 import { formatMessage, getTranslations, type ToolCallKind, type ToolCallRecord, type ToolCallStatus } from "@symphony/shared-types";
-import { AiEmptyView, ErrorState, LoadingRows, SdkBadge, SdkCodeBlock, TimeAgo, formatDuration } from "@symphony/ui";
+import { AiEmptyView, Badge, Button, CodeBlock, ErrorState, LoadingRows, TimeAgo, formatDuration, type BadgeTone } from "@symphony/ui";
 import { useLocale, useMessages, useT } from "../../lib/i18n.js";
 import { useTaskToolCalls } from "../../lib/queries.js";
 import { executionMessages } from "./messages.js";
 
-const STATUS_COLOR: Record<ToolCallStatus, "info" | "success" | "danger"> = {
+const STATUS_COLOR: Record<ToolCallStatus, BadgeTone> = {
   started: "info",
   succeeded: "success",
   failed: "danger"
@@ -26,9 +25,7 @@ const ToolCallItem = React.memo(function ToolCallItem({ call }: { call: ToolCall
   return (
     <li className="space-y-1.5 rounded-md border border-border p-2">
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        <SdkBadge variant="soft" color={STATUS_COLOR[call.status]} size="sm" pill>
-          {m.toolCalls.status[call.status]}
-        </SdkBadge>
+        <Badge tone={STATUS_COLOR[call.status]}>{m.toolCalls.status[call.status]}</Badge>
         <code className="min-w-0 flex-1 truncate font-mono text-foreground" title={call.tool_name}>
           {call.tool_name || m.toolCalls.unnamed}
         </code>
@@ -37,7 +34,7 @@ const ToolCallItem = React.memo(function ToolCallItem({ call }: { call: ToolCall
       <div className="flex flex-wrap items-center gap-x-3 text-xs tabular-nums text-muted-foreground">
         {call.duration_ms !== null ? <span>{formatDuration(call.duration_ms / 1000, getTranslations(locale))}</span> : null}
         <TimeAgo iso={call.started_at} />
-        <Button className="ms-auto" size="small" appearance="subtle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <Button className="ms-auto" size="sm" variant="subtle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
           {open ? m.toolCalls.hideDetails : m.toolCalls.showDetails}
         </Button>
       </div>
@@ -45,12 +42,12 @@ const ToolCallItem = React.memo(function ToolCallItem({ call }: { call: ToolCall
         <div className="space-y-2">
           <section className="space-y-1" aria-label={m.toolCalls.arguments}>
             <h4 className="text-xs font-semibold text-muted-foreground">{m.toolCalls.arguments}</h4>
-            {args ? <SdkCodeBlock language="json">{args}</SdkCodeBlock> : <p className="text-xs text-muted-foreground">{m.toolCalls.none}</p>}
+            {args ? <CodeBlock language="json">{args}</CodeBlock> : <p className="text-xs text-muted-foreground">{m.toolCalls.none}</p>}
           </section>
           <section className="space-y-1" aria-label={m.toolCalls.output}>
             <h4 className="text-xs font-semibold text-muted-foreground">{m.toolCalls.output}</h4>
             {call.output ? (
-              <SdkCodeBlock language="text">{call.output}</SdkCodeBlock>
+              <CodeBlock language="text">{call.output}</CodeBlock>
             ) : (
               <p className="text-xs text-muted-foreground">{call.status === "started" ? m.toolCalls.running : m.toolCalls.none}</p>
             )}
@@ -93,7 +90,7 @@ export const ToolCallsTab: React.FC<{ taskId: string }> = ({ taskId }) => {
         <ErrorState title={m.toolCalls.loadOlderFailed} message={calls.error?.message ?? ""} onRetry={() => void calls.fetchNextPage()} />
       ) : null}
       {calls.hasNextPage && !calls.isFetchNextPageError ? (
-        <Button size="small" appearance="secondary" disabled={calls.isFetchingNextPage} onClick={() => void calls.fetchNextPage()}>
+        <Button size="sm" variant="secondary" disabled={calls.isFetchingNextPage} onClick={() => void calls.fetchNextPage()}>
           {calls.isFetchingNextPage ? t.common.loading : m.toolCalls.loadOlder}
         </Button>
       ) : null}

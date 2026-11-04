@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./tokens.css": "./src/tokens/tokens.css",
+    "./legacy": "./src/legacy.tsx",
     "./lib/utils": "./src/lib/utils.ts",
     "./primitives/*": "./src/primitives/*.tsx"
   },
@@ -18,7 +19,6 @@
   },
   "dependencies": {
     "@fluentui/react-components": "^9.74.11",
-    "@openai/apps-sdk-ui": "^0.2.2",
     "@symphony/shared-types": "workspace:*",
     "@tanstack/react-table": "^9.3.1",
     "@tanstack/react-virtual": "^3.14.22",
@@ -30,7 +30,10 @@
     "radix-ui": "^1.8.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "^9.1.0",
     "react-resizable-panels": "^4.14.8",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
     "sonner": "^2.0.8",
     "tailwind-merge": "^3.7.0"
   },

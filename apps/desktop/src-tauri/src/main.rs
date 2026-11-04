@@ -71,10 +71,22 @@ struct LocalApiConfig {
 
 #[tauri::command]
 fn get_local_api_config(state: State<'_, DesktopAppState>) -> LocalApiConfig {
+    // An attached runtime (`symphony-cli serve`) publishes a new port and token whenever it
+    // restarts, so read what it publishes now: the values captured when the window opened would
+    // keep the UI locked out ("unauthorized") until the app is restarted. The embedded runtime
+    // never changes. When nothing live is published the last known values are returned.
+    let attached = match state.mode {
+        RuntimeMode::Attached => RuntimeDiscovery::read_live(&state.data_dir),
+        RuntimeMode::Embedded { .. } => None,
+    };
+    let (base_url, token, api_version) = match attached {
+        Some(found) => (found.base_url, found.token, found.api_version),
+        None => (state.base_url.clone(), state.token.clone(), API_VERSION),
+    };
     LocalApiConfig {
-        base_url: state.base_url.clone(),
-        token: state.token.clone(),
-        api_version: API_VERSION,
+        base_url,
+        token,
+        api_version,
         mode: match state.mode {
             RuntimeMode::Embedded { .. } => "embedded",
             RuntimeMode::Attached => "attached",
@@ -427,15 +439,43 @@ fn notify_for_event(app: &AppHandle, event: &symphony_core::domain::AgentEvent) 
         .show();
 }
 
+/// Bring the "start on login" registry entry in line with the stored setting (`wanted`), for this
+/// executable (never the CLI's). Failures are logged: a login entry that cannot be repaired must not
+/// keep the window from opening.
+fn reconcile_login_autostart(wanted: bool) {
+    match std::env::current_exe() {
+        Ok(exe) => match symphony_platform::reconcile_autostart(wanted, &exe) {
+            Ok(symphony_platform::AutostartFix::InSync) => {}
+            Ok(fix) => tracing::info!(?fix, "Login autostart registration repaired"),
+            Err(err) => {
+                tracing::warn!(error = %err, "Could not reconcile the login autostart registration")
+            }
+        },
+        Err(err) => {
+            tracing::warn!(error = %err, "Could not locate the executable to reconcile autostart")
+        }
+    }
+}
+
 async fn start_embedded_runtime(
     app: &AppHandle,
     data_dir: PathBuf,
     guard: SingleInstanceGuard,
 ) -> Result<DesktopAppState, String> {
+    // A restore requested from Settings → Backups is applied now, with the runtime lock held and
+    // before the database is opened (a restore replaces the database file).
+    symphony_storage::backup::apply_requested_restore(&data_dir).await;
     let storage = Storage::connect(&data_dir.join("symphony.sqlite"))
         .await
         .map_err(|e| format!("Failed to initialize SQLite storage: {e}"))?;
-    let mut settings = storage.get_settings().await.unwrap_or_default();
+    let stored_settings = storage.get_settings().await;
+    // Whether the stored settings could be read at all: defaults stand in for them below, and the
+    // default for "start on login" is off, which must not be mistaken for the user's choice.
+    let settings_known = stored_settings.is_ok();
+    if let Err(err) = &stored_settings {
+        tracing::warn!(error = %err, "Could not read the stored settings; using defaults");
+    }
+    let mut settings = stored_settings.unwrap_or_default();
     if let Some(ui) = app.try_state::<NativeUi>() {
         ui.set_locale(NativeLocale::from_setting(&settings.locale));
     }
@@ -450,6 +490,15 @@ async fn start_embedded_runtime(
         }
     }
 
+    // The "start on login" registry entry can be missing (a new Windows profile, a cleaned
+    // registry) or point at a program that moved while the stored setting says it is on. Bring it
+    // back in line, so the switch in Settings tells the truth.
+    if settings_known {
+        reconcile_login_autostart(settings.start_background_runtime_on_login);
+    } else {
+        tracing::warn!("Login autostart left as it is: the stored setting could not be read");
+    }
+
     let wf_path = [PathBuf::from("WORKFLOW.md"), data_dir.join("WORKFLOW.md")]
         .into_iter()
         .find(|p| p.is_file());
@@ -461,6 +510,10 @@ async fn start_embedded_runtime(
     orchestrator
         .set_workflow_fallback_path(data_dir.join("WORKFLOW.md"))
         .await;
+    if let Err(err) = orchestrator.enable_knowledge(&data_dir).await {
+        // The Knowledge Base is optional: the runtime works without it.
+        tracing::warn!(error = %err, "Knowledge Base unavailable");
+    }
     orchestrator.start_background_loops();
 
     let token = generate_access_token();
@@ -629,6 +682,13 @@ fn main() {
                     RuntimeOwner::This(guard) => start_embedded_runtime(&handle, data_dir.clone(), guard).await,
                     RuntimeOwner::Other(found) => {
                         tracing::info!(base_url = %found.base_url, owner = %found.owner, "Attaching to existing Symphony runtime");
+                        if found.api_version != API_VERSION {
+                            tracing::warn!(
+                                runtime_api_version = found.api_version,
+                                desktop_api_version = API_VERSION,
+                                "The attached runtime speaks a different API version than this desktop build; some screens may not work"
+                            );
+                        }
                         Ok(DesktopAppState {
                             mode: RuntimeMode::Attached,
                             data_dir: data_dir.clone(),
@@ -644,6 +704,51 @@ fn main() {
             let embedded = matches!(state.mode, RuntimeMode::Embedded { .. });
             app.manage(state);
             setup_tray(app.handle(), embedded, native_locale(app.handle()))?;
+
+            if !embedded {
+                // Attached to a runtime that runs on its own (`symphony-cli`): its events do not pass
+                // through this process, so read its event stream to raise the same native
+                // notifications (approvals, failed runs) while the window is in the background.
+                let notifier = app.handle().clone();
+                tauri::async_runtime::spawn(
+                    symphony_platform::runtime_events::follow_attached_runtime(
+                        data_dir.clone(),
+                        move |event| notify_for_event(&notifier, &event),
+                    ),
+                );
+
+                // The login entry is this app's, whoever runs the runtime: repair it from the
+                // setting the attached runtime holds. An unreadable answer leaves the entry alone.
+                let (base_url, token) = {
+                    let attached = app.state::<DesktopAppState>();
+                    (attached.base_url.clone(), attached.token.clone())
+                };
+                tauri::async_runtime::spawn(async move {
+                    let client = match reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(10))
+                        // Loopback only: a system proxy must not see the runtime's token.
+                        .no_proxy()
+                        .build()
+                    {
+                        Ok(client) => client,
+                        Err(err) => {
+                            tracing::warn!(error = %err, "Login autostart left as it is");
+                            return;
+                        }
+                    };
+                    match symphony_platform::runtime_events::fetch_start_on_login(
+                        &client, &base_url, &token,
+                    )
+                    .await
+                    {
+                        Ok(wanted) => reconcile_login_autostart(wanted),
+                        Err(err) => tracing::warn!(
+                            error = %err,
+                            "Login autostart left as it is: the attached runtime's setting could not be read"
+                        ),
+                    }
+                });
+            }
 
             if start_hidden {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW) {

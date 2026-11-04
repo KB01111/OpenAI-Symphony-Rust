@@ -9,9 +9,9 @@ use std::str::FromStr;
 use std::time::Duration;
 use symphony_core::{
     redact_secrets, AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, ApprovalStatus,
-    Issue, Project, ProviderKind, ProviderProfile, PullRequestReview, RunAttempt, RunAttemptPhase,
-    SymphonyError, SymphonyResult, Task, TaskStatus, ThreadUsageMark, TokenUsage, ToolCallKind,
-    ToolCallRecord, ToolCallStatus, ValidationResult,
+    CloudAgentKind, Issue, Project, ProviderKind, ProviderProfile, PullRequestReview, RunAttempt,
+    RunAttemptPhase, SymphonyError, SymphonyResult, Task, TaskStatus, ThreadUsageMark, TokenUsage,
+    ToolCallKind, ToolCallRecord, ToolCallStatus, ValidationResult,
 };
 
 pub mod backup;
@@ -54,10 +54,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "tool_calls",
         sql: include_str!("../migrations/0004_tool_calls.sql"),
     },
+    Migration {
+        version: 5,
+        name: "cloud_agent",
+        sql: include_str!("../migrations/0005_cloud_agent.sql"),
+    },
 ];
 
 /// The schema version this build reads and writes.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticBundle {
@@ -248,12 +253,27 @@ impl Storage {
         row.map(row_to_project).transpose()
     }
 
+    /// Delete a project with everything that belongs to it. Tasks, attempts, follow-ups and tool
+    /// calls go through their foreign keys; approvals, validation results and pull request reviews
+    /// predate the cascading tables and have none, so they are removed here, in the same
+    /// transaction. Left behind, a review of a deleted project fails the pull request sweep on every
+    /// pass.
     pub async fn delete_project(&self, id: &str) -> SymphonyResult<()> {
-        sqlx::query("DELETE FROM projects WHERE id = ?1")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let storage_err = |e: sqlx::Error| SymphonyError::StorageError(e.to_string());
+        let mut tx = self.pool.begin().await.map_err(storage_err)?;
+        for statement in [
+            "DELETE FROM approval_requests WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+            "DELETE FROM validation_results WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+            "DELETE FROM pull_request_reviews WHERE project_id = ?1 OR task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+            "DELETE FROM projects WHERE id = ?1",
+        ] {
+            sqlx::query(statement)
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_err)?;
+        }
+        tx.commit().await.map_err(storage_err)?;
         Ok(())
     }
 
@@ -276,11 +296,11 @@ impl Storage {
                 estimated_cost_usd, duration_seconds, last_error, next_retry_at,
                 created_at, updated_at, started_at, completed_at,
                 thread_usage_thread_id, thread_usage_input_tokens, thread_usage_output_tokens,
-                thread_usage_total_tokens, usage_estimated
+                thread_usage_total_tokens, usage_estimated, cloud_agent
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
                 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
-                ?29, ?30, ?31, ?32, ?33
+                ?29, ?30, ?31, ?32, ?33, ?34
             )
             ON CONFLICT(id) DO UPDATE SET
                 issue_id = excluded.issue_id,
@@ -312,7 +332,8 @@ impl Storage {
                 thread_usage_input_tokens = excluded.thread_usage_input_tokens,
                 thread_usage_output_tokens = excluded.thread_usage_output_tokens,
                 thread_usage_total_tokens = excluded.thread_usage_total_tokens,
-                usage_estimated = excluded.usage_estimated
+                usage_estimated = excluded.usage_estimated,
+                cloud_agent = excluded.cloud_agent
             "#,
         )
         .bind(&task.id)
@@ -360,6 +381,7 @@ impl Storage {
                 .map(|m| m.usage.total_tokens as i64),
         )
         .bind(task.usage_estimated as i64)
+        .bind(task.cloud_agent.map(|a| a.as_str()))
         .execute(&self.pool)
         .await
         .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
@@ -393,16 +415,60 @@ impl Storage {
         row.map(row_to_task).transpose()
     }
 
+    /// Record the provider thread (for a cloud run: the sandbox) of a task right away, without
+    /// touching any other column, so a run that is interrupted before it ends can be resumed in the
+    /// same sandbox instead of starting another one.
+    pub async fn set_task_thread_id(&self, task_id: &str, thread_id: &str) -> SymphonyResult<()> {
+        sqlx::query("UPDATE tasks SET current_thread_id = ?2 WHERE id = ?1")
+            .bind(task_id)
+            .bind(thread_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Replace only the tracker's view of a task's issue (`issue_json` with its id and identifier).
+    /// For the tracker sync, which works from a snapshot of the tasks: a whole-row write would put
+    /// the snapshot's status and usage over whatever a worker recorded in the meantime.
+    pub async fn update_task_issue(
+        &self,
+        task_id: &str,
+        issue: &symphony_core::Issue,
+        updated_at: DateTime<Utc>,
+    ) -> SymphonyResult<()> {
+        let issue_json =
+            serde_json::to_string(issue).map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let result = sqlx::query(
+            "UPDATE tasks SET issue_id = ?2, issue_identifier = ?3, issue_json = ?4, updated_at = ?5
+             WHERE id = ?1",
+        )
+        .bind(task_id)
+        .bind(&issue.id)
+        .bind(&issue.identifier)
+        .bind(issue_json)
+        .bind(updated_at.to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(SymphonyError::NotFound(format!("task {task_id} not found")));
+        }
+        Ok(())
+    }
+
     /// Persist only the lifecycle columns of `task` (status, session/thread/turn ids, phase, error,
     /// retry time, update time). For the side that stops a worker: its copy of the task was read
     /// before the worker settled usage, and [`upsert_task`](Self::upsert_task) would write that
-    /// stale usage back over the settlement.
+    /// stale usage back over the settlement. A copy without a thread id never erases one that was
+    /// recorded meanwhile ([`set_task_thread_id`](Self::set_task_thread_id)): a cloud run's sandbox
+    /// id is what lets a retry resume it.
     pub async fn update_task_lifecycle(&self, task: &Task) -> SymphonyResult<()> {
         let result = sqlx::query(
             "UPDATE tasks SET
                 status = ?2,
                 current_session_id = ?3,
-                current_thread_id = ?4,
+                current_thread_id = COALESCE(?4, current_thread_id),
                 current_turn_id = ?5,
                 current_phase = ?6,
                 last_error = ?7,
@@ -481,12 +547,24 @@ impl Storage {
         row.map(row_to_task).transpose()
     }
 
+    /// Delete a task with its approvals, validation results and pull request review (see
+    /// [`delete_project`](Self::delete_project) for why those are removed explicitly).
     pub async fn delete_task(&self, id: &str) -> SymphonyResult<()> {
-        sqlx::query("DELETE FROM tasks WHERE id = ?1")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let storage_err = |e: sqlx::Error| SymphonyError::StorageError(e.to_string());
+        let mut tx = self.pool.begin().await.map_err(storage_err)?;
+        for statement in [
+            "DELETE FROM approval_requests WHERE task_id = ?1",
+            "DELETE FROM validation_results WHERE task_id = ?1",
+            "DELETE FROM pull_request_reviews WHERE task_id = ?1",
+            "DELETE FROM tasks WHERE id = ?1",
+        ] {
+            sqlx::query(statement)
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_err)?;
+        }
+        tx.commit().await.map_err(storage_err)?;
         Ok(())
     }
 
@@ -569,7 +647,25 @@ impl Storage {
             recovered.push(task);
         }
 
+        // No worker survives a restart, so no approval can still be waited on: one left `pending`
+        // would show as actionable in the UI, and "approving" it would record a decision that
+        // changes nothing.
+        self.cancel_stale_pending_approvals().await?;
+
         Ok(recovered)
+    }
+
+    /// Mark every approval that is still `pending` as cancelled. Called on startup, when no run is
+    /// alive to receive a decision. Returns how many were closed.
+    pub async fn cancel_stale_pending_approvals(&self) -> SymphonyResult<u64> {
+        let done = sqlx::query(
+            "UPDATE approval_requests SET status = 'cancelled', decision = 'cancel', resolved_at = ?1 WHERE status = 'pending'",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(done.rows_affected())
     }
 
     // =========================================================================
@@ -1452,6 +1548,9 @@ fn row_to_task(r: sqlx::sqlite::SqliteRow) -> SymphonyResult<Task> {
         status: TaskStatus::from_str(&status_str).unwrap_or(TaskStatus::Ready),
         provider: ProviderKind::from_str(&prov_str).unwrap_or(ProviderKind::Codex),
         model: r.get("model"),
+        cloud_agent: r
+            .get::<Option<String>, _>("cloud_agent")
+            .and_then(|a| CloudAgentKind::from_str(&a).ok()),
         workspace_path: r.get("workspace_path"),
         branch_name: r.get("branch_name"),
         attempt_count: r.get::<i64, _>("attempt_count") as u32,
@@ -1631,6 +1730,150 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("Interrupted"));
+    }
+
+    #[tokio::test]
+    async fn deleting_a_project_leaves_no_orphaned_reviews_approvals_or_validation_results() {
+        let storage = Storage::connect_in_memory().await.unwrap();
+        let now = Utc::now();
+        let project = |id: &str| Project {
+            id: id.into(),
+            name: format!("Project {id}"),
+            repo_path: "C:/repos/x".into(),
+            default_branch: "main".into(),
+            workspace_root: "C:/repos/ws".into(),
+            workflow_path: None,
+            preferred_provider: ProviderKind::Codex,
+            preferred_model: None,
+            tracker_kind: "manual".into(),
+            github_repo: None,
+            linear_project_slug: None,
+            required_labels: Vec::new(),
+            auto_dispatch: false,
+            max_concurrent_agents: 1,
+            validation_commands: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        };
+        let mut tasks = Vec::new();
+        for project_id in ["doomed", "kept"] {
+            storage.upsert_project(&project(project_id)).await.unwrap();
+            let task = Task::new_manual(
+                project_id.into(),
+                format!("SYM-{project_id}"),
+                "A task".into(),
+                None,
+                Some(1),
+                ProviderKind::Codex,
+                None,
+                Vec::new(),
+            );
+            storage.upsert_task(&task).await.unwrap();
+            storage
+                .upsert_approval(&ApprovalRequest {
+                    id: format!("approval-{project_id}"),
+                    task_id: task.id.clone(),
+                    issue_identifier: task.issue.identifier.clone(),
+                    session_id: "s".into(),
+                    provider: ProviderKind::Codex,
+                    kind: "command".into(),
+                    title: "t".into(),
+                    description: String::new(),
+                    command_or_diff: None,
+                    status: ApprovalStatus::Approved,
+                    created_at: now,
+                    resolved_at: None,
+                    decision: None,
+                })
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO validation_results (id, task_id, attempt_number, command, exit_code, passed, stdout, stderr, duration_ms, executed_at)
+                 VALUES (?1, ?2, 1, 'cargo test', 0, 1, '', '', 1, ?3)",
+            )
+            .bind(format!("val-{project_id}"))
+            .bind(&task.id)
+            .bind(now.to_rfc3339())
+            .execute(&storage.pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO pull_request_reviews (id, task_id, project_id, pr_number, review_json, updated_at)
+                 VALUES (?1, ?2, ?3, 0, '{}', ?4)",
+            )
+            .bind(format!("pr-{project_id}"))
+            .bind(&task.id)
+            .bind(project_id)
+            .bind(now.to_rfc3339())
+            .execute(&storage.pool)
+            .await
+            .unwrap();
+            tasks.push(task);
+        }
+
+        storage.delete_project("doomed").await.unwrap();
+
+        let count = |sql: &'static str| {
+            let pool = storage.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(sql)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        // Only the other project's rows remain.
+        assert_eq!(count("SELECT COUNT(*) FROM tasks").await, 1);
+        assert_eq!(count("SELECT COUNT(*) FROM approval_requests").await, 1);
+        assert_eq!(count("SELECT COUNT(*) FROM validation_results").await, 1);
+        assert_eq!(count("SELECT COUNT(*) FROM pull_request_reviews").await, 1);
+
+        // Deleting a single task is just as thorough.
+        storage.delete_task(&tasks[1].id).await.unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM tasks").await, 0);
+        assert_eq!(count("SELECT COUNT(*) FROM approval_requests").await, 0);
+        assert_eq!(count("SELECT COUNT(*) FROM validation_results").await, 0);
+        assert_eq!(count("SELECT COUNT(*) FROM pull_request_reviews").await, 0);
+    }
+
+    #[tokio::test]
+    async fn approvals_left_pending_by_a_crash_are_closed_on_startup_recovery() {
+        let storage = Storage::connect_in_memory().await.unwrap();
+        let request = |id: &str, status: ApprovalStatus| ApprovalRequest {
+            id: id.into(),
+            task_id: "task-1".into(),
+            issue_identifier: "SYM-1".into(),
+            session_id: "session-1".into(),
+            provider: ProviderKind::Codex,
+            kind: "command".into(),
+            title: format!("approval {id}"),
+            description: String::new(),
+            command_or_diff: None,
+            status,
+            created_at: Utc::now(),
+            resolved_at: None,
+            decision: None,
+        };
+        storage
+            .upsert_approval(&request("pending-1", ApprovalStatus::Pending))
+            .await
+            .unwrap();
+        storage
+            .upsert_approval(&request("approved-1", ApprovalStatus::Approved))
+            .await
+            .unwrap();
+
+        storage.recover_stale_running_tasks().await.unwrap();
+
+        assert!(storage.list_approvals(true).await.unwrap().is_empty());
+        let all = storage.list_approvals(false).await.unwrap();
+        let pending = all.iter().find(|a| a.id == "pending-1").unwrap();
+        assert_eq!(pending.status, ApprovalStatus::Cancelled);
+        assert_eq!(pending.decision, Some(ApprovalDecision::Cancel));
+        assert!(pending.resolved_at.is_some());
+        // A decision that was already made is left alone.
+        let approved = all.iter().find(|a| a.id == "approved-1").unwrap();
+        assert_eq!(approved.status, ApprovalStatus::Approved);
     }
 }
 

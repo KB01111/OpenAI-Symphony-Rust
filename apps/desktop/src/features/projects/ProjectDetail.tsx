@@ -1,18 +1,22 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  Badge,
-  Button,
-  MessageBar,
-  MessageBarBody,
-  MessageBarTitle,
-  Spinner,
-  Tooltip
-} from "@fluentui/react-components";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage, type Project } from "@symphony/shared-types";
-import { ConfirmDialog, KeyValueList, ProviderBadge, TimeAgo, useNotify } from "@symphony/ui";
-import { CheckCircle2, KanbanSquare, Plus, Trash2, X } from "lucide-react";
+import {
+  Alert,
+  Badge,
+  Button,
+  ConfirmDialog,
+  KeyValueList,
+  ProviderBadge,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  Spinner,
+  TimeAgo,
+  useNotify
+} from "@symphony/ui";
+import { CheckCircle2, KanbanSquare, Plus, Trash2 } from "lucide-react";
 import { paths } from "../../app/routes.js";
 import { useMessages, useT } from "../../lib/i18n.js";
 import { useDeleteProject, useUpdateProject } from "../../lib/queries.js";
@@ -74,14 +78,11 @@ const ProjectEditForm: React.FC<{ project: Project }> = ({ project }) => {
   };
 
   return (
-    <form onSubmit={submit} aria-label={m.detail.settings} className="flex flex-col gap-4" noValidate>
+    <form onSubmit={submit} aria-label={m.detail.settings} className="flex min-w-0 flex-col gap-4" noValidate>
       {update.isError ? (
-        <MessageBar intent="error" layout="multiline">
-          <MessageBarBody>
-            <MessageBarTitle>{m.form.saveError}</MessageBarTitle>
-            {errorMessage(update.error)}
-          </MessageBarBody>
-        </MessageBar>
+        <Alert intent="error" title={m.form.saveError}>
+          {errorMessage(update.error)}
+        </Alert>
       ) : null}
       <ProjectFormFields
         form={form}
@@ -92,18 +93,13 @@ const ProjectEditForm: React.FC<{ project: Project }> = ({ project }) => {
         extraTrackerKinds={[project.tracker_kind]}
         sectioned
       />
-      <div className="sticky bottom-0 -mx-4 flex items-center gap-2 border-t border-border bg-surface px-4 py-2">
+      <div className="sticky bottom-0 -mx-5 flex items-center gap-2 border-t border-border bg-surface px-5 py-3">
         {dirty ? <span className="flex-1 text-xs text-warning">{m.form.unsaved}</span> : <span className="flex-1" />}
-        <Button type="button" size="small" disabled={!dirty || update.isPending} onClick={reset}>
+        <Button type="button" size="sm" disabled={!dirty || update.isPending} onClick={reset}>
           {m.form.reset}
         </Button>
-        <Button
-          type="submit"
-          size="small"
-          appearance="primary"
-          disabled={!dirty || update.isPending}
-          icon={update.isPending ? <Spinner size="tiny" /> : undefined}
-        >
+        <Button type="submit" size="sm" variant="default" disabled={!dirty || update.isPending}>
+          {update.isPending ? <Spinner className="size-3.5 text-current" /> : null}
           {update.isPending ? m.form.saving : m.form.save}
         </Button>
       </div>
@@ -111,7 +107,10 @@ const ProjectEditForm: React.FC<{ project: Project }> = ({ project }) => {
   );
 };
 
-/** Right-hand detail/edit panel for the selected project. */
+/**
+ * Detail/edit content for the selected project, rendered inside a side sheet so the project table
+ * keeps its full width. The sheet supplies the dialog, title and close button.
+ */
 export const ProjectDetail: React.FC<{ project: Project; counts: ProjectTaskCounts | undefined }> = ({ project, counts = EMPTY_COUNTS }) => {
   const m = useMessages(projectMessages);
   const t = useT();
@@ -120,7 +119,6 @@ export const ProjectDetail: React.FC<{ project: Project; counts: ProjectTaskCoun
   const activeProjectId = useUiStore((s) => s.activeProjectId);
   const setActiveProject = useUiStore((s) => s.setActiveProject);
   const setNewTaskOpen = useUiStore((s) => s.setNewTaskOpen);
-  const inspect = useUiStore((s) => s.inspect);
   const deleteProject = useDeleteProject();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const isActive = activeProjectId === project.id;
@@ -132,83 +130,76 @@ export const ProjectDetail: React.FC<{ project: Project; counts: ProjectTaskCoun
         setConfirmOpen(false);
         notify("success", formatMessage(m.delete.deleted, { name: project.name }));
         if (useUiStore.getState().activeProjectId === project.id) setActiveProject(null);
-        const inspector = useUiStore.getState().inspector;
-        if (inspector?.kind === "project" && inspector.id === project.id) inspect(null);
         navigate(paths.projects());
       }
     });
   };
 
   const breakdown = [
-    { label: formatMessage(m.counts.running, { count: counts.running }), tone: "informative" as const, show: counts.running > 0 },
+    { label: formatMessage(m.counts.running, { count: counts.running }), tone: "info" as const, show: counts.running > 0 },
     { label: formatMessage(m.counts.review, { count: counts.review }), tone: "warning" as const, show: counts.review > 0 },
     { label: formatMessage(m.counts.failed, { count: counts.failed }), tone: "danger" as const, show: counts.failed > 0 }
   ];
 
   return (
-    <section aria-label={m.detail.label} className="flex h-full min-h-0 flex-col border-l border-border bg-surface">
-      <header className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h2 className="truncate font-display text-sm font-semibold text-foreground">{project.name}</h2>
-            {isActive ? (
-              <Badge size="small" appearance="tint" color="brand" icon={<CheckCircle2 className="size-3" aria-hidden />}>
-                {m.detail.active}
-              </Badge>
-            ) : null}
-          </div>
-          <p className="truncate font-mono text-xs text-muted-foreground" title={project.repo_path}>
-            {project.repo_path}
-          </p>
-        </div>
-        <Tooltip content={m.detail.close} relationship="label">
-          <Button size="small" appearance="subtle" icon={<X className="size-4" aria-hidden />} onClick={() => navigate(paths.projects())} />
-        </Tooltip>
-      </header>
+    <section aria-label={m.detail.label} className="flex h-full min-h-0 flex-col">
+      <SheetHeader className="shrink-0 gap-1 border-b border-border pr-12">
+        <SheetTitle className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-display">{project.name}</span>
+          {isActive ? (
+            <Badge tone="accent">
+              <CheckCircle2 aria-hidden />
+              {m.detail.active}
+            </Badge>
+          ) : null}
+        </SheetTitle>
+        <SheetDescription className="truncate font-mono text-xs" title={project.repo_path}>
+          {project.repo_path}
+        </SheetDescription>
+      </SheetHeader>
 
       <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border px-4 py-2">
         {!isActive ? (
-          <Button size="small" onClick={() => setActiveProject(project.id)}>
+          <Button size="sm" onClick={() => setActiveProject(project.id)}>
             {m.detail.setActive}
           </Button>
         ) : null}
         <Button
-          size="small"
-          icon={<Plus className="size-4" aria-hidden />}
+          size="sm"
           onClick={() => {
             setActiveProject(project.id);
             setNewTaskOpen(true);
           }}
         >
+          <Plus />
           {m.detail.newTask}
         </Button>
         <Button
-          size="small"
-          icon={<KanbanSquare className="size-4" aria-hidden />}
+          size="sm"
           onClick={() => {
             setActiveProject(project.id);
             navigate(paths.tasks());
           }}
         >
+          <KanbanSquare />
           {m.detail.viewTasks}
         </Button>
         <span className="flex-1" />
         <Button
-          size="small"
-          appearance="subtle"
-          icon={<Trash2 className="size-4" aria-hidden />}
-          className="!text-destructive"
+          size="sm"
+          variant="destructive-ghost"
           onClick={() => {
             deleteProject.reset();
             setConfirmOpen(true);
           }}
         >
+          <Trash2 />
           {m.detail.delete}
         </Button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto px-4 pt-3">
-        <div className="flex flex-col gap-4">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-5 pt-4">
+        <div className="flex min-w-0 flex-col gap-5">
           <div>
             <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{m.detail.tasks}</h3>
             {counts.total === 0 ? (
@@ -219,7 +210,7 @@ export const ProjectDetail: React.FC<{ project: Project; counts: ProjectTaskCoun
                 {breakdown
                   .filter((b) => b.show)
                   .map((b) => (
-                    <Badge key={b.label} size="small" appearance="tint" color={b.tone}>
+                    <Badge key={b.label} tone={b.tone}>
                       {b.label}
                     </Badge>
                   ))}
@@ -237,7 +228,7 @@ export const ProjectDetail: React.FC<{ project: Project; counts: ProjectTaskCoun
             ]}
           />
           <div>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{m.detail.settings}</h3>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{m.detail.settings}</h3>
             <ProjectEditForm key={project.id} project={project} />
           </div>
         </div>
@@ -256,18 +247,11 @@ export const ProjectDetail: React.FC<{ project: Project; counts: ProjectTaskCoun
         pending={deleteProject.isPending}
         onConfirm={confirmDelete}
       >
-        {counts.running > 0 ? (
-          <MessageBar intent="warning" layout="multiline">
-            <MessageBarBody>{formatMessage(m.delete.runningWarning, { count: counts.running })}</MessageBarBody>
-          </MessageBar>
-        ) : null}
+        {counts.running > 0 ? <Alert intent="warning">{formatMessage(m.delete.runningWarning, { count: counts.running })}</Alert> : null}
         {deleteProject.isError ? (
-          <MessageBar intent="error" layout="multiline" role="alert">
-            <MessageBarBody>
-              <MessageBarTitle>{m.delete.error}</MessageBarTitle>
-              {errorMessage(deleteProject.error)}
-            </MessageBarBody>
-          </MessageBar>
+          <Alert intent="error" title={m.delete.error}>
+            {errorMessage(deleteProject.error)}
+          </Alert>
         ) : null}
       </ConfirmDialog>
     </section>

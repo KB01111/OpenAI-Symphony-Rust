@@ -11,7 +11,7 @@ test("navigates every primary view without full page reloads", async ({ page }) 
   const views: [string, RegExp][] = [
     ["Projects", /#\/projects/],
     ["Tasks", /#\/tasks/],
-    ["Agent runs", /#\/runs/],
+    ["Activity", /#\/activity/],
     ["Worktrees", /#\/worktrees/],
     ["Pull requests", /#\/reviews/],
     ["Workflow Studio", /#\/workflow/],
@@ -32,6 +32,14 @@ test("shows real runtime connection status", async ({ page }) => {
   await openApp(page, "/overview");
   await expect(page.getByRole("contentinfo")).toContainText("Runtime: Live");
   await expect(page.getByRole("contentinfo")).toContainText("Dispatching active");
+});
+
+test("the old /runs address opens the Runs view of Tasks", async ({ page }) => {
+  await openApp(page, "/runs");
+  await expect(page).toHaveURL(/#\/tasks/);
+  await expect(page.getByRole("radio", { name: "Runs" })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("radio", { name: "Board" }).click();
+  await expect(page.getByRole("group", { name: /board/i })).toBeVisible();
 });
 
 test("command palette navigates and runs actions from the keyboard", async ({ page }) => {
@@ -74,5 +82,16 @@ test("keyboard shortcuts toggle shell panels", async ({ page }) => {
   await page.keyboard.press("Control+b");
   await expect.poll(async () => (await nav.boundingBox())!.width).toBeLessThan(before);
   await page.keyboard.press("Control+b");
-  await expect(page.getByRole("region", { name: "Activity" })).toBeVisible();
+  await expect.poll(async () => (await nav.boundingBox())!.width).toBe(before);
+});
+
+test("opens on the prompt composer with project, provider, priority and mode chips", async ({ page }) => {
+  await openApp(page, "/");
+  await expect(page.getByRole("heading", { level: 1, name: "What should Symphony work on?" })).toBeVisible();
+  const composer = page.getByRole("form", { name: "New task" });
+  await expect(composer.getByRole("textbox", { name: "Task prompt" })).toBeFocused();
+  await expect(composer.getByRole("radio", { name: "Run now" })).toBeVisible();
+  await expect(composer.getByRole("radio", { name: "Add to queue" })).toBeVisible();
+  await expect(composer.getByRole("button", { name: /^Priority/ })).toBeVisible();
+  await expect(composer.getByRole("button", { name: /^Labels/ })).toBeVisible();
 });
