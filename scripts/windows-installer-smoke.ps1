@@ -99,6 +99,137 @@ function Stop-InstalledApp([string] $dir) {
   Start-Sleep -Seconds 2
 }
 
+
+function Assert-CodeSandboxResources([string] $dir) {
+  # Run the private Node executable by absolute path, not from PATH.
+  $bridge = Join-Path $dir 'resources\codesandbox-runner\bridge.mjs'
+  $node = Join-Path $dir 'resources\codesandbox-runner\node.exe'
+  if (-not (Test-Path -LiteralPath $bridge -PathType Leaf)) { Fail "CodeSandbox bridge absent from installer: $bridge" }
+  if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { Fail "CodeSandbox Node runtime absent from installer: $node" }
+  if ((Get-Item -LiteralPath $bridge).Length -eq 0) { Fail 'CodeSandbox bridge is empty' }
+  if ((Get-Item -LiteralPath $node).Length -eq 0) { Fail 'CodeSandbox Node runtime is empty' }
+  $version = (& $node --version | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or $version -notmatch '^v(\d+)\.(\d+)\.(\d+)
+  $signature = Get-AuthenticodeSignature $path
+  if ($signature.Status -ne 'Valid') { Fail "$path has signature status $($signature.Status), expected Valid" }
+}
+
+# A registry value that may not exist (StrictMode would throw on a missing property).
+function Get-Value($entry, [string] $name) {
+  $property = $entry.PSObject.Properties[$name]
+  if ($property) { [string] $property.Value } else { '' }
+}
+
+function Get-InstallDir($entry) {
+  $location = Get-Value $entry 'InstallLocation'
+  $location = $location.Trim().Trim('"')
+  if (-not $location) { $location = Join-Path $env:LOCALAPPDATA $productName }
+  $location
+}
+
+$installDir = $null
+try {
+  Step 'Preconditions'
+  if (@(Get-UninstallEntries).Count -gt 0) { Fail "$productName is already installed for this user; run this test on a clean profile" }
+  # The cleanup below removes the install directory and the marker: only ever what this run created.
+  if (Test-Path $defaultInstallDir) { Fail "$defaultInstallDir already exists; run this test on a clean profile" }
+  if (Test-Path $marker) { Fail "$marker already exists; refusing to overwrite it" }
+  if ($RequireSignature) { Assert-Signed $Installer }
+
+  # Data that an uninstall must not remove: the real default data directory.
+  if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir | Out-Null; $createdDataDir = $true }
+  Set-Content -Path $marker -Value 'installer smoke test marker' -Encoding ascii
+  $createdMarker = $true
+
+  Step 'Silent install'
+  Invoke-Silent $Installer @('/S') 'the installer'
+  $entry = Wait-Until { @(Get-UninstallEntries) | Select-Object -First 1 } 'the uninstall entry'
+  $installDir = Get-InstallDir $entry
+  Write-Host "installed to $installDir"
+  # Only a directory that did not exist before the install is this run's to delete.
+  $createdInstallDir = $true
+  Stop-InstalledApp $installDir
+
+  Step 'Uninstall entry and installed files'
+  if (@(Get-UninstallEntries).Count -ne 1) { Fail 'expected exactly one uninstall entry' }
+  $version = Get-Value $entry 'DisplayVersion'
+  $publisher = Get-Value $entry 'Publisher'
+  if ($ExpectedVersion -and $version -ne $ExpectedVersion) {
+    Fail "uninstall entry version is '$version', expected '$ExpectedVersion'"
+  }
+  $displayName = Get-Value $entry 'DisplayName'
+  if ($displayName -ne $productName) { Fail "uninstall entry is named '$displayName', expected '$productName'" }
+  if ($publisher -ne $expectedPublisher) { Fail "uninstall entry publisher is '$publisher', expected '$expectedPublisher'" }
+  Write-Host "entry: $displayName $version by $publisher"
+  if (-not (Test-Path $installDir)) { Fail "install directory $installDir does not exist" }
+  $uninstaller = Join-Path $installDir 'uninstall.exe'
+  if (-not (Test-Path $uninstaller)) { Fail "no uninstall.exe in $installDir" }
+  $app = Get-ChildItem $installDir -Filter '*.exe' | Where-Object { $_.Name -ne 'uninstall.exe' } |
+    Sort-Object { if ($_.Name -eq 'symphony-desktop.exe') { 0 } else { 1 } } | Select-Object -First 1
+  if (-not $app) { Fail "no application executable in $installDir" }
+  Write-Host "application: $($app.FullName) ($([math]::Round($app.Length / 1MB, 1)) MB)"
+  if ($RequireSignature) { Assert-Signed $app.FullName }
+  Assert-CodeSandboxResources $installDir
+
+  $shortcuts = @(Get-ChildItem (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs') -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like "$productName*" })
+  if ($shortcuts.Count -eq 0) { Warn 'no Start Menu shortcut for Symphony Desktop was found after the install' }
+  else { Write-Host "Start Menu shortcut: $($shortcuts[0].FullName)" }
+
+  Step 'The installed application passes the native runtime smoke test'
+  & pwsh -NoProfile -File $smokeScript -DesktopExe $app.FullName -CliExe $CliExe -AssertCodeSandboxProvider
+  if ($LASTEXITCODE -ne 0) { Fail "native smoke test of the installed application failed ($LASTEXITCODE)" }
+  Stop-InstalledApp $installDir
+
+  Step 'Upgrade: the same installer over the installed application'
+  Invoke-Silent $Installer @('/S') 'the second (upgrade) install'
+  Stop-InstalledApp $installDir
+  if (@(Get-UninstallEntries).Count -ne 1) { Fail 'the upgrade left more than one uninstall entry' }
+  if (-not (Test-Path $app.FullName)) { Fail 'the application is missing after the upgrade' }
+  Assert-CodeSandboxResources $installDir
+
+  Step 'Silent uninstall'
+  # `_?=<dir>` keeps the uninstaller in this process (otherwise it copies itself to %TEMP% and
+  # returns immediately); the side effect is that uninstall.exe stays behind and is removed below.
+  Invoke-Silent $uninstaller @('/S', "_?=$installDir") 'the uninstaller'
+  Wait-Until { -not (Test-Path $app.FullName) } 'the application to be removed'
+  if (Test-Path (Join-Path $installDir 'resources\codesandbox-runner\node.exe')) { Fail 'CodeSandbox Node resource survived uninstall' }
+  if (Test-Path (Join-Path $installDir 'resources\codesandbox-runner\bridge.mjs')) { Fail 'CodeSandbox bridge resource survived uninstall' }
+  Wait-Until { @(Get-UninstallEntries).Count -eq 0 } 'the uninstall entry to be removed'
+
+  Step 'User data survives the uninstall'
+  if (-not (Test-Path $marker)) { Fail "$marker was removed by the uninstaller" }
+
+  Write-Host 'INSTALLER SMOKE TEST PASSED'
+}
+finally {
+  if ($installDir -and (Test-Path $installDir)) {
+    Stop-InstalledApp $installDir
+    if ($createdInstallDir) {
+      # A run that failed half-way still has its uninstall entry: remove it properly first, so the
+      # profile is not left with an entry that points at a deleted directory.
+      $leftover = Join-Path $installDir 'uninstall.exe'
+      if ((Test-Path $leftover) -and @(Get-UninstallEntries).Count -gt 0) {
+        try { Invoke-Silent $leftover @('/S', "_?=$installDir") 'the cleanup uninstall' 120 }
+        catch { Write-Host "cleanup uninstall failed: $_" }
+      }
+      Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+  if ($createdMarker) { Remove-Item $marker -Force -ErrorAction SilentlyContinue }
+  if ($createdDataDir) { Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+) {
+    Fail "bundled Node cannot report its version: $version"
+  }
+  $major = [int] $Matches[1]
+  $minor = [int] $Matches[2]
+  if ($major -lt 22 -or ($major -eq 22 -and $minor -lt 13)) { Fail "bundled Node is too old: $version" }
+  & $node --check $bridge
+  if ($LASTEXITCODE -ne 0) { Fail 'bundled Node rejected the installed bridge' }
+  Write-Host "    CodeSandbox resources OK: $version; SHA256 bridge $((Get-FileHash $bridge -Algorithm SHA256).Hash)"
+}
+
 function Assert-Signed([string] $path) {
   $signature = Get-AuthenticodeSignature $path
   if ($signature.Status -ne 'Valid') { Fail "$path has signature status $($signature.Status), expected Valid" }

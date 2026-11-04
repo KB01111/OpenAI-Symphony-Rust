@@ -35,3 +35,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# CodeSandbox Windows bundle is built at packaging time, not checked in
+apps/desktop/src-tauri/resources/codesandbox-runner/

@@ -181,7 +181,7 @@ describe("ProvidersPage: CodeSandbox cloud agents", () => {
     expect(screen.queryAllByText("Cloud agents")).toHaveLength(1);
   });
 
-  it("shows the bridge install command on its own, with the alternative explained in prose", async () => {
+  it("explains how to repair a broken installed runtime without asking for a source checkout", async () => {
     const rt = cloudRuntime([]);
     rt.on("GET /providers", () => [
       providerStatus({
@@ -196,9 +196,9 @@ describe("ProvidersPage: CodeSandbox cloud agents", () => {
     ]);
     renderWithProviders(<ProvidersPage />, { runtime: rt, route: "/providers", path: "/providers" });
     const card = await screen.findByRole("region", { name: "CodeSandbox Cloud Agent" });
-    // The code element holds only the command, so copying it gives something that runs.
-    expect(within(card).getByText("pnpm --filter @symphony/codesandbox-runner build")).toBeInTheDocument();
-    expect(within(card).getByText(/set SYMPHONY_CODESANDBOX_RUNNER/)).toBeInTheDocument();
+    expect(within(card).getAllByText("CodeSandbox runtime unavailable").length).toBeGreaterThan(0);
+    expect(within(card).getByText(/Windows installers include the bridge and Node.js/)).toBeInTheDocument();
+    expect(within(card).queryByText("pnpm --filter @symphony/codesandbox-runner build")).not.toBeInTheDocument();
   });
 
   it("shows the token as configured once it is stored", async () => {
