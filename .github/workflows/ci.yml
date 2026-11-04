@@ -62,6 +62,11 @@ jobs:
           rustc --version
           cargo --version
 
+      # Seconds instead of a full build: a smoke-test script PowerShell cannot parse fails here.
+      - name: Check PowerShell script syntax
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-powershell-syntax.ps1
+
       # --frozen-lockfile makes dependency resolution reproducible: the build
       # must match the committed pnpm-lock.yaml exactly.
       - name: Install frontend dependencies

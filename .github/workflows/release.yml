@@ -84,6 +84,11 @@ jobs:
           ref: refs/tags/${{ env.RELEASE_TAG }}
           persist-credentials: false
 
+      # Seconds instead of a full build: a smoke-test script PowerShell cannot parse fails here.
+      - name: Check PowerShell script syntax
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-powershell-syntax.ps1
+
       # No build caches in this job: a release must not restore anything written by other runs.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
