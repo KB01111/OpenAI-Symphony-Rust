@@ -26,3 +26,29 @@ describe("uiStore persisted task view", () => {
     expect(useUiStore.getState().taskView).toBe("board");
   });
 });
+
+describe("uiStore persisted language", () => {
+  afterEach(() => {
+    window.localStorage.removeItem(KEY);
+    useUiStore.getState().setLocale("en");
+  });
+
+  async function hydrateLocale(locale: unknown) {
+    window.localStorage.setItem(KEY, JSON.stringify({ state: { locale }, version: 1 }));
+    await useUiStore.persist.rehydrate();
+  }
+
+  it("keeps a saved language that is offered", async () => {
+    await hydrateLocale("sv");
+    expect(useUiStore.getState().locale).toBe("sv");
+  });
+
+  it("falls back to the default for a language that is not offered, instead of breaking every screen", async () => {
+    await hydrateLocale("de");
+    expect(useUiStore.getState().locale).toBe("en");
+    await hydrateLocale(7);
+    expect(useUiStore.getState().locale).toBe("en");
+    await hydrateLocale(null);
+    expect(useUiStore.getState().locale).toBe("en");
+  });
+});

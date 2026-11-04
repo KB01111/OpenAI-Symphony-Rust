@@ -10,6 +10,22 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Added
 
+- **Native notifications when the desktop is attached to `symphony-cli`.** Approval requests and failed runs
+  raised a Windows notification only when the runtime was embedded in the app; a window attached to a runtime
+  that runs on its own showed none. It now follows that runtime's event stream (only from the moment of
+  connecting, never replaying history, and only ever to a loopback address) and reconnects with a backoff when
+  the runtime restarts.
+- **Restore a backup from the application** (Settings → Backups → *Restore…*). The backup is verified at once
+  and the restore is applied the next time Symphony starts, before the database is opened; the replaced files
+  are kept as `.pre-restore-<time>`, a restore that cannot be applied is reported on the page (saying whether
+  your previous data was put back completely, and which `.pre-restore-<time>` files still hold it if not), and a
+  waiting request can be withdrawn. Previously restoring needed `symphony-cli restore-backup`
+  with nothing running (still available). New: `GET`/`DELETE /api/v1/backups/restore` and
+  `POST /api/v1/backups/{id}/restore` (local only). **API:** additive only (the restore outcome also says
+  when putting the previous data back did not finish). The backup a waiting request names is kept by the
+  automatic retention; an interrupted restore is finished by the next start (and given up after two) instead
+  of leaving an empty database; an offline `restore-backup` withdraws a waiting request. See
+  `docs/DATA_BACKUP.md`.
 - **Repository Knowledge Base** (`/knowledge`, crate `symphony-knowledge`): an intelligence view per
   repository that joins a code graph, live worktrees, a deduplicated commit timeline and AI analysis.
   *Worktrees* lists every git worktree (not only Symphony's) with HEAD, uncommitted files, commits ahead of the
@@ -126,17 +142,103 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   badges, alerts and code highlighting, through its own theme variables); the approvals bell and
   every copy button (event cards, code blocks, Markdown code) have an accessible name; scrollable
   diffs and logs can be scrolled from the keyboard.
+- **Cancelling a run while it was finishing** (after the agent stopped, during the `after_run` hook and the
+  validation commands) was undone by the worker's last write: the task ended in *Human review* instead of
+  *Cancelled*. The worker now checks that it still owns the run before it writes.
+- The project's **Max concurrent agents** and `agent.max_concurrent_agents_by_state` in `WORKFLOW.md` were
+  stored but never applied. Dispatch and retries now stay within both.
+- The stall timer cancelled runs that were validating or waiting for you to answer an approval; it now only
+  watches an agent that is streaming.
+- Approvals that a crash or restart left pending showed as actionable, and answering one recorded
+  "approved" although nothing was waiting. They are closed on startup, and answering a request nobody waits
+  for is refused with an explanation.
+- A queued task whose issue was closed in the tracker in the meantime was started anyway; the issue is
+  re-read right before it starts and the task is cancelled instead. The tracker sync no longer overwrites a
+  task row a worker has just finished.
+- Validation results of a retry were silently dropped (the same id as the first attempt's), a test suite
+  was reported as timed out after the 60 s hook timeout, and long output lost its end, where the failure is.
+  Results are kept per attempt, validation gets at least 10 minutes, and the tail of long output is kept.
+- A UTF-8 byte order mark (Notepad, Windows PowerShell) turned the whole `WORKFLOW.md` front matter into
+  prompt text; it is ignored now.
+- **Codex**: a turn that failed or was interrupted (`turn/completed` with `turn.status`) was recorded as a
+  success; `item/tool/requestUserInput` was approved on sight and now goes through the approval gate;
+  requests this app does not implement are answered with "method not found" instead of stalling the turn.
+- **Windows**: npm-installed Claude Code and OpenCode (`.cmd` shims) are resolved through `PATH`/`PATHEXT`
+  and start; a quoted Codex path is launched with PowerShell's call operator; `\\?\UNC\` network paths keep
+  their leading `\\`; the *Start when I sign in* entry is repaired at startup when it is missing or points
+  at a program that moved, and is removed by the uninstaller.
+- A branch that already exists (a previous attempt's, or the one a tracker issue names) is checked out as it
+  is instead of being reset to the base branch; commits, fetches and pushes give up after 5 minutes instead of
+  hanging on a stalled remote; git no longer inherits the tracker tokens.
+- `tracker.provider.api_url` (GitHub Enterprise), `assignee` and the Linear `endpoint` in `WORKFLOW.md`, and
+  the workflow's `terminal_states` for Linear blockers, were parsed and then ignored. A failed or
+  rate-limited poll was hidden; it is reported once as an activity event and a rate-limited tracker is left
+  alone until its limit resets.
+- The power mode shown on Overview always said "Battery Power (1 Agent Limit)"; it names the limit set in
+  *Settings → Resource policy*.
+- Deleting a project or a task left its approvals, validation results and pull request reviews behind, and the
+  automatic pull request status sweep then failed on every orphaned review each time; they are removed with it.
+- A pull request's changed files and review comments were read from the first page only (30 items), so a large
+  pull request showed an incomplete diff summary and missed comments; every page is read now (up to GitHub's limits).
+- A desktop attached to a running `symphony-cli` kept the old token after the CLI restarted and showed
+  *unauthorized* until the app was restarted; a different API version is written to the log.
+- An unsupported saved language no longer breaks the whole UI at start; the task composer says when the
+  repositories could not be loaded (with *Retry*) instead of asking you to register one.
+- `pnpm --filter @symphony/desktop e2e` no longer rewrites the committed `docs/screenshots` and
+  `docs/perf/perf-results.json` (they go to `target/e2e-evidence/`; `SYMPHONY_UPDATE_DOCS=1` refreshes them).
+- Review follow-ups: **a Linear endpoint or GitHub Enterprise URL in `WORKFLOW.md` also reaches the agent's
+  `github_api`/`linear_graphql` tools** (they used the public servers while polling used the configured
+  ones); a Linear project no longer inherits another tracker's terminal states; a closed issue no longer uses
+  up the free slot of a tick, due retries are checked against the tracker like new candidates, a Linear
+  issue moved out of the active states is not started, and a rate-limited project is not asked about
+  running or queued issues either (a 429 without `Retry-After` now backs off for a minute); an approval is
+  claimed and recorded under one lock, so two simultaneous decisions cannot disagree with what the agent
+  received, and a failed write leaves the request answerable; a stall is not declared when the pending
+  approvals cannot be read; a refusal option such as "Do not deny" is never taken for a refusal, and a
+  one-time approval never picks an "always"/"session" option; a worktree branch created between the check and
+  `git worktree add` is checked out instead of failing, and a fallback branch is created, never reset;
+  Graphify and Serena get absolute paths (a relative `--data-dir` broke indexing); AI analyses are made again
+  with the new diff handling (prompt version 3); `.js`/`.vbs` entries of `PATHEXT` are not mistaken for a
+  provider CLI; a battery limit of `0` now pauses dispatching on battery, as Settings says; the login
+  autostart entry is repaired only when it is a `--background` entry of a Symphony copy, also when the
+  window is attached to `symphony-cli`, and never from settings that could not be read; uninstalling one
+  copy leaves the login entry of another copy alone.
+- A queued task whose issue is no longer handed to the worker (another assignee, a new unresolved blocker) stays
+  queued instead of starting; a GitHub secondary rate limit that names no wait (a 403 with no header) is
+  recognised from its body and waited out for a minute; a pull request page that cannot be read fails the refresh
+  instead of replacing the stored files and review comments with a partial list; a one-time answer can pick
+  "Allow all requested changes once"; a restore retried after an interrupted start puts the database that attempt
+  set aside back first, so the retry lists it with the other replaced files (and, when that retry then fails on
+  a damaged backup, reports the database as put back rather than the data folder as partly replaced); a rate limit
+  met while refreshing pull requests pauses that project's sweep for the wait GitHub named; "Allow all commands
+  once per day" is not taken for a one-time approval, and neither is "Allow all commands once" (only a label that
+  also scopes the grant to the request, such as "all requested changes once", is); a successful issue sync keeps a
+  tracker wait that the pull request sweep set meanwhile; a restore whose early recovery cannot put every file back
+  names the files that still hold data and does not claim the data folder is as it was.
 
 ### Security
+
+- **Knowledge Base AI analysis**: the Codex command guard accepted shell syntax (`codex app-server | tee x`,
+  `foo;/codex app-server`), so the flags that switch Codex's own tools off could land on another program; it
+  now refuses it. The commit diff is redacted *before* it is cut to the prompt size (a token straddling the
+  cut used to reach the provider as a fragment), and Graphify and Serena no longer run in the host's working
+  directory.
 
 - Raw provider event payloads (command output, tool results, diffs) were stored, streamed and exported
   without redaction (only the event message was redacted), so a token an agent printed reached the
   database, the event stream and diagnostics exports. Every string of a payload, and the live
   session's last message in `/state`, is now redacted first.
 - `ctutils` 0.4.3 → 0.4.4 (RUSTSEC-2026-0385, non-constant-time comparisons; pulled in by `digest`).
+- `minimatch` is resolved to 11.0.x for `@sentry/node` (GHSA-g3hv-75wg-m249, denial of service through globparts
+  amplification of a crafted glob; reached only through the CodeSandbox runner's SDK), which clears `pnpm audit`.
 
 ### Changed
 
+- **Merge readiness needs a passing CI for the top rating.** A review without any CI result, or with one
+  that is not recognised (a local review before a pull request exists, a pull request whose checks were not
+  read yet, a repository without CI) now stops at 4, "Strong Candidate", like an unchecked merge always did;
+  5, "Ready for Human Approval & Merge", needs a passing CI behind it, or a CI that is explicitly
+  `not_applicable`. Nothing is merged either way.
 - **Agent runs is now a view of Tasks**: *Board*, *Table* and *Runs* sit side by side on the Tasks page, and
   the separate *Agent runs* sidebar entry is gone (its running/approval badge moved to *Tasks*). `/runs`
   still works and opens the Runs view; task threads stay at `/runs/<id>`.

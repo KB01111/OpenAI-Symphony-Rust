@@ -329,6 +329,23 @@ describe("Symphony runtime contract (real Axum router)", () => {
     await client.deleteCredential("LINEAR_API_KEY");
   });
 
+  it("schedules a backup restore for the next start, refuses bad requests and can withdraw it", async () => {
+    const empty = await client.getRestoreStatus();
+    expect(empty).toEqual({ pending: null, last: null });
+
+    const backup = await client.createBackup();
+    const scheduled = await client.scheduleRestore(backup.id);
+    expect(scheduled.pending?.backup_id).toBe(backup.id);
+    expect((await client.getRestoreStatus()).pending?.backup_id).toBe(backup.id);
+    // Only a backup that exists is accepted; a path-like name never is.
+    await expect(client.scheduleRestore("symphony-backup-does-not-exist")).rejects.toMatchObject({ status: 404 });
+    await expect(client.scheduleRestore("../symphony.sqlite")).rejects.toBeTruthy();
+    expect((await client.getRestoreStatus()).pending?.backup_id).toBe(backup.id);
+
+    expect((await client.cancelRestore()).pending).toBeNull();
+    expect((await client.getRestoreStatus()).pending).toBeNull();
+  });
+
   it("delivers each event once over SSE, in emission order", () => {
     const ids = events.map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);

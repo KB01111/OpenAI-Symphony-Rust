@@ -13,8 +13,7 @@ import {
   DialogTitle,
   ErrorState,
   LoadingRows,
-  Spinner,
-  useNotify
+  Spinner
 } from "@symphony/ui";
 import { useMessages, useT } from "../../lib/i18n.js";
 import { useProjects, useProviders, useSaveSettings, useSettings } from "../../lib/queries.js";
@@ -31,7 +30,6 @@ type Step = (typeof STEPS)[number];
 export default function OnboardingDialog() {
   const m = useMessages(onboardingMessages);
   const t = useT();
-  const notify = useNotify();
   const settings = useSettings();
   const providers = useProviders();
   const projects = useProjects();
@@ -45,10 +43,10 @@ export default function OnboardingDialog() {
   const complete = () => {
     if (!settings.data || save.isPending || submitting.current) return;
     submitting.current = true;
+    // A failed save is reported by the settings hook itself; reporting it here too showed two toasts.
     save.mutate(
       (latest) => ({ ...latest, onboarding_completed: true }),
       {
-        onError: (error) => notify("error", m.saveFailed, errorMessage(error)),
         onSettled: () => {
           submitting.current = false;
         }

@@ -103,6 +103,11 @@ const PROVIDER_CACHE_TTL_SECS: i64 = 60;
 /// Upper bound for operator follow-up instructions (`continue_task`).
 pub const MAX_FOLLOW_UP_CHARS: usize = 20_000;
 
+/// Validation commands (tests, linters, builds) get at least this long, whatever `hooks.timeout_ms`
+/// says: that setting bounds short lifecycle hooks (60 seconds by default), and a real test suite
+/// would be reported as timed out under it.
+const MIN_VALIDATION_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+
 /// First prompt of an attempt that continues a task with operator instructions. A resumed thread
 /// already holds the task and its earlier turns, so it gets the instructions alone; a fresh one gets
 /// the task prompt followed by them.
@@ -348,6 +353,11 @@ struct OrchestratorRuntimeMemory {
     pub workflow_error: Option<String>,
     pub pending_approvals: HashMap<String, oneshot::Sender<ApprovalDecision>>,
     pub provider_cache: Option<(DateTime<Utc>, Vec<ProviderStatus>)>,
+    /// Per project: until when the tracker is left alone after it answered with a rate limit.
+    pub tracker_backoff: HashMap<String, DateTime<Utc>>,
+    /// Per project: the tracker failure that was last reported, so one that persists is reported
+    /// once instead of on every poll.
+    pub tracker_sync_errors: HashMap<String, String>,
     /// Where the workflow is saved when no `WORKFLOW.md` was loaded at startup.
     pub workflow_fallback_path: Option<PathBuf>,
 }
@@ -374,6 +384,71 @@ fn redact_event(mut event: AgentEvent) -> AgentEvent {
     event
 }
 
+/// Tracker states compare case-insensitively (`In Progress` = `in progress`).
+fn state_key(state: &str) -> String {
+    state.trim().to_lowercase()
+}
+
+/// How many agents run per project and per tracker state: what the project's
+/// `max_concurrent_agents` and the workflow's `agent.max_concurrent_agents_by_state` limit.
+#[derive(Debug, Default)]
+struct RunningCounts {
+    by_project: HashMap<String, u32>,
+    by_state: HashMap<String, u32>,
+}
+
+impl RunningCounts {
+    fn of<'a>(running: impl Iterator<Item = &'a Task>) -> Self {
+        let mut counts = Self::default();
+        for task in running {
+            counts.note_started(task);
+        }
+        counts
+    }
+
+    fn note_started(&mut self, task: &Task) {
+        *self.by_project.entry(task.project_id.clone()).or_default() += 1;
+        *self
+            .by_state
+            .entry(state_key(&task.issue.state))
+            .or_default() += 1;
+    }
+
+    /// Whether one more run of `task` stays within its project's limit and within the limit for the
+    /// state its issue is in. A limit of `None` (or 0) is no limit.
+    fn allows(
+        &self,
+        task: &Task,
+        project_limit: Option<u32>,
+        state_limits: &HashMap<String, u32>,
+    ) -> bool {
+        if let Some(limit) = project_limit.filter(|limit| *limit > 0) {
+            if self.by_project.get(&task.project_id).copied().unwrap_or(0) >= limit {
+                return false;
+            }
+        }
+        let state = state_key(&task.issue.state);
+        if let Some(limit) = state_limits.get(&state).filter(|limit| **limit > 0) {
+            if self.by_state.get(&state).copied().unwrap_or(0) >= *limit {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// What the tracker says about a task that is about to start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrackerVerdict {
+    /// Start it (also when the tracker could not be asked).
+    Dispatch,
+    /// The issue is closed: the task was cancelled.
+    Cancelled,
+    /// The issue is open but cannot start now (no longer in an active state, assigned to someone
+    /// else, blocked): leave the task queued.
+    Skip,
+}
+
 struct OrchestratorApprovalGate {
     storage: Storage,
     memory: Arc<RwLock<OrchestratorRuntimeMemory>>,
@@ -384,7 +459,22 @@ struct OrchestratorApprovalGate {
 impl ApprovalGate for OrchestratorApprovalGate {
     async fn request_approval(&self, request: ApprovalRequest) -> SymphonyResult<ApprovalDecision> {
         let approval_id = request.id.clone();
-        self.storage.upsert_approval(&request).await?;
+        // The waiting side is registered before the request becomes visible (stored, broadcast):
+        // an answer can arrive the moment the UI shows it, and `resolve_approval` only accepts an
+        // answer for a request somebody is waiting for.
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut mem = self.memory.write().await;
+            mem.pending_approvals.insert(approval_id.clone(), tx);
+        }
+        if let Err(err) = self.storage.upsert_approval(&request).await {
+            self.memory
+                .write()
+                .await
+                .pending_approvals
+                .remove(&approval_id);
+            return Err(err);
+        }
 
         let evt = AgentEvent {
             id: Uuid::new_v4().to_string(),
@@ -401,12 +491,6 @@ impl ApprovalGate for OrchestratorApprovalGate {
         let evt = redact_event(evt);
         let _ = self.storage.record_event(&evt).await;
         let _ = self.event_tx.send(evt);
-
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut mem = self.memory.write().await;
-            mem.pending_approvals.insert(approval_id.clone(), tx);
-        }
 
         match rx.await {
             Ok(decision) => Ok(decision),
@@ -491,17 +575,109 @@ pub struct SymphonyOrchestrator {
     /// Serializes publishing a review (commit, push, open the pull request), so a double click
     /// cannot commit or open twice. Never held together with `dispatch_lock`.
     publish_lock: Arc<Mutex<()>>,
+    /// Serializes the settling of approval requests (`resolve_approval`, `expire_pending_approvals`):
+    /// a request is claimed, recorded and answered by one caller, so the stored status and the
+    /// answer the agent gets cannot disagree. Taken before `memory`, never while holding it.
+    approvals_lock: Arc<Mutex<()>>,
     /// Serializes manual requeues (`retry_task`, `continue_task`): the status check, the waiting
     /// follow-up and the dispatch of one request finish before another starts. Taken before
     /// `dispatch_lock`.
     requeue_lock: Arc<Mutex<()>>,
     /// GitHub REST API base URL for pull requests (GitHub Enterprise, tests); `None` = github.com.
     github_api_url: Option<String>,
+    /// The GitHub API URL the loaded `WORKFLOW.md` names (`tracker.provider.api_url`, GitHub
+    /// Enterprise Server), kept in step with the active configuration.
+    workflow_github_api_url: Arc<std::sync::RwLock<Option<String>>>,
     /// The Knowledge Base, once the host enabled it (`enable_knowledge`).
     knowledge: Arc<std::sync::RwLock<Option<Arc<symphony_knowledge::service::KnowledgeService>>>>,
 }
 
 mod knowledge;
+
+/// The GitHub API base URL a workflow names for a GitHub tracker (GitHub Enterprise Server):
+/// `tracker.provider.api_url`. Tracker tokens are sent there, so only an absolute `https://` URL is
+/// accepted; plain `http://` only for a loopback address.
+fn workflow_github_api_url(cfg: &ServiceConfig) -> Option<String> {
+    if !cfg.tracker_kind.eq_ignore_ascii_case("github") {
+        return None;
+    }
+    acceptable_tracker_url(cfg.tracker_provider.get("api_url")?.as_str()?)
+}
+
+/// A tracker URL a credential may be sent to: absolute and `https://`, or plain `http://` for a
+/// loopback address only (tests, local proxies). Anything else is dropped, so the tracker falls
+/// back to its public default instead of putting a token on an unencrypted connection.
+fn acceptable_tracker_url(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let parsed = url::Url::parse(raw).ok()?;
+    let host = parsed.host_str()?;
+    let loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1");
+    let acceptable = parsed.scheme() == "https" || (parsed.scheme() == "http" && loopback);
+    acceptable.then(|| raw.trim_end_matches('/').to_string())
+}
+
+/// What the loaded `WORKFLOW.md` contributes to the tracker of one project.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct TrackerSettings {
+    /// `tracker.provider.assignee` of a GitHub tracker.
+    assignee: Option<String>,
+    /// `tracker.provider.endpoint` of a Linear tracker, when it is safe to send the API key there.
+    linear_endpoint: Option<String>,
+    /// The states that count as finished for this project's tracker.
+    terminal_states: Vec<String>,
+}
+
+impl TrackerSettings {
+    /// The workflow's tracker settings apply to projects of the workflow's own tracker kind only:
+    /// another kind gets that tracker's own defaults, not terminal states or a provider block that
+    /// were written for a different tracker.
+    fn resolve(cfg: &ServiceConfig, project_tracker_kind: &str) -> Self {
+        if !cfg.tracker_kind.eq_ignore_ascii_case(project_tracker_kind) {
+            return Self {
+                terminal_states: ServiceConfig::default().terminal_states,
+                ..Self::default()
+            };
+        }
+        let setting = |key: &str| {
+            cfg.tracker_provider
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        Self {
+            assignee: setting("assignee"),
+            linear_endpoint: setting("endpoint").and_then(|raw| acceptable_tracker_url(&raw)),
+            terminal_states: cfg.terminal_states.clone(),
+        }
+    }
+}
+
+/// Forget a project's tracker back-off once it has run out. A wait that is still running stays:
+/// the pull request sweep can set one while an issue sync is in flight, and the sync's success
+/// must not erase it.
+fn clear_expired_tracker_backoff(
+    backoff: &mut HashMap<String, DateTime<Utc>>,
+    project_id: &str,
+    now: DateTime<Utc>,
+) {
+    backoff.retain(|id, until| id != project_id || *until > now);
+}
+
+/// Keep a project's tracker quiet until `until`, never shortening a wait that is already running:
+/// the issue sync and the pull request sweep can both meet a rate limit, and the later, shorter
+/// answer must not cut the longer one short.
+fn extend_tracker_backoff(
+    backoff: &mut HashMap<String, DateTime<Utc>>,
+    project_id: &str,
+    until: DateTime<Utc>,
+) {
+    let entry = backoff.entry(project_id.to_string()).or_insert(until);
+    if *entry < until {
+        *entry = until;
+    }
+}
 
 impl SymphonyOrchestrator {
     pub async fn new(
@@ -578,6 +754,7 @@ impl SymphonyOrchestrator {
         let (event_tx, _) = broadcast::channel(2048);
         let (refresh_tx, refresh_rx) = mpsc::channel(32);
 
+        let workflow_api_url = workflow_github_api_url(&active_config);
         let memory = Arc::new(RwLock::new(OrchestratorRuntimeMemory {
             scheduler_paused: false,
             running: HashMap::new(),
@@ -593,6 +770,8 @@ impl SymphonyOrchestrator {
             workflow_error,
             pending_approvals: HashMap::new(),
             provider_cache: None,
+            tracker_backoff: HashMap::new(),
+            tracker_sync_errors: HashMap::new(),
             workflow_fallback_path: None,
         }));
 
@@ -607,8 +786,10 @@ impl SymphonyOrchestrator {
             refresh_rx: Arc::new(Mutex::new(refresh_rx)),
             dispatch_lock: Arc::new(Mutex::new(())),
             publish_lock: Arc::new(Mutex::new(())),
+            approvals_lock: Arc::new(Mutex::new(())),
             requeue_lock: Arc::new(Mutex::new(())),
             github_api_url: None,
+            workflow_github_api_url: Arc::new(std::sync::RwLock::new(workflow_api_url)),
             knowledge: Arc::new(std::sync::RwLock::new(None)),
         })
     }
@@ -876,6 +1057,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                         mem.provider_cache = None;
                     }
                     mem.active_workflow = wf;
+                    self.note_workflow_endpoints(&cfg);
                     mem.active_config = cfg;
                     mem.active_workflow_path = Some(path.to_path_buf());
                     mem.workflow_error = None;
@@ -1754,6 +1936,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
         approval_id: &str,
         decision: ApprovalDecision,
     ) -> SymphonyResult<ApprovalRequest> {
+        // One decision at a time: two callers cannot both see the request as pending, and neither
+        // can record a different outcome than the one the agent receives.
+        let _settling = self.approvals_lock.lock().await;
         let approvals = self.storage.list_approvals(false).await?;
         let mut req = approvals
             .into_iter()
@@ -1763,6 +1948,26 @@ Please implement the requested changes cleanly in the current Git workspace, run
             return Err(SymphonyError::Conflict(format!(
                 "Approval {approval_id} was already resolved"
             )));
+        }
+
+        // Only a run that is still waiting can act on a decision. After a restart, or once the run
+        // ended, nobody is listening: recording "approved" would put a decision in the audit trail
+        // that changed nothing. The request is closed as expired and the caller is told. The
+        // waiting side stays registered until the decision is stored: a failed write must leave a
+        // request that can still be answered, not a cancelled run behind a still-pending card.
+        let listening = {
+            let mem = self.memory.read().await;
+            mem.pending_approvals
+                .get(approval_id)
+                .is_some_and(|waiting| !waiting.is_closed())
+        };
+        if !listening {
+            self.memory
+                .write()
+                .await
+                .pending_approvals
+                .remove(approval_id);
+            return self.expire_unanswered_approval(req).await;
         }
 
         req.decision = Some(decision);
@@ -1775,13 +1980,15 @@ Please implement the requested changes cleanly in the current Git workspace, run
             ApprovalDecision::Cancel => ApprovalStatus::Cancelled,
         };
         self.storage.upsert_approval(&req).await?;
-
-        let tx_opt = {
-            let mut mem = self.memory.write().await;
-            mem.pending_approvals.remove(approval_id)
-        };
-        if let Some(tx) = tx_opt {
-            let _ = tx.send(decision);
+        let waiting = self
+            .memory
+            .write()
+            .await
+            .pending_approvals
+            .remove(approval_id);
+        // The run can stop listening while the decision is being stored; then it never saw it.
+        if !waiting.is_some_and(|waiting| waiting.send(decision).is_ok()) {
+            return self.expire_unanswered_approval(req).await;
         }
 
         self.emit_event(
@@ -1799,9 +2006,40 @@ Please implement the requested changes cleanly in the current Git workspace, run
         Ok(req)
     }
 
+    /// Close a request no run is waiting for as expired (cancelled, no effect) and tell the caller
+    /// that their decision changed nothing. Always an `Err`.
+    async fn expire_unanswered_approval(
+        &self,
+        mut req: ApprovalRequest,
+    ) -> SymphonyResult<ApprovalRequest> {
+        let approval_id = req.id.clone();
+        req.status = ApprovalStatus::Cancelled;
+        req.decision = Some(ApprovalDecision::Cancel);
+        req.resolved_at = Some(Utc::now());
+        self.storage.upsert_approval(&req).await?;
+        self.emit_event(
+            Some(req.task_id.clone()),
+            Some(req.issue_identifier.clone()),
+            Some(req.session_id.clone()),
+            Some(req.provider),
+            "approval/expired",
+            None,
+            format!(
+                "Approval '{}' expired: no run was waiting for it",
+                req.title
+            ),
+            None,
+        )
+        .await;
+        Err(SymphonyError::Conflict(format!(
+            "Approval {approval_id} is no longer waiting for an answer (its run ended or Symphony restarted); it was closed without effect"
+        )))
+    }
+
     /// Mark approvals still pending for a task as cancelled (its run ended without a decision), so
     /// they never linger as actionable in the UI.
     async fn expire_pending_approvals(&self, task_id: &str) {
+        let _settling = self.approvals_lock.lock().await;
         let Ok(pending) = self.storage.list_approvals(true).await else {
             return;
         };
@@ -2054,7 +2292,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         if host.eq_ignore_ascii_case("github.com") {
             return true;
         }
-        self.github_api_url
+        self.effective_github_api_url()
             .as_deref()
             .and_then(|api| url::Url::parse(api).ok())
             .map(|api| {
@@ -2067,6 +2305,24 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     || host.eq_ignore_ascii_case(api_host.strip_prefix("api.").unwrap_or(&api_host))
             })
             .unwrap_or(false)
+    }
+
+    /// The GitHub API URL in use: the one set explicitly (tests, embedding), else the one the loaded
+    /// workflow names; `None` is api.github.com.
+    fn effective_github_api_url(&self) -> Option<String> {
+        self.github_api_url.clone().or_else(|| {
+            self.workflow_github_api_url
+                .read()
+                .ok()
+                .and_then(|url| url.clone())
+        })
+    }
+
+    /// Keep [`Self::effective_github_api_url`] in step with a configuration that is being applied.
+    fn note_workflow_endpoints(&self, cfg: &ServiceConfig) {
+        if let Ok(mut slot) = self.workflow_github_api_url.write() {
+            *slot = workflow_github_api_url(cfg);
+        }
     }
 
     /// Use another GitHub REST API base URL (GitHub Enterprise Server) for pull requests.
@@ -2185,7 +2441,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         // is opened for it instead.
         if updating {
             let details = GitHubTracker::new(
-                self.github_api_url.clone(),
+                self.effective_github_api_url(),
                 repo.clone(),
                 Some(token.clone()),
                 None,
@@ -2231,7 +2487,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let (number, html_url, already_existed) = if updating {
             (review.pr_number, review.url.clone(), true)
         } else {
-            let tracker = GitHubTracker::new(self.github_api_url.clone(), repo, Some(token), None);
+            let tracker =
+                GitHubTracker::new(self.effective_github_api_url(), repo, Some(token), None);
             let body = redact_secrets(
                 &format!(
                     "{}\n\n---\nOpened by Symphony Desktop after explicit human approval of this review (merge readiness {}/5). Nothing is merged automatically.",
@@ -2332,8 +2589,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     "the project has no GitHub repository (owner/name) configured".into(),
                 )
             })?;
-        let tracker =
-            GitHubTracker::new(self.github_api_url.clone(), repo, self.github_token(), None);
+        let tracker = GitHubTracker::new(
+            self.effective_github_api_url(),
+            repo,
+            self.github_token(),
+            None,
+        );
         let details = tracker
             .fetch_pull_request_details(review.pr_number)
             .await
@@ -2416,7 +2677,15 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .filter(|r| r.has_pull_request() && !matches!(r.state.as_str(), "merged" | "closed"))
             .collect();
         failing.retain(|id| open.iter().any(|r| &r.id == id));
+        // Projects whose GitHub answered with a rate limit during this sweep: the rest of their
+        // pull requests wait for the next one, instead of asking again at once.
+        let mut limited: HashSet<String> = HashSet::new();
         for before in open {
+            if limited.contains(&before.project_id)
+                || self.tracker_backed_off(&before.project_id).await
+            {
+                continue;
+            }
             sweep.checked += 1;
             match self.refresh_pull_request(&before.id).await {
                 Ok(after) => {
@@ -2461,6 +2730,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 }
                 Err(e) => {
                     sweep.failed += 1;
+                    // The same back-off as the issue sync: no request for this project until the
+                    // wait GitHub named is over.
+                    if let Some(wait) = symphony_trackers::rate_limit_retry_after(&e) {
+                        if let Ok(wait) = chrono::Duration::from_std(wait) {
+                            let mut mem = self.memory.write().await;
+                            extend_tracker_backoff(
+                                &mut mem.tracker_backoff,
+                                &before.project_id,
+                                Utc::now() + wait,
+                            );
+                        }
+                        limited.insert(before.project_id.clone());
+                    }
                     if failing.insert(before.id.clone()) {
                         warn!(review = %before.id, error = %e, "Refreshing a pull request failed");
                         self.emit_event(
@@ -2671,6 +2953,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 mem.provider_cache = None;
             }
             mem.active_workflow = wf;
+            self.note_workflow_endpoints(&cfg);
             mem.active_config = cfg;
             mem.active_workflow_path = Some(path.clone());
             mem.workflow_error = None;
@@ -2889,12 +3172,28 @@ Please implement the requested changes cleanly in the current Git workspace, run
         .await;
     }
 
-    fn build_tracker_for_project(&self, project: &Project) -> Option<Box<dyn TrackerAdapter>> {
+    /// The tracker adapter of a project, configured from the loaded workflow where that has
+    /// something to say: the GitHub Enterprise API URL and assignee filter of a GitHub tracker, the
+    /// endpoint of a Linear one, and the workflow's terminal states. The workflow's tracker settings
+    /// apply to projects of the workflow's own tracker kind only.
+    async fn build_tracker_for_project(
+        &self,
+        project: &Project,
+    ) -> Option<Box<dyn TrackerAdapter>> {
+        let settings = {
+            let mem = self.memory.read().await;
+            TrackerSettings::resolve(&mem.active_config, &project.tracker_kind)
+        };
         match project.tracker_kind.to_lowercase().as_str() {
             "github" => {
                 let repo = project.github_repo.clone()?;
                 let token = self.github_token();
-                Some(Box::new(GitHubTracker::new(None, repo, token, None)))
+                Some(Box::new(GitHubTracker::new(
+                    self.effective_github_api_url(),
+                    repo,
+                    token,
+                    settings.assignee,
+                )))
             }
             "linear" => {
                 let slug = project.linear_project_slug.clone()?;
@@ -2903,10 +3202,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     .get_secret("LINEAR_API_KEY")
                     .or_else(|| std::env::var("LINEAR_API_KEY").ok())?;
                 Some(Box::new(LinearTracker::new(
-                    None,
+                    settings.linear_endpoint,
                     slug,
                     Some(key),
-                    vec!["Done".into(), "Closed".into(), "Cancelled".into()],
+                    settings.terminal_states,
                 )))
             }
             _ => None,
@@ -2920,7 +3219,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .await?
             .ok_or_else(|| SymphonyError::ProjectNotFound(project_id.to_string()))?;
 
-        let Some(tracker) = self.build_tracker_for_project(&project) else {
+        let Some(tracker) = self.build_tracker_for_project(&project).await else {
             return self.storage.list_tasks(Some(project_id)).await;
         };
 
@@ -2934,16 +3233,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
             .await?;
 
         let existing = self.storage.list_tasks(Some(project_id)).await?;
-        let mut by_identifier: HashMap<String, Task> = existing
+        let by_identifier: HashMap<String, Task> = existing
             .into_iter()
             .map(|t| (t.issue.identifier.clone(), t))
             .collect();
 
         for issue in issues {
-            if let Some(existing_task) = by_identifier.get_mut(&issue.identifier) {
-                existing_task.issue = issue;
-                existing_task.updated_at = Utc::now();
-                self.storage.upsert_task(existing_task).await?;
+            if let Some(existing_task) = by_identifier.get(&issue.identifier) {
+                // Only the tracker's view of the issue: `existing_task` is a snapshot from before
+                // the tracker was asked, and a worker may have finished since. Writing the whole
+                // row back would put its old status and usage over the worker's result.
+                self.storage
+                    .update_task_issue(&existing_task.id, &issue, Utc::now())
+                    .await?;
             } else {
                 let now = Utc::now();
                 let new_task = Task {
@@ -2999,7 +3301,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
         };
 
         for project in projects {
-            if let Some(tracker) = self.build_tracker_for_project(&project) {
+            if let Some(tracker) = self.build_tracker_for_project(&project).await {
                 if let Ok(terminal_issues) = tracker.fetch_issues_by_states(&terminal_states).await
                 {
                     let root = PathBuf::from(&project.workspace_root);
@@ -3057,13 +3359,23 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let projects = self.storage.list_projects().await?;
         for project in &projects {
             if project.auto_dispatch {
-                let _ = self.sync_project_issues(&project.id).await;
+                self.sync_project_for_tick(project).await;
             }
         }
 
         // 5. Select eligible candidate tasks sorted by priority, created_at, identifier (SPEC.md Section 8.2)
         let all_tasks = self.storage.list_tasks(None).await?;
         let mut eligible_tasks: Vec<Task> = Vec::new();
+        let (mut counts, state_limits) = {
+            let mem = self.memory.read().await;
+            (
+                RunningCounts::of(all_tasks.iter().filter(|t| mem.running.contains_key(&t.id))),
+                mem.active_config
+                    .agent
+                    .max_concurrent_agents_by_state
+                    .clone(),
+            )
+        };
         {
             let mem = self.memory.read().await;
             for task in all_tasks {
@@ -3097,13 +3409,196 @@ Please implement the requested changes cleanly in the current Git workspace, run
         sort_candidate_issues(&mut issues);
 
         let available_slots = hw.effective_max_concurrency.saturating_sub(running_count) as usize;
-        for issue in issues.into_iter().take(available_slots) {
-            if let Some(task) = eligible_tasks.iter().find(|t| t.issue.id == issue.id) {
-                let _ = self.dispatch_task_now(&task.id).await;
+        // Only a run that really started uses up one of the slots: a candidate the tracker shows as
+        // closed, or one that could not be started, leaves its place to the next candidate.
+        let mut started = 0;
+        for issue in issues {
+            if started >= available_slots {
+                break;
+            }
+            let Some(task) = eligible_tasks.iter().find(|t| t.issue.id == issue.id) else {
+                continue;
+            };
+            let project = projects.iter().find(|p| p.id == task.project_id);
+            // A task over its project's or its state's limit waits for a free place; it does not
+            // use up one of the global slots.
+            if !counts.allows(
+                task,
+                project.map(|p| p.max_concurrent_agents),
+                &state_limits,
+            ) {
+                continue;
+            }
+            if self.tracker_verdict(task, project).await != TrackerVerdict::Dispatch {
+                continue;
+            }
+            if self.dispatch_task_now(&task.id).await.is_ok() {
+                counts.note_started(task);
+                started += 1;
             }
         }
 
         Ok(())
+    }
+
+    /// One tick's sync of a project's issues. A failure is reported once, as an event the user can
+    /// see, not on every poll and not silently; a tracker that answered with a rate limit is left
+    /// alone until its limit resets.
+    async fn sync_project_for_tick(&self, project: &Project) {
+        let now = Utc::now();
+        {
+            let mem = self.memory.read().await;
+            if mem
+                .tracker_backoff
+                .get(&project.id)
+                .is_some_and(|until| *until > now)
+            {
+                return;
+            }
+        }
+        match self.sync_project_issues(&project.id).await {
+            Ok(_) => {
+                let recovered = {
+                    let mut mem = self.memory.write().await;
+                    // A wait that the pull request sweep set while this sync ran is still running.
+                    clear_expired_tracker_backoff(
+                        &mut mem.tracker_backoff,
+                        &project.id,
+                        Utc::now(),
+                    );
+                    mem.tracker_sync_errors.remove(&project.id).is_some()
+                };
+                if recovered {
+                    self.emit_event(
+                        None,
+                        None,
+                        None,
+                        None,
+                        "tracker/sync_recovered",
+                        None,
+                        format!("Issues of project {} can be read again.", project.name),
+                        None,
+                    )
+                    .await;
+                }
+            }
+            Err(err) => {
+                let wait = symphony_trackers::rate_limit_retry_after(&err);
+                let message = redact_secrets(&err.to_string(), &[]);
+                // A rate limit repeats with a different wait each time; it is one failure.
+                let key = if wait.is_some() {
+                    symphony_trackers::GITHUB_RATE_LIMITED.to_string()
+                } else {
+                    message.clone()
+                };
+                let first_time = {
+                    let mut mem = self.memory.write().await;
+                    if let Some(wait) = wait {
+                        if let Ok(wait) = chrono::Duration::from_std(wait) {
+                            extend_tracker_backoff(
+                                &mut mem.tracker_backoff,
+                                &project.id,
+                                now + wait,
+                            );
+                        }
+                    }
+                    mem.tracker_sync_errors
+                        .insert(project.id.clone(), key.clone())
+                        .as_deref()
+                        != Some(key.as_str())
+                };
+                if first_time {
+                    warn!(project = %project.id, error = %message, "could not read the project's issues");
+                    let hint = match wait {
+                        Some(wait) => format!(" It is asked again in {} s.", wait.as_secs()),
+                        None => String::new(),
+                    };
+                    self.emit_event(
+                        None,
+                        None,
+                        None,
+                        None,
+                        "tracker/sync_failed",
+                        None,
+                        format!(
+                            "Could not read the issues of project {}: {message}.{hint}",
+                            project.name
+                        ),
+                        None,
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    /// Whether the tracker of a project answered with a rate limit that has not run out yet. Every
+    /// request to it waits, not only the bulk sync.
+    async fn tracker_backed_off(&self, project_id: &str) -> bool {
+        let mem = self.memory.read().await;
+        mem.tracker_backoff
+            .get(project_id)
+            .is_some_and(|until| *until > Utc::now())
+    }
+
+    /// Re-read the issue of a task that is about to start. Dispatch decisions come from the cached
+    /// copy, which is refreshed only for issues the tracker still lists as candidates, so a task
+    /// whose issue was closed, or moved out of the active states, while it waited would start
+    /// anyway. A closed issue cancels the task; an issue that is no longer active leaves it queued
+    /// for a later tick. A tracker that cannot be asked (not configured, rate limited, unreachable,
+    /// issue not found) leaves the decision to the cached copy.
+    async fn tracker_verdict(&self, task: &Task, project: Option<&Project>) -> TrackerVerdict {
+        let Some(project) = project else {
+            return TrackerVerdict::Dispatch;
+        };
+        if self.tracker_backed_off(&project.id).await {
+            return TrackerVerdict::Dispatch;
+        }
+        let Some(tracker) = self.build_tracker_for_project(project).await else {
+            return TrackerVerdict::Dispatch;
+        };
+        let Ok(refreshed) = tracker
+            .fetch_issue_states_by_ids(std::slice::from_ref(&task.issue.id))
+            .await
+        else {
+            return TrackerVerdict::Dispatch;
+        };
+        let Some(issue) = refreshed.into_iter().next() else {
+            return TrackerVerdict::Dispatch;
+        };
+        let (terminal_states, active_states, same_kind) = {
+            let mem = self.memory.read().await;
+            let cfg = &mem.active_config;
+            (
+                // The project's own tracker's terminal states, not another tracker's workflow's:
+                // a GitHub issue is `closed` whatever a Linear workflow lists as done.
+                TrackerSettings::resolve(cfg, &project.tracker_kind).terminal_states,
+                cfg.active_states.clone(),
+                cfg.tracker_kind.eq_ignore_ascii_case(&project.tracker_kind),
+            )
+        };
+        if issue.is_in_states(&terminal_states) {
+            let _ = self
+                .cancel_task(&task.id, "Tracker issue is no longer active")
+                .await;
+            return TrackerVerdict::Cancelled;
+        }
+        // The tracker no longer hands the issue to this worker (another assignee, a new unresolved
+        // blocker): the task stays queued and starts again if that changes, as it does for a retry.
+        if !issue.dispatchable {
+            return TrackerVerdict::Skip;
+        }
+        // Linear states are matched by name. GitHub has only open and closed, which the workflow's
+        // state names are mapped onto when listing, so the names cannot be compared there. And the
+        // workflow's active states describe its own tracker, not another kind.
+        if same_kind
+            && project.tracker_kind.eq_ignore_ascii_case("linear")
+            && !active_states.is_empty()
+            && !issue.is_in_states(&active_states)
+        {
+            return TrackerVerdict::Skip;
+        }
+        TrackerVerdict::Dispatch
     }
 
     async fn reconcile_active_runs(&self) -> SymphonyResult<()> {
@@ -3124,6 +3619,11 @@ Please implement the requested changes cleanly in the current Git workspace, run
             {
                 let mem = self.memory.read().await;
                 for (task_id, handle) in &mem.running {
+                    // Once the agent has stopped (hooks, validation, merge checks) nothing streams
+                    // any more, and those steps are bounded by their own timeouts.
+                    if handle.session.phase == RunAttemptPhase::Finishing {
+                        continue;
+                    }
                     let ref_time = handle
                         .session
                         .last_event_at
@@ -3131,6 +3631,23 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     let elapsed_ms = (now - ref_time).num_milliseconds();
                     if elapsed_ms > stall_timeout_ms {
                         stalled_task_ids.push(task_id.clone());
+                    }
+                }
+            }
+            // A run waiting for a person's approval is silent too, for as long as the person takes:
+            // that is not a stall.
+            if !stalled_task_ids.is_empty() {
+                match self.storage.list_approvals(true).await {
+                    Ok(pending) => {
+                        let waiting: HashSet<&str> =
+                            pending.iter().map(|a| a.task_id.as_str()).collect();
+                        stalled_task_ids.retain(|id| !waiting.contains(id.as_str()));
+                    }
+                    // A run waiting for a person cannot be told from a stalled one: nothing is
+                    // cancelled on a guess, the next tick looks again.
+                    Err(err) => {
+                        warn!(error = %err, "could not read pending approvals; skipping stall handling this tick");
+                        stalled_task_ids.clear();
                     }
                 }
             }
@@ -3169,8 +3686,13 @@ Please implement the requested changes cleanly in the current Git workspace, run
         };
 
         for (task_id, project_id, issue_id) in running_snapshots {
+            // A tracker that asked to be left alone (rate limit) is not asked about running tasks
+            // either; their state is looked at again once the limit has run out.
+            if self.tracker_backed_off(&project_id).await {
+                continue;
+            }
             if let Ok(Some(project)) = self.storage.get_project(&project_id).await {
-                if let Some(tracker) = self.build_tracker_for_project(&project) {
+                if let Some(tracker) = self.build_tracker_for_project(&project).await {
                     if let Ok(refreshed) = tracker
                         .fetch_issue_states_by_ids(std::slice::from_ref(&issue_id))
                         .await
@@ -3216,7 +3738,7 @@ Please implement the requested changes cleanly in the current Git workspace, run
     /// as the candidate filter would hold the task back, and runs once the issue is eligible.
     async fn process_due_retries(&self, available_slots: usize) -> SymphonyResult<()> {
         let now = Utc::now();
-        let (due_task_ids, terminal_states) = {
+        let (due_task_ids, terminal_states, state_limits) = {
             let mem = self.memory.read().await;
             let mut due: Vec<&RetryEntry> = mem
                 .retry_attempts
@@ -3225,17 +3747,46 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 .collect();
             due.sort_by_key(|r| r.due_at);
             let ids: Vec<String> = due.into_iter().map(|r| r.task_id.clone()).collect();
-            (ids, mem.active_config.terminal_states.clone())
+            (
+                ids,
+                mem.active_config.terminal_states.clone(),
+                mem.active_config
+                    .agent
+                    .max_concurrent_agents_by_state
+                    .clone(),
+            )
         };
+        if due_task_ids.is_empty() {
+            return Ok(());
+        }
+        let mut counts = self.running_counts().await.unwrap_or_default();
 
         let mut dispatched = 0;
         for task_id in due_task_ids {
             if dispatched >= available_slots {
                 break;
             }
+            // A queued retry is a dispatch like any other: the tracker is asked first, without the
+            // dispatch lock (a slow answer must not hold up manual status changes), whether the
+            // issue was closed or moved on while the retry waited.
+            if let Ok(task) = self.get_task(&task_id).await {
+                if task.status == TaskStatus::Queued {
+                    let project = self
+                        .storage
+                        .get_project(&task.project_id)
+                        .await
+                        .ok()
+                        .flatten();
+                    if self.tracker_verdict(&task, project.as_ref()).await
+                        != TrackerVerdict::Dispatch
+                    {
+                        continue;
+                    }
+                }
+            }
             // Checked, claimed and started as one step against manual status changes.
             let _dispatch_guard = self.dispatch_lock.lock().await;
-            match self.get_task(&task_id).await {
+            let task = match self.get_task(&task_id).await {
                 Ok(task)
                     if !task.issue.dispatchable || task.issue.is_todo_blocked(&terminal_states) =>
                 {
@@ -3243,12 +3794,26 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 }
                 // Moved by hand since the snapshot (which also dropped the retry).
                 Ok(task) if task.status != TaskStatus::Queued => continue,
-                Ok(_) => {}
+                Ok(task) => task,
                 // The task is gone: nothing left to retry.
                 Err(_) => {
                     self.memory.write().await.retry_attempts.remove(&task_id);
                     continue;
                 }
+            };
+            // A retry over its project's or its state's limit stays due until a place is free.
+            let project = self
+                .storage
+                .get_project(&task.project_id)
+                .await
+                .ok()
+                .flatten();
+            if !counts.allows(
+                &task,
+                project.as_ref().map(|p| p.max_concurrent_agents),
+                &state_limits,
+            ) {
+                continue;
             }
             // Claim the retry: only an entry that is still registered may start.
             if self
@@ -3261,10 +3826,21 @@ Please implement the requested changes cleanly in the current Git workspace, run
             {
                 continue;
             }
-            let _ = self.dispatch_task_locked(&task_id).await;
-            dispatched += 1;
+            if self.dispatch_task_locked(&task_id).await.is_ok() {
+                counts.note_started(&task);
+                dispatched += 1;
+            }
         }
         Ok(())
+    }
+
+    /// Per-project and per-state counts of the runs in progress.
+    async fn running_counts(&self) -> SymphonyResult<RunningCounts> {
+        let tasks = self.storage.list_tasks(None).await?;
+        let mem = self.memory.read().await;
+        Ok(RunningCounts::of(
+            tasks.iter().filter(|t| mem.running.contains_key(&t.id)),
+        ))
     }
 
     pub async fn schedule_retry(
@@ -3583,11 +4159,20 @@ Please implement the requested changes cleanly in the current Git workspace, run
         task.current_phase = Some(RunAttemptPhase::LaunchingAgentProcess);
         let _ = self.storage.upsert_task(&task).await;
 
+        // The tools talk to the same servers as polling does (GitHub Enterprise Server, a Linear
+        // endpoint named in the workflow), or the agent would act on another server than the one the
+        // issue came from.
+        let tracker_settings = TrackerSettings::resolve(&config, &project.tracker_kind);
         let mut dynamic_tools = Vec::new();
         let gh_tracker = if project.tracker_kind.eq_ignore_ascii_case("github") {
             project.github_repo.as_ref().map(|repo| {
                 dynamic_tools.push(GitHubTracker::dynamic_tool_spec());
-                GitHubTracker::new(None, repo.clone(), self.github_token(), None)
+                GitHubTracker::new(
+                    self.effective_github_api_url(),
+                    repo.clone(),
+                    self.github_token(),
+                    None,
+                )
             })
         } else {
             None
@@ -3600,10 +4185,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     .or_else(|| std::env::var("LINEAR_API_KEY").ok())?;
                 dynamic_tools.push(LinearTracker::dynamic_tool_spec());
                 Some(LinearTracker::new(
-                    None,
+                    tracker_settings.linear_endpoint.clone(),
                     slug.clone(),
                     Some(key),
-                    config.terminal_states.clone(),
+                    tracker_settings.terminal_states.clone(),
                 ))
             })
         } else {
@@ -3946,6 +4531,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 let _ = self.storage.upsert_task(&task).await;
             }
         }
+        // A cancel that arrived while the last turn ended is honoured here, not overwritten below.
+        if let Some(reason) = self.external_stop(&task.id, &mut cancel_rx).await {
+            self.finish_externally_stopped_attempt(&mut attempt_record, &reason)
+                .await;
+            return;
+        }
 
         // 6. Run `after_run` lifecycle hook (failure logged and ignored per SPEC.md)
         if let Some(ref after_script) = config.hooks.after_run {
@@ -3972,12 +4563,20 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 task.attempt_count,
                 &allocated.path,
                 &project.validation_commands,
-                config.hooks.timeout_ms,
+                config.hooks.timeout_ms.max(MIN_VALIDATION_TIMEOUT_MS),
             )
             .await;
 
         for vr in &validation_results {
-            let _ = self.storage.save_validation_result(vr).await;
+            if let Err(err) = self.storage.save_validation_result(vr).await {
+                warn!(task_id = %task.id, error = %err, "could not store a validation result");
+            }
+        }
+        // Validation can take minutes: a cancel during it must not turn into a review below.
+        if let Some(reason) = self.external_stop(&task.id, &mut cancel_rx).await {
+            self.finish_externally_stopped_attempt(&mut attempt_record, &reason)
+                .await;
+            return;
         }
 
         // 8. Inspect workspace changes, diff, and construct structured PR review / merge-readiness report
@@ -4075,7 +4674,6 @@ Please implement the requested changes cleanly in the current Git workspace, run
             reviewed_commit: None,
             unpushed_changes: continued_pr.is_some(),
         };
-        let _ = self.storage.upsert_pr_review(&pr_review).await;
 
         // 9. Transition task to HumanReview (or Completed if all validations passed and no review gate)
         let elapsed_secs = (Utc::now() - attempt_start).num_milliseconds().max(0) as f64 / 1000.0;
@@ -4083,18 +4681,33 @@ Please implement the requested changes cleanly in the current Git workspace, run
         task.status = TaskStatus::HumanReview;
         task.current_phase = Some(RunAttemptPhase::Succeeded);
         task.updated_at = Utc::now();
-        let _ = self.storage.upsert_task(&task).await;
-
-        attempt_record.phase = RunAttemptPhase::Succeeded;
-        attempt_record.finished_at = Some(Utc::now());
-        let _ = self.storage.upsert_run_attempt(&attempt_record).await;
-
         {
+            // The row is written under the memory lock, as the turn loop does: `cancel_task`, stall
+            // detection and tracker reconciliation take the run's handle out under that lock before
+            // they persist anything. Missing handle = somebody else owns the task now, and this stale
+            // copy must not be written over their state (a `Cancelled` task turning into a review).
             let mut mem = self.memory.write().await;
+            if !mem.running.contains_key(&task.id) {
+                drop(mem);
+                let reason = cancel_rx
+                    .try_recv()
+                    .unwrap_or_else(|_| "cancelled".to_string());
+                self.finish_externally_stopped_attempt(&mut attempt_record, &reason)
+                    .await;
+                return;
+            }
+            // The review is written here too, after the ownership check: a task cancelled while the
+            // diff and the credential scan ran must keep the review it had, not get this run's.
+            let _ = self.storage.upsert_pr_review(&pr_review).await;
+            let _ = self.storage.upsert_task(&task).await;
             mem.running.remove(&task.id);
             mem.claimed_issue_ids.remove(&task.issue.id);
             mem.codex_totals.seconds_running += elapsed_secs;
         }
+
+        attempt_record.phase = RunAttemptPhase::Succeeded;
+        attempt_record.finished_at = Some(Utc::now());
+        let _ = self.storage.upsert_run_attempt(&attempt_record).await;
 
         self.emit_event(
             Some(task.id.clone()),
@@ -4110,6 +4723,25 @@ Please implement the requested changes cleanly in the current Git workspace, run
             None,
         )
         .await;
+    }
+
+    /// `Some(reason)` once the run was taken over by the side that stops runs from outside the
+    /// worker (`cancel_task`, stall detection, tracker reconciliation): each of them removes the
+    /// run's handle from `running` before it persists anything, so a missing handle means "not
+    /// yours any more". The worker then only closes its attempt record.
+    async fn external_stop(
+        &self,
+        task_id: &str,
+        cancel_rx: &mut oneshot::Receiver<String>,
+    ) -> Option<String> {
+        if self.memory.read().await.running.contains_key(task_id) {
+            return None;
+        }
+        Some(
+            cancel_rx
+                .try_recv()
+                .unwrap_or_else(|_| "cancelled".to_string()),
+        )
     }
 
     async fn finish_failed_attempt(
@@ -5772,6 +6404,933 @@ rl.on('line', (line) => {
         let opened = orch.create_pull_request(&review.id).await.unwrap();
         assert_eq!(opened.pr_number, 42);
         assert!(opened.has_pull_request());
+    }
+
+    fn task_in(project: &str, state: &str, identifier: &str) -> Task {
+        let mut task = Task::new_manual(
+            project.into(),
+            identifier.into(),
+            "A task".into(),
+            None,
+            Some(1),
+            ProviderKind::Simulated,
+            None,
+            Vec::new(),
+        );
+        task.issue.state = state.into();
+        task
+    }
+
+    #[test]
+    fn running_counts_enforce_the_project_limit_and_the_state_limit() {
+        let running = [
+            task_in("a", "In Progress", "A-1"),
+            task_in("a", "Todo", "A-2"),
+            task_in("b", "In Progress", "B-1"),
+        ];
+        let counts = RunningCounts::of(running.iter());
+        let no_state_limits = HashMap::new();
+
+        // Project "a" runs two: a limit of 2 is reached, 3 is not; project "b" runs one.
+        let candidate = task_in("a", "Todo", "A-3");
+        assert!(!counts.allows(&candidate, Some(2), &no_state_limits));
+        assert!(counts.allows(&candidate, Some(3), &no_state_limits));
+        assert!(counts.allows(&task_in("b", "Todo", "B-2"), Some(2), &no_state_limits));
+        // No limit (or 0) means unlimited.
+        assert!(counts.allows(&candidate, None, &no_state_limits));
+        assert!(counts.allows(&candidate, Some(0), &no_state_limits));
+
+        // State limits compare case-insensitively across projects: two run "in progress".
+        let state_limits: HashMap<String, u32> = [("in progress".to_string(), 2)].into();
+        assert!(!counts.allows(&task_in("c", "IN PROGRESS", "C-1"), None, &state_limits));
+        assert!(counts.allows(&task_in("c", "Todo", "C-2"), None, &state_limits));
+
+        // Starting one more is counted.
+        let mut counts = counts;
+        counts.note_started(&task_in("c", "Todo", "C-3"));
+        assert!(!counts.allows(&task_in("c", "Todo", "C-4"), Some(1), &no_state_limits));
+    }
+
+    #[tokio::test]
+    async fn an_approval_nobody_waits_for_is_closed_not_approved() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        // A request a previous process left behind: stored as pending, no run waits for it.
+        orch.storage
+            .upsert_approval(&ApprovalRequest {
+                id: "approval-orphan".into(),
+                task_id: task.id.clone(),
+                issue_identifier: task.issue.identifier.clone(),
+                session_id: "session".into(),
+                provider: ProviderKind::Codex,
+                kind: "command".into(),
+                title: "Run rm -rf".into(),
+                description: String::new(),
+                command_or_diff: None,
+                status: ApprovalStatus::Pending,
+                created_at: Utc::now(),
+                resolved_at: None,
+                decision: None,
+            })
+            .await
+            .unwrap();
+
+        let error = orch
+            .resolve_approval("approval-orphan", ApprovalDecision::Accept)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "conflict", "{error}");
+
+        // The audit trail does not claim an approval that changed nothing.
+        let stored = orch
+            .list_approvals(false)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == "approval-orphan")
+            .unwrap();
+        assert_eq!(stored.status, ApprovalStatus::Cancelled);
+        assert_eq!(stored.decision, Some(ApprovalDecision::Cancel));
+        assert!(orch.list_approvals(true).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_run_waiting_for_an_approval_or_finishing_is_not_stalled() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        {
+            let mut mem = orch.memory.write().await;
+            mem.active_config.codex.stall_timeout_ms = 1;
+        }
+        let long_ago = Utc::now() - chrono::Duration::minutes(30);
+        let session = |phase: RunAttemptPhase, id: &str| {
+            let (cancel_tx, _cancel_rx) = oneshot::channel::<String>();
+            (
+                id.to_string(),
+                ActiveWorkerHandle {
+                    session: LiveSession {
+                        session_id: format!("session-{id}"),
+                        thread_id: String::new(),
+                        turn_id: "turn-1".into(),
+                        task_id: id.to_string(),
+                        issue_id: format!("issue-{id}"),
+                        issue_identifier: format!("SYM-{id}"),
+                        issue_title: "Silent".into(),
+                        project_id: "proj-retry".into(),
+                        provider: ProviderKind::Simulated,
+                        model: None,
+                        workspace_path: String::new(),
+                        branch_name: String::new(),
+                        pid: None,
+                        phase,
+                        attempt_number: 1,
+                        turn_count: 1,
+                        started_at: long_ago,
+                        last_event: None,
+                        last_message: None,
+                        last_event_at: Some(long_ago),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        total_tokens: 0,
+                    },
+                    cancel_tx,
+                },
+            )
+        };
+        // The real task waits for an approval; a second run is validating; a third is silent and stalls.
+        let (_, waiting) = session(RunAttemptPhase::StreamingTurn, &task.id);
+        let (finishing_id, finishing) = session(RunAttemptPhase::Finishing, "finishing");
+        let (silent_id, silent) = session(RunAttemptPhase::StreamingTurn, "silent");
+        orch.storage
+            .upsert_approval(&ApprovalRequest {
+                id: "approval-live".into(),
+                task_id: task.id.clone(),
+                issue_identifier: task.issue.identifier.clone(),
+                session_id: "session".into(),
+                provider: ProviderKind::Simulated,
+                kind: "command".into(),
+                title: "Run tests".into(),
+                description: String::new(),
+                command_or_diff: None,
+                status: ApprovalStatus::Pending,
+                created_at: Utc::now(),
+                resolved_at: None,
+                decision: None,
+            })
+            .await
+            .unwrap();
+        {
+            let mut mem = orch.memory.write().await;
+            mem.running.insert(task.id.clone(), waiting);
+            mem.running.insert(finishing_id.clone(), finishing);
+            mem.running.insert(silent_id.clone(), silent);
+        }
+
+        orch.reconcile_active_runs().await.ok();
+
+        let mem = orch.memory.read().await;
+        assert!(
+            mem.running.contains_key(&task.id),
+            "a run waiting for a person is not stalled"
+        );
+        assert!(
+            mem.running.contains_key(&finishing_id),
+            "validation is not an agent stall"
+        );
+        assert!(
+            !mem.running.contains_key(&silent_id),
+            "a silent streaming run still stalls"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_project_at_its_agent_limit_does_not_start_another_task() {
+        let temp = TempDir::new().unwrap();
+        let (orch, queued) = single_slot_orchestrator(&temp).await;
+        // Room for four agents overall, but the project allows one.
+        let mut settings = orch.storage.get_settings().await.unwrap();
+        settings.resource_policy.max_concurrent_on_ac = 4;
+        settings.resource_policy.max_concurrent_on_battery = 4;
+        orch.storage.save_settings(&settings).await.unwrap();
+
+        // One run of the project is in progress (a task in storage with a live handle) ...
+        let mut busy = task_in("proj-retry", "Todo", "SYM-BUSY");
+        busy.status = TaskStatus::Running;
+        orch.storage.upsert_task(&busy).await.unwrap();
+        let (cancel_tx, _cancel_rx) = oneshot::channel::<String>();
+        orch.memory.write().await.running.insert(
+            busy.id.clone(),
+            ActiveWorkerHandle {
+                session: LiveSession {
+                    session_id: "busy".into(),
+                    thread_id: String::new(),
+                    turn_id: "turn-1".into(),
+                    task_id: busy.id.clone(),
+                    issue_id: busy.issue.id.clone(),
+                    issue_identifier: busy.issue.identifier.clone(),
+                    issue_title: "Occupies the project".into(),
+                    project_id: "proj-retry".into(),
+                    provider: ProviderKind::Simulated,
+                    model: None,
+                    workspace_path: String::new(),
+                    branch_name: String::new(),
+                    pid: None,
+                    phase: RunAttemptPhase::StreamingTurn,
+                    attempt_number: 1,
+                    turn_count: 1,
+                    started_at: Utc::now(),
+                    last_event: None,
+                    last_message: None,
+                    last_event_at: Some(Utc::now()),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                },
+                cancel_tx,
+            },
+        );
+        // ... and another one of that project waits in the queue.
+        let mut waiting = orch.get_task(&queued.id).await.unwrap();
+        waiting.status = TaskStatus::Queued;
+        orch.storage.upsert_task(&waiting).await.unwrap();
+
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(
+            orch.get_task(&queued.id).await.unwrap().attempt_count,
+            0,
+            "the project's limit holds the queued task back"
+        );
+
+        // Once the project has room, it starts.
+        orch.memory.write().await.running.remove(&busy.id);
+        let mut busy = orch.get_task(&busy.id).await.unwrap();
+        busy.status = TaskStatus::Completed;
+        orch.storage.upsert_task(&busy).await.unwrap();
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        assert_eq!(orch.get_task(&queued.id).await.unwrap().attempt_count, 1);
+    }
+
+    /// An orchestrator whose `WORKFLOW.md` names `api_url` as its GitHub API (as a GitHub Enterprise
+    /// user would), with an auto-dispatching GitHub project `acme/widgets` and a vault token.
+    async fn github_tracked_orchestrator(
+        temp: &TempDir,
+        api_url: &str,
+    ) -> (SymphonyOrchestrator, Project) {
+        let workflow = temp.path().join("WORKFLOW.md");
+        std::fs::write(
+            &workflow,
+            format!(
+                "---\ntracker:\n  kind: github\n  provider:\n    api_url: {api_url}\n    repo: acme/widgets\nagent:\n  max_concurrent_agents: 4\n---\nWork on {{{{ issue.identifier }}}}\n"
+            ),
+        )
+        .unwrap();
+        let secrets = SecretStore::new(&temp.path().join("vault")).unwrap();
+        secrets
+            .set_secret("GITHUB_TOKEN", "ghp_testtokentesttokentesttoken123456")
+            .unwrap();
+        let orch = SymphonyOrchestrator::new(
+            Storage::connect_in_memory().await.unwrap(),
+            Some(workflow),
+            secrets,
+        )
+        .await
+        .unwrap();
+        let project = Project {
+            id: "proj-gh".into(),
+            name: "Widgets".into(),
+            repo_path: temp.path().join("repo").to_string_lossy().to_string(),
+            default_branch: "main".into(),
+            workspace_root: temp.path().join("workspaces").to_string_lossy().to_string(),
+            workflow_path: None,
+            preferred_provider: ProviderKind::Simulated,
+            preferred_model: None,
+            tracker_kind: "github".into(),
+            github_repo: Some("acme/widgets".into()),
+            linear_project_slug: None,
+            required_labels: Vec::new(),
+            auto_dispatch: true,
+            max_concurrent_agents: 2,
+            validation_commands: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        orch.create_project(project.clone()).await.unwrap();
+        (orch, project)
+    }
+
+    #[test]
+    fn the_workflow_github_api_url_is_only_taken_when_it_is_safe_to_send_a_token_there() {
+        let cfg = |kind: &str, api_url: &str| {
+            let mut tracker_provider = serde_json::Map::new();
+            tracker_provider.insert("api_url".into(), json!(api_url));
+            ServiceConfig {
+                tracker_kind: kind.into(),
+                tracker_provider,
+                ..ServiceConfig::default()
+            }
+        };
+        assert_eq!(
+            workflow_github_api_url(&cfg("github", "https://ghe.example.com/api/v3/")),
+            Some("https://ghe.example.com/api/v3".to_string())
+        );
+        // Plain http only to the local machine; other schemes and garbage are ignored.
+        assert_eq!(
+            workflow_github_api_url(&cfg("github", "http://127.0.0.1:8080")),
+            Some("http://127.0.0.1:8080".to_string())
+        );
+        for refused in [
+            "http://ghe.example.com",
+            "ftp://ghe.example.com",
+            "ghe.example.com",
+            "",
+        ] {
+            assert_eq!(
+                workflow_github_api_url(&cfg("github", refused)),
+                None,
+                "{refused:?}"
+            );
+        }
+        // The setting belongs to a GitHub tracker.
+        assert_eq!(
+            workflow_github_api_url(&cfg("linear", "https://ghe.example.com")),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_queued_task_whose_issue_was_closed_meanwhile_is_cancelled_not_started() {
+        let temp = TempDir::new().unwrap();
+        let (api, seen) = github_mock_with(Arc::new(|_method: &str, target: &str| {
+            if target.starts_with("/repos/acme/widgets/issues/7") {
+                (
+                    "200 OK".to_string(),
+                    json!({ "number": 7, "title": "Closed meanwhile", "state": "closed", "labels": [] }),
+                )
+            } else {
+                ("200 OK".to_string(), json!([]))
+            }
+        }))
+        .await;
+        let (orch, project) = github_tracked_orchestrator(&temp, &api).await;
+        let mut task = task_in(&project.id, "open", "GH-7");
+        task.issue.id = "7".into();
+        task.status = TaskStatus::Queued;
+        orch.storage.upsert_task(&task).await.unwrap();
+
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+
+        let after = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(after.status, TaskStatus::Cancelled, "{after:?}");
+        assert_eq!(after.attempt_count, 0, "it never started");
+        // The workflow's API URL was used, with the vault token.
+        let requests = seen.lock().unwrap().clone();
+        let lookup = requests
+            .iter()
+            .find(|(method, target, _, _)| method == "GET" && target.contains("/issues/7"))
+            .expect("the issue was looked up on the configured GitHub API");
+        assert!(lookup.2.contains("ghp_testtokentesttokentesttoken123456"));
+    }
+
+    #[tokio::test]
+    async fn test_a_closed_candidate_does_not_use_up_the_only_free_slot() {
+        let temp = TempDir::new().unwrap();
+        let (api, seen) = github_mock_with(Arc::new(|_method: &str, target: &str| {
+            if target.starts_with("/repos/acme/widgets/issues/7") {
+                (
+                    "200 OK".to_string(),
+                    json!({ "number": 7, "title": "Closed meanwhile", "state": "closed", "labels": [] }),
+                )
+            } else if target.starts_with("/repos/acme/widgets/issues/8") {
+                (
+                    "200 OK".to_string(),
+                    json!({ "number": 8, "title": "Still open", "state": "open", "labels": [] }),
+                )
+            } else {
+                ("200 OK".to_string(), json!([]))
+            }
+        }))
+        .await;
+        let (orch, project) = github_tracked_orchestrator(&temp, &api).await;
+        orch.memory
+            .write()
+            .await
+            .active_config
+            .agent
+            .max_concurrent_agents = 1;
+        for (number, identifier) in [("7", "GH-7"), ("8", "GH-8")] {
+            let mut task = task_in(&project.id, "open", identifier);
+            task.issue.id = number.into();
+            task.status = TaskStatus::Queued;
+            orch.storage.upsert_task(&task).await.unwrap();
+        }
+
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+
+        let closed = orch
+            .list_tasks(Some(&project.id))
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|t| t.issue.identifier == "GH-7")
+            .unwrap();
+        assert_eq!(closed.status, TaskStatus::Cancelled, "{closed:?}");
+        // The one free slot was still offered to the next candidate in the same tick.
+        let looked_up_next = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(method, target, _, _)| method == "GET" && target.contains("/issues/8"));
+        assert!(looked_up_next, "the next candidate was considered");
+    }
+
+    #[tokio::test]
+    async fn test_a_closed_github_issue_is_closed_whatever_another_trackers_workflow_calls_done() {
+        let temp = TempDir::new().unwrap();
+        let (api, _seen) = github_mock_with(Arc::new(|_method: &str, target: &str| {
+            if target.starts_with("/repos/acme/widgets/issues/7") {
+                (
+                    "200 OK".to_string(),
+                    json!({ "number": 7, "title": "Closed meanwhile", "state": "closed", "labels": [] }),
+                )
+            } else {
+                ("200 OK".to_string(), json!([]))
+            }
+        }))
+        .await;
+        let (orch, project) = github_tracked_orchestrator(&temp, &api).await;
+        {
+            // The loaded workflow is a Linear one with its own idea of "finished".
+            let mut mem = orch.memory.write().await;
+            mem.active_config.tracker_kind = "linear".into();
+            mem.active_config.terminal_states = vec!["Shipped".into()];
+        }
+        let mut task = task_in(&project.id, "open", "GH-7");
+        task.issue.id = "7".into();
+        task.status = TaskStatus::Queued;
+        orch.storage.upsert_task(&task).await.unwrap();
+
+        let verdict = orch.tracker_verdict(&task, Some(&project)).await;
+
+        assert_eq!(verdict, TrackerVerdict::Cancelled);
+        assert_eq!(
+            orch.get_task(&task.id).await.unwrap().status,
+            TaskStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_queued_issue_the_tracker_no_longer_assigns_to_the_worker_stays_queued() {
+        let temp = TempDir::new().unwrap();
+        let (api, _seen) = github_mock_with(Arc::new(|_method: &str, target: &str| {
+            let assignee = if target.starts_with("/repos/acme/widgets/issues/7") {
+                "someone-else"
+            } else {
+                "octocat"
+            };
+            (
+                "200 OK".to_string(),
+                json!({
+                    "number": 7, "title": "Reassigned", "state": "open", "labels": [],
+                    "assignees": [{ "login": assignee }]
+                }),
+            )
+        }))
+        .await;
+        let (orch, project) = github_tracked_orchestrator(&temp, &api).await;
+        orch.memory
+            .write()
+            .await
+            .active_config
+            .tracker_provider
+            .insert("assignee".into(), json!("octocat"));
+        let queued = |number: &str, identifier: &str| {
+            let mut task = task_in(&project.id, "open", identifier);
+            task.issue.id = number.into();
+            task.status = TaskStatus::Queued;
+            task
+        };
+        let reassigned = queued("7", "GH-7");
+        let still_ours = queued("8", "GH-8");
+        orch.storage.upsert_task(&reassigned).await.unwrap();
+        orch.storage.upsert_task(&still_ours).await.unwrap();
+
+        assert_eq!(
+            orch.tracker_verdict(&reassigned, Some(&project)).await,
+            TrackerVerdict::Skip,
+            "an issue handed to someone else is not started"
+        );
+        assert_eq!(
+            orch.get_task(&reassigned.id).await.unwrap().status,
+            TaskStatus::Queued,
+            "and it is neither cancelled nor lost: it starts again if the assignment comes back"
+        );
+        assert_eq!(
+            orch.tracker_verdict(&still_ours, Some(&project)).await,
+            TrackerVerdict::Dispatch
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_due_retry_whose_issue_was_closed_is_cancelled_not_restarted() {
+        let temp = TempDir::new().unwrap();
+        let (api, _seen) = github_mock_with(Arc::new(|_method: &str, target: &str| {
+            if target.starts_with("/repos/acme/widgets/issues/7") {
+                (
+                    "200 OK".to_string(),
+                    json!({ "number": 7, "title": "Closed meanwhile", "state": "closed", "labels": [] }),
+                )
+            } else {
+                ("200 OK".to_string(), json!([]))
+            }
+        }))
+        .await;
+        let (orch, project) = github_tracked_orchestrator(&temp, &api).await;
+        let mut task = task_in(&project.id, "open", "GH-7");
+        task.issue.id = "7".into();
+        task.status = TaskStatus::Failed;
+        orch.storage.upsert_task(&task).await.unwrap();
+        orch.schedule_retry(&task.id, false, Some("boom".into()))
+            .await
+            .unwrap();
+        make_retry_due(&orch, &task.id).await;
+
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+
+        let after = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(after.status, TaskStatus::Cancelled, "{after:?}");
+        assert_eq!(after.attempt_count, 0, "it never started again");
+        assert!(!orch
+            .memory
+            .read()
+            .await
+            .retry_attempts
+            .contains_key(&task.id));
+    }
+
+    #[test]
+    fn a_successful_sync_keeps_a_tracker_wait_that_is_still_running() {
+        let now = Utc::now();
+        let mut backoff: HashMap<String, DateTime<Utc>> = HashMap::new();
+        backoff.insert("running".into(), now + chrono::Duration::seconds(300));
+        backoff.insert("expired".into(), now - chrono::Duration::seconds(1));
+        backoff.insert("other".into(), now + chrono::Duration::seconds(300));
+
+        clear_expired_tracker_backoff(&mut backoff, "running", now);
+        assert!(backoff.contains_key("running"), "a running wait stays");
+        clear_expired_tracker_backoff(&mut backoff, "expired", now);
+        assert!(!backoff.contains_key("expired"), "an expired one goes");
+        assert!(
+            backoff.contains_key("other"),
+            "other projects are untouched"
+        );
+    }
+
+    #[test]
+    fn a_shorter_rate_limit_never_cuts_a_longer_tracker_wait_short() {
+        let mut backoff: HashMap<String, DateTime<Utc>> = HashMap::new();
+        let now = Utc::now();
+        extend_tracker_backoff(&mut backoff, "p", now + chrono::Duration::seconds(600));
+        extend_tracker_backoff(&mut backoff, "p", now + chrono::Duration::seconds(60));
+        assert_eq!(
+            backoff["p"],
+            now + chrono::Duration::seconds(600),
+            "the longer wait stays"
+        );
+        extend_tracker_backoff(&mut backoff, "p", now + chrono::Duration::seconds(900));
+        assert_eq!(backoff["p"], now + chrono::Duration::seconds(900));
+        extend_tracker_backoff(&mut backoff, "q", now + chrono::Duration::seconds(5));
+        assert_eq!(backoff.len(), 2, "projects are independent");
+    }
+
+    #[tokio::test]
+    async fn test_a_rate_limit_ends_the_pull_request_sweep_for_that_project() {
+        let temp = TempDir::new().unwrap();
+        // GitHub refuses every request with a secondary rate limit that names no wait header.
+        let (api, seen) = github_mock_with(Arc::new(|_method: &str, _target: &str| {
+            (
+                "403 Forbidden".to_string(),
+                json!({ "message": "You have exceeded a secondary rate limit. Please wait." }),
+            )
+        }))
+        .await;
+        let (orch, project) = github_tracked_orchestrator(&temp, &api).await;
+        for number in [7u64, 8] {
+            let review = PullRequestReview {
+                id: format!("pr-task-{number}"),
+                task_id: format!("task-{number}"),
+                project_id: project.id.clone(),
+                pr_number: number,
+                title: format!("PR {number}"),
+                description: String::new(),
+                url: format!("https://github.com/acme/widgets/pull/{number}"),
+                branch_name: format!("task-{number}"),
+                base_branch: "main".into(),
+                state: "open".into(),
+                ci_status: "none".into(),
+                mergeable: true,
+                has_conflicts: false,
+                changed_files: Vec::new(),
+                diff_preview: String::new(),
+                validation_results: Vec::new(),
+                review_comments: Vec::new(),
+                security_warnings: Vec::new(),
+                merge_readiness: MergeReadinessReport::evaluate(
+                    ConflictCheck::NotChecked,
+                    "none",
+                    &[],
+                    &[],
+                    0,
+                ),
+                human_approved: false,
+                updated_at: Utc::now(),
+                reviewed_commit: None,
+                unpushed_changes: false,
+            };
+            orch.storage.upsert_pr_review(&review).await.unwrap();
+        }
+        let mut failing = HashSet::new();
+
+        let first = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+
+        assert_eq!(
+            (first.checked, first.failed),
+            (1, 1),
+            "the second pull request of the limited project was not asked about"
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1, "one request, then silence");
+        assert!(orch.tracker_backed_off(&project.id).await);
+
+        // And while the wait lasts, the next sweep leaves the project alone.
+        let second = orch.refresh_open_pull_requests(&mut failing).await.unwrap();
+        assert_eq!((second.checked, second.failed), (0, 0));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_a_rate_limited_project_is_not_asked_about_a_queued_issue_either() {
+        let temp = TempDir::new().unwrap();
+        let (api, seen) = github_mock_with(Arc::new(|_method: &str, _target: &str| {
+            ("200 OK".to_string(), json!([]))
+        }))
+        .await;
+        let (orch, project) = github_tracked_orchestrator(&temp, &api).await;
+        let mut task = task_in(&project.id, "open", "GH-7");
+        task.issue.id = "7".into();
+        task.status = TaskStatus::Queued;
+        orch.memory.write().await.tracker_backoff.insert(
+            project.id.clone(),
+            Utc::now() + chrono::Duration::minutes(10),
+        );
+
+        assert!(orch.tracker_backed_off(&project.id).await);
+        let verdict = orch.tracker_verdict(&task, Some(&project)).await;
+        assert_eq!(
+            verdict,
+            TrackerVerdict::Dispatch,
+            "the cached copy decides while the tracker is left alone"
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "no request while the limit has not run out"
+        );
+    }
+
+    #[test]
+    fn tracker_urls_that_receive_a_credential_must_be_https_or_loopback() {
+        assert_eq!(
+            acceptable_tracker_url(" https://linear.example.com/graphql/ "),
+            Some("https://linear.example.com/graphql".to_string())
+        );
+        assert_eq!(
+            acceptable_tracker_url("http://localhost:8080/graphql"),
+            Some("http://localhost:8080/graphql".to_string())
+        );
+        for refused in [
+            "http://linear.example.com/graphql",
+            "ftp://linear.example.com",
+            "linear.example.com",
+            "",
+        ] {
+            assert_eq!(acceptable_tracker_url(refused), None, "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn workflow_tracker_settings_apply_to_their_own_tracker_kind_only() {
+        let cfg = |kind: &str, endpoint: &str| {
+            let mut tracker_provider = serde_json::Map::new();
+            tracker_provider.insert("endpoint".into(), json!(endpoint));
+            tracker_provider.insert("assignee".into(), json!("octocat"));
+            ServiceConfig {
+                tracker_kind: kind.into(),
+                tracker_provider,
+                terminal_states: vec!["Shipped".into()],
+                ..ServiceConfig::default()
+            }
+        };
+
+        // A GitHub workflow says nothing about a Linear project: Linear's own defaults apply, so
+        // a blocker in "Shipped" is not mistaken for a finished one, nor an unrelated provider
+        // block taken for Linear's.
+        let linear_project =
+            TrackerSettings::resolve(&cfg("github", "https://x.example"), "linear");
+        assert_eq!(linear_project.linear_endpoint, None);
+        assert_eq!(linear_project.assignee, None);
+        assert_eq!(
+            linear_project.terminal_states,
+            ServiceConfig::default().terminal_states
+        );
+
+        // For the workflow's own kind, its settings apply.
+        let github_project =
+            TrackerSettings::resolve(&cfg("github", "https://x.example"), "GitHub");
+        assert_eq!(github_project.assignee.as_deref(), Some("octocat"));
+        assert_eq!(github_project.terminal_states, vec!["Shipped".to_string()]);
+
+        // A Linear endpoint is used only where the API key may safely be sent.
+        assert_eq!(
+            TrackerSettings::resolve(&cfg("linear", "https://linear.example/graphql"), "linear")
+                .linear_endpoint
+                .as_deref(),
+            Some("https://linear.example/graphql")
+        );
+        assert_eq!(
+            TrackerSettings::resolve(&cfg("linear", "http://linear.example/graphql"), "linear")
+                .linear_endpoint,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_decisions_on_one_approval_have_one_winner_and_a_matching_record() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.storage
+            .upsert_approval(&pending_approval("approval-race", &task))
+            .await
+            .unwrap();
+        let (tx, rx) = oneshot::channel();
+        orch.memory
+            .write()
+            .await
+            .pending_approvals
+            .insert("approval-race".into(), tx);
+
+        let (accept, decline) = tokio::join!(
+            orch.resolve_approval("approval-race", ApprovalDecision::Accept),
+            orch.resolve_approval("approval-race", ApprovalDecision::Decline),
+        );
+
+        assert!(
+            accept.is_ok() ^ decline.is_ok(),
+            "exactly one decision wins: {accept:?} / {decline:?}"
+        );
+        // What the agent received is what the audit trail says.
+        let delivered = rx.await.expect("the waiting side got an answer");
+        let stored = orch
+            .list_approvals(false)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == "approval-race")
+            .unwrap();
+        assert_eq!(stored.decision, Some(delivered));
+        assert_eq!(
+            stored.status,
+            match delivered {
+                ApprovalDecision::Accept => ApprovalStatus::Approved,
+                ApprovalDecision::Decline => ApprovalStatus::Denied,
+                other => panic!("unexpected {other:?}"),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_approval_whose_run_stopped_listening_is_closed_not_approved() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        orch.storage
+            .upsert_approval(&pending_approval("approval-gone", &task))
+            .await
+            .unwrap();
+        let (tx, rx) = oneshot::channel();
+        orch.memory
+            .write()
+            .await
+            .pending_approvals
+            .insert("approval-gone".into(), tx);
+        drop(rx); // the run was torn down while the card was still on screen
+
+        let error = orch
+            .resolve_approval("approval-gone", ApprovalDecision::Accept)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "conflict", "{error}");
+
+        let stored = orch
+            .list_approvals(false)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == "approval-gone")
+            .unwrap();
+        assert_eq!(stored.status, ApprovalStatus::Cancelled);
+        assert!(!orch
+            .memory
+            .read()
+            .await
+            .pending_approvals
+            .contains_key("approval-gone"));
+    }
+
+    fn pending_approval(id: &str, task: &Task) -> ApprovalRequest {
+        ApprovalRequest {
+            id: id.into(),
+            task_id: task.id.clone(),
+            issue_identifier: task.issue.identifier.clone(),
+            session_id: "session".into(),
+            provider: ProviderKind::Codex,
+            kind: "command".into(),
+            title: "Run tests".into(),
+            description: String::new(),
+            command_or_diff: None,
+            status: ApprovalStatus::Pending,
+            created_at: Utc::now(),
+            resolved_at: None,
+            decision: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_a_rate_limited_tracker_is_left_alone_and_reported_once() {
+        let temp = TempDir::new().unwrap();
+        let (api, seen) = github_mock_with(Arc::new(|_method: &str, _target: &str| {
+            // The status text carries a header: the mock writes it into the response head.
+            (
+                "429 Too Many Requests\r\nRetry-After: 120".to_string(),
+                json!({ "message": "API rate limit exceeded" }),
+            )
+        }))
+        .await;
+        let (orch, _project) = github_tracked_orchestrator(&temp, &api).await;
+
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+        orch.reconcile_and_dispatch_tick().await.unwrap();
+
+        let listings = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, target, _, _)| method == "GET" && target.contains("/issues?"))
+            .count();
+        assert_eq!(listings, 1, "later ticks leave the limited tracker alone");
+        let events = orch.list_events(None, 100).await.unwrap();
+        let failures: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == "tracker/sync_failed")
+            .collect();
+        assert_eq!(failures.len(), 1, "reported once: {events:?}");
+        assert!(
+            failures[0].message.contains("120"),
+            "{}",
+            failures[0].message
+        );
+        assert!(
+            !failures[0].message.contains("ghp_"),
+            "no token in the report"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_cancel_during_validation_is_not_turned_into_a_review() {
+        let temp = TempDir::new().unwrap();
+        let (orch, task) = single_slot_orchestrator(&temp).await;
+        // A slow validation command keeps the run in its finishing phase long enough to cancel it.
+        let mut project = orch
+            .storage
+            .get_project("proj-retry")
+            .await
+            .unwrap()
+            .unwrap();
+        project.validation_commands = vec!["node -e \"setTimeout(function(){},2500)\"".into()];
+        orch.storage.upsert_project(&project).await.unwrap();
+
+        orch.dispatch_task_now(&task.id).await.unwrap();
+        let mut finishing = false;
+        for _ in 0..300 {
+            if orch.get_task(&task.id).await.unwrap().current_phase
+                == Some(RunAttemptPhase::Finishing)
+            {
+                finishing = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(finishing, "the run reached its validation");
+
+        orch.cancel_task(&task.id, "operator").await.unwrap();
+        for _ in 0..200 {
+            if !orch.memory.read().await.winding_down.contains(&task.id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let after = orch.get_task(&task.id).await.unwrap();
+        assert_eq!(
+            after.status,
+            TaskStatus::Cancelled,
+            "the worker's last write must not undo the cancellation"
+        );
+        assert!(
+            orch.storage
+                .get_pr_review(&format!("pr-{}", task.id))
+                .await
+                .unwrap()
+                .is_none(),
+            "a cancelled run leaves no review behind"
+        );
     }
 
     #[tokio::test]

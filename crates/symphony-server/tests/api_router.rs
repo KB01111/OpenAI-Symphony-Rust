@@ -50,6 +50,59 @@ async fn json_body(resp: axum::response::Response) -> Value {
 }
 
 #[tokio::test]
+async fn the_event_stream_is_readable_by_the_frame_parser_the_desktop_uses_when_attached() {
+    use symphony_core::sse::{agent_event, SseParser};
+
+    let (app, _dir) = router().await;
+    let stream = app
+        .clone()
+        .oneshot(authed(Method::GET, "/api/v1/events", None))
+        .await
+        .unwrap();
+    assert_eq!(stream.status(), StatusCode::OK);
+    let mut body = stream.into_body();
+
+    // Something happens in the runtime while the stream is open. `app` stays alive for the whole
+    // test: it owns the token watcher that ends the stream when it is dropped.
+    let paused = app
+        .clone()
+        .oneshot(authed(Method::POST, "/api/v1/scheduler/pause", None))
+        .await
+        .unwrap();
+    assert_eq!(paused.status(), StatusCode::OK);
+
+    let mut parser = SseParser::new();
+    let mut frames = Vec::new();
+    while !frames
+        .iter()
+        .any(|f: &symphony_core::sse::SseFrame| f.event.as_deref() == Some("scheduler/paused"))
+    {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), body.frame())
+            .await
+            .expect("the stream delivers the event")
+            .expect("the stream is still open")
+            .unwrap();
+        if let Ok(data) = frame.into_data() {
+            frames.extend(parser.push(&data));
+        }
+    }
+
+    // `ready` is a control frame and no event; the runtime's own event arrives as an AgentEvent.
+    assert_eq!(frames[0].event.as_deref(), Some("ready"));
+    assert!(agent_event(&frames[0]).is_none());
+    let event = frames
+        .iter()
+        .find_map(agent_event)
+        .expect("an agent event was read");
+    assert_eq!(event.event_type, "scheduler/paused");
+    assert_eq!(
+        frames.last().unwrap().id.as_deref(),
+        Some(event.id.as_str())
+    );
+    drop(app);
+}
+
+#[tokio::test]
 async fn public_routes_do_not_require_token() {
     let (app, _dir) = router().await;
     let resp = app
@@ -382,6 +435,121 @@ async fn backups_are_created_and_listed_through_the_local_api() {
     .await;
     assert_eq!(listed["backups"].as_array().unwrap().len(), 1);
     assert_eq!(listed["backups"][0]["id"], created["id"]);
+}
+
+#[tokio::test]
+async fn a_backup_restore_is_scheduled_for_the_next_start_and_can_be_withdrawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::connect(dir.path().join("symphony.sqlite"))
+        .await
+        .unwrap();
+    let secrets = SecretStore::new(dir.path()).unwrap();
+    let orch = Arc::new(
+        SymphonyOrchestrator::new(storage, None, secrets)
+            .await
+            .unwrap(),
+    );
+    let app = build_router(
+        orch,
+        &ServerConfig {
+            backup_root: Some(dir.path().join("backups")),
+            ..ServerConfig::local(0, Some(TOKEN.to_string()))
+        },
+    );
+    let call = |method: Method, uri: String| {
+        let app = app.clone();
+        async move { app.oneshot(authed(method, &uri, None)).await.unwrap() }
+    };
+
+    // Authentication is required for the restore endpoints too.
+    let anonymous = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/backups/symphony-backup-x/restore")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+    // Nothing pending, nothing applied.
+    let status = call(Method::GET, "/api/v1/backups/restore".into()).await;
+    assert_eq!(status.status(), StatusCode::OK);
+    let status = json_body(status).await;
+    assert_eq!(status["pending"], json!(null));
+    assert_eq!(status["last"], json!(null));
+
+    // A name that is not a backup: refused, nothing recorded.
+    let missing = call(
+        Method::POST,
+        "/api/v1/backups/symphony-backup-does-not-exist/restore".into(),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let traversal = call(
+        Method::POST,
+        "/api/v1/backups/..%2Fsymphony.sqlite/restore".into(),
+    )
+    .await;
+    assert!(
+        traversal.status().is_client_error(),
+        "{}",
+        traversal.status()
+    );
+
+    // A real backup is accepted for the next start.
+    let created = json_body(call(Method::POST, "/api/v1/backups".into()).await).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let scheduled = call(Method::POST, format!("/api/v1/backups/{id}/restore")).await;
+    assert_eq!(scheduled.status(), StatusCode::ACCEPTED);
+    let scheduled = json_body(scheduled).await;
+    assert_eq!(scheduled["pending"]["backup_id"], json!(id));
+    let again = json_body(call(Method::GET, "/api/v1/backups/restore".into()).await).await;
+    assert_eq!(again["pending"]["backup_id"], json!(id));
+
+    // A damaged backup is refused with a reason instead of failing after a restart.
+    let damaged = json_body(call(Method::POST, "/api/v1/backups".into()).await).await;
+    let damaged_db =
+        std::path::Path::new(damaged["path"].as_str().unwrap()).join("symphony.sqlite");
+    let mut bytes = std::fs::read(&damaged_db).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    std::fs::write(&damaged_db, bytes).unwrap();
+    let refused = call(
+        Method::POST,
+        format!(
+            "/api/v1/backups/{}/restore",
+            damaged["id"].as_str().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        json_body(refused).await["error"]["code"],
+        "backup_not_restorable"
+    );
+    // The earlier valid request is still the pending one.
+    let still = json_body(call(Method::GET, "/api/v1/backups/restore".into()).await).await;
+    assert_eq!(still["pending"]["backup_id"], json!(id));
+
+    // Withdrawn.
+    let cancelled = call(Method::DELETE, "/api/v1/backups/restore".into()).await;
+    assert_eq!(cancelled.status(), StatusCode::OK);
+    assert_eq!(json_body(cancelled).await["pending"], json!(null));
+}
+
+#[tokio::test]
+async fn restoring_a_backup_is_not_offered_to_the_remote_companion() {
+    // Restoring replaces the database: local administration only.
+    assert!(
+        !symphony_server::remote::REMOTE_OPERATIONS
+            .iter()
+            .any(|(_, path)| path.contains("backups")),
+        "no backup operation may be reachable remotely"
+    );
 }
 
 #[tokio::test]

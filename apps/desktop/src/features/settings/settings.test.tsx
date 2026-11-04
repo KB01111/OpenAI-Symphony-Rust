@@ -234,6 +234,132 @@ describe("BackupsSection", () => {
     expect(runtime.calls.filter((c) => c.method === "POST")).toHaveLength(1);
   });
 
+  describe("restoring a backup from the application", () => {
+    const id = "symphony-backup-20261020T100000Z";
+    const directory = "C:\\data\\backups";
+    const noStatus = { pending: null, last: null };
+
+    it("asks for confirmation, schedules the restore for the next start and can withdraw it", async () => {
+      let status: { pending: { backup_id: string; requested_at: string } | null; last: null } = noStatus;
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => status,
+        "POST /backups/:id/restore": () => {
+          status = { pending: { backup_id: id, requested_at: "2026-10-23T08:00:00Z" }, last: null };
+          return { status: 202, body: status };
+        },
+        "DELETE /backups/restore": () => {
+          status = noStatus;
+          return status;
+        }
+      });
+      renderWithProviders(<Backups />, { runtime });
+
+      // Nothing happens without the confirmation.
+      fireEvent.click(await screen.findByRole("button", { name: `Restore ${id}` }));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(within(dialog).getByText(m.confirmTitle)).toBeInTheDocument();
+      expect(within(dialog).getByText(/Nothing is replaced now/)).toBeInTheDocument();
+      expect(runtime.calls.filter((c) => c.method === "POST")).toHaveLength(0);
+
+      fireEvent.click(within(dialog).getByRole("button", { name: m.confirmAction }));
+      expect(await screen.findByText(m.pendingTitle)).toBeInTheDocument();
+      expect(screen.getByText(`${id} will be restored the next time Symphony starts. Quit Symphony and start it again to apply it.`)).toBeInTheDocument();
+      const posts = runtime.calls.filter((c) => c.method === "POST");
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.path).toBe(`/backups/${id}/restore`);
+
+      fireEvent.click(screen.getByRole("button", { name: m.pendingWithdraw }));
+      await waitFor(() => expect(screen.queryByText(m.pendingTitle)).not.toBeInTheDocument());
+      expect(runtime.calls.some((c) => c.method === "DELETE" && c.path === "/backups/restore")).toBe(true);
+    });
+
+    it("says why a backup cannot be restored and keeps the dialog open", async () => {
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => noStatus,
+        "POST /backups/:id/restore": () => ({
+          status: 422,
+          body: { error: { code: "backup_not_restorable", message: "backup file symphony.sqlite does not match its checksum; the backup is damaged" } }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+
+      fireEvent.click(await screen.findByRole("button", { name: `Restore ${id}` }));
+      const dialog = await screen.findByRole("alertdialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: m.confirmAction }));
+      expect(await within(dialog).findByText(m.restoreFailed)).toBeInTheDocument();
+      expect(within(dialog).getByText(/does not match its checksum/)).toBeInTheDocument();
+      expect(screen.queryByText(m.pendingTitle)).not.toBeInTheDocument();
+    });
+
+    it("reports what the last restore did, including a failure that left the data alone", async () => {
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => ({
+          pending: null,
+          last: { backup_id: id, applied_at: "2026-10-23T08:05:00Z", succeeded: false, error: "the backup is damaged", previous_files: [] }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+      expect(await screen.findByText(m.lastFailedTitle)).toBeInTheDocument();
+      expect(screen.getByText(/your data was left as it was: the backup is damaged/)).toBeInTheDocument();
+    });
+
+    it("does not say the data was left as it was when putting it back did not finish", async () => {
+      const displaced = "C:\\data\\symphony.sqlite.pre-restore-20261023T080500Z";
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => ({
+          pending: null,
+          last: {
+            backup_id: id,
+            applied_at: "2026-10-23T08:05:00Z",
+            succeeded: false,
+            error: "the restore failed and putting the previous data back was incomplete",
+            previous_files: [displaced],
+            rollback_incomplete: true
+          }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+      expect(await screen.findByText(m.lastIncompleteTitle)).toBeInTheDocument();
+      // The files that still hold the previous data are named, so they can be moved back by hand.
+      expect(screen.getByText(displaced)).toBeInTheDocument();
+      expect(screen.queryByText(/left as it was/)).not.toBeInTheDocument();
+      expect(screen.queryByText(m.lastFailedTitle)).not.toBeInTheDocument();
+    });
+
+    it("does not offer a restore while it cannot tell whether one is already waiting", async () => {
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => ({
+          status: 500,
+          body: { error: { code: "storage_error", message: "the restore status is unreadable" } }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+      expect(await screen.findByText(m.statusFailedTitle)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: `Restore ${id}` })).toBeDisabled();
+    });
+
+    it("says so when a waiting restore could not be withdrawn", async () => {
+      const runtime = createMockRuntime({
+        "GET /backups": () => ({ directory, backups: [summary(id, "2026-10-20T10:00:00Z")] }),
+        "GET /backups/restore": () => ({ pending: { backup_id: id, requested_at: "2026-10-23T08:00:00Z" }, last: null }),
+        "DELETE /backups/restore": () => ({
+          status: 500,
+          body: { error: { code: "io_error", message: "the request file is locked" } }
+        })
+      });
+      renderWithProviders(<Backups />, { runtime });
+      fireEvent.click(await screen.findByRole("button", { name: m.pendingWithdraw }));
+      expect(await screen.findByText(m.withdrawFailed)).toBeInTheDocument();
+      // It is still waiting, and still shown as waiting.
+      expect(screen.getByText(m.pendingTitle)).toBeInTheDocument();
+    });
+  });
+
   it("reports a failed backup instead of pretending it succeeded", async () => {
     const runtime = createMockRuntime({
       "GET /backups": () => ({ directory: "C:\\data\\backups", backups: [] }),

@@ -24,6 +24,8 @@ export const qk = {
   runtime: ["runtime"] as const,
   remoteAccess: ["remote-access"] as const,
   backups: ["backups"] as const,
+  /** A restore waiting for the next start, and the last one applied (under `backups`). */
+  restoreStatus: ["backups", "restore"] as const,
   recentEvents: ["recent-events"] as const,
   /** Everything the Knowledge Base cached for a project (prefix of every key below). */
   knowledge: (projectId: string) => ["knowledge", projectId] as const,

@@ -3,7 +3,7 @@
 use crate::analysis::{
     build_analysis_prompt, build_chat_prompt, number_evidence, parse_analysis_output,
     parse_chat_output, AnalysisRequest, AnalysisRunner, EventSink, ANALYSIS_PROMPT_VERSION,
-    MAX_DIFF_BYTES,
+    DIFF_FETCH_BYTES,
 };
 use crate::engine::{detect_engines, import_graph, read_graph_file, EngineConfig, GraphifyEngine};
 use crate::git::{short_sha, worktree_id, GitRepo};
@@ -93,8 +93,10 @@ fn restrict_to_owner(dir: &Path) {
 
 impl KnowledgePaths {
     pub fn new(data_dir: &Path) -> Self {
+        // Absolute from the start: the engines run from directories of their own, where a path
+        // relative to the host's working directory (`--data-dir data`) would point elsewhere.
         Self {
-            root: data_dir.join("knowledge"),
+            root: crate::engine::absolute(data_dir).join("knowledge"),
         }
     }
     pub fn root(&self) -> &Path {
@@ -1216,7 +1218,8 @@ impl KnowledgeService {
             }
         };
         let repo = GitRepo::new(&project.repo_path);
-        let (diff, truncated) = repo.diff_text(sha, 3, MAX_DIFF_BYTES).await?;
+        // Read more than the prompt takes: the prompt builder redacts the whole diff, then cuts it.
+        let (diff, truncated) = repo.diff_text(sha, 3, DIFF_FETCH_BYTES).await?;
         let built = build_analysis_prompt(&project.name, &detail, &impact, &diff, truncated);
         let scratch = self.new_scratch_dir()?;
         let output = runner

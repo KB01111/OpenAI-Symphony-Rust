@@ -18,9 +18,16 @@ use symphony_core::{redact_secrets, ProviderKind, SymphonyError, SymphonyResult}
 
 /// Bump when the prompt or the output schema changes; cached analyses are keyed by it.
 /// Part of the cache key of a stored analysis: bump it whenever the prompt changes, so analyses made
-/// with the old one are recomputed. (2: redacted metadata, bounded lists with a note.)
-pub const ANALYSIS_PROMPT_VERSION: u32 = 2;
+/// with the old one are recomputed. (2: redacted metadata, bounded lists with a note. 3: the diff is
+/// redacted as a whole and then cut at a line boundary, with the truncation stated.)
+pub const ANALYSIS_PROMPT_VERSION: u32 = 3;
+/// The most of a diff that goes into a prompt.
 pub const MAX_DIFF_BYTES: usize = 60 * 1024;
+/// The most of a diff that is read from git. It is deliberately larger than [`MAX_DIFF_BYTES`]: the
+/// diff is redacted as a whole *before* it is cut to the prompt size, so a secret that straddles the
+/// prompt limit is masked in full instead of being cut into a fragment the redaction patterns no
+/// longer recognise. A secret that straddles *this* limit lies beyond the prompt cut and is never sent.
+pub const DIFF_FETCH_BYTES: usize = 1024 * 1024;
 const MAX_LIST: usize = 20;
 const MAX_TITLE: usize = 200;
 const MAX_DETAIL: usize = 2000;
@@ -92,6 +99,36 @@ fn cap(text: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}…", &text[..end])
+}
+
+/// The diff as the provider sees it: redacted as a whole first, then cut to [`MAX_DIFF_BYTES`] at a
+/// line boundary. The order matters (see [`DIFF_FETCH_BYTES`]). The flag is true when the text the
+/// provider gets is shorter than the real diff, either because git's output was already cut or
+/// because it is cut here.
+fn redact_then_cut_diff(diff: &str, already_truncated: bool) -> (String, bool) {
+    // Git cut its output at the fetch limit, possibly in the middle of a line and so of a secret:
+    // the redaction patterns do not recognise a fragment. The partial last line never goes through
+    // (and a diff that is one endless line with no newline is not sent at all).
+    let diff = if already_truncated {
+        diff.rfind('\n').map_or("", |newline| &diff[..=newline])
+    } else {
+        diff
+    };
+    let redacted = redact_secrets(diff, &[]);
+    if redacted.len() <= MAX_DIFF_BYTES {
+        return (redacted, already_truncated);
+    }
+    let mut end = MAX_DIFF_BYTES;
+    while end > 0 && !redacted.is_char_boundary(end) {
+        end -= 1;
+    }
+    let kept = &redacted[..end];
+    // Drop the partial last line so the prompt never ends mid-line.
+    let kept = match kept.rfind('\n') {
+        Some(newline) if newline > 0 => &kept[..=newline],
+        _ => kept,
+    };
+    (kept.to_string(), true)
 }
 
 fn status_word(status: FileChangeStatus) -> &'static str {
@@ -254,7 +291,7 @@ pub fn build_analysis_prompt(
         ),
     };
     let project_name = redact_secrets(project_name, &[]);
-    let diff = redact_secrets(diff, &[]);
+    let (diff, diff_truncated) = redact_then_cut_diff(diff, diff_truncated);
     let body = cap(&redact_secrets(&detail.body, &[]), 4000);
     let impact_note = match &impact.unavailable_reason {
         Some(reason) => format!("Dependency information is incomplete: {reason}"),
@@ -673,6 +710,69 @@ mod tests {
             "secrets never reach the model"
         );
         assert!(built.prompt.contains("untrusted data"));
+    }
+
+    #[test]
+    fn a_secret_straddling_the_prompt_limit_never_reaches_the_provider_even_as_a_fragment() {
+        const TOKEN: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        // The token starts 8 bytes before the prompt limit, so cutting first would leave "ghp_" and
+        // a few characters: too short for the redaction patterns to recognise.
+        let head = "+header\n";
+        let filler = "a".repeat(MAX_DIFF_BYTES - head.len() - 8);
+        let diff = format!("{head}{filler}{TOKEN}\n+tail line\n");
+        let built = build_analysis_prompt("demo", &detail(), &impact(), &diff, false);
+        assert!(!built.prompt.contains("ghp_"), "no token fragment is sent");
+        assert!(built.prompt.contains("+header"));
+        assert!(
+            built.prompt.contains("DIFF (truncated)"),
+            "the cut is announced to the model"
+        );
+    }
+
+    #[test]
+    fn the_diff_is_cut_at_a_line_boundary_and_never_inside_a_character() {
+        // Two-byte characters: a cut at an arbitrary byte would split one and panic.
+        let line = format!("+{}\n", "é".repeat(100));
+        let diff = line.repeat(MAX_DIFF_BYTES / line.len() * 2);
+        let (cut, truncated) = redact_then_cut_diff(&diff, false);
+        assert!(truncated);
+        assert!(cut.len() <= MAX_DIFF_BYTES);
+        assert!(cut.ends_with('\n'), "ends on a whole line");
+        assert!(cut.lines().all(|l| l == line.trim_end()));
+    }
+
+    #[test]
+    fn a_secret_that_git_cut_in_half_is_not_sent_as_a_fragment() {
+        let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let whole = format!("+fine line\n+token = {token}\n");
+        // Git's fetch limit fell inside the token: what is left no longer looks like one.
+        let cut_at = whole.find(token).unwrap() + 12;
+        let fetched = &whole[..cut_at];
+        assert!(fetched.contains("ghp_abcdefgh"));
+
+        let (sent, truncated) = redact_then_cut_diff(fetched, true);
+        assert!(truncated);
+        assert_eq!(sent, "+fine line\n", "the partial last line is dropped");
+        assert!(!sent.contains("ghp_"));
+
+        // One endless line has no safe place to cut: nothing of it is sent.
+        let endless = format!("+{token}");
+        let (sent, truncated) = redact_then_cut_diff(&endless[..20], true);
+        assert!(truncated);
+        assert!(sent.is_empty());
+
+        // A diff git did not cut is untouched, even without a final newline.
+        let (sent, truncated) = redact_then_cut_diff("+small", false);
+        assert_eq!((sent.as_str(), truncated), ("+small", false));
+    }
+
+    #[test]
+    fn a_diff_within_the_limit_is_kept_whole_and_keeps_git_s_truncation_flag() {
+        let (kept, truncated) = redact_then_cut_diff("+small\n", false);
+        assert_eq!((kept.as_str(), truncated), ("+small\n", false));
+        // Git's own output was already cut: that is still reported.
+        let (_, truncated) = redact_then_cut_diff("+small\n", true);
+        assert!(truncated);
     }
 
     #[test]

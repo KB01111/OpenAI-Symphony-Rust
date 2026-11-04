@@ -3128,7 +3128,7 @@
         "tags": [
           "backups"
         ],
-        "summary": "Create a backup now: a transactionally consistent copy of the database (SQLite `VACUUM INTO`,\nWAL included) plus the active `WORKFLOW.md`, with a checksum manifest. Credentials are not\nincluded. Restoring is an offline operation (`symphony-cli restore-backup <folder>`).",
+        "summary": "Create a backup now: a transactionally consistent copy of the database (SQLite `VACUUM INTO`,\nWAL included) plus the active `WORKFLOW.md`, with a checksum manifest. Credentials are not\nincluded. A backup is restored by the next start of the runtime\n(`POST /backups/{id}/restore`) or offline with\n`symphony-cli restore-backup <folder>`.",
         "operationId": "createBackup",
         "responses": {
           "201": {
@@ -3137,6 +3137,146 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BackupSummary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
+    "/api/v1/backups/restore": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "The restore waiting for the next start, and what the last applied restore did.",
+        "operationId": "getRestoreStatus",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      },
+      "delete": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "Withdraw the restore that was waiting for the next start.",
+        "operationId": "cancelRestore",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
+    "/api/v1/backups/{id}/restore": {
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "Restore a backup the next time the runtime starts. The database cannot be replaced while it is\nopen, so nothing changes now: the request is checked (the backup's manifest, checksums, schema\nand SQLite integrity) and recorded, and the runtime applies it before it opens the database. The\nreplaced files are kept as `<name>.pre-restore-<time>`. Credentials are not part of a backup and\nare not touched. A pending request is replaced; withdraw it with `DELETE /backups/restore`.",
+        "operationId": "scheduleRestore",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Directory name of the backup, as listed by `GET /backups`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The restore will be applied on the next start",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such backup",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The backup is damaged or cannot be read by this version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
                 }
               }
             }
@@ -6395,6 +6535,24 @@
           }
         }
       },
+      "PendingRestoreInfo": {
+        "type": "object",
+        "description": "A restore that the next start of the runtime will apply.",
+        "required": [
+          "backup_id",
+          "requested_at"
+        ],
+        "properties": {
+          "backup_id": {
+            "type": "string",
+            "description": "Directory name of the backup that will be restored."
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "Precision": {
         "type": "string",
         "description": "How exactly a changed line range was mapped onto a symbol.",
@@ -7101,6 +7259,78 @@
           "reduce_on_thermal_throttle": {
             "type": "boolean",
             "default": true
+          }
+        }
+      },
+      "RestoreOutcomeInfo": {
+        "type": "object",
+        "description": "What the last applied restore did. A failed restore leaves the previous data in place.",
+        "required": [
+          "backup_id",
+          "applied_at",
+          "succeeded",
+          "error",
+          "previous_files",
+          "rollback_incomplete"
+        ],
+        "properties": {
+          "backup_id": {
+            "type": "string"
+          },
+          "applied_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "succeeded": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed, when it did."
+          },
+          "previous_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The files the restore replaced; they are kept as `<name>.pre-restore-<time>` next to the\nrestored ones, never deleted. After a failure with `rollback_incomplete`: the files that are\nstill displaced and have to be moved back by hand."
+          },
+          "rollback_incomplete": {
+            "type": "boolean",
+            "description": "The restore failed and putting the previous data back did not finish (or the restore was\ninterrupted too often to tell): the data folder is not as it was, unlike after any other\nfailed restore."
+          }
+        }
+      },
+      "RestoreStatus": {
+        "type": "object",
+        "description": "The restore requested from the application: waiting for the next start, and the last one applied.",
+        "required": [
+          "pending",
+          "last"
+        ],
+        "properties": {
+          "pending": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PendingRestoreInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RestoreOutcomeInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

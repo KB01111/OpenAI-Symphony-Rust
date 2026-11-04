@@ -185,7 +185,9 @@ const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
                 <PhaseBadge phase={task.current_phase} />
               ) : null}
               <ProviderBadge provider={task.provider} model={session?.model ?? task.model} />
-              <span className="text-xs text-muted-foreground" aria-label={session ? m.started : m.totalDuration}>
+              {/* A bare span cannot carry an accessible name (aria-label is ignored on it): the label is real, visually hidden text. */}
+              <span className="text-xs text-muted-foreground">
+                <span className="sr-only">{session ? m.started : m.totalDuration}: </span>
                 {session ? <Duration since={session.started_at} /> : <Duration seconds={task.duration_seconds} />}
               </span>
             </span>

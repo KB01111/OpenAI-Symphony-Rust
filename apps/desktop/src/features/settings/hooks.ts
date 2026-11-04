@@ -59,6 +59,32 @@ export function useCreateBackup() {
   });
 }
 
+/** `GET /backups/restore` — the restore waiting for the next start, and what the last one did. */
+export function useRestoreStatus() {
+  const client = useClient();
+  return useQuery({ queryKey: qk.restoreStatus, queryFn: ({ signal }) => client.getRestoreStatus(signal) });
+}
+
+/** `POST /backups/{id}/restore` — ask for a backup to be restored on the next start. */
+export function useScheduleRestore() {
+  const client = useClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => client.scheduleRestore(id),
+    onSuccess: (status) => qc.setQueryData(qk.restoreStatus, status)
+  });
+}
+
+/** `DELETE /backups/restore` — withdraw the restore that was waiting for the next start. */
+export function useCancelRestore() {
+  const client = useClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.cancelRestore(),
+    onSuccess: (status) => qc.setQueryData(qk.restoreStatus, status)
+  });
+}
+
 /** `GET /remote-access` — persisted remote settings plus the listener's effective state. */
 export function useRemoteAccess() {
   const client = useClient();

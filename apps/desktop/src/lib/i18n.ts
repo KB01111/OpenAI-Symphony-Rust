@@ -14,5 +14,6 @@ export function useT(): TranslationDictionary {
 
 /** Resolve a feature catalogue created with `defineMessages` for the active locale. */
 export function useMessages<T>(catalogue: Record<Locale, T>): T {
-  return catalogue[useLocale()];
+  // English is the fallback for a locale a catalogue does not have (it never throws on lookup).
+  return catalogue[useLocale()] ?? catalogue.en;
 }

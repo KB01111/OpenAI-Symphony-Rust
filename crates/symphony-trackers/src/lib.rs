@@ -18,6 +18,108 @@ const MAX_ISSUE_PAGES: usize = 10;
 /// first, so a low cap would hide every newer issue); this only bounds a runaway listing.
 const MAX_CANDIDATE_PAGES: usize = 100;
 const GITHUB_PAGE_SIZE: usize = 100;
+/// GitHub lists at most 3000 files of a pull request (30 pages of 100); review comments are bounded the same way.
+const MAX_PULL_REQUEST_LIST_PAGES: usize = 30;
+
+/// The error code of a GitHub answer that says a rate limit is used up.
+pub const GITHUB_RATE_LIMITED: &str = "github_rate_limited";
+/// The longest a rate-limit answer can make the caller wait. GitHub's primary limit resets within
+/// the hour; a longer wait is not trusted.
+const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60 * 60);
+
+/// How long GitHub asks the client to wait, from the headers of a 403/429 answer: `Retry-After`
+/// (seconds), or `X-RateLimit-Reset` (epoch seconds) when `X-RateLimit-Remaining` is 0. `None`
+/// when the answer is not a rate limit (a 403 for a missing permission carries neither).
+fn rate_limit_wait(headers: &reqwest::header::HeaderMap, now: DateTime<Utc>) -> Option<Duration> {
+    let number = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<i64>().ok())
+    };
+    let seconds = if let Some(retry_after) = number("retry-after") {
+        retry_after
+    } else if number("x-ratelimit-remaining") == Some(0) {
+        number("x-ratelimit-reset")? - now.timestamp()
+    } else {
+        return None;
+    };
+    Some(Duration::from_secs(seconds.max(1) as u64).min(MAX_RATE_LIMIT_WAIT))
+}
+
+/// The wait applied to a 429 answer that names none (no usable `Retry-After`): the status alone
+/// says the client is asking too often.
+const DEFAULT_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
+
+/// How long to wait after an answer with this status, if it is a rate limit. A 429 always is (with
+/// [`DEFAULT_RATE_LIMIT_WAIT`] when the headers name no wait); a 403 only when the headers say so,
+/// because a 403 is also what a missing permission looks like.
+fn rate_limit_wait_for_status(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    now: DateTime<Utc>,
+) -> Option<Duration> {
+    match status {
+        429 => Some(rate_limit_wait(headers, now).unwrap_or(DEFAULT_RATE_LIMIT_WAIT)),
+        403 => rate_limit_wait(headers, now),
+        _ => None,
+    }
+}
+
+/// Whether the body of a 403 is GitHub's *secondary* rate limit, which it may answer without any
+/// rate-limit header ("You have exceeded a secondary rate limit", formerly "abuse detection").
+/// An ordinary permission-denied 403 does not say so.
+fn is_secondary_rate_limit_body(body: &str) -> bool {
+    let body = body.to_lowercase();
+    body.contains("secondary rate limit") || body.contains("abuse detection")
+}
+
+/// The error for a GitHub answer that is not a success. A rate limit becomes
+/// [`GITHUB_RATE_LIMITED`] with the wait in the message (read it back with
+/// [`rate_limit_retry_after`]), so the caller can back off instead of asking again at once; anything
+/// else is `github_http_<status>` with the body.
+async fn github_http_error(resp: reqwest::Response) -> SymphonyError {
+    let status = resp.status().as_u16();
+    let wait = rate_limit_wait_for_status(status, resp.headers(), Utc::now());
+    let body = resp.text().await.unwrap_or_default();
+    // GitHub asks for at least a minute after a secondary limit, and may name no wait.
+    let wait = wait.or_else(|| {
+        (status == 403 && is_secondary_rate_limit_body(&body)).then_some(DEFAULT_RATE_LIMIT_WAIT)
+    });
+    match wait {
+        Some(wait) => SymphonyError::TrackerError {
+            code: GITHUB_RATE_LIMITED.to_string(),
+            message: format!(
+                "retry_after_secs={}; GitHub rate limit reached: {}",
+                wait.as_secs(),
+                body.chars().take(200).collect::<String>()
+            ),
+        },
+        None => SymphonyError::TrackerError {
+            code: format!("github_http_{status}"),
+            message: body,
+        },
+    }
+}
+
+/// How long to wait before asking the tracker again, when `error` says a rate limit is used up.
+pub fn rate_limit_retry_after(error: &SymphonyError) -> Option<Duration> {
+    match error {
+        SymphonyError::TrackerError { code, message } if code == GITHUB_RATE_LIMITED => {
+            let digits: String = message
+                .split("retry_after_secs=")
+                .nth(1)?
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits
+                .parse::<u64>()
+                .ok()
+                .map(|secs| Duration::from_secs(secs).min(MAX_RATE_LIMIT_WAIT))
+        }
+        _ => None,
+    }
+}
 const LINEAR_PAGE_SIZE: usize = 50;
 
 #[async_trait]
@@ -161,19 +263,18 @@ impl GitHubTracker {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let assignee_id = obj
-            .get("assignee")
-            .and_then(|a| a.get("login"))
-            .and_then(|l| l.as_str())
-            .map(|s| s.to_string())
-            .or_else(|| {
-                obj.get("assignees")
-                    .and_then(|arr| arr.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|a| a.get("login"))
-                    .and_then(|l| l.as_str())
-                    .map(|s| s.to_string())
-            });
+        // GitHub allows several assignees: `assignee` is the first of them, `assignees` all of them.
+        let login_of = |a: &Value| {
+            a.get("login")
+                .and_then(|l| l.as_str())
+                .map(|s| s.to_string())
+        };
+        let mut assignee_logins: Vec<String> =
+            obj.get("assignee").and_then(login_of).into_iter().collect();
+        if let Some(all) = obj.get("assignees").and_then(|arr| arr.as_array()) {
+            assignee_logins.extend(all.iter().filter_map(login_of));
+        }
+        let assignee_id = assignee_logins.first().cloned();
 
         let labels: Vec<String> = obj
             .get("labels")
@@ -206,10 +307,10 @@ impl GitHubTracker {
 
         let assigned_to_worker = match &self.assignee {
             None => true,
-            Some(expected) => assignee_id
-                .as_ref()
-                .map(|actual| actual.eq_ignore_ascii_case(expected))
-                .unwrap_or(false),
+            // Assigned to the worker when the worker is any one of the assignees.
+            Some(expected) => assignee_logins
+                .iter()
+                .any(|actual| actual.eq_ignore_ascii_case(expected)),
         };
 
         Some(Issue {
@@ -381,10 +482,7 @@ impl GitHubTracker {
                 message: e.to_string(),
             })?;
         if !resp.status().is_success() {
-            return Err(SymphonyError::TrackerError {
-                code: format!("github_http_{}", resp.status().as_u16()),
-                message: resp.text().await.unwrap_or_default(),
-            });
+            return Err(github_http_error(resp).await);
         }
         let list: Value = resp.json().await.unwrap_or(Value::Null);
         Ok(list
@@ -449,6 +547,48 @@ impl GitHubTracker {
         self.fetch_pull_request_details(pr_number).await
     }
 
+    /// Every item of a paginated GitHub list, 100 per page, up to [`MAX_PULL_REQUEST_LIST_PAGES`]
+    /// pages. A page that cannot be read fails the whole listing: a partial list saved as the
+    /// pull request's files or review comments would replace the complete one already stored (and
+    /// label comments on files of the lost page as not part of the diff), so the refresh fails and
+    /// is reported instead. A rate limit keeps its own error, so the caller backs off.
+    async fn fetch_all_pages(&self, base_url: &str) -> SymphonyResult<Vec<Value>> {
+        let mut out = Vec::new();
+        for page in 1..=MAX_PULL_REQUEST_LIST_PAGES {
+            let url = format!("{base_url}?per_page={GITHUB_PAGE_SIZE}&page={page}");
+            let resp = self
+                .apply_headers(self.client.get(&url))
+                .send()
+                .await
+                .map_err(|e| SymphonyError::TrackerError {
+                    code: "github_pr_fetch_failed".to_string(),
+                    message: e.to_string(),
+                })?;
+            if !resp.status().is_success() {
+                return Err(github_http_error(resp).await);
+            }
+            let Value::Array(items) =
+                resp.json::<Value>()
+                    .await
+                    .map_err(|e| SymphonyError::TrackerError {
+                        code: "github_pr_decode_failed".to_string(),
+                        message: e.to_string(),
+                    })?
+            else {
+                return Err(SymphonyError::TrackerError {
+                    code: "github_pr_decode_failed".to_string(),
+                    message: format!("{base_url} did not answer with a list"),
+                });
+            };
+            let count = items.len();
+            out.extend(items);
+            if count < GITHUB_PAGE_SIZE {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     /// Fetch full Pull Request details, CI status, changed files, and review comments (evaluating agent vs human comments)
     pub async fn fetch_pull_request_details(
         &self,
@@ -466,10 +606,8 @@ impl GitHubTracker {
             })?;
 
         if !resp.status().is_success() {
-            return Err(SymphonyError::TrackerError {
-                code: format!("github_http_{}", resp.status().as_u16()),
-                message: format!("Failed to fetch PR #{pr_number}"),
-            });
+            // A rate limit keeps its own error (with the wait), so the caller backs off.
+            return Err(github_http_error(resp).await);
         }
 
         let pr: Value = resp.json().await.map_err(|e| SymphonyError::TrackerError {
@@ -526,30 +664,24 @@ impl GitHubTracker {
         let merged = pr.get("merged").and_then(|v| v.as_bool()).unwrap_or(false)
             || pr.get("merged_at").map(|v| !v.is_null()).unwrap_or(false);
 
-        // Fetch changed files
+        // Fetch changed files (every page: GitHub returns 30 per page unless asked for more)
         let files_url = format!(
             "{}/repos/{}/pulls/{pr_number}/files",
             self.api_url, self.repo
         );
         let mut changed_files = Vec::new();
-        if let Ok(f_resp) = self.apply_headers(self.client.get(&files_url)).send().await {
-            if let Ok(Value::Array(arr)) = f_resp.json::<Value>().await {
-                for item in arr {
-                    if let Some(path) = item.get("filename").and_then(|v| v.as_str()) {
-                        changed_files.push(ChangedFileSummary {
-                            path: path.to_string(),
-                            status: item
-                                .get("status")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("modified")
-                                .to_string(),
-                            additions: item.get("additions").and_then(|v| v.as_u64()).unwrap_or(0)
-                                as u32,
-                            deletions: item.get("deletions").and_then(|v| v.as_u64()).unwrap_or(0)
-                                as u32,
-                        });
-                    }
-                }
+        for item in self.fetch_all_pages(&files_url).await? {
+            if let Some(path) = item.get("filename").and_then(|v| v.as_str()) {
+                changed_files.push(ChangedFileSummary {
+                    path: path.to_string(),
+                    status: item
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("modified")
+                        .to_string(),
+                    additions: item.get("additions").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                    deletions: item.get("deletions").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                });
             }
         }
 
@@ -607,63 +739,55 @@ impl GitHubTracker {
             self.api_url, self.repo
         );
         let mut review_comments = Vec::new();
-        if let Ok(cm_resp) = self
-            .apply_headers(self.client.get(&comments_url))
-            .send()
-            .await
-        {
-            if let Ok(Value::Array(arr)) = cm_resp.json::<Value>().await {
-                for item in arr {
-                    let author = item
-                        .get("user")
-                        .and_then(|u| u.get("login"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("reviewer")
-                        .to_string();
-                    let user_type = item
-                        .get("user")
-                        .and_then(|u| u.get("type"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("User");
-                    let is_agent = user_type.eq_ignore_ascii_case("Bot")
-                        || author.contains("[bot]")
-                        || author.contains("copilot")
-                        || author.contains("codex");
-                    let comment_body = item
-                        .get("body")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let file_path = item
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+        for item in self.fetch_all_pages(&comments_url).await? {
+            let author = item
+                .get("user")
+                .and_then(|u| u.get("login"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("reviewer")
+                .to_string();
+            let user_type = item
+                .get("user")
+                .and_then(|u| u.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("User");
+            let is_agent = user_type.eq_ignore_ascii_case("Bot")
+                || author.contains("[bot]")
+                || author.contains("copilot")
+                || author.contains("codex");
+            let comment_body = item
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let file_path = item
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
 
-                    let verified_against_diff = match &file_path {
-                        Some(fp) => changed_files.iter().any(|cf| &cf.path == fp),
-                        None => !changed_files.is_empty(),
-                    };
+            let verified_against_diff = match &file_path {
+                Some(fp) => changed_files.iter().any(|cf| &cf.path == fp),
+                None => !changed_files.is_empty(),
+            };
 
-                    let evaluation_summary = if is_agent {
-                        if verified_against_diff {
-                            "Agent review comment targets an active file in the PR diff; verify line context before acting.".to_string()
-                        } else {
-                            "Agent review comment references a path not modified in the current diff; treat with caution.".to_string()
-                        }
-                    } else {
-                        "Human reviewer feedback.".to_string()
-                    };
-
-                    review_comments.push(ReviewCommentEvaluation {
-                        author,
-                        is_agent,
-                        body: comment_body,
-                        file_path,
-                        verified_against_diff,
-                        evaluation_summary,
-                    });
+            let evaluation_summary = if is_agent {
+                if verified_against_diff {
+                    "Agent review comment targets an active file in the PR diff; verify line context before acting.".to_string()
+                } else {
+                    "Agent review comment references a path not modified in the current diff; treat with caution.".to_string()
                 }
-            }
+            } else {
+                "Human reviewer feedback.".to_string()
+            };
+
+            review_comments.push(ReviewCommentEvaluation {
+                author,
+                is_agent,
+                body: comment_body,
+                file_path,
+                verified_against_diff,
+                evaluation_summary,
+            });
         }
 
         Ok(GitHubPullRequestDetails {
@@ -822,10 +946,7 @@ impl GitHubTracker {
                 })?;
 
             if !resp.status().is_success() {
-                return Err(SymphonyError::TrackerError {
-                    code: format!("github_http_{}", resp.status().as_u16()),
-                    message: resp.text().await.unwrap_or_default(),
-                });
+                return Err(github_http_error(resp).await);
             }
 
             let items: Vec<Value> = resp.json().await.map_err(|e| SymphonyError::TrackerError {
@@ -898,10 +1019,7 @@ impl TrackerAdapter for GitHubTracker {
                 continue;
             }
             if !resp.status().is_success() {
-                return Err(SymphonyError::TrackerError {
-                    code: format!("github_http_{}", resp.status().as_u16()),
-                    message: resp.text().await.unwrap_or_default(),
-                });
+                return Err(github_http_error(resp).await);
             }
             let val: Value = resp.json().await.map_err(|e| SymphonyError::TrackerError {
                 code: "github_payload_error".to_string(),
@@ -929,10 +1047,7 @@ impl TrackerAdapter for GitHubTracker {
             })?;
 
         if !resp.status().is_success() {
-            return Err(SymphonyError::TrackerError {
-                code: format!("github_http_{}", resp.status().as_u16()),
-                message: resp.text().await.unwrap_or_default(),
-            });
+            return Err(github_http_error(resp).await);
         }
         Ok(())
     }
@@ -956,10 +1071,7 @@ impl TrackerAdapter for GitHubTracker {
             })?;
 
         if !resp.status().is_success() {
-            return Err(SymphonyError::TrackerError {
-                code: format!("github_http_{}", resp.status().as_u16()),
-                message: resp.text().await.unwrap_or_default(),
-            });
+            return Err(github_http_error(resp).await);
         }
         Ok(())
     }
@@ -1507,6 +1619,158 @@ fn derive_priority_from_labels(labels: &[String]) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+        let mut map = reqwest::header::HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                reqwest::header::HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn a_rate_limit_answer_tells_how_long_to_wait() {
+        let now = DateTime::<Utc>::from_timestamp(1_800_000_000, 0).unwrap();
+        // Secondary limit: Retry-After in seconds.
+        assert_eq!(
+            rate_limit_wait(&headers(&[("retry-after", "42")]), now),
+            Some(Duration::from_secs(42))
+        );
+        // Primary limit: used up, resets at an epoch time.
+        assert_eq!(
+            rate_limit_wait(
+                &headers(&[
+                    ("x-ratelimit-remaining", "0"),
+                    ("x-ratelimit-reset", "1800000120"),
+                ]),
+                now
+            ),
+            Some(Duration::from_secs(120))
+        );
+        // A reset time in the past still waits a moment; a wait is never trusted past an hour.
+        assert_eq!(
+            rate_limit_wait(
+                &headers(&[("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", "1")]),
+                now
+            ),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            rate_limit_wait(&headers(&[("retry-after", "999999")]), now),
+            Some(MAX_RATE_LIMIT_WAIT)
+        );
+        // A 403 for a missing permission carries neither header; quota left is not a rate limit.
+        assert_eq!(rate_limit_wait(&headers(&[]), now), None);
+        assert_eq!(
+            rate_limit_wait(&headers(&[("x-ratelimit-remaining", "4999")]), now),
+            None
+        );
+    }
+
+    #[test]
+    fn an_issue_is_the_workers_when_the_worker_is_any_of_its_assignees() {
+        let tracker = GitHubTracker::new(None, "o/r".into(), None, Some("Alice".into()));
+        let issue = |assignees: serde_json::Value| {
+            let first = assignees.get(0).cloned().unwrap_or(Value::Null);
+            json!({
+                "number": 7, "title": "t", "state": "open", "labels": [],
+                "assignee": first, "assignees": assignees
+            })
+        };
+        let dispatchable = |raw: Value| tracker.normalize_issue(&raw).unwrap().dispatchable;
+        // The worker is not the first assignee: still the worker's issue.
+        assert!(dispatchable(issue(
+            json!([{ "login": "bob" }, { "login": "alice" }])
+        )));
+        assert!(dispatchable(issue(json!([{ "login": "alice" }]))));
+        // Nobody, or only other people: not the worker's.
+        assert!(!dispatchable(issue(json!([]))));
+        assert!(!dispatchable(issue(
+            json!([{ "login": "bob" }, { "login": "carol" }])
+        )));
+        // The first assignee stays the issue's `assignee_id`.
+        let normalized = tracker
+            .normalize_issue(&issue(json!([{ "login": "bob" }, { "login": "alice" }])))
+            .unwrap();
+        assert_eq!(normalized.assignee_id.as_deref(), Some("bob"));
+        // Payloads with only `assignees` (no `assignee`) still work.
+        let only_list = json!({
+            "number": 8, "title": "t", "state": "open", "labels": [],
+            "assignees": [{ "login": "bob" }, { "login": "alice" }]
+        });
+        assert!(tracker.normalize_issue(&only_list).unwrap().dispatchable);
+    }
+
+    #[test]
+    fn a_secondary_rate_limit_is_recognised_by_its_body_when_no_header_says_so() {
+        for body in [
+            r#"{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}"#,
+            r#"{"message":"You have triggered an abuse detection mechanism. Please wait a few minutes."}"#,
+        ] {
+            assert!(is_secondary_rate_limit_body(body), "{body}");
+        }
+        // A missing permission is a 403 as well, and is not a reason to back off.
+        for body in [
+            r#"{"message":"Resource not accessible by integration"}"#,
+            r#"{"message":"Must have admin rights to Repository."}"#,
+            "",
+        ] {
+            assert!(!is_secondary_rate_limit_body(body), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_429_is_a_rate_limit_even_without_usable_headers() {
+        let now = DateTime::<Utc>::from_timestamp(1_800_000_000, 0).unwrap();
+        // No headers, or headers that do not parse: a bounded default wait.
+        assert_eq!(
+            rate_limit_wait_for_status(429, &headers(&[]), now),
+            Some(DEFAULT_RATE_LIMIT_WAIT)
+        );
+        assert_eq!(
+            rate_limit_wait_for_status(429, &headers(&[("retry-after", "soon")]), now),
+            Some(DEFAULT_RATE_LIMIT_WAIT)
+        );
+        // Headers that do name a wait win over the default.
+        assert_eq!(
+            rate_limit_wait_for_status(429, &headers(&[("retry-after", "7")]), now),
+            Some(Duration::from_secs(7))
+        );
+        // A 403 without evidence is a permission problem, not a rate limit; other statuses never are.
+        assert_eq!(rate_limit_wait_for_status(403, &headers(&[]), now), None);
+        assert_eq!(
+            rate_limit_wait_for_status(403, &headers(&[("retry-after", "30")]), now),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            rate_limit_wait_for_status(500, &headers(&[("retry-after", "30")]), now),
+            None
+        );
+    }
+
+    #[test]
+    fn the_wait_survives_the_trip_through_the_error() {
+        let limited = SymphonyError::TrackerError {
+            code: GITHUB_RATE_LIMITED.to_string(),
+            message: "retry_after_secs=90; GitHub rate limit reached: slow down".to_string(),
+        };
+        assert_eq!(
+            rate_limit_retry_after(&limited),
+            Some(Duration::from_secs(90))
+        );
+        let other = SymphonyError::TrackerError {
+            code: "github_http_404".to_string(),
+            message: "retry_after_secs=90".to_string(),
+        };
+        assert_eq!(rate_limit_retry_after(&other), None);
+        assert_eq!(
+            rate_limit_retry_after(&SymphonyError::Conflict("x".into())),
+            None
+        );
+    }
 
     #[test]
     fn check_runs_are_summarised_without_inventing_a_pass() {

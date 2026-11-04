@@ -1,6 +1,7 @@
 pub mod domain;
 pub mod error;
 pub mod redaction;
+pub mod sse;
 pub mod tool_calls;
 pub mod usage;
 pub mod workflow;
@@ -59,6 +60,39 @@ mod tests {
     }
 
     #[test]
+    fn merge_readiness_needs_a_passing_ci_for_the_top_rating() {
+        let score = |ci: &str| {
+            MergeReadinessReport::evaluate(
+                ConflictCheck::Clean,
+                ci,
+                &[passing_validation()],
+                &[],
+                1,
+            )
+        };
+        // Everything else in order: only a passing CI earns the top rating.
+        assert_eq!(score("passed").score, 5);
+        assert_eq!(score("success").score, 5);
+        for missing in ["none", "unknown", "something-new"] {
+            let report = score(missing);
+            assert_eq!(report.score, 4, "{missing}");
+            assert_ne!(
+                report.label, "Ready for Human Approval & Merge",
+                "{missing}"
+            );
+            assert!(
+                report.blockers.is_empty(),
+                "{missing}: not a blocker, just not proven"
+            );
+        }
+        // A review for which CI explicitly does not apply is not held back by its absence.
+        assert_eq!(score("not_applicable").score, 5);
+        // Lower scores are unaffected by the ceiling.
+        assert_eq!(score("pending").score, 4);
+        assert_eq!(score("failed").score, 3);
+    }
+
+    #[test]
     fn merge_readiness_penalises_conflicts_and_failed_ci() {
         let clean = MergeReadinessReport::evaluate(
             ConflictCheck::Clean,
@@ -100,6 +134,20 @@ mod tests {
         let non_map = "---\n- item1\n- item2\n---\nPrompt";
         let err = WorkflowDefinition::parse(non_map, None).unwrap_err();
         assert_eq!(err.code(), "workflow_front_matter_not_a_map");
+    }
+
+    #[test]
+    fn a_workflow_file_written_with_a_byte_order_mark_and_crlf_keeps_its_settings() {
+        // Notepad and Windows PowerShell write exactly this; the settings must not turn into prompt text.
+        let raw = "\u{feff}---\r\ntracker:\r\n  kind: github\r\nagent:\r\n  max_concurrent_agents: 3\r\n---\r\nHello {{ issue.identifier }}\r\n";
+        let wf = WorkflowDefinition::parse(raw, None).expect("should parse");
+        assert_eq!(wf.prompt_template, "Hello {{ issue.identifier }}");
+        assert!(wf.config.contains_key("tracker"));
+        let cfg = ServiceConfig::from_workflow(&wf).expect("valid config");
+        assert_eq!(cfg.tracker_kind, "github");
+        assert_eq!(cfg.agent.max_concurrent_agents, 3);
+        // The original text, byte order mark included, is kept so an editor round-trips the file.
+        assert!(wf.raw_source.starts_with('\u{feff}'));
     }
 
     #[test]

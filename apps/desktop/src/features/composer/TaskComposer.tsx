@@ -157,6 +157,21 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
     value === null ? m.priorityNone : `${formatMessage(m.priorityValue, { value })} · ${m.priorityLabels[`p${value}` as "p1" | "p2" | "p3" | "p4"]}`;
   const labelCount = parseLabels(labels).length;
 
+  // A failed load is not "no repositories": say what happened and let the user try again, instead of
+  // sending them to register a repository they already have.
+  if (projects.isError && projectList.length === 0) {
+    return (
+      <Alert intent="error" title={m.projectsError} className={className}>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="flex-1">{errorMessage(projects.error)}</span>
+          <Button variant="secondary" size="sm" onClick={() => void projects.refetch()}>
+            {t.common.retry}
+          </Button>
+        </div>
+      </Alert>
+    );
+  }
+
   if (!projects.isLoading && projectList.length === 0) {
     return (
       <Alert intent="info" className={className}>

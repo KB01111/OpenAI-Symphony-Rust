@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { DatabaseBackup, Download, FileJson, FolderOpen, Keyboard, KeyRound, LogOut, RefreshCw, ShieldOff } from "lucide-react";
 import { SymphonyApiError, errorMessage, isTauri, nativeHost } from "@symphony/api-client";
-import { ALL_CLOUD_AGENTS, ALL_PROVIDERS, DEFAULT_CLOUD_AGENT, formatMessage, type AppSettings, type CloudAgentKind, type Locale, type ProviderKind } from "@symphony/shared-types";
+import { ALL_CLOUD_AGENTS, ALL_PROVIDERS, DEFAULT_CLOUD_AGENT, formatMessage, type AppSettings, type BackupSummary, type CloudAgentKind, type Locale, type ProviderKind } from "@symphony/shared-types";
 import {
   Alert,
   Badge,
@@ -42,7 +42,10 @@ import { CredentialRow } from "../providers/CredentialControls.js";
 import { PROVIDER_CREDENTIAL_KEYS } from "../providers/ProviderCard.js";
 import {
   useBackups,
+  useCancelRestore,
   useCreateBackup,
+  useRestoreStatus,
+  useScheduleRestore,
   useExportDiagnostics,
   useNativeHostConfig,
   useRemoteAccess,
@@ -617,6 +620,30 @@ export const BackupsSection: React.FC<FormSectionProps> = ({ draft, errors, upda
   const notify = useNotify();
   const backups = useBackups();
   const create = useCreateBackup();
+  const restoreStatus = useRestoreStatus();
+  const scheduleRestore = useScheduleRestore();
+  const cancelRestore = useCancelRestore();
+  const runtime = useRuntime();
+  const [restoreTarget, setRestoreTarget] = useState<BackupSummary | null>(null);
+  const exit = useMutation({
+    mutationFn: () => nativeHost.exitApplication(),
+    onError: (error) => notify("error", m.backups.restoreFailed, errorMessage(error))
+  });
+  const confirmRestore = () => {
+    if (!restoreTarget) return;
+    scheduleRestore.mutate(restoreTarget.id, {
+      onSuccess: () => {
+        setRestoreTarget(null);
+        notify("success", m.backups.restoreScheduled, restoreTarget.id);
+      }
+    });
+  };
+  const pending = restoreStatus.data?.pending ?? null;
+  const last = restoreStatus.data?.last ?? null;
+  // A restore already waiting is replaced by a new request; until the status is known it must not be
+  // taken for "none", or the new request would replace it unseen.
+  const restoreStatusKnown = restoreStatus.isSuccess;
+  const t = useT();
   const onCreate = () =>
     create.mutate(undefined, {
       onSuccess: (backup) => notify("success", m.backups.created, backup.path),
@@ -662,6 +689,73 @@ export const BackupsSection: React.FC<FormSectionProps> = ({ draft, errors, upda
               onChange={(v) => update((s) => ({ ...s, backup_keep: v }))}
             />
           </div>
+          {pending ? (
+            <Alert intent="warning" title={m.backups.pendingTitle}>
+              <p>{formatMessage(m.backups.pendingBody, { id: pending.backup_id })}</p>
+              {runtime.mode === "attached" ? <p className="mt-1">{m.backups.pendingAttached}</p> : null}
+              <div className="mt-2 flex flex-wrap gap-2">
+                {isTauri() && runtime.mode !== "attached" ? (
+                  <Button size="sm" disabled={exit.isPending} onClick={() => exit.mutate()}>
+                    <LogOut className="size-4" />
+                    {m.backups.pendingQuit}
+                  </Button>
+                ) : null}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={cancelRestore.isPending}
+                  onClick={() =>
+                    cancelRestore.mutate(undefined, {
+                      onError: (error) => notify("error", m.backups.withdrawFailed, errorMessage(error))
+                    })
+                  }
+                >
+                  {m.backups.pendingWithdraw}
+                </Button>
+              </div>
+            </Alert>
+          ) : null}
+          {restoreStatus.isLoading ? <p className="text-xs text-muted-foreground">{m.backups.statusLoading}</p> : null}
+          {restoreStatus.isError ? (
+            <ErrorState
+              title={m.backups.statusFailedTitle}
+              message={`${m.backups.statusFailedBody} ${errorMessage(restoreStatus.error)}`}
+              onRetry={() => void restoreStatus.refetch()}
+              retryLabel={t.common.retry}
+            />
+          ) : null}
+          {last ? (
+            <Alert
+              intent={last.succeeded ? "success" : "error"}
+              title={
+                last.succeeded
+                  ? m.backups.lastSucceededTitle
+                  : last.rollback_incomplete
+                    ? m.backups.lastIncompleteTitle
+                    : m.backups.lastFailedTitle
+              }
+            >
+              <p>
+                {formatMessage(
+                  last.succeeded ? m.backups.lastSucceeded : last.rollback_incomplete ? m.backups.lastIncomplete : m.backups.lastFailed,
+                  { id: last.backup_id, error: last.error ?? "" }
+                )}{" "}
+                <TimeAgo iso={last.applied_at} />
+              </p>
+              {!last.succeeded && last.rollback_incomplete ? (
+                <>
+                  <p className="mt-1">{m.backups.lastIncompleteFiles}</p>
+                  <ul className="mt-1 list-disc ps-5">
+                    {last.previous_files.map((file) => (
+                      <li key={file}>
+                        <code className="break-all font-mono text-xs">{file}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+            </Alert>
+          ) : null}
           {backups.isLoading ? <LoadingRows rows={2} /> : null}
           {backups.isError ? <ErrorState title={m.backups.loadFailed} message={errorMessage(backups.error)} /> : null}
           {backups.data && backups.data.backups.length === 0 ? (
@@ -684,6 +778,15 @@ export const BackupsSection: React.FC<FormSectionProps> = ({ draft, errors, upda
                   <code className="ms-auto max-w-full truncate font-mono text-xs text-subtle-foreground" title={b.path}>
                     {b.id}
                   </code>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!restoreStatusKnown}
+                    onClick={() => setRestoreTarget(b)}
+                    aria-label={formatMessage(m.backups.restoreLabel, { id: b.id })}
+                  >
+                    {m.backups.restoreAction}
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -692,6 +795,26 @@ export const BackupsSection: React.FC<FormSectionProps> = ({ draft, errors, upda
       )}
       <p className="text-xs text-muted-foreground">{m.backups.scope}</p>
       <p className="text-xs text-muted-foreground">{m.backups.restore}</p>
+      <ConfirmDialog
+        open={restoreTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRestoreTarget(null);
+            scheduleRestore.reset();
+          }
+        }}
+        title={m.backups.confirmTitle}
+        description={restoreTarget ? formatMessage(m.backups.confirmBody, { id: restoreTarget.id }) : ""}
+        confirmLabel={m.backups.confirmAction}
+        pending={scheduleRestore.isPending}
+        onConfirm={confirmRestore}
+      >
+        {scheduleRestore.isError ? (
+          <Alert intent="error" title={m.backups.restoreFailed}>
+            {errorMessage(scheduleRestore.error)}
+          </Alert>
+        ) : null}
+      </ConfirmDialog>
     </SettingsSection>
   );
 };

@@ -125,7 +125,7 @@ impl Server {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
-        let mut cmd = Command::new(exe);
+        let mut cmd = Command::new(launch_program(exe));
         cmd.arg("serve")
             .arg("--hostname")
             .arg("127.0.0.1")

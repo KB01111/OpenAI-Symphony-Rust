@@ -16,10 +16,15 @@ allowBuilds:
 #   4.3.2). Build-time only; `pnpm generate:api` output is unchanged.
 # - lodash, xml2js: @codesandbox/sdk (CodeSandbox runner) -> blessed-contrib, the terminal UI of its own CLI.
 #   The patched lines (lodash 4.18, xml2js 0.6) are drop-in for it.
+# - minimatch: @sentry/node 9.x (via @codesandbox/sdk) asks for ^9.0.0 (GHSA-g3hv-75wg-m249, denial
+#   of service through globparts amplification of a crafted glob; fixed in 11.0.1). It calls
+#   minimatch in one place, its Fastify instrumentation (`minimatch.minimatch(url, glob)`), and
+#   minimatch 11 ships CommonJS next to ESM with the same named export, so it is drop-in there.
 overrides:
   "js-yaml@>=4.0.0 <4.3.2": "^4.3.2"
   "lodash@<=4.17.23": "^4.18.0"
   "xml2js@<0.5.0": "^0.6.2"
+  "minimatch@<11.0.1": "^11.0.1"
 
 # Advisories that are reported but cannot be fixed by an override and do not apply here. Each is
 # reachable only through @codesandbox/sdk -> @sentry/node, whose OpenTelemetry packages are several

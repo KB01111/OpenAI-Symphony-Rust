@@ -670,7 +670,25 @@ impl CodexAppServerSession {
                     return Ok(None);
                 }
                 "item/tool/requestUserInput" => {
-                    let answers = build_tool_user_input_answers(&params);
+                    // Codex asks before it runs some tools (an MCP tool call, for instance) as a
+                    // question with options. Answering it is an approval, so it goes through the
+                    // same gate as command and file approvals: the policy decides whether a person
+                    // is asked, and the answer follows the decision instead of granting on sight.
+                    let ask = json!({
+                        "reason": user_input_question_text(&params),
+                        "questions": params.get("questions").cloned().unwrap_or(Value::Null),
+                    });
+                    let decision = self
+                        .resolve_approval(
+                            method,
+                            &ask,
+                            "acceptForSession",
+                            "accept",
+                            "decline",
+                            "cancel",
+                        )
+                        .await?;
+                    let answers = build_tool_user_input_answers(&params, &decision);
                     self.send_json(&json!({
                         "id": req_id,
                         "result": { "answers": answers }
@@ -734,21 +752,25 @@ impl CodexAppServerSession {
                         .await;
                     return Ok(None);
                 }
-                _ => {}
+                other => {
+                    // A request (it has a method, not just a result) that this driver does not
+                    // implement. Unanswered, the server would wait for the reply until the turn
+                    // timeout (an hour by default); JSON-RPC 2.0 says to answer "method not found".
+                    if msg.get("method").is_some() {
+                        self.send_json(&json!({
+                            "id": req_id,
+                            "error": {
+                                "code": -32601,
+                                "message": format!("Method not found: {other}")
+                            }
+                        }))
+                        .await?;
+                    }
+                }
             }
         }
 
-        match method {
-            "turn/completed" => Ok(Some(TurnCompletionSignal::Completed)),
-            "turn/failed" => Ok(Some(TurnCompletionSignal::Failed(
-                params
-                    .get("error")
-                    .map(|e| e.to_string())
-                    .unwrap_or_else(|| "Turn failed".into()),
-            ))),
-            "turn/cancelled" => Ok(Some(TurnCompletionSignal::Cancelled)),
-            _ => Ok(None),
-        }
+        Ok(turn_completion_signal(method, &params))
     }
 
     async fn resolve_approval(
@@ -811,6 +833,52 @@ enum TurnCompletionSignal {
     Completed,
     Failed(String),
     Cancelled,
+}
+
+/// How a turn ended, from the notification that says so. Codex reports every end as
+/// `turn/completed` and puts the outcome in `turn.status` (`completed`, `interrupted`, `failed`);
+/// reading the method alone would record a failed or interrupted turn as a success. The separate
+/// `turn/failed` and `turn/cancelled` methods are kept for servers that send them.
+fn turn_completion_signal(method: &str, params: &Value) -> Option<TurnCompletionSignal> {
+    match method {
+        "turn/completed" => {
+            let status = params
+                .pointer("/turn/status")
+                .or_else(|| params.get("status"))
+                .and_then(Value::as_str)
+                .unwrap_or("completed")
+                .to_ascii_lowercase();
+            match status.as_str() {
+                "failed" => Some(TurnCompletionSignal::Failed(turn_error_message(params))),
+                "interrupted" | "cancelled" | "canceled" => Some(TurnCompletionSignal::Cancelled),
+                _ => Some(TurnCompletionSignal::Completed),
+            }
+        }
+        "turn/failed" => Some(TurnCompletionSignal::Failed(turn_error_message(params))),
+        "turn/cancelled" => Some(TurnCompletionSignal::Cancelled),
+        _ => None,
+    }
+}
+
+/// The reason a turn failed, as far as the notification gives one.
+fn turn_error_message(params: &Value) -> String {
+    params
+        .pointer("/turn/error/message")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            params
+                .pointer("/turn/error")
+                .filter(|e| !e.is_null())
+                .map(|e| e.to_string())
+        })
+        .or_else(|| {
+            params
+                .get("error")
+                .filter(|e| !e.is_null())
+                .map(|e| e.to_string())
+        })
+        .unwrap_or_else(|| "Turn failed".into())
 }
 
 #[async_trait]
@@ -1471,7 +1539,7 @@ impl AgentSession for ClaudeCodeSession {
                 self.config.command.trim()
             };
 
-        let mut cmd = Command::new(exe);
+        let mut cmd = Command::new(launch_program(exe));
         cmd.arg("-p")
             .arg("--input-format")
             .arg("stream-json")
@@ -1708,7 +1776,7 @@ impl AgentSession for OpenCodeSession {
             return self.run_server_turn(&exe, prompt, event_tx).await;
         }
 
-        let mut cmd = Command::new(exe);
+        let mut cmd = Command::new(launch_program(exe));
         cmd.arg("run")
             .arg("--format")
             .arg("json")
@@ -2209,6 +2277,33 @@ impl AgentSession for SimulatedAgentSession {
     }
 }
 
+/// The program to start for a configured command such as `claude`. A bare name is resolved on `PATH`
+/// here, honouring `PATHEXT` on Windows: Rust's process spawning appends only `.exe` when it
+/// searches, so an npm-installed `claude.cmd` or `opencode.cmd` shim, which provider detection
+/// reports as installed, would otherwise fail to start by its bare name. (A resolved `.cmd` path is
+/// started through `cmd.exe` by the standard library, with its arguments escaped.)
+pub(crate) fn launch_program(exe: &str) -> std::ffi::OsString {
+    let bare = !exe.contains(['/', '\\']);
+    if cfg!(windows) && bare && Path::new(exe).extension().is_none() {
+        if let Some(found) = detection::find_on_path(exe) {
+            return found.into_os_string();
+        }
+    }
+    exe.into()
+}
+
+/// A command line for `powershell -Command`. PowerShell reads a line that starts with a quoted path
+/// as a string to print, not as a program to run, unless the call operator `&` is in front.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn powershell_command_line(command: &str) -> String {
+    let trimmed = command.trim();
+    if matches!(trimmed.chars().next(), Some('"' | '\'')) {
+        format!("& {trimmed}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn build_codex_command(
     raw_command: &str,
     workspace_path: &Path,
@@ -2229,7 +2324,7 @@ fn build_codex_command(
                 .arg("-NoProfile")
                 .arg("-NonInteractive")
                 .arg("-Command")
-                .arg(trimmed);
+                .arg(powershell_command_line(trimmed));
             c
         }
     };
@@ -2357,16 +2452,47 @@ fn extract_assistant_text(msg: &Value) -> Option<String> {
     None
 }
 
-fn build_tool_user_input_answers(params: &Value) -> Value {
+/// The text of the questions Codex asks in an `item/tool/requestUserInput` request, for the
+/// approval a person is shown.
+fn user_input_question_text(params: &Value) -> String {
+    let text: Vec<&str> = params
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(|questions| {
+            questions
+                .iter()
+                .filter_map(|q| q.get("question").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    if text.is_empty() {
+        "Codex asks for permission to use a tool".to_string()
+    } else {
+        text.join("\n")
+    }
+}
+
+/// The answers to an `item/tool/requestUserInput` request for an approval decision
+/// (`acceptForSession`, `accept`, `decline` or `cancel`): each question is answered with the one of
+/// its own options that means that decision.
+fn build_tool_user_input_answers(params: &Value, decision: &str) -> Value {
     let mut answers = serde_json::Map::new();
     if let Some(questions) = params.get("questions").and_then(|v| v.as_array()) {
         for q in questions {
             if let Some(qid) = q.get("id").and_then(|v| v.as_str()) {
+                let labels: Vec<&str> = q
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .map(|options| {
+                        options
+                            .iter()
+                            .filter_map(|o| o.get("label").and_then(Value::as_str))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 answers.insert(
                     qid.to_string(),
-                    json!({
-                        "answers": ["Approve this Session"]
-                    }),
+                    json!({ "answers": [pick_option_label(&labels, decision)] }),
                 );
             }
         }
@@ -2374,9 +2500,360 @@ fn build_tool_user_input_answers(params: &Value) -> Value {
     Value::Object(answers)
 }
 
+/// The label among `labels` that stands for `decision`; when a question lists no options (or none
+/// fits) the label Codex uses for it.
+fn pick_option_label(labels: &[&str], decision: &str) -> String {
+    let words = |label: &str| -> Vec<String> {
+        label
+            .to_lowercase()
+            .replace('\u{2019}', "'")
+            .split(|c: char| !c.is_alphanumeric() && c != '\'')
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let has_any = |label: &str, wanted: &[&str]| {
+        let label_words = words(label);
+        wanted.iter().any(|w| label_words.iter().any(|lw| lw == w))
+    };
+    // What a label means is read from its first word that carries a meaning, and a negation before
+    // it turns it around ("Don't allow" refuses). A label that denies a refusal ("Do not deny") or
+    // cancels a negation means nothing reliable, so no decision ever selects it.
+    let meaning = |label: &str| -> Option<Meaning> {
+        let mut negated = false;
+        for word in words(label) {
+            let word = word.as_str();
+            if matches!(
+                word,
+                "not" | "don't" | "dont" | "never" | "cannot" | "can't" | "won't"
+            ) {
+                negated = true;
+                continue;
+            }
+            let found =
+                if ["approve", "allow", "accept", "yes", "ok", "run", "proceed"].contains(&word) {
+                    Meaning::Affirm
+                } else if ["deny", "denied", "decline", "reject", "no"].contains(&word) {
+                    Meaning::Refuse
+                } else if ["cancel", "abort", "stop"].contains(&word) {
+                    Meaning::Cancel
+                } else {
+                    continue;
+                };
+            return match (negated, found) {
+                (false, found) => Some(found),
+                (true, Meaning::Affirm) => Some(Meaning::Refuse),
+                (true, _) => None,
+            };
+        }
+        // "Never", "Don't": a refusal without a verb.
+        negated.then_some(Meaning::Refuse)
+    };
+    let is = |wanted: Meaning| move |l: &&str| meaning(l) == Some(wanted);
+    let broad = |l: &&str| {
+        has_any(
+            l,
+            &[
+                "session",
+                "sessions",
+                "always",
+                "again",
+                "remember",
+                "forever",
+                "permanently",
+                "permanent",
+                "future",
+                "every",
+            ],
+        ) || (
+            // "All" widens the grant. It is exempt only when the label both scopes the grant to the
+            // request in front of the user ("all requested changes", "all of this") and says it is
+            // for this one time. "Allow all commands once" does not: "once" limits how often, not
+            // what is granted. "Once per day" is a standing grant.
+            has_any(l, &["all"])
+                && !(has_any(l, &["once", "onetime"])
+                    && has_any(l, &["requested", "this", "current", "proposed", "these"])
+                    && !has_any(
+                        l,
+                        &[
+                            "per", "each", "daily", "weekly", "monthly", "hourly", "day", "days",
+                            "week", "weeks", "month", "months", "hour", "hours",
+                        ],
+                    ))
+        )
+    };
+    let pick = |matching: &dyn Fn(&&str) -> bool| labels.iter().find(|l| matching(l)).copied();
+
+    let (chosen, fallback) = match decision {
+        "acceptForSession" => (
+            pick(&|l| is(Meaning::Affirm)(l) && has_any(l, &["session"]))
+                .or_else(|| pick(&|l| is(Meaning::Affirm)(l) && !broad(l)))
+                .or_else(|| pick(&is(Meaning::Affirm))),
+            "Approve this Session",
+        ),
+        // A one-time approval never selects an option that also grants more (the session, always):
+        // when only such options exist, the plain label is sent instead.
+        "accept" => (
+            pick(&|l| is(Meaning::Affirm)(l) && !broad(l)),
+            "Approve Once",
+        ),
+        "cancel" => (
+            pick(&is(Meaning::Cancel)).or_else(|| pick(&is(Meaning::Refuse))),
+            "Cancel",
+        ),
+        // Anything else is a refusal: never fall back to an affirmative option.
+        _ => (
+            pick(&is(Meaning::Refuse)).or_else(|| pick(&is(Meaning::Cancel))),
+            "Deny",
+        ),
+    };
+    chosen.unwrap_or(fallback).to_string()
+}
+
+/// What an answer option stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Meaning {
+    Affirm,
+    Refuse,
+    Cancel,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn outcome(method: &str, params: Value) -> &'static str {
+        match turn_completion_signal(method, &params) {
+            Some(TurnCompletionSignal::Completed) => "completed",
+            Some(TurnCompletionSignal::Failed(_)) => "failed",
+            Some(TurnCompletionSignal::Cancelled) => "cancelled",
+            None => "none",
+        }
+    }
+
+    #[test]
+    fn a_turn_that_codex_reports_as_failed_or_interrupted_is_not_recorded_as_a_success() {
+        // Codex ends every turn with `turn/completed`; the outcome is in `turn.status`.
+        assert_eq!(
+            outcome(
+                "turn/completed",
+                json!({ "turn": { "status": "completed" } })
+            ),
+            "completed"
+        );
+        assert_eq!(
+            outcome("turn/completed", json!({ "turn": { "status": "failed" } })),
+            "failed"
+        );
+        assert_eq!(
+            outcome(
+                "turn/completed",
+                json!({ "turn": { "status": "interrupted" } })
+            ),
+            "cancelled"
+        );
+        // Without a status (older servers, fixtures) a completion is a completion.
+        assert_eq!(outcome("turn/completed", json!({})), "completed");
+        assert_eq!(outcome("turn/completed", Value::Null), "completed");
+        // The separate methods still work, and other notifications are not turn ends.
+        assert_eq!(outcome("turn/failed", json!({})), "failed");
+        assert_eq!(outcome("turn/cancelled", json!({})), "cancelled");
+        assert_eq!(outcome("item/completed", json!({})), "none");
+    }
+
+    #[test]
+    fn a_failed_turn_carries_the_reason_codex_gave() {
+        let params = json!({ "turn": { "status": "failed", "error": { "message": "context window exceeded" } } });
+        match turn_completion_signal("turn/completed", &params) {
+            Some(TurnCompletionSignal::Failed(reason)) => {
+                assert_eq!(reason, "context window exceeded")
+            }
+            _ => panic!("expected a failure"),
+        }
+        match turn_completion_signal("turn/completed", &json!({ "turn": { "status": "failed" } })) {
+            Some(TurnCompletionSignal::Failed(reason)) => assert_eq!(reason, "Turn failed"),
+            _ => panic!("expected a failure"),
+        }
+    }
+
+    #[test]
+    fn user_input_questions_are_answered_with_the_option_that_matches_the_decision() {
+        let params = json!({ "questions": [{
+            "id": "q1",
+            "question": "Allow the github tool to create an issue?",
+            "options": [
+                { "label": "Approve Once" },
+                { "label": "Approve this Session" },
+                { "label": "Deny" },
+                { "label": "Cancel" },
+            ]
+        }]});
+        let answer = |decision: &str| {
+            build_tool_user_input_answers(&params, decision)["q1"]["answers"][0]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(answer("acceptForSession"), "Approve this Session");
+        assert_eq!(answer("accept"), "Approve Once");
+        assert_eq!(answer("decline"), "Deny");
+        assert_eq!(answer("cancel"), "Cancel");
+        assert_eq!(
+            user_input_question_text(&params),
+            "Allow the github tool to create an issue?"
+        );
+    }
+
+    #[test]
+    fn a_refusal_never_picks_an_affirmative_option() {
+        // Options in another wording, and none that says "deny": a refusal must still not approve.
+        let labels = ["Allow", "Allow for this session", "Don't allow"];
+        assert_eq!(pick_option_label(&labels, "decline"), "Don't allow");
+        assert_eq!(pick_option_label(&labels, "accept"), "Allow");
+        assert_eq!(
+            pick_option_label(&labels, "acceptForSession"),
+            "Allow for this session"
+        );
+        // Only affirmative options: a refusal falls back to Codex's own label, not to an approval.
+        let only_yes = ["Yes", "Yes, always"];
+        assert_eq!(pick_option_label(&only_yes, "decline"), "Deny");
+        assert_eq!(pick_option_label(&only_yes, "cancel"), "Cancel");
+        // No options at all (a free-text question): Codex's labels.
+        assert_eq!(pick_option_label(&[], "accept"), "Approve Once");
+        assert_eq!(
+            pick_option_label(&[], "acceptForSession"),
+            "Approve this Session"
+        );
+        assert_eq!(
+            user_input_question_text(&json!({})),
+            "Codex asks for permission to use a tool"
+        );
+    }
+
+    #[test]
+    fn a_one_time_option_that_mentions_all_is_still_a_one_time_approval() {
+        // "All" describes what is approved ("all requested changes"), "once" for how long.
+        let labels = ["Allow all requested changes once", "Deny"];
+        assert_eq!(
+            pick_option_label(&labels, "accept"),
+            "Allow all requested changes once"
+        );
+        assert_eq!(pick_option_label(&labels, "decline"), "Deny");
+        // Without "once", "all" does widen the grant, so a one-time answer does not select it.
+        let wide = ["Allow all", "Deny"];
+        assert_eq!(pick_option_label(&wide, "accept"), "Approve Once");
+        // "Once" alone does not scope "all commands" to the request: it stays broad.
+        let unscoped = ["Allow all commands once", "Allow once"];
+        assert_eq!(pick_option_label(&unscoped, "accept"), "Allow once");
+        let only_unscoped = ["Allow all commands once", "Deny"];
+        assert_eq!(pick_option_label(&only_unscoped, "accept"), "Approve Once");
+        // "Once" with a recurrence is a standing grant, not a one-time one.
+        let recurring = ["Allow all commands once per day", "Allow once"];
+        assert_eq!(pick_option_label(&recurring, "accept"), "Allow once");
+        let only_recurring = ["Allow all commands once per day", "Deny"];
+        assert_eq!(pick_option_label(&only_recurring, "accept"), "Approve Once");
+        // And an option that is persistent in another word stays so, whatever else it says.
+        let always = ["Always allow all once more", "Allow once"];
+        assert_eq!(pick_option_label(&always, "accept"), "Allow once");
+    }
+
+    #[test]
+    fn negated_option_labels_are_read_by_what_they_mean() {
+        // "Do not deny" is not a refusal, and "Not OK" is not an approval.
+        let tricky = ["Do not deny", "Deny"];
+        assert_eq!(pick_option_label(&tricky, "decline"), "Deny");
+        let negations = ["Not OK", "Do not run", "Allow"];
+        assert_eq!(pick_option_label(&negations, "decline"), "Not OK");
+        assert_eq!(pick_option_label(&negations, "accept"), "Allow");
+        // Only labels that deny a refusal: nothing is selected, the plain label is sent.
+        assert_eq!(pick_option_label(&["Do not deny"], "decline"), "Deny");
+        assert_eq!(
+            pick_option_label(&["Do not deny"], "accept"),
+            "Approve Once"
+        );
+        // A typographic apostrophe reads like a plain one.
+        assert_eq!(
+            pick_option_label(&["Allow", "Don\u{2019}t allow"], "decline"),
+            "Don\u{2019}t allow"
+        );
+    }
+
+    #[test]
+    fn a_label_that_mixes_yes_and_no_is_read_by_its_first_meaning_word() {
+        // "Yes, and don't ask again" says yes: a refusal must not choose it.
+        let yes_labels = ["Yes", "Yes, and don't ask again"];
+        assert_eq!(pick_option_label(&yes_labels, "decline"), "Deny");
+        // "Don't allow" says no: an approval must not choose it, even when it comes first.
+        let mixed = ["Don't allow", "Allow"];
+        assert_eq!(pick_option_label(&mixed, "accept"), "Allow");
+        assert_eq!(pick_option_label(&mixed, "decline"), "Don't allow");
+        // "Do not allow" is a refusal too, though no word in it is "deny".
+        assert_eq!(
+            pick_option_label(&["Do not allow", "Allow"], "decline"),
+            "Do not allow"
+        );
+    }
+
+    #[test]
+    fn a_one_time_approval_never_picks_an_option_that_grants_more() {
+        let broad_only = ["Yes, don't ask again", "Allow always", "Deny"];
+        assert_eq!(pick_option_label(&broad_only, "accept"), "Approve Once");
+        // The session approval a person granted may use them (narrowest first).
+        assert_eq!(
+            pick_option_label(&broad_only, "acceptForSession"),
+            "Yes, don't ask again"
+        );
+        let with_once = ["Allow always", "Allow once", "Deny"];
+        assert_eq!(pick_option_label(&with_once, "accept"), "Allow once");
+        // Other ways of saying "more than this once" are not a one-time approval either.
+        for wider in [
+            "Allow for all sessions",
+            "Allow permanently",
+            "Allow forever",
+            "Allow in future",
+            "Allow every time",
+        ] {
+            assert_eq!(
+                pick_option_label(&[wider, "Deny"], "accept"),
+                "Approve Once",
+                "{wider}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_quoted_program_path_gets_the_powershell_call_operator() {
+        assert_eq!(
+            powershell_command_line(r#"  "C:\Program Files\nodejs\codex.cmd" app-server "#),
+            r#"& "C:\Program Files\nodejs\codex.cmd" app-server"#
+        );
+        assert_eq!(
+            powershell_command_line("'C:\\codex.cmd' app-server"),
+            "& 'C:\\codex.cmd' app-server"
+        );
+        // An unquoted command is passed as it is.
+        assert_eq!(
+            powershell_command_line(" codex app-server "),
+            "codex app-server"
+        );
+    }
+
+    #[test]
+    fn a_configured_program_with_a_path_or_extension_is_started_as_written() {
+        // Only a bare name on Windows is looked up; everything else is the user's explicit choice.
+        assert_eq!(
+            launch_program("/usr/local/bin/claude"),
+            "/usr/local/bin/claude"
+        );
+        assert_eq!(
+            launch_program(r"C:\tools\claude.exe"),
+            r"C:\tools\claude.exe"
+        );
+        assert_eq!(launch_program("claude.cmd"), "claude.cmd");
+        if !cfg!(windows) {
+            assert_eq!(launch_program("claude"), "claude");
+        }
+    }
 
     #[test]
     fn claude_prompt_cache_tokens_count_as_input_but_codex_cached_tokens_do_not() {
