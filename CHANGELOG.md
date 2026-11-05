@@ -25,6 +25,12 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Added
 
+- **OpenCode version contract.** The OpenCode driver speaks the 1.x server API and was verified against
+  1.19.4; it now declares `>=1.19.4, <2.0.0` (`opencode_version.rs`). A binary outside that range (for example
+  OpenCode 2, which serves `POST /api/session` and wraps responses in `data`) is refused up front with
+  `opencode_version_unsupported` instead of failing inside a request, and provider detection reports the same
+  message. A binary that prints no recognisable version is not blocked. Tests cover session start, streaming,
+  approvals, cancel and resume against the 1.x contract.
 - **Native notifications when the desktop is attached to `symphony-cli`.** Approval requests and failed runs
   raised a Windows notification only when the runtime was embedded in the app; a window attached to a runtime
   that runs on its own showed none. It now follows that runtime's event stream (only from the moment of

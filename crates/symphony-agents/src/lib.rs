@@ -24,6 +24,7 @@ use tokio::time::timeout;
 pub mod codesandbox;
 pub mod detection;
 mod opencode_server;
+pub mod opencode_version;
 pub mod tool_events;
 pub use codesandbox::{
     find_runner_bundle, CloudLaunch, CodeSandboxSession, CSB_API_KEY, RUNNER_ENV,
@@ -1771,6 +1772,7 @@ impl AgentSession for OpenCodeSession {
             } else {
                 self.config.command.trim()
             };
+        opencode_version::ensure_supported(exe, &self.config.workspace_path).await?;
         if self.supervised() {
             let exe = exe.to_string();
             return self.run_server_turn(&exe, prompt, event_tx).await;

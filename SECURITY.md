@@ -235,6 +235,9 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   the user's own OpenCode permissions decide (OpenCode's defaults allow bash and edits). Symphony never
   passes `--auto`.
 
+  Symphony supports OpenCode `>=1.19.4, <2.0.0` (the 1.x server API, verified against 1.19.4). A binary whose
+  `--version` is outside that range (OpenCode 2 serves other routes) is refused before anything is launched with
+  `opencode_version_unsupported`, and provider detection reports it with the same message.
 - Every agent (Codex, Claude Code, OpenCode), lifecycle hook and validation command runs as an owned
   **process tree** (`symphony_workspaces::process::ProcessTree`): a Windows Job Object with
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (the kernel also kills the tree when the host crashes), a dedicated

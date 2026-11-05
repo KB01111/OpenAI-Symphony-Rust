@@ -6,7 +6,8 @@
 //! therefore runs its own `opencode serve` for the turn (loopback only, random password, `ask` for
 //! commands, edits, web fetches and paths outside the workspace), drives the session over its HTTP
 //! API and answers each `permission.asked` event through the approval gate. Shapes verified against
-//! opencode 1.19.4 (docs/PRODUCTION_GAP_AUDIT.md, AG-04).
+//! opencode 1.19.4 (docs/PRODUCTION_GAP_AUDIT.md, AG-04); the supported range is declared in
+//! [`crate::opencode_version`].
 
 use std::collections::{HashMap, HashSet};
 

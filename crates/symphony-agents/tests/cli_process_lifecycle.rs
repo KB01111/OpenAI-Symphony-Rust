@@ -21,7 +21,11 @@ use tokio::sync::mpsc;
 /// that moment, and executing it then fails with ETXTBSY ("Text file busy").
 fn fake_agent(dir: &Path, body: &str) -> PathBuf {
     let source = dir.join("fake-agent.src");
-    std::fs::write(&source, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::write(
+        &source,
+        format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.19.4; exit 0; fi\n{body}\n"),
+    )
+    .unwrap();
     let path = dir.join("fake-agent.sh");
     let copied = std::process::Command::new("cp")
         .arg(&source)

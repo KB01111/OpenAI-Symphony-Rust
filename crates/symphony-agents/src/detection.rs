@@ -86,31 +86,48 @@ pub fn find_on_path(binary: &str) -> Option<PathBuf> {
     None
 }
 
+/// Why an installed CLI cannot be used with the driver, when its version is known to be outside
+/// what the driver was written for. Today only OpenCode has a declared range.
+fn unsupported_version_note(kind: ProviderKind, version: Option<&str>) -> Option<String> {
+    match kind {
+        ProviderKind::OpenCode => crate::opencode_version::unsupported_message(version?),
+        _ => None,
+    }
+}
+
 pub(crate) async fn probe_version(binary: &Path) -> Option<String> {
     let mut cmd = Command::new(binary);
     cmd.arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
     symphony_workspaces::hide_console_window(&mut cmd);
     for key in symphony_workspaces::SECRET_ENV_VARS_TO_STRIP {
         cmd.env_remove(key);
     }
-    let output = tokio::time::timeout(VERSION_PROBE_TIMEOUT, cmd.output())
-        .await
-        .ok()?
+    // Run as an owned process tree: a wrapper's helper processes end with the timeout too.
+    let output = symphony_workspaces::output_with_timeout(&mut cmd, VERSION_PROBE_TIMEOUT)
+        .await?
         .ok()?;
     let text = if output.stdout.is_empty() {
         String::from_utf8_lossy(&output.stderr).to_string()
     } else {
         String::from_utf8_lossy(&output.stdout).to_string()
     };
-    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
-    Some(redact_secrets(
-        &line.chars().take(120).collect::<String>(),
-        &[],
-    ))
+    version_line(&text).map(|line| redact_secrets(&line.chars().take(120).collect::<String>(), &[]))
+}
+
+/// The line of `--version` output that names the version: the first one with an `x.y.z`, so a
+/// banner or warning before it does not hide it; otherwise the first non-empty line.
+fn version_line(text: &str) -> Option<&str> {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next()?;
+    if crate::opencode_version::parse_version(first).is_some() {
+        return Some(first);
+    }
+    lines
+        .find(|l| crate::opencode_version::parse_version(l).is_some())
+        .or(Some(first))
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -606,6 +623,7 @@ pub async fn detect_provider_status(
             },
         }
     };
+    let mut unsupported_version = false;
     let bridge_missing = kind == ProviderKind::CodeSandbox && bridge.is_none();
     if bridge_missing {
         capabilities.status_message = format!(
@@ -626,13 +644,20 @@ pub async fn detect_provider_status(
             version.as_deref().unwrap_or("unknown")
         );
     }
-    let installed = installed && !bridge_missing;
+    if installed {
+        if let Some(message) = unsupported_version_note(kind, version.as_deref()) {
+            capabilities.status_message = format!("{} · {message}", capabilities.status_message);
+            unsupported_version = true;
+        }
+    }
+    // Like an unsupported Node.js: present on disk, but not something a task can run with.
+    let installed = installed && !bridge_missing && !unsupported_version;
     capabilities.available = installed;
     capabilities.binary_path = binary_path.clone();
     capabilities.version = version.clone();
     let (auth_state, auth_detail) = detect_auth(kind, vault_keys);
     let discovered = match (&binary_path, provider_binary_name(kind)) {
-        (Some(path), Some(_)) => {
+        (Some(path), Some(_)) if !unsupported_version => {
             discover_models(kind, Path::new(path), version.as_deref(), refresh_models).await
         }
         _ => None,
@@ -730,6 +755,35 @@ mod tests {
         assert_eq!(next.as_deref(), Some("page-2"));
         let (_, _, _, last) = parse_codex_model_page(&json!({ "data": [], "nextCursor": null }));
         assert_eq!(last, None);
+    }
+
+    #[test]
+    fn the_version_is_read_from_the_line_that_has_one() {
+        assert_eq!(version_line("1.19.4\n"), Some("1.19.4"));
+        assert_eq!(
+            version_line("warning: deprecated wrapper\n\nopencode 2.0.1\n"),
+            Some("opencode 2.0.1")
+        );
+        assert_eq!(version_line("\n  dev build \nsecond"), Some("dev build"));
+        assert_eq!(version_line("  \n"), None);
+    }
+
+    #[test]
+    fn an_incompatible_opencode_is_reported_unusable_with_the_range() {
+        let note = |v| unsupported_version_note(ProviderKind::OpenCode, Some(v));
+        assert_eq!(note("1.19.4"), None);
+        assert_eq!(note("1.21.0"), None);
+        assert_eq!(note("not a version"), None);
+        let v2 = note("2.0.1").unwrap();
+        assert!(v2.contains("OpenCode 2.0.1 is not supported"), "{v2}");
+        assert!(v2.contains(">=1.19.4, <2.0.0"), "{v2}");
+        assert!(note("1.18.9").unwrap().contains("1.19.4"));
+        // A missing version and other providers are never gated.
+        assert_eq!(unsupported_version_note(ProviderKind::OpenCode, None), None);
+        assert_eq!(
+            unsupported_version_note(ProviderKind::Codex, Some("2.0.0")),
+            None
+        );
     }
 
     #[test]
