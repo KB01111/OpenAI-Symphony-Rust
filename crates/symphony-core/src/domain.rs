@@ -543,6 +543,23 @@ pub struct ProviderProfile {
     pub sandbox_mode: String,
     pub credential_ref: Option<String>,
     pub is_default: bool,
+    /// The model service this profile connects the agent to (connection profiles); `None` for the
+    /// built-in agent entries.
+    #[serde(default)]
+    pub service: Option<crate::connection::ModelService>,
+    /// Overrides the service's preset base URL; validated against the service's allowed hosts.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Result of the last connection test.
+    #[serde(default)]
+    pub status: crate::connection::ProfileStatus,
+    #[serde(default)]
+    pub status_detail: Option<String>,
+    #[serde(default)]
+    pub verified_at: Option<DateTime<Utc>>,
+    /// A second profile to use when this one has no key or its last test failed.
+    #[serde(default)]
+    pub fallback_profile_id: Option<String>,
 }
 
 /// Project entity representing a connected local + tracker repository

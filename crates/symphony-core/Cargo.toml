@@ -19,6 +19,7 @@ liquid.workspace = true
 dirs.workspace = true
 tracing.workspace = true
 utoipa.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

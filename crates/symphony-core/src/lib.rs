@@ -1,3 +1,4 @@
+pub mod connection;
 pub mod domain;
 pub mod error;
 pub mod redaction;
@@ -6,6 +7,10 @@ pub mod tool_calls;
 pub mod usage;
 pub mod workflow;
 
+pub use connection::{
+    effective_base_url, resolve_connection, validate_base_url, validate_profile, ModelService,
+    ProfileStatus, ResolvedConnection,
+};
 pub use domain::*;
 pub use error::{SymphonyError, SymphonyResult};
 pub use redaction::{detect_secrets_in_added_lines, redact_json_strings, redact_secrets};
