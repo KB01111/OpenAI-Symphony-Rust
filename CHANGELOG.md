@@ -8,6 +8,21 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ## [Unreleased]
 
+### Fixed
+
+- **The release checks are green again.** The CodeSandbox detection test expects the current
+  `bridge missing` message, the Windows installer smoke test (`scripts/windows-installer-smoke.ps1`) is one
+  coherent install, upgrade and uninstall flow again (it also checks the packaged CodeSandbox bridge and its
+  private Node runtime), `openapi/symphony-api.json` carries the released version, and CI parses every
+  PowerShell script first (`scripts/check-powershell-syntax.ps1`), so a script that cannot be parsed fails in
+  seconds instead of after the installer build.
+- **In-app updates require the signed version again.** `plugins.updater.requireSignedVersion` had been lost
+  from `tauri.conf.json` in a merge of the release automation, which would let a forged (unsigned) manifest pair
+  a newer version number with an older, genuinely signed installer. The setting is back, next to the new
+  updater public key, and the existing guard test (`the_updater_requires_the_signed_version`) passes again.
+
+## [2.0.1] - 2026-11-04
+
 ### Added
 
 - **Native notifications when the desktop is attached to `symphony-cli`.** Approval requests and failed runs
