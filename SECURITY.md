@@ -174,11 +174,21 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   cross-origin scripts cannot send without a preflight), `Sec-Fetch-Site: same-origin` when present and a
   matching `Origin` when present, so other web pages cannot read the token.
 - **Credential API allowlist**: only `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `LINEAR_API_KEY`,
-  `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` can be stored; values are never returned (`GET /credentials`
+  `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `CSB_API_KEY` and the model-service keys `OPENROUTER_API_KEY`,
+  `OPENCODE_GO_API_KEY` and `NVIDIA_API_KEY` can be stored; values are never returned (`GET /credentials`
   lists key names only). Provider API keys are passed to agent subprocesses explicitly from the vault
   (`AgentLaunchConfig.extra_env`); tracker tokens never reach agents and are used only by host-side tools.
   The host-side GitHub tools read `GITHUB_TOKEN`/`GH_TOKEN` from the vault first and then the environment;
   GitHub Enterprise tokens are never sent to the public `api.github.com` endpoint.
+- **Connection profiles** (`/connection-profiles`, local administration only, not in `REMOTE_OPERATIONS`) name
+  the model service an OpenCode run uses. A profile holds no key: it refers to the service's vault key. The key
+  is sent only to the profile's base URL, which must be `https` on the service's own host (no port,
+  credentials, query or look-alike host), by a client that does not follow redirects; the connection test
+  returns a status line, never the response body or the key. OpenRouter and NVIDIA Build list their models to anyone,
+  so OpenRouter is checked with its key endpoint (`GET /key`), and NVIDIA Build, which has no such call, is reported as
+  `limited` (key not yet checked) rather than `verified`. A run hands OpenCode the key as one environment
+  variable plus an inline config that refers to it as `{env:VAR}`, and nothing is put into the runtime's own
+  environment. Changing or removing a service key clears the profiles' earlier test results.
 - **Workflow writes** go only to the active `WORKFLOW.md` (or the runtime's data directory); clients cannot
   choose a path. Invalid documents are rejected before writing.
 - **Redaction**: workflow configuration returned by the API masks credential-like tracker values

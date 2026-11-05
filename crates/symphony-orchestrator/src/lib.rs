@@ -275,11 +275,16 @@ fn attempt_usage(attempt: &RunAttempt) -> TokenUsage {
 }
 
 /// Add usage to a task and to the attempt that consumed it.
-fn record_usage(task: &mut Task, attempt: &mut RunAttempt, delta: &TokenUsage) {
+fn record_usage(
+    task: &mut Task,
+    attempt: &mut RunAttempt,
+    delta: &TokenUsage,
+    model: Option<&str>,
+) {
     task.input_tokens = task.input_tokens.saturating_add(delta.input_tokens);
     task.output_tokens = task.output_tokens.saturating_add(delta.output_tokens);
     task.total_tokens = task.total_tokens.saturating_add(delta.total_tokens);
-    task.estimated_cost_usd += delta.estimate_cost_usd(task.model.as_deref());
+    task.estimated_cost_usd += delta.estimate_cost_usd(model);
     attempt.input_tokens = attempt.input_tokens.saturating_add(delta.input_tokens);
     attempt.output_tokens = attempt.output_tokens.saturating_add(delta.output_tokens);
     attempt.total_tokens = attempt.total_tokens.saturating_add(delta.total_tokens);
@@ -308,11 +313,16 @@ fn record_thread_usage(
 
 /// Account for usage a session consumed that no completed turn reported (a turn that timed out,
 /// crashed or was interrupted): everything beyond what the attempt already recorded.
-fn settle_session_usage(task: &mut Task, attempt: &mut RunAttempt, session: &dyn AgentSession) {
+fn settle_session_usage(
+    task: &mut Task,
+    attempt: &mut RunAttempt,
+    session: &dyn AgentSession,
+    model: Option<&str>,
+) {
     let snapshot = session.usage_snapshot();
     let unreported = snapshot.session_usage.since(&attempt_usage(attempt));
     if unreported != TokenUsage::default() {
-        record_usage(task, attempt, &unreported);
+        record_usage(task, attempt, &unreported, model);
     }
     match session.thread_id() {
         Some(thread_id) => record_thread_usage(
@@ -590,8 +600,21 @@ pub struct SymphonyOrchestrator {
     workflow_github_api_url: Arc<std::sync::RwLock<Option<String>>>,
     /// The Knowledge Base, once the host enabled it (`enable_knowledge`).
     knowledge: Arc<std::sync::RwLock<Option<Arc<symphony_knowledge::service::KnowledgeService>>>>,
+    /// Asks a model service for its models (connection profiles); replaced in tests.
+    model_lister: Arc<std::sync::RwLock<Arc<dyn ModelLister>>>,
+    /// Serializes changes to connection profiles (saving, deleting, recording a test result), so
+    /// switching the default or checking a fallback cannot interleave with another change.
+    connections_lock: Arc<Mutex<()>>,
+    /// Bumped whenever a model-service key is stored, replaced or removed; a connection test that
+    /// started before the change does not record its (stale) result.
+    credential_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 
+mod connections;
+pub use connections::{
+    ConnectionModels, ConnectionTestResult, HttpModelLister, ModelLister, RunConnection,
+};
+pub use symphony_agents::connection_probe::ProbeResult;
 mod knowledge;
 
 /// The GitHub API base URL a workflow names for a GitHub tracker (GitHub Enterprise Server):
@@ -791,6 +814,9 @@ impl SymphonyOrchestrator {
             github_api_url: None,
             workflow_github_api_url: Arc::new(std::sync::RwLock::new(workflow_api_url)),
             knowledge: Arc::new(std::sync::RwLock::new(None)),
+            model_lister: Arc::new(std::sync::RwLock::new(Arc::new(HttpModelLister))),
+            connections_lock: Arc::new(Mutex::new(())),
+            credential_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
@@ -4207,7 +4233,34 @@ Please implement the requested changes cleanly in the current Git workspace, run
             event_tx: self.event_tx.clone(),
         });
 
-        let provider_env = self.provider_env_from_vault();
+        let mut provider_env = self.provider_env_from_vault();
+        // OpenCode through a connection profile: the same resolved profile the connection test used.
+        let connection = if task.provider == ProviderKind::OpenCode {
+            match self.resolve_run_connection(task.model.as_deref()).await {
+                Ok(connection) => connection,
+                Err(e) => {
+                    self.finish_failed_attempt(
+                        &mut task,
+                        &mut attempt_record,
+                        RunAttemptPhase::Failed,
+                        e.to_string(),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(connection) = &connection {
+            provider_env.extend(connection.env.clone());
+            info!(
+                task_id = %task.id,
+                profile = %connection.profile_name,
+                fell_back = connection.fell_back,
+                "OpenCode run through a connection profile"
+            );
+        }
         let is_cloud = task.provider == ProviderKind::CodeSandbox;
         // litellm-style ids: pick the family whose key is configured when no model was chosen.
         let cloud_default_model = is_cloud
@@ -4221,7 +4274,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 }
             })
             .flatten();
-        let effective_model = task.model.clone().or(cloud_default_model);
+        let effective_model = match &connection {
+            Some(connection) => connection.model.clone(),
+            None => task.model.clone().or(cloud_default_model),
+        };
         // Before the branch is published or a sandbox started: a run that cannot work says so now.
         if is_cloud {
             if let Some(problem) = cloud_model_problem(effective_model.as_deref(), &provider_env) {
@@ -4288,7 +4344,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
         let event_task_id = task.id.clone();
         let event_identifier = task.issue.identifier.clone();
         let event_provider = task.provider;
-        let event_model = task.model.clone();
+        // Tokens are priced by the model that ran, which a connection profile may have chosen.
+        let priced_model = launch_cfg.model.clone();
+        let event_model = priced_model.clone();
         let event_task = task.clone();
         let event_cloud_sync = cloud_sync.clone();
         // Tokens of the task's earlier attempts, so the live session shows the task's total.
@@ -4405,14 +4463,19 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     // task copy is stale (the stopping side owns the row), so only the usage is
                     // added, atomically.
                     let recorded = attempt_usage(&attempt_record);
-                    settle_session_usage(&mut task, &mut attempt_record, agent_session.as_ref());
+                    settle_session_usage(
+                        &mut task,
+                        &mut attempt_record,
+                        agent_session.as_ref(),
+                        priced_model.as_deref(),
+                    );
                     let settled = attempt_usage(&attempt_record).since(&recorded);
                     let _ = self
                         .storage
                         .add_task_usage(
                             &task.id,
                             &settled,
-                            settled.estimate_cost_usd(task.model.as_deref()),
+                            settled.estimate_cost_usd(priced_model.as_deref()),
                             attempt_record.usage_estimated,
                             task.thread_usage.as_ref(),
                         )
@@ -4439,7 +4502,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
                     task.current_thread_id = Some(outcome.thread_id.clone());
                     task.current_turn_id = Some(outcome.turn_id.clone());
                     task.current_session_id = Some(outcome.session_id.clone());
-                    record_usage(&mut task, &mut attempt_record, &outcome.usage);
+                    record_usage(
+                        &mut task,
+                        &mut attempt_record,
+                        &outcome.usage,
+                        priced_model.as_deref(),
+                    );
                     record_thread_usage(
                         &mut task,
                         &mut attempt_record,
@@ -4496,7 +4564,12 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 Err(err) => {
                     // The turn ended without an outcome (timeout, dead process): what the session
                     // reported before that is still real usage.
-                    settle_session_usage(&mut task, &mut attempt_record, agent_session.as_ref());
+                    settle_session_usage(
+                        &mut task,
+                        &mut attempt_record,
+                        agent_session.as_ref(),
+                        priced_model.as_deref(),
+                    );
                     // A cloud run's sandbox outlives its bridge: the retry resumes it.
                     if task.provider == ProviderKind::CodeSandbox {
                         if let Some(sandbox_id) = agent_session.thread_id() {

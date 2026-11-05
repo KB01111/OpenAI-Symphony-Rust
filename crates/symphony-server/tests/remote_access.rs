@@ -215,6 +215,20 @@ async fn sensitive_endpoints_are_forbidden_to_remote_clients() {
             Some(json!({"key": "GITHUB_TOKEN", "value": "x"})),
         ),
         (Method::DELETE, "/credentials/GITHUB_TOKEN", None),
+        (Method::GET, "/connection-profiles", None),
+        (
+            Method::POST,
+            "/connection-profiles",
+            Some(json!({"name": "x", "service": "openrouter"})),
+        ),
+        (
+            Method::PUT,
+            "/connection-profiles/cp-1",
+            Some(json!({"name": "x", "service": "openrouter"})),
+        ),
+        (Method::DELETE, "/connection-profiles/cp-1", None),
+        (Method::POST, "/connection-profiles/cp-1/test", None),
+        (Method::GET, "/connection-profiles/cp-1/models", None),
         (Method::GET, "/workflow", None),
         (Method::PUT, "/workflow", Some(json!({"raw_markdown": "x"}))),
         (

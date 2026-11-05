@@ -251,6 +251,9 @@ async fn stand_in(listener: TcpListener) -> Arc<Mutex<Seen>> {
 const FAKE_SERVE: &str = r#"printf '%s\n' "$@" > serve-args.txt
 printf '%s' "$OPENCODE_SERVER_PASSWORD" > password.txt
 printf '%s' "$OPENCODE_PERMISSION" > permission.txt
+printf '%s' "$OPENROUTER_API_KEY" > profile-key.txt
+printf '%s' "$OPENCODE_CONFIG_CONTENT" > profile-config.txt
+printf '%s' "$GITHUB_TOKEN" > github-token.txt
 port=""; prev=""
 for a in "$@"; do [ "$prev" = "--port" ] && port="$a"; prev="$a"; done
 printf '%s' "$port" > port.txt.tmp && mv port.txt.tmp port.txt
@@ -287,6 +290,14 @@ async fn run(decision: ApprovalDecision) -> Run {
 }
 
 async fn run_resuming(decision: ApprovalDecision, existing: Option<&str>) -> Run {
+    run_full(decision, existing, HashMap::new()).await
+}
+
+async fn run_full(
+    decision: ApprovalDecision,
+    existing: Option<&str>,
+    extra_env: HashMap<String, String>,
+) -> Run {
     let dir = tempfile::tempdir().unwrap();
     let fake = script(dir.path(), "opencode", FAKE_SERVE);
     let serving = tokio::spawn(serve_when_ready(dir.path().to_path_buf()));
@@ -296,13 +307,15 @@ async fn run_resuming(decision: ApprovalDecision, existing: Option<&str>) -> Run
     });
     let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(64);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut launch = config(
+        &fake,
+        dir.path(),
+        json!("on-request"),
+        Some("anthropic/claude-sonnet-5-5"),
+    );
+    launch.extra_env = extra_env;
     let mut session = start_agent_session(
-        config(
-            &fake,
-            dir.path(),
-            json!("on-request"),
-            Some("anthropic/claude-sonnet-5-5"),
-        ),
+        launch,
         existing.map(str::to_string),
         None,
         gate.clone(),
@@ -593,6 +606,34 @@ async fn an_incompatible_opencode_is_refused_before_it_is_launched() {
         // Nothing was started: no `serve` invocation left its marker.
         assert!(!dir.path().join("serve-args.txt").exists());
     }
+}
+
+/// A connection profile reaches the server as its key variable and inline config, next to the
+/// permission rules, while tracker tokens from the host stay out.
+#[tokio::test]
+async fn a_connection_profile_reaches_the_server_as_environment() {
+    std::env::set_var("GITHUB_TOKEN", "ghp_must_not_reach_the_agent");
+    let config = r#"{"provider":{"openrouter":{"options":{"apiKey":"{env:OPENROUTER_API_KEY}"}}}}"#;
+    let r = run_full(
+        ApprovalDecision::Accept,
+        None,
+        HashMap::from([
+            (
+                "OPENROUTER_API_KEY".to_string(),
+                "sk-or-profile-key".to_string(),
+            ),
+            ("OPENCODE_CONFIG_CONTENT".to_string(), config.to_string()),
+        ]),
+    )
+    .await;
+    let read = |f: &str| std::fs::read_to_string(r.dir.path().join(f)).unwrap();
+    assert_eq!(read("profile-key.txt"), "sk-or-profile-key");
+    assert_eq!(read("profile-config.txt"), config);
+    assert_eq!(read("github-token.txt"), "");
+    // The permission rules are still the driver's own.
+    let permission: Value = serde_json::from_str(&read("permission.txt")).unwrap();
+    assert_eq!(permission["bash"], "ask");
+    assert!(r.outcome.succeeded);
 }
 
 /// The launch runs in the task workspace, so a relative command is checked there too: a

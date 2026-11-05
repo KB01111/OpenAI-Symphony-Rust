@@ -466,6 +466,42 @@ export type CommitWorktreeRef = {
 export type Confidence = 'extracted' | 'inferred' | 'ambiguous';
 
 /**
+ * The models a profile's service lists right now (the stored status is not changed).
+ */
+export type ConnectionModels = {
+    status: ProfileStatus;
+    detail: string;
+    models: Array<string>;
+};
+
+/**
+ * What a client sends to create or change a connection profile. The key itself is stored
+ * separately through the credential endpoints.
+ */
+export type ConnectionProfileInput = {
+    name: string;
+    service: ModelService;
+    /**
+     * `None` uses the service's preset base URL.
+     */
+    base_url?: string | null;
+    /**
+     * Default model, as the service names it (`anthropic/claude-sonnet-5.5`).
+     */
+    model?: string | null;
+    fallback_profile_id?: string | null;
+    is_default?: boolean;
+};
+
+/**
+ * A profile after a connection test, with the models the service listed.
+ */
+export type ConnectionTestResult = {
+    profile: ProviderProfile;
+    models: Array<string>;
+};
+
+/**
  * Operator instructions that continue a task's agent thread (`POST /tasks/{id}/continue`).
  */
 export type ContinueTaskRequest = {
@@ -877,6 +913,11 @@ export type MergeReadinessReport = {
     blockers: Array<string>;
 };
 
+/**
+ * A hosted service that provides models over an OpenAI-compatible API.
+ */
+export type ModelService = 'openrouter' | 'opencode_go' | 'nvidia_build';
+
 export type ModuleStat = {
     module: string;
     files: number;
@@ -961,6 +1002,11 @@ export type PreviewWorkflowRequest = {
 };
 
 /**
+ * What the last connection test found.
+ */
+export type ProfileStatus = 'configured' | 'verified' | 'limited' | 'error';
+
+/**
  * Project entity representing a connected local + tracker repository
  */
 export type Project = {
@@ -1032,6 +1078,36 @@ export type ProviderCapabilities = {
  * Multi-provider coding agent kinds
  */
 export type ProviderKind = 'codex' | 'claude_code' | 'opencode' | 'codesandbox' | 'simulated';
+
+/**
+ * Non-secret provider profile configuration
+ */
+export type ProviderProfile = {
+    id: string;
+    name: string;
+    provider: ProviderKind;
+    model: string | null;
+    command_override: string | null;
+    approval_policy: string;
+    sandbox_mode: string;
+    credential_ref: string | null;
+    is_default: boolean;
+    service: ModelService | null;
+    /**
+     * Overrides the service's preset base URL; validated against the service's allowed hosts.
+     */
+    base_url: string | null;
+    /**
+     * Result of the last connection test.
+     */
+    status: ProfileStatus;
+    status_detail: string | null;
+    verified_at: string | null;
+    /**
+     * A second profile to use when this one has no key or its last test failed.
+     */
+    fallback_profile_id: string | null;
+};
 
 /**
  * Runtime-detected status of a coding agent provider (`GET /api/v1/providers`).
@@ -3435,6 +3511,176 @@ export type DeleteCredentialResponses = {
 };
 
 export type DeleteCredentialResponse = DeleteCredentialResponses[keyof DeleteCredentialResponses];
+
+export type ListConnectionProfilesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/connection-profiles';
+};
+
+export type ListConnectionProfilesErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ListConnectionProfilesError = ListConnectionProfilesErrors[keyof ListConnectionProfilesErrors];
+
+export type ListConnectionProfilesResponses = {
+    /**
+     * OK
+     */
+    200: Array<ProviderProfile>;
+};
+
+export type ListConnectionProfilesResponse = ListConnectionProfilesResponses[keyof ListConnectionProfilesResponses];
+
+export type CreateConnectionProfileData = {
+    body: ConnectionProfileInput;
+    path?: never;
+    query?: never;
+    url: '/api/v1/connection-profiles';
+};
+
+export type CreateConnectionProfileErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type CreateConnectionProfileError = CreateConnectionProfileErrors[keyof CreateConnectionProfileErrors];
+
+export type CreateConnectionProfileResponses = {
+    /**
+     * OK
+     */
+    200: ProviderProfile;
+};
+
+export type CreateConnectionProfileResponse = CreateConnectionProfileResponses[keyof CreateConnectionProfileResponses];
+
+export type DeleteConnectionProfileData = {
+    body?: never;
+    path: {
+        /**
+         * Connection profile id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/connection-profiles/{id}';
+};
+
+export type DeleteConnectionProfileErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type DeleteConnectionProfileError = DeleteConnectionProfileErrors[keyof DeleteConnectionProfileErrors];
+
+export type DeleteConnectionProfileResponses = {
+    /**
+     * Deleted
+     */
+    204: void;
+};
+
+export type DeleteConnectionProfileResponse = DeleteConnectionProfileResponses[keyof DeleteConnectionProfileResponses];
+
+export type UpdateConnectionProfileData = {
+    body: ConnectionProfileInput;
+    path: {
+        /**
+         * Connection profile id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/connection-profiles/{id}';
+};
+
+export type UpdateConnectionProfileErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type UpdateConnectionProfileError = UpdateConnectionProfileErrors[keyof UpdateConnectionProfileErrors];
+
+export type UpdateConnectionProfileResponses = {
+    /**
+     * OK
+     */
+    200: ProviderProfile;
+};
+
+export type UpdateConnectionProfileResponse = UpdateConnectionProfileResponses[keyof UpdateConnectionProfileResponses];
+
+export type TestConnectionProfileData = {
+    body?: never;
+    path: {
+        /**
+         * Connection profile id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/connection-profiles/{id}/test';
+};
+
+export type TestConnectionProfileErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type TestConnectionProfileError = TestConnectionProfileErrors[keyof TestConnectionProfileErrors];
+
+export type TestConnectionProfileResponses = {
+    /**
+     * OK
+     */
+    200: ConnectionTestResult;
+};
+
+export type TestConnectionProfileResponse = TestConnectionProfileResponses[keyof TestConnectionProfileResponses];
+
+export type ListConnectionProfileModelsData = {
+    body?: never;
+    path: {
+        /**
+         * Connection profile id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/v1/connection-profiles/{id}/models';
+};
+
+export type ListConnectionProfileModelsErrors = {
+    /**
+     * Error (`ApiErrorBody`)
+     */
+    default: ApiErrorBody;
+};
+
+export type ListConnectionProfileModelsError = ListConnectionProfileModelsErrors[keyof ListConnectionProfileModelsErrors];
+
+export type ListConnectionProfileModelsResponses = {
+    /**
+     * OK
+     */
+    200: ConnectionModels;
+};
+
+export type ListConnectionProfileModelsResponse = ListConnectionProfileModelsResponses[keyof ListConnectionProfileModelsResponses];
 
 export type ExportDiagnosticsData = {
     body?: never;
