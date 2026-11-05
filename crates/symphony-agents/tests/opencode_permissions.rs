@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use symphony_agents::{start_agent_session, AgentLaunchConfig, AgentStreamEvent, ApprovalGate};
 use symphony_core::domain::{ApprovalDecision, ApprovalRequest, ProviderKind};
-use symphony_core::error::Result;
+use symphony_core::error::{Result, SymphonyError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 /// Written by `cp` so a concurrently forking test cannot hold it open for writing (ETXTBSY).
 fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     let source = dir.join(format!("{name}.src"));
-    std::fs::write(&source, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::write(&source, format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then cat \"$(dirname \"$0\")/version\" 2>/dev/null || echo 1.19.4; exit 0; fi\n{body}\n")).unwrap();
     let path = dir.join(name);
     assert!(std::process::Command::new("cp")
         .arg(&source)
@@ -283,6 +283,10 @@ struct Run {
 }
 
 async fn run(decision: ApprovalDecision) -> Run {
+    run_resuming(decision, None).await
+}
+
+async fn run_resuming(decision: ApprovalDecision, existing: Option<&str>) -> Run {
     let dir = tempfile::tempdir().unwrap();
     let fake = script(dir.path(), "opencode", FAKE_SERVE);
     let serving = tokio::spawn(serve_when_ready(dir.path().to_path_buf()));
@@ -299,7 +303,7 @@ async fn run(decision: ApprovalDecision) -> Run {
             json!("on-request"),
             Some("anthropic/claude-sonnet-5-5"),
         ),
-        None,
+        existing.map(str::to_string),
         None,
         gate.clone(),
         tx.clone(),
@@ -523,4 +527,70 @@ fn base64_encode(input: &str) -> String {
         }
     }
     out
+}
+
+/// A stored OpenCode session id is continued, not recreated.
+#[tokio::test]
+async fn a_stored_session_is_resumed_without_creating_another() {
+    let resumed = run_resuming(ApprovalDecision::Accept, Some("ses_1")).await;
+    let sent = requests(&resumed);
+    assert!(
+        !sent.iter().any(|(t, _)| t.starts_with("POST /session?")),
+        "{sent:?}"
+    );
+    assert!(sent
+        .iter()
+        .any(|(t, _)| t.starts_with("POST /session/ses_1/prompt_async")));
+    assert!(resumed.outcome.succeeded);
+    assert_eq!(resumed.outcome.thread_id, "ses_1");
+
+    // The id of a `opencode run` turn is a placeholder the server does not know.
+    let fresh = run_resuming(ApprovalDecision::Accept, Some("opencode-0000")).await;
+    assert!(requests(&fresh)
+        .iter()
+        .any(|(t, _)| t.starts_with("POST /session?")));
+}
+
+/// OpenCode 2 serves other routes; a known-incompatible binary is refused before the driver starts
+/// a server or sends a request, on both the supervised and the plain `opencode run` path.
+#[tokio::test]
+async fn an_incompatible_opencode_is_refused_before_it_is_launched() {
+    for (version, policy) in [
+        ("2.0.1", json!("on-request")),
+        ("opencode/2.0.1", json!("never")),
+        ("1.18.0", json!("on-request")),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("version"), version).unwrap();
+        let fake = script(dir.path(), "opencode", FAKE_SERVE);
+        let gate = Arc::new(Gate {
+            decision: ApprovalDecision::Accept,
+            seen: Mutex::new(Vec::new()),
+        });
+        let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(64);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let mut session = start_agent_session(
+            config(&fake, dir.path(), policy, None),
+            None,
+            None,
+            gate,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let err = session.run_turn("work", tx).await.unwrap_err();
+        match err {
+            SymphonyError::AgentProtocolError { code, message } => {
+                assert_eq!(code, "opencode_version_unsupported");
+                assert!(message.contains(">=1.19.4, <2.0.0"), "{message}");
+                assert!(
+                    message.contains(version.trim_start_matches("opencode/")),
+                    "{message}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // Nothing was started: no `serve` invocation left its marker.
+        assert!(!dir.path().join("serve-args.txt").exists());
+    }
 }

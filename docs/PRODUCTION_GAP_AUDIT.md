@@ -399,6 +399,8 @@ the time; the owner later chose an automatic refresh, see §3).
   (Codex `model/list`, verified against codex-cli 0.164.0; `opencode models`, verified against
   opencode 1.19.4); the static lists are only a fallback, and the old default `gpt-5-codex` (no longer
   offered by Codex 0.164.0) is no longer the settings default nor passed to a CLI that does not list it.
+- **OpenCode version range**: the supported range (`>=1.19.4, <2.0.0`) is declared in
+  `crates/symphony-agents/src/opencode_version.rs` and enforced at launch and in detection.
 
 ## 4. Unverified (needs Windows 11 hardware or a signed build)
 

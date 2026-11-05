@@ -86,6 +86,15 @@ pub fn find_on_path(binary: &str) -> Option<PathBuf> {
     None
 }
 
+/// Why an installed CLI cannot be used with the driver, when its version is known to be outside
+/// what the driver was written for. Today only OpenCode has a declared range.
+fn unsupported_version_note(kind: ProviderKind, version: Option<&str>) -> Option<String> {
+    match kind {
+        ProviderKind::OpenCode => crate::opencode_version::unsupported_message(version?),
+        _ => None,
+    }
+}
+
 pub(crate) async fn probe_version(binary: &Path) -> Option<String> {
     let mut cmd = Command::new(binary);
     cmd.arg("--version")
@@ -606,6 +615,7 @@ pub async fn detect_provider_status(
             },
         }
     };
+    let mut unsupported_version = false;
     let bridge_missing = kind == ProviderKind::CodeSandbox && bridge.is_none();
     if bridge_missing {
         capabilities.status_message = format!(
@@ -626,8 +636,14 @@ pub async fn detect_provider_status(
             version.as_deref().unwrap_or("unknown")
         );
     }
+    if installed {
+        if let Some(message) = unsupported_version_note(kind, version.as_deref()) {
+            capabilities.status_message = format!("{} · {message}", capabilities.status_message);
+            unsupported_version = true;
+        }
+    }
     let installed = installed && !bridge_missing;
-    capabilities.available = installed;
+    capabilities.available = installed && !unsupported_version;
     capabilities.binary_path = binary_path.clone();
     capabilities.version = version.clone();
     let (auth_state, auth_detail) = detect_auth(kind, vault_keys);
@@ -730,6 +746,24 @@ mod tests {
         assert_eq!(next.as_deref(), Some("page-2"));
         let (_, _, _, last) = parse_codex_model_page(&json!({ "data": [], "nextCursor": null }));
         assert_eq!(last, None);
+    }
+
+    #[test]
+    fn an_incompatible_opencode_is_reported_unusable_with_the_range() {
+        let note = |v| unsupported_version_note(ProviderKind::OpenCode, Some(v));
+        assert_eq!(note("1.19.4"), None);
+        assert_eq!(note("1.21.0"), None);
+        assert_eq!(note("not a version"), None);
+        let v2 = note("2.0.1").unwrap();
+        assert!(v2.contains("OpenCode 2.0.1 is not supported"), "{v2}");
+        assert!(v2.contains(">=1.19.4, <2.0.0"), "{v2}");
+        assert!(note("1.18.9").unwrap().contains("1.19.4"));
+        // A missing version and other providers are never gated.
+        assert_eq!(unsupported_version_note(ProviderKind::OpenCode, None), None);
+        assert_eq!(
+            unsupported_version_note(ProviderKind::Codex, Some("2.0.0")),
+            None
+        );
     }
 
     #[test]
