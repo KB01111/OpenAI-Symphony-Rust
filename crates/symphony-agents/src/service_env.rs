@@ -1,23 +1,28 @@
 //! Which model-service keys an OpenCode process may inherit.
 //!
 //! A run through a connection profile gets exactly one service key (the profile's) in
-//! `extra_env`. Keys of the *other* services that happen to be set on the host are removed from
-//! that run, so a task cannot read a key the profile never asked for. A run with no profile is
-//! left alone: like `OPENAI_API_KEY`, an ambient service key keeps working for OpenCode as before.
+//! `extra_env`. Keys of the *other* services, and the OpenAI and Anthropic keys, that happen to be
+//! set on the host are removed from that run, so a task cannot read a key the profile never asked
+//! for. A run with no profile is left alone: an ambient key keeps working for OpenCode as before.
 
 use std::collections::HashMap;
 
 use symphony_core::ModelService;
 use tokio::process::Command;
 
+/// The provider keys Symphony passes to agents outside connection profiles.
+const PROVIDER_KEY_ENV: [&str; 2] = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"];
+
 /// Names of the environment variables to remove for a run with `extra_env`: every service key
 /// variable that `extra_env` does not set, but only when it sets one (a profile run).
 pub(crate) fn unselected_service_keys(extra_env: &HashMap<String, String>) -> Vec<&'static str> {
-    let keys = ModelService::ALL.map(ModelService::key_env_name);
-    if !keys.iter().any(|k| extra_env.contains_key(*k)) {
+    let services = ModelService::ALL.map(ModelService::key_env_name);
+    if !services.iter().any(|k| extra_env.contains_key(*k)) {
         return Vec::new();
     }
-    keys.into_iter()
+    services
+        .into_iter()
+        .chain(PROVIDER_KEY_ENV)
         .filter(|k| !extra_env.contains_key(*k))
         .collect()
 }
@@ -48,16 +53,32 @@ mod tests {
         let mut removed =
             unselected_service_keys(&env(&["OPENROUTER_API_KEY", "OPENCODE_CONFIG_CONTENT"]));
         removed.sort_unstable();
-        assert_eq!(removed, ["NVIDIA_API_KEY", "OPENCODE_API_KEY"]);
+        assert_eq!(
+            removed,
+            [
+                "ANTHROPIC_API_KEY",
+                "NVIDIA_API_KEY",
+                "OPENAI_API_KEY",
+                "OPENCODE_API_KEY"
+            ]
+        );
         let mut go = unselected_service_keys(&env(&["OPENCODE_API_KEY"]));
         go.sort_unstable();
-        assert_eq!(go, ["NVIDIA_API_KEY", "OPENROUTER_API_KEY"]);
+        assert_eq!(
+            go,
+            [
+                "ANTHROPIC_API_KEY",
+                "NVIDIA_API_KEY",
+                "OPENAI_API_KEY",
+                "OPENROUTER_API_KEY"
+            ]
+        );
     }
 
     #[test]
     fn a_run_without_a_profile_is_left_alone() {
         assert!(unselected_service_keys(&HashMap::new()).is_empty());
-        // Provider keys and unrelated variables do not make it a profile run.
+        // Provider keys and unrelated variables alone do not make it a profile run.
         assert!(unselected_service_keys(&env(&["OPENAI_API_KEY", "FOO"])).is_empty());
     }
 }

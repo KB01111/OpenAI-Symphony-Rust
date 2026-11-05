@@ -767,7 +767,7 @@ export function useSaveConnectionProfile() {
     mutationFn: ({ id, input }: { id?: string; input: ConnectionProfileInput }) =>
       id ? client.updateConnectionProfile(id, input) : client.createConnectionProfile(input),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: qk.connections });
+      void qc.invalidateQueries({ queryKey: qk.connections, exact: true });
       void qc.invalidateQueries({ queryKey: qk.providers });
     },
     onError
@@ -781,7 +781,7 @@ export function useDeleteConnectionProfile() {
   return useMutation({
     mutationFn: (id: string) => client.deleteConnectionProfile(id),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: qk.connections });
+      void qc.invalidateQueries({ queryKey: qk.connections, exact: true });
       void qc.invalidateQueries({ queryKey: qk.providers });
     },
     onError

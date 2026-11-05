@@ -384,11 +384,10 @@ pub fn resolve_connection(
         profile_id: profile.id.clone(),
         service,
         base_url: effective_base_url(profile, service),
-        custom_base_url: profile
-            .base_url
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|u| !u.is_empty()),
+        // Only a URL that differs from the preset is custom: the preset leaves the endpoint to
+        // OpenCode's own provider, which also knows the headers the service wants.
+        custom_base_url: effective_base_url(profile, service)
+            != service.default_base_url().trim_end_matches('/'),
         model_id,
     })
 }
@@ -557,6 +556,15 @@ mod tests {
         assert_eq!(
             resolved.opencode_config()["provider"]["opencode-go"]["options"]["baseURL"],
             "https://opencode.ai/zen/go/v1"
+        );
+        // The preset written out by hand is not custom either.
+        go.base_url = Some("https://opencode.ai/inference/go/".into());
+        let preset = resolve_connection(&go, None).unwrap();
+        assert!(!preset.custom_base_url);
+        assert!(
+            preset.opencode_config()["provider"]["opencode-go"]["options"]
+                .get("baseURL")
+                .is_none()
         );
         go.base_url = Some("https://opencode.ai/zen/go/v1".into());
         assert_eq!(

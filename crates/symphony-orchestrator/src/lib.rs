@@ -4253,7 +4253,9 @@ Please implement the requested changes cleanly in the current Git workspace, run
             None
         };
         if let Some(connection) = &connection {
-            provider_env.extend(connection.env.clone());
+            // Exactly one key: the profile's. The vault's OpenAI/Anthropic keys are not passed along
+            // (and the agent layer removes inherited copies of them and of the other services' keys).
+            provider_env = connection.env.clone();
             info!(
                 task_id = %task.id,
                 profile = %connection.profile_name,
@@ -4448,6 +4450,8 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 let mut mem = self.memory.write().await;
                 if let Some(handle) = mem.running.get_mut(&task.id) {
                     handle.session.phase = RunAttemptPhase::StreamingTurn;
+                    // A connection profile may have chosen the model (its default, or a fallback).
+                    handle.session.model = priced_model.clone();
                     handle.session.turn_count = turn_number;
                     if task.current_phase != Some(RunAttemptPhase::StreamingTurn) {
                         task.current_phase = Some(RunAttemptPhase::StreamingTurn);

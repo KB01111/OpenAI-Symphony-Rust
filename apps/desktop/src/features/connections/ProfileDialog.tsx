@@ -75,10 +75,12 @@ export const ProfileDialog: React.FC<{
         : urlProblem === "host"
           ? formatMessage(m.baseUrlHost, { host: service.host })
           : undefined;
-  const effectiveName = name.trim() || (editing ? "" : nextProfileName(service, profiles));
+  // Profiles other than the one being edited, or the one this dialog already saved (a retry after a
+  // failed test): they decide the default name and the fallback choices.
+  const otherProfiles = profiles.filter((p) => p.id !== (profile?.id ?? savedId));
+  const effectiveName = name.trim() || (editing ? "" : nextProfileName(service, otherProfiles));
   const needsKey = !stored && secret.trim().length === 0;
-  // Neither the profile being edited nor one this dialog already saved (a retry after a failed test).
-  const fallbackOptions = profiles.filter((p) => p.id !== (profile?.id ?? savedId));
+  const fallbackOptions = otherProfiles;
 
   const close = () => {
     setSecret("");
@@ -185,7 +187,7 @@ export const ProfileDialog: React.FC<{
               <Field label={m.nameLabel} error={submitted && !effectiveName ? m.nameRequired : undefined}>
                 <Input
                   value={name}
-                  placeholder={editing ? undefined : nextProfileName(service, profiles)}
+                  placeholder={editing ? undefined : nextProfileName(service, otherProfiles)}
                   onChange={(e) => setName(e.target.value)}
                 />
               </Field>

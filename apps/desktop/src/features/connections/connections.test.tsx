@@ -196,7 +196,10 @@ describe("Model connections", () => {
     fireEvent.click(await within(dialog).findByRole("button", { name: "Connect" }));
     await waitFor(() => expect(rt.calls.filter((c) => c.path.endsWith("/test"))).toHaveLength(2));
     expect(rt.calls.filter((c) => c.method === "POST" && c.path.endsWith("/connection-profiles"))).toHaveLength(1);
-    expect(rt.calls.some((c) => c.method === "PUT" && c.path.endsWith("/connection-profiles/p1"))).toBe(true);
+    const put = rt.calls.find((c) => c.method === "PUT" && c.path.endsWith("/connection-profiles/p1"));
+    expect(put).toBeDefined();
+    // The retry keeps the name it was created with; it does not become "OpenRouter 2".
+    expect(put?.body).toMatchObject({ name: "OpenRouter" });
   });
 
   it("keeps a stored key reachable after the last connection to its service is removed", async () => {
