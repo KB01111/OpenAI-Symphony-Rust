@@ -594,3 +594,40 @@ async fn an_incompatible_opencode_is_refused_before_it_is_launched() {
         assert!(!dir.path().join("serve-args.txt").exists());
     }
 }
+
+/// The launch runs in the task workspace, so a relative command is checked there too: a
+/// workspace-relative launcher that is OpenCode 2 is refused even though Symphony's own working
+/// directory has no such file.
+#[tokio::test]
+async fn a_workspace_relative_launcher_is_version_checked_in_the_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("version"),
+        "warning: wrapper\nopencode 2.0.1\n",
+    )
+    .unwrap();
+    script(dir.path(), "opencode", FAKE_SERVE);
+    let mut launch = config(
+        &PathBuf::from("./opencode"),
+        dir.path(),
+        json!("on-request"),
+        None,
+    );
+    launch.command = "./opencode".into();
+    let gate = Arc::new(Gate {
+        decision: ApprovalDecision::Accept,
+        seen: Mutex::new(Vec::new()),
+    });
+    let (tx, mut rx) = mpsc::channel::<AgentStreamEvent>(64);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut session = start_agent_session(launch, None, None, gate, tx.clone())
+        .await
+        .unwrap();
+    match session.run_turn("work", tx).await.unwrap_err() {
+        SymphonyError::AgentProtocolError { code, .. } => {
+            assert_eq!(code, "opencode_version_unsupported")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!dir.path().join("serve-args.txt").exists());
+}
