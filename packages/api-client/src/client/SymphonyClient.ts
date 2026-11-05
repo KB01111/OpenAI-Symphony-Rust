@@ -3,6 +3,7 @@ import { createClient, type Client } from "@symphony/shared-types/api/client";
 import type {
   AppSettings,
   ApprovalDecision,
+  ConnectionProfileInput,
   CreateProjectRequest,
   CreateTaskRequest,
   GraphLevel,
@@ -431,6 +432,29 @@ export class SymphonyClient {
   deleteCredential(key: string): Promise<void> {
     return this.call((o) => api.deleteCredential({ ...o, path: { key } })).then(() => undefined);
   }
+
+  // Connection profiles: the model service (OpenRouter, OpenCode Go, NVIDIA Build) an OpenCode
+  // run uses. The API key itself is stored through `saveCredential`.
+  listConnectionProfiles(signal?: AbortSignal) {
+    return this.call((o) => api.listConnectionProfiles(o), signal);
+  }
+  createConnectionProfile(input: ConnectionProfileInput) {
+    return this.call((o) => api.createConnectionProfile({ ...o, body: input }));
+  }
+  updateConnectionProfile(id: string, input: ConnectionProfileInput) {
+    return this.call((o) => api.updateConnectionProfile({ ...o, path: { id }, body: input }));
+  }
+  deleteConnectionProfile(id: string): Promise<void> {
+    return this.call((o) => api.deleteConnectionProfile({ ...o, path: { id } })).then(() => undefined);
+  }
+  /** Asks the service for its models with the stored key and records the outcome on the profile. */
+  testConnectionProfile(id: string) {
+    return this.call((o) => api.testConnectionProfile({ ...o, path: { id } }), undefined, 30_000);
+  }
+  listConnectionProfileModels(id: string, signal?: AbortSignal) {
+    return this.call((o) => api.listConnectionProfileModels({ ...o, path: { id } }), signal, 30_000);
+  }
+
   exportDiagnostics() {
     return this.call((o) => api.exportDiagnostics(o)) as Promise<Record<string, unknown>>;
   }

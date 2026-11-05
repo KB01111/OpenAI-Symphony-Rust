@@ -21,6 +21,8 @@ export const qk = {
   settings: ["settings"] as const,
   providers: ["providers"] as const,
   credentials: ["credentials"] as const,
+  connections: ["connections"] as const,
+  connectionModels: (id: string) => ["connections", "models", id] as const,
   runtime: ["runtime"] as const,
   remoteAccess: ["remote-access"] as const,
   backups: ["backups"] as const,

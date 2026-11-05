@@ -6,6 +6,7 @@ import { Alert, Badge, Button, cn, ErrorState, LoadingRows, PageHeader, Spinner,
 import { useMessages } from "../../lib/i18n.js";
 import { useSaveSettings, useSettings } from "../../lib/queries.js";
 import { useUiStore } from "../../store/uiStore.js";
+import { ConnectionsSection } from "../connections/ConnectionsSection.js";
 import { settingsMessages } from "./messages.js";
 import {
   AppearanceSection,
@@ -269,6 +270,7 @@ export default function SettingsPage() {
                 <div hidden={active !== "remote"}>
                   <RemoteSection draft={current} errors={errors} update={update} />
                 </div>
+                {active === "connections" ? <ConnectionsSection /> : null}
                 {active === "integrations" ? <IntegrationsSection /> : null}
                 {active === "backups" ? <BackupsSection draft={current} errors={errors} update={update} /> : null}
                 {active === "diagnostics" ? <DiagnosticsSection /> : null}

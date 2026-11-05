@@ -10,6 +10,10 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Added
 
+- **Connection profiles.** Settings → Model connections adds a model service from just its API key: the app
+  stores the key in the vault, saves the profile, tests the connection and lists the service's models, and the
+  model is picked on the profile's card. The status (not tested, verified, limited, error) is shown as text with
+  an icon, EN and SV.
 - **Connection profiles (backend).** A coding agent and the model service it talks to are now separate: a
   profile names a service (OpenRouter, OpenCode Go or NVIDIA Build), an optional base URL (https on the
   service's own host), a default model and an optional fallback profile. The API key stays in the credential
