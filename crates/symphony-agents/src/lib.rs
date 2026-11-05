@@ -26,6 +26,7 @@ pub mod connection_probe;
 pub mod detection;
 mod opencode_server;
 pub mod opencode_version;
+mod service_env;
 pub mod tool_events;
 pub use codesandbox::{
     find_runner_bundle, CloudLaunch, CodeSandboxSession, CSB_API_KEY, RUNNER_ENV,
@@ -1825,6 +1826,7 @@ impl AgentSession for OpenCodeSession {
         for key in SECRET_ENV_VARS_TO_STRIP {
             cmd.env_remove(key);
         }
+        service_env::scrub_unselected_service_keys(&mut cmd, &self.config.extra_env);
         for (k, v) in &self.config.extra_env {
             cmd.env(k, v);
         }

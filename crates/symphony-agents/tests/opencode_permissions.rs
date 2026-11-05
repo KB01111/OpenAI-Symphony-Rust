@@ -254,6 +254,7 @@ printf '%s' "$OPENCODE_PERMISSION" > permission.txt
 printf '%s' "$OPENROUTER_API_KEY" > profile-key.txt
 printf '%s' "$OPENCODE_CONFIG_CONTENT" > profile-config.txt
 printf '%s' "$GITHUB_TOKEN" > github-token.txt
+printf '%s|%s|%s' "$OPENROUTER_API_KEY" "$NVIDIA_API_KEY" "$OPENCODE_API_KEY" > service-keys.txt
 port=""; prev=""
 for a in "$@"; do [ "$prev" = "--port" ] && port="$a"; prev="$a"; done
 printf '%s' "$port" > port.txt.tmp && mv port.txt.tmp port.txt
@@ -671,4 +672,29 @@ async fn a_workspace_relative_launcher_is_version_checked_in_the_workspace() {
         other => panic!("{other:?}"),
     }
     assert!(!dir.path().join("serve-args.txt").exists());
+}
+
+/// On a profile run the other services' keys that happen to be set on the host are not inherited;
+/// without a profile an ambient key still reaches OpenCode, as it always did.
+#[tokio::test]
+async fn a_profile_run_does_not_inherit_other_services_keys() {
+    std::env::set_var("NVIDIA_API_KEY", "nvapi-host-key");
+    std::env::set_var("OPENCODE_API_KEY", "oc-host-key");
+    std::env::remove_var("OPENROUTER_API_KEY");
+    let profile = run_full(
+        ApprovalDecision::Accept,
+        None,
+        HashMap::from([(
+            "OPENROUTER_API_KEY".to_string(),
+            "sk-or-profile-key".to_string(),
+        )]),
+    )
+    .await;
+    let read = |r: &Run| std::fs::read_to_string(r.dir.path().join("service-keys.txt")).unwrap();
+    assert_eq!(read(&profile), "sk-or-profile-key||");
+
+    let plain = run_full(ApprovalDecision::Accept, None, HashMap::new()).await;
+    assert_eq!(read(&plain), "|nvapi-host-key|oc-host-key");
+    std::env::remove_var("NVIDIA_API_KEY");
+    std::env::remove_var("OPENCODE_API_KEY");
 }

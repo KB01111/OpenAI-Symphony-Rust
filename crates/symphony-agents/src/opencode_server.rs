@@ -139,6 +139,7 @@ impl Server {
         for key in SECRET_ENV_VARS_TO_STRIP {
             cmd.env_remove(key);
         }
+        service_env::scrub_unselected_service_keys(&mut cmd, &config.extra_env);
         for (k, v) in &config.extra_env {
             cmd.env(k, v);
         }
