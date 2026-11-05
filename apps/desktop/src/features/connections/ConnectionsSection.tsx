@@ -23,10 +23,10 @@ import {
   useTestConnectionProfile
 } from "../../lib/queries.js";
 import { SettingsSection } from "../settings/sections.js";
-import { SetCredentialDialog } from "../providers/CredentialControls.js";
+import { CredentialRow, SetCredentialDialog } from "../providers/CredentialControls.js";
 import { providerMessages } from "../providers/messages.js";
 import { ProfileDialog } from "./ProfileDialog.js";
-import { modelProblem, serviceInfo, statusTone } from "./connectionLogic.js";
+import { SERVICES, modelProblem, serviceInfo, statusTone } from "./connectionLogic.js";
 import { connectionMessages } from "./messages.js";
 
 const STATUS_ICONS: Record<ProfileStatus, React.ReactNode> = {
@@ -118,9 +118,13 @@ const ProfileCard: React.FC<{
           hint={
             models.isFetching
               ? m.modelsLoading
-              : options.length > 0
-                ? formatMessage(m.modelsCount, { count: options.length })
-                : undefined
+              : models.isError
+                ? `${m.modelsFailed}: ${errorMessage(models.error)}`
+                : options.length > 0
+                  ? formatMessage(m.modelsCount, { count: options.length })
+                  : models.data && models.data.status !== "verified"
+                    ? models.data.detail
+                    : undefined
           }
         >
           <Combobox value={model} options={options} onValueChange={setModel} placeholder={m.modelPlaceholder} />
@@ -185,13 +189,24 @@ export const ConnectionsSection: React.FC = () => {
   const credentials = useCredentials();
   const [dialog, setDialog] = useState<{ profile: ProviderProfile | null } | null>(null);
   const configured = new Set(credentials.data?.configured ?? []);
+  // Service keys left in the vault with no connection to manage them.
+  const orphanKeys = SERVICES.filter(
+    (s) => configured.has(s.credentialKey) && !(profiles.data ?? []).some((p) => p.service === s.id)
+  );
 
   return (
     <SettingsSection id="connections" intro={m.intro}>
-      {profiles.isPending ? (
+      {profiles.isPending || credentials.isPending ? (
         <LoadingRows rows={2} />
       ) : profiles.isError ? (
         <ErrorState title={m.loadError} message={errorMessage(profiles.error)} onRetry={() => void profiles.refetch()} />
+      ) : credentials.isError ? (
+        // Not an empty key list: that would show every connection as having no key.
+        <ErrorState
+          title={m.credentialsLoadError}
+          message={errorMessage(credentials.error)}
+          onRetry={() => void credentials.refetch()}
+        />
       ) : (
         <div className="space-y-3">
           {profiles.data.length === 0 ? (
@@ -210,6 +225,19 @@ export const ConnectionsSection: React.FC = () => {
             ))
           )}
           <Button onClick={() => setDialog({ profile: null })}>{m.add}</Button>
+          {orphanKeys.length > 0 ? (
+            <div className="space-y-2 border-t border-border pt-3">
+              <h3 className="text-xs font-semibold text-foreground">{m.orphanTitle}</h3>
+              <p className="text-xs text-muted-foreground">{m.orphanHint}</p>
+              <ul className="divide-y divide-border">
+                {orphanKeys.map((s) => (
+                  <li key={s.id} className="py-2 first:pt-0 last:pb-0">
+                    <CredentialRow keyName={s.credentialKey} configured description={m.services[s.id]} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       )}
       {dialog ? (

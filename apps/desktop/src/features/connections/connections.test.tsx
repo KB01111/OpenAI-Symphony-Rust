@@ -52,7 +52,7 @@ function runtime(initial: ProviderProfile[] = [], configured: string[] = [], tes
       return created;
     },
     "PUT /connection-profiles/:id": ({ path, body }) => {
-      const id = (path as unknown as { id: string }).id;
+      const id = path.split("/").pop()!;
       const updated = fromInput(id, body as ConnectionProfileInput);
       profiles = profiles.map((p) => (p.id === id ? { ...updated, status: p.status, status_detail: p.status_detail } : p));
       return profiles.find((p) => p.id === id);
@@ -151,5 +151,67 @@ describe("Model connections", () => {
     fireEvent.click(within(confirm).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(rt.calls.some((c) => c.method === "DELETE" && c.path.endsWith("/connection-profiles/p1"))).toBe(true));
     expect(await screen.findByText("No model connections yet")).toBeInTheDocument();
+  });
+
+  it("never stores a key typed for one service under another", async () => {
+    const rt = runtime();
+    render(rt);
+    fireEvent.click(await screen.findByRole("button", { name: "Add connection" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText(/API key/), { target: { value: KEY } });
+    // Switch to NVIDIA Build before connecting: the typed key is dropped, so Connect needs a new one.
+    fireEvent.click(within(dialog).getByRole("combobox", { name: /Service/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "NVIDIA Build" }));
+    expect((within(dialog).getByLabelText(/API key/) as HTMLInputElement).value).toBe("");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+    expect(await within(dialog).findByText("Enter the API key to connect.")).toBeInTheDocument();
+    expect(rt.calls.some((c) => c.method === "POST")).toBe(false);
+  });
+
+  it("explains a pasted key with a control character instead of dropping it", async () => {
+    const rt = runtime();
+    render(rt);
+    fireEvent.click(await screen.findByRole("button", { name: "Add connection" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText(/API key/), { target: { value: `${KEY}\0extra` } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+    expect(await within(dialog).findByText("The key must be a single line. Paste it again.")).toBeInTheDocument();
+    expect(rt.calls.some((c) => c.method === "POST")).toBe(false);
+  });
+
+  it("retries after a failed test on the profile it already saved instead of creating another", async () => {
+    const rt = runtime();
+    let failures = 1;
+    rt.on("POST /connection-profiles/:id/test", () => {
+      if (failures-- > 0) return { status: 500, body: { error: { code: "boom", message: "boom" } } };
+      return { profile: profile({ id: "p1", status: "verified" }), models: [] };
+    });
+    render(rt);
+    fireEvent.click(await screen.findByRole("button", { name: "Add connection" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText(/API key/), { target: { value: KEY } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(rt.calls.filter((c) => c.path.endsWith("/test"))).toHaveLength(1));
+    // The dialog stays open; connecting again updates p1 rather than creating p2.
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(rt.calls.filter((c) => c.path.endsWith("/test"))).toHaveLength(2));
+    expect(rt.calls.filter((c) => c.method === "POST" && c.path.endsWith("/connection-profiles"))).toHaveLength(1);
+    expect(rt.calls.some((c) => c.method === "PUT" && c.path.endsWith("/connection-profiles/p1"))).toBe(true);
+  });
+
+  it("keeps a stored key reachable after the last connection to its service is removed", async () => {
+    const rt = runtime([], ["OPENROUTER_API_KEY"]);
+    render(rt);
+    expect(await screen.findByText("Stored keys without a connection")).toBeInTheDocument();
+    expect(screen.getByText("OPENROUTER_API_KEY")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove OPENROUTER_API_KEY" })).toBeInTheDocument();
+  });
+
+  it("does not show connections as keyless when the key lookup failed", async () => {
+    const rt = runtime([profile()], ["OPENROUTER_API_KEY"]);
+    rt.on("GET /credentials", () => ({ status: 500, body: { error: { code: "boom", message: "vault unreadable" } } }));
+    render(rt);
+    expect(await screen.findByText("Could not check which API keys are stored")).toBeInTheDocument();
+    expect(screen.queryByText("Not set")).not.toBeInTheDocument();
   });
 });

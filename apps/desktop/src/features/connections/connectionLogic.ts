@@ -58,7 +58,8 @@ export function baseUrlProblem(service: ServiceInfo, value: string): BaseUrlProb
     return "invalid";
   }
   if (url.protocol !== "https:") return "insecure";
-  if (url.username || url.password || url.port || url.search || url.hash) return "invalid";
+  // A bare `?` or `#` leaves `search`/`hash` empty, but the runtime refuses it all the same.
+  if (url.username || url.password || url.port || /[?#]/.test(text)) return "invalid";
   return url.hostname.toLowerCase() === service.host ? null : "host";
 }
 

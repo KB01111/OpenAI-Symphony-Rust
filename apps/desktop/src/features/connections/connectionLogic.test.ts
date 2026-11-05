@@ -19,6 +19,8 @@ describe("connection logic", () => {
     expect(baseUrlProblem(openrouter, "https://user:pw@openrouter.ai/v1")).toBe("invalid");
     expect(baseUrlProblem(openrouter, "https://openrouter.ai:8443/v1")).toBe("invalid");
     expect(baseUrlProblem(openrouter, "not a url")).toBe("invalid");
+    expect(baseUrlProblem(openrouter, "https://openrouter.ai/api/v1?")).toBe("invalid");
+    expect(baseUrlProblem(openrouter, "https://openrouter.ai/api/v1#")).toBe("invalid");
   });
 
   it("names a second profile of a service differently", () => {

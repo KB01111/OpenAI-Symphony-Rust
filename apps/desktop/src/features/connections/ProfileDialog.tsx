@@ -61,6 +61,9 @@ export const ProfileDialog: React.FC<{
   const [isDefault, setIsDefault] = useState(profile?.is_default ?? profiles.length === 0);
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [keyInvalid, setKeyInvalid] = useState(false);
+  // Once saved, a retry (after a failed test, say) updates this profile instead of creating another.
+  const [savedId, setSavedId] = useState<string | undefined>(profile?.id);
 
   const stored = keyConfigured(service.credentialKey);
   const urlProblem = baseUrlProblem(service, baseUrl);
@@ -87,17 +90,21 @@ export const ProfileDialog: React.FC<{
     if (busy) return;
     setSubmitted(true);
     if (urlProblem || needsKey || !effectiveName) return;
-    setBusy(true);
     const value = secret;
     // Cleared immediately: the key is not retained anywhere in the UI after submission.
     setSecret("");
+    if (/[\r\n\0]/.test(value)) {
+      setKeyInvalid(true);
+      return;
+    }
+    setKeyInvalid(false);
+    setBusy(true);
     try {
       if (value.trim()) {
-        if (/[\r\n\0]/.test(value)) return;
         await saveKey.mutateAsync({ key: service.credentialKey, value });
       }
       const saved = await saveProfile.mutateAsync({
-        id: profile?.id,
+        id: savedId,
         input: {
           name: effectiveName,
           service: service.id,
@@ -107,6 +114,7 @@ export const ProfileDialog: React.FC<{
           is_default: isDefault
         }
       });
+      setSavedId(saved.id);
       const result = await test.mutateAsync(saved.id);
       const status = result.profile.status;
       notify(
@@ -136,7 +144,12 @@ export const ProfileDialog: React.FC<{
           <DialogBody>
             <div className="space-y-3 py-1">
               <Field label={m.serviceLabel}>
-                <Select value={serviceId} disabled={editing} onValueChange={(v) => setServiceId(v as ModelService)}>
+                <Select value={serviceId} disabled={editing} onValueChange={(v) => {
+                    // A key typed for one service must never be stored under another.
+                    setServiceId(v as ModelService);
+                    setSecret("");
+                    setKeyInvalid(false);
+                  }}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -152,7 +165,7 @@ export const ProfileDialog: React.FC<{
               <Field
                 label={m.keyLabel}
                 hint={stored ? m.keyHintStored : m.keyHintNew}
-                error={submitted && needsKey ? m.keyRequired : undefined}
+                error={keyInvalid ? m.keyInvalid : submitted && needsKey ? m.keyRequired : undefined}
                 required={!stored}
               >
                 <Input
@@ -162,7 +175,10 @@ export const ProfileDialog: React.FC<{
                   name={`secret-${service.credentialKey}`}
                   autoComplete="new-password"
                   spellCheck={false}
-                  onChange={(e) => setSecret(e.target.value)}
+                  onChange={(e) => {
+                    setSecret(e.target.value);
+                    setKeyInvalid(false);
+                  }}
                 />
               </Field>
               <Field label={m.nameLabel} error={submitted && !effectiveName ? m.nameRequired : undefined}>
