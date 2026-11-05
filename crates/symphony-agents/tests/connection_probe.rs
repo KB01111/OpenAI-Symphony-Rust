@@ -123,7 +123,7 @@ async fn a_service_with_a_key_check_is_verified_only_when_the_check_passes() {
 
     let (check, _) = serve("200 OK", "", r#"{"data":{"label":"k"}}"#).await;
     let (models, _) = serve("200 OK", "", r#"{"data":[{"id":"a/b"}]}"#).await;
-    let ok = probe(Some(&check), &models, false, "sk-right").await;
+    let ok = probe(Some(&check), &models, true, "sk-right").await;
     assert_eq!(ok.status, ProfileStatus::Verified, "{ok:?}");
     assert_eq!(ok.models, ["a/b"]);
 }
@@ -156,4 +156,13 @@ async fn an_oversized_model_list_is_abandoned_not_buffered() {
     let result = probe_models_url(&url, "k").await;
     assert_eq!(result.status, ProfileStatus::Limited, "{:?}", result.detail);
     assert!(result.models.is_empty());
+}
+
+#[tokio::test]
+async fn a_missing_key_check_endpoint_cannot_verify_a_public_model_list() {
+    let (check, _) = serve("404 Not Found", "", "{}").await;
+    let (models, _) = serve("200 OK", "", r#"{"data":[{"id":"a/b"}]}"#).await;
+    let result = probe(Some(&check), &models, true, "sk-anything").await;
+    assert_eq!(result.status, ProfileStatus::Limited, "{result:?}");
+    assert_eq!(result.models, ["a/b"]);
 }

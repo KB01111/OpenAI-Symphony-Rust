@@ -67,9 +67,13 @@ pub fn parse_model_ids(body: &Value) -> Vec<String> {
 /// list. A service that lists models without checking the key and has no key check cannot be
 /// verified; the connection is then at most `limited`.
 pub async fn probe_models(conn: &ResolvedConnection, api_key: &str) -> ProbeResult {
-    let key_check = conn.key_check_url();
-    let unchecked = conn.service.lists_models_without_key() && key_check.is_none();
-    probe(key_check.as_deref(), &conn.models_url(), unchecked, api_key).await
+    probe(
+        conn.key_check_url().as_deref(),
+        &conn.models_url(),
+        conn.service.lists_models_without_key(),
+        api_key,
+    )
+    .await
 }
 
 /// Probe a models URL that checks the key. Callers outside tests go through [`probe_models`].
@@ -77,11 +81,12 @@ pub async fn probe_models_url(url: &str, api_key: &str) -> ProbeResult {
     probe(None, url, false, api_key).await
 }
 
-/// [`probe_models`] against explicit URLs.
+/// [`probe_models`] against explicit URLs. `models_are_public` says the model list is served
+/// without checking the key, so only a passed key check can verify the connection.
 pub async fn probe(
     key_check_url: Option<&str>,
     models_url: &str,
-    models_listed_without_key: bool,
+    models_are_public: bool,
     api_key: &str,
 ) -> ProbeResult {
     let client = match reqwest::Client::builder()
@@ -92,13 +97,16 @@ pub async fn probe(
         Ok(client) => client,
         Err(_) => return ProbeResult::new(ProfileStatus::Error, "could not create an HTTP client"),
     };
+    let mut key_checked = false;
     if let Some(url) = key_check_url {
-        if let Some(failed) = key_check(&client, url, api_key).await {
-            return failed;
+        match key_check(&client, url, api_key).await {
+            KeyCheck::Passed => key_checked = true,
+            KeyCheck::Unavailable => {}
+            KeyCheck::Failed(result) => return result,
         }
     }
     let mut result = list_models(&client, models_url, api_key).await;
-    if result.status == ProfileStatus::Verified && models_listed_without_key {
+    if result.status == ProfileStatus::Verified && models_are_public && !key_checked {
         result.status = ProfileStatus::Limited;
         result.detail = format!(
             "{}; this service lists models without checking the key, so the key is first checked when a task uses it",
@@ -108,26 +116,31 @@ pub async fn probe(
     result
 }
 
-/// `Some` when the key check says the connection is not usable; `None` when the key passed.
-async fn key_check(client: &reqwest::Client, url: &str, api_key: &str) -> Option<ProbeResult> {
+enum KeyCheck {
+    Passed,
+    /// The service has no such endpoint (404/405/501): nothing was checked.
+    Unavailable,
+    Failed(ProbeResult),
+}
+
+async fn key_check(client: &reqwest::Client, url: &str, api_key: &str) -> KeyCheck {
     let response = match client.get(url).bearer_auth(api_key).send().await {
         Ok(response) => response,
-        Err(e) => return Some(unreachable(&e)),
+        Err(e) => return KeyCheck::Failed(unreachable(&e)),
     };
     match response.status().as_u16() {
-        200..=299 => None,
-        code @ (401 | 403) => Some(ProbeResult::new(
+        200..=299 => KeyCheck::Passed,
+        code @ (401 | 403) => KeyCheck::Failed(ProbeResult::new(
             ProfileStatus::Error,
             format!("the service refused the key (HTTP {code})"),
         )),
-        // No such check on this deployment: the model list decides.
-        404 | 405 | 501 => None,
-        code @ 300..=399 => Some(redirected(code)),
-        429 => Some(ProbeResult::new(
+        404 | 405 | 501 => KeyCheck::Unavailable,
+        code @ 300..=399 => KeyCheck::Failed(redirected(code)),
+        429 => KeyCheck::Failed(ProbeResult::new(
             ProfileStatus::Limited,
             "the service is rate limiting this key (HTTP 429)",
         )),
-        code => Some(ProbeResult::new(
+        code => KeyCheck::Failed(ProbeResult::new(
             ProfileStatus::Error,
             format!("the service answered HTTP {code}"),
         )),
