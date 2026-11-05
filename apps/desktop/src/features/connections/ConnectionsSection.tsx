@@ -217,7 +217,8 @@ export const ConnectionsSection: React.FC = () => {
           ) : (
             profiles.data.map((profile) => (
               <ProfileCard
-                key={profile.id}
+                // A saved model change (from the dialog, say) must reach the model field.
+                key={`${profile.id}:${profile.model ?? ""}`}
                 profile={profile}
                 keyConfigured={configured.has(serviceInfo(profile.service)?.credentialKey ?? profile.credential_ref ?? "")}
                 onEdit={(p) => setDialog({ profile: p })}

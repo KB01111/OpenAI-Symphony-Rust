@@ -200,11 +200,18 @@ describe("Model connections", () => {
   });
 
   it("keeps a stored key reachable after the last connection to its service is removed", async () => {
-    const rt = runtime([], ["OPENROUTER_API_KEY"]);
+    const rt = runtime([profile()], ["OPENROUTER_API_KEY"]);
     render(rt);
+    const card = await screen.findByRole("region", { name: "OpenRouter" });
+    expect(screen.queryByText("Stored keys without a connection")).not.toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "Remove OpenRouter" }));
+    const confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Remove" }));
+    // The connection is gone, the key is not: it is offered for Replace/Remove.
     expect(await screen.findByText("Stored keys without a connection")).toBeInTheDocument();
     expect(screen.getByText("OPENROUTER_API_KEY")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Remove OPENROUTER_API_KEY" })).toBeInTheDocument();
+    expect(rt.calls.some((c) => c.method === "DELETE" && c.path.endsWith("/credentials/OPENROUTER_API_KEY"))).toBe(false);
   });
 
   it("does not show connections as keyless when the key lookup failed", async () => {

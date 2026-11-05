@@ -1820,7 +1820,11 @@ async fn put_settings_handler(
     State(state): State<ServerState>,
     Json(mut settings): Json<AppSettings>,
 ) -> Response {
-    // A service key that settings already hold, resubmitted unchanged, is not a new secret.
+    // Every settings write goes through this handler; holding the lock from the read below to the
+    // save keeps "keep the stored value" from restoring a value another request just replaced.
+    let _write = SETTINGS_WRITE.lock().await;
+    // A service key that settings already hold, resubmitted unchanged, is not a new secret. Read under
+    // the lock, so a concurrent save cannot remove the key between this check and the write.
     let stored_env = match state.orchestrator.storage().get_settings().await {
         Ok(stored) => stored.extra_env_vars,
         Err(e) => return error_response(e),
@@ -1832,9 +1836,6 @@ async fn put_settings_handler(
     if let Err(msg) = validate_settings(&checked) {
         return api_error(StatusCode::BAD_REQUEST, "invalid_settings", msg);
     }
-    // Every settings write goes through this handler; holding the lock from the read below to the
-    // save keeps "keep the stored value" from restoring a value another request just replaced.
-    let _write = SETTINGS_WRITE.lock().await;
     // A client that predates a field omits it: keep what is stored rather than resetting it
     // (for the retention period a reset to the default would start deleting history).
     if settings.event_retention_days.is_none()

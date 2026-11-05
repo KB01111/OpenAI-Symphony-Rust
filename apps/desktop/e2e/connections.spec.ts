@@ -3,6 +3,10 @@ import { api, openApp, prepareRuntime } from "./helpers.js";
 
 test.beforeAll(async () => {
   await prepareRuntime();
+  // Start from none, so a profile left by an interrupted run cannot change the counts below.
+  for (const left of await api<{ id: string }[]>("GET", "/connection-profiles")) {
+    await api("DELETE", `/connection-profiles/${left.id}`);
+  }
 });
 
 // Runs against the real runtime and vault. The service is not reachable with this made-up key (offline

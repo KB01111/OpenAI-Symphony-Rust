@@ -77,7 +77,8 @@ export const ProfileDialog: React.FC<{
           : undefined;
   const effectiveName = name.trim() || (editing ? "" : nextProfileName(service, profiles));
   const needsKey = !stored && secret.trim().length === 0;
-  const fallbackOptions = profiles.filter((p) => p.id !== profile?.id);
+  // Neither the profile being edited nor one this dialog already saved (a retry after a failed test).
+  const fallbackOptions = profiles.filter((p) => p.id !== (profile?.id ?? savedId));
 
   const close = () => {
     setSecret("");

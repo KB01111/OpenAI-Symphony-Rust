@@ -93,6 +93,8 @@ async fn the_service_keys_are_allowed_and_stay_out_of_the_process_environment() 
         assert!(ALLOWED_CREDENTIAL_KEYS.contains(&key), "{key}");
     }
     let (app, _dir) = app().await;
+    // The shell or CI may already export it; what matters is that storing it changes nothing.
+    let before = std::env::var("OPENROUTER_API_KEY").ok();
     let (status, _) = call(
         &app,
         Method::POST,
@@ -101,7 +103,11 @@ async fn the_service_keys_are_allowed_and_stay_out_of_the_process_environment() 
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(std::env::var("OPENROUTER_API_KEY").is_err());
+    assert_eq!(std::env::var("OPENROUTER_API_KEY").ok(), before);
+    assert_ne!(
+        std::env::var("OPENROUTER_API_KEY").ok().as_deref(),
+        Some(KEY)
+    );
     let (_, listed) = call(&app, Method::GET, "/credentials", None).await;
     assert!(listed["configured"]
         .as_array()

@@ -298,6 +298,15 @@ impl SymphonyOrchestrator {
                     connection.credential_key()
                 ))
             })?;
+        // Without a model OpenCode would pick its own default, which may belong to another provider.
+        if connection.model_id.is_none() {
+            return Err(SymphonyError::InvalidConfig(format!(
+                "Connection profile \"{}\" has no default model: pick one in Settings → Model connections, \
+                 or give the task a model such as {}/…",
+                profile.name,
+                connection.service.opencode_provider_id()
+            )));
+        }
         let config = connection.opencode_config().to_string();
         Ok(Some(RunConnection {
             env: HashMap::from([
@@ -695,5 +704,45 @@ mod tests {
             .filter(|p| p.is_default)
             .count();
         assert_eq!(defaults, 1);
+    }
+
+    #[tokio::test]
+    async fn a_run_through_a_profile_without_a_model_fails_instead_of_using_opencodes_default() {
+        let (orch, _dir) = orchestrator().await;
+        orch.save_connection_profile(
+            None,
+            ConnectionProfileInput {
+                model: None,
+                ..input("Main", ModelService::OpenRouter)
+            },
+        )
+        .await
+        .unwrap();
+        orch.secret_store()
+            .set_secret("OPENROUTER_API_KEY", KEY)
+            .unwrap();
+
+        // No model on the task and none on the profile.
+        let err = orch
+            .resolve_run_connection(None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("has no default model") && err.contains("openrouter/"),
+            "{err}"
+        );
+        // A model on the task is enough.
+        let run = orch
+            .resolve_run_connection(Some("openrouter/openai/gpt-5.5"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.model.as_deref(), Some("openrouter/openai/gpt-5.5"));
+        // The connection test and model listing do not need a model.
+        assert!(orch
+            .connection_profile_models(&orch.connection_profiles().await.unwrap()[0].id)
+            .await
+            .is_ok());
     }
 }
