@@ -85,9 +85,16 @@ jobs:
           persist-credentials: false
 
       # Seconds instead of a full build: a smoke-test script PowerShell cannot parse fails here.
+      # An older tag that is rebuilt by hand predates the checker, so it is skipped for those.
       - name: Check PowerShell script syntax
         shell: pwsh
-        run: pwsh -NoProfile -File scripts/check-powershell-syntax.ps1
+        run: |
+          if (-not (Test-Path scripts/check-powershell-syntax.ps1)) {
+            Write-Host "::notice::$env:RELEASE_TAG predates scripts/check-powershell-syntax.ps1; skipping the syntax check"
+            exit 0
+          }
+          pwsh -NoProfile -File scripts/check-powershell-syntax.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       # No build caches in this job: a release must not restore anything written by other runs.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
