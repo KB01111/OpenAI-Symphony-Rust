@@ -40,6 +40,7 @@ import { useCredentials, useProviders, useRuntimeState, useWorkflow } from "../.
 import { useRuntime } from "../../runtime/RuntimeProvider.js";
 import { CredentialRow } from "../providers/CredentialControls.js";
 import { PROVIDER_CREDENTIAL_KEYS } from "../providers/ProviderCard.js";
+import { SERVICE_CREDENTIAL_KEYS } from "../connections/connectionLogic.js";
 import {
   useBackups,
   useCancelRestore,
@@ -65,6 +66,7 @@ export const SECTION_IDS: ReadonlyArray<SectionId> = [
   "desktop",
   "scheduling",
   "defaults",
+  "connections",
   "remote",
   "integrations",
   "backups",
@@ -571,7 +573,8 @@ export const RemoteSection: React.FC<FormSectionProps> = ({ draft, errors, updat
 // Integrations credentials
 // ---------------------------------------------------------------------------------------------
 
-const PROVIDER_KEYS = new Set(Object.values(PROVIDER_CREDENTIAL_KEYS));
+// Keys with a home of their own (agent providers on the Providers page, model services under Connections).
+const PROVIDER_KEYS = new Set<string>([...Object.values(PROVIDER_CREDENTIAL_KEYS), ...SERVICE_CREDENTIAL_KEYS]);
 
 export const IntegrationsSection: React.FC = () => {
   const m = useMessages(settingsMessages);

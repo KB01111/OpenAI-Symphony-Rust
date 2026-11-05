@@ -11,6 +11,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   CloudAgentKind,
+  ConnectionProfileInput,
   CreateProjectRequest,
   CreateTaskRequest,
   GraphLevel,
@@ -436,6 +437,23 @@ export function useCredentials() {
   return useQuery({ queryKey: qk.credentials, queryFn: ({ signal }) => client.listCredentials(signal) });
 }
 
+export function useConnectionProfiles() {
+  const client = useClient();
+  return useQuery({ queryKey: qk.connections, queryFn: ({ signal }) => client.listConnectionProfiles(signal) });
+}
+
+/** Models the profile's service lists right now; asked only when `enabled` (a key is stored). */
+export function useConnectionModels(id: string, enabled: boolean) {
+  const client = useClient();
+  return useQuery({
+    queryKey: qk.connectionModels(id),
+    queryFn: ({ signal }) => client.listConnectionProfileModels(id, signal),
+    enabled,
+    staleTime: 5 * 60_000,
+    retry: false
+  });
+}
+
 // ---------------------------------------------------------------------------------------------
 // Mutations — every mutation reports failures through a toast and refreshes affected caches.
 // ---------------------------------------------------------------------------------------------
@@ -719,6 +737,8 @@ export function useSaveCredential() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.credentials });
       void qc.invalidateQueries({ queryKey: qk.providers });
+      // The runtime clears the earlier test result of the profiles that use this key.
+      void qc.invalidateQueries({ queryKey: qk.connections });
     },
     onError
   });
@@ -732,6 +752,56 @@ export function useDeleteCredential() {
     mutationFn: (key: string) => client.deleteCredential(key),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.credentials });
+      void qc.invalidateQueries({ queryKey: qk.providers });
+      void qc.invalidateQueries({ queryKey: qk.connections });
+    },
+    onError
+  });
+}
+
+export function useSaveConnectionProfile() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: ({ id, input }: { id?: string; input: ConnectionProfileInput }) =>
+      id ? client.updateConnectionProfile(id, input) : client.createConnectionProfile(input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.connections });
+      void qc.invalidateQueries({ queryKey: qk.providers });
+    },
+    onError
+  });
+}
+
+export function useDeleteConnectionProfile() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: (id: string) => client.deleteConnectionProfile(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.connections });
+      void qc.invalidateQueries({ queryKey: qk.providers });
+    },
+    onError
+  });
+}
+
+/** Tests the connection and records the result; the models it listed are cached for the picker. */
+export function useTestConnectionProfile() {
+  const client = useClient();
+  const qc = useQueryClient();
+  const onError = useFailureToast();
+  return useMutation({
+    mutationFn: (id: string) => client.testConnectionProfile(id),
+    onSuccess: (result) => {
+      qc.setQueryData(qk.connectionModels(result.profile.id), {
+        status: result.profile.status,
+        detail: result.profile.status_detail ?? "",
+        models: result.models
+      });
+      void qc.invalidateQueries({ queryKey: qk.connections, exact: true });
       void qc.invalidateQueries({ queryKey: qk.providers });
     },
     onError
