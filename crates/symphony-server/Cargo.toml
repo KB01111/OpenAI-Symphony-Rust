@@ -34,4 +34,5 @@ url.workspace = true
 tempfile.workspace = true
 tower.workspace = true
 http-body-util = "0.1"
+async-trait.workspace = true
 reqwest.workspace = true

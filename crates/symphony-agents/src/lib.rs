@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 
 pub mod codesandbox;
+pub mod connection_probe;
 pub mod detection;
 mod opencode_server;
 pub mod opencode_version;

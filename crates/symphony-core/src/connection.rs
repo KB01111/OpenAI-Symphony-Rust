@@ -255,6 +255,24 @@ pub fn validate_profile(profile: &ProviderProfile) -> SymphonyResult<ModelServic
     Ok(service)
 }
 
+/// What a client sends to create or change a connection profile. The key itself is stored
+/// separately through the credential endpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ConnectionProfileInput {
+    pub name: String,
+    pub service: ModelService,
+    /// `None` uses the service's preset base URL.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Default model, as the service names it (`anthropic/claude-sonnet-5.5`).
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub fallback_profile_id: Option<String>,
+    #[serde(default)]
+    pub is_default: bool,
+}
+
 /// A profile as used by discovery, the connection test and a run. Holds no secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedConnection {
@@ -327,6 +345,80 @@ pub fn resolve_connection(
         base_url: effective_base_url(profile, service),
         model_id,
     })
+}
+
+/// Which profile a run uses.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Selection<'a> {
+    /// No connection profile applies; the agent keeps its own authentication.
+    NoProfile,
+    /// Use this profile; `fell_back` when it is the fallback of the one the run asked for.
+    Use {
+        profile: &'a ProviderProfile,
+        fell_back: bool,
+    },
+    /// A profile applies but its service has no key in the vault.
+    MissingKey { profile: &'a ProviderProfile },
+}
+
+/// Pick the connection profile for an OpenCode run.
+///
+/// A model reference (`openrouter/anthropic/claude-…`) selects the profile of that service (the
+/// default one first); with no model, the default profile applies. A bare model or one of another
+/// provider (`anthropic/…`) is left to OpenCode. When the chosen profile has no key, or its last test
+/// failed, its fallback is used if that one has a key; a profile whose test failed but has a key is
+/// still tried when there is nothing better, since a failed test may have been a passing outage.
+pub fn select_profile<'a>(
+    profiles: &'a [ProviderProfile],
+    requested_model: Option<&str>,
+    has_key: impl Fn(ModelService) -> bool,
+) -> Selection<'a> {
+    let mut candidates = profiles
+        .iter()
+        .filter(|p| p.provider == ProviderKind::OpenCode && p.service.is_some());
+    let requested = requested_model.map(str::trim).filter(|m| !m.is_empty());
+    let primary = match requested {
+        Some(model) => {
+            let Some(service) = ModelService::from_model_ref(model) else {
+                return Selection::NoProfile;
+            };
+            let of_service: Vec<_> = candidates.filter(|p| p.service == Some(service)).collect();
+            of_service
+                .iter()
+                .copied()
+                .find(|p| p.is_default)
+                .or_else(|| of_service.first().copied())
+        }
+        None => candidates.find(|p| p.is_default),
+    };
+    let Some(primary) = primary else {
+        return Selection::NoProfile;
+    };
+    let keyed = |p: &ProviderProfile| p.service.is_some_and(&has_key);
+    if keyed(primary) && primary.status != ProfileStatus::Error {
+        return Selection::Use {
+            profile: primary,
+            fell_back: false,
+        };
+    }
+    let fallback = primary
+        .fallback_profile_id
+        .as_deref()
+        .and_then(|id| profiles.iter().find(|p| p.id == id))
+        .filter(|p| p.provider == ProviderKind::OpenCode && p.service.is_some() && keyed(p));
+    if let Some(fallback) = fallback {
+        return Selection::Use {
+            profile: fallback,
+            fell_back: true,
+        };
+    }
+    if keyed(primary) {
+        return Selection::Use {
+            profile: primary,
+            fell_back: false,
+        };
+    }
+    Selection::MissingKey { profile: primary }
 }
 
 #[cfg(test)]
@@ -493,5 +585,83 @@ mod tests {
             ModelService::OpenRouter
         );
         assert!("nope".parse::<ModelService>().is_err());
+    }
+
+    fn named(id: &str, service: ModelService, default: bool) -> ProviderProfile {
+        let mut p = profile(service);
+        p.id = id.into();
+        p.is_default = default;
+        p
+    }
+
+    #[test]
+    fn a_model_reference_selects_the_profile_of_its_service() {
+        let profiles = [
+            named("or1", ModelService::OpenRouter, false),
+            named("or2", ModelService::OpenRouter, true),
+            named("nv", ModelService::NvidiaBuild, true),
+        ];
+        let all_keys = |_| true;
+        let pick = |model: Option<&str>| match select_profile(&profiles, model, all_keys) {
+            Selection::Use { profile, fell_back } => Some((profile.id.clone(), fell_back)),
+            _ => None,
+        };
+        assert_eq!(
+            pick(Some("openrouter/openai/gpt-5.5")),
+            Some(("or2".into(), false))
+        );
+        assert_eq!(pick(Some("nvidia/meta/llama")), Some(("nv".into(), false)));
+        // No model: the default profile (the first one flagged, in list order).
+        assert_eq!(pick(None), Some(("or2".into(), false)));
+        // OpenCode's own providers, bare models and other services are not hijacked.
+        assert_eq!(pick(Some("anthropic/claude-sonnet-5.5")), None);
+        assert_eq!(pick(Some("gpt-5.5")), None);
+        assert_eq!(pick(Some("opencode-go/glm")), None); // no such profile
+        assert!(matches!(
+            select_profile(&[], None, all_keys),
+            Selection::NoProfile
+        ));
+    }
+
+    #[test]
+    fn a_missing_key_or_failed_test_falls_back_when_the_fallback_has_a_key() {
+        let mut main = named("or", ModelService::OpenRouter, true);
+        main.fallback_profile_id = Some("nv".into());
+        let backup = named("nv", ModelService::NvidiaBuild, false);
+        let profiles = [main, backup];
+
+        let only_nvidia = |s: ModelService| s == ModelService::NvidiaBuild;
+        match select_profile(&profiles, None, only_nvidia) {
+            Selection::Use { profile, fell_back } => {
+                assert_eq!((profile.id.as_str(), fell_back), ("nv", true))
+            }
+            other => panic!("{other:?}"),
+        }
+        // Nothing has a key: report the profile that was asked for.
+        match select_profile(&profiles, None, |_| false) {
+            Selection::MissingKey { profile } => assert_eq!(profile.id, "or"),
+            other => panic!("{other:?}"),
+        }
+        // A failed test with a key and no usable fallback is still tried.
+        let mut failed = named("or", ModelService::OpenRouter, true);
+        failed.status = ProfileStatus::Error;
+        let profiles = [failed];
+        match select_profile(&profiles, None, |_| true) {
+            Selection::Use { profile, fell_back } => {
+                assert_eq!((profile.id.as_str(), fell_back), ("or", false))
+            }
+            other => panic!("{other:?}"),
+        }
+        // A verified primary is never replaced by its fallback.
+        let mut ok = named("or", ModelService::OpenRouter, true);
+        ok.status = ProfileStatus::Verified;
+        ok.fallback_profile_id = Some("nv".into());
+        let profiles = [ok, named("nv", ModelService::NvidiaBuild, false)];
+        match select_profile(&profiles, None, |_| true) {
+            Selection::Use { profile, fell_back } => {
+                assert_eq!((profile.id.as_str(), fell_back), ("or", false))
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

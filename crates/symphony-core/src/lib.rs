@@ -8,8 +8,8 @@ pub mod usage;
 pub mod workflow;
 
 pub use connection::{
-    effective_base_url, resolve_connection, validate_base_url, validate_profile, ModelService,
-    ProfileStatus, ResolvedConnection,
+    effective_base_url, resolve_connection, select_profile, validate_base_url, validate_profile,
+    ConnectionProfileInput, ModelService, ProfileStatus, ResolvedConnection, Selection,
 };
 pub use domain::*;
 pub use error::{SymphonyError, SymphonyResult};

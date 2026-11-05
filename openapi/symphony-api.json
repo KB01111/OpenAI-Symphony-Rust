@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "2.0.0"
+    "version": "2.0.1"
   },
   "paths": {
     "/api/v1/health": {
@@ -3052,6 +3052,278 @@
         "x-symphony-remote": false
       }
     },
+    "/api/v1/connection-profiles": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "listConnectionProfiles",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderProfile"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      },
+      "post": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "createConnectionProfile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectionProfileInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderProfile"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
+    "/api/v1/connection-profiles/{id}": {
+      "put": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "updateConnectionProfile",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection profile id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectionProfileInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderProfile"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      },
+      "delete": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "deleteConnectionProfile",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection profile id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
+    "/api/v1/connection-profiles/{id}/test": {
+      "post": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "testConnectionProfile",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection profile id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionTestResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
+    "/api/v1/connection-profiles/{id}/models": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "operationId": "listConnectionProfileModels",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection profile id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionModels"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (`ApiErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-symphony-remote": false
+      }
+    },
     "/api/v1/diagnostics/export": {
       "get": {
         "tags": [
@@ -4838,6 +5110,87 @@
           "ambiguous"
         ]
       },
+      "ConnectionModels": {
+        "type": "object",
+        "description": "The models a profile's service lists right now (the stored status is not changed).",
+        "required": [
+          "status",
+          "detail",
+          "models"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ProfileStatus"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ConnectionProfileInput": {
+        "type": "object",
+        "description": "What a client sends to create or change a connection profile. The key itself is stored\nseparately through the credential endpoints.",
+        "required": [
+          "name",
+          "service"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "service": {
+            "$ref": "#/components/schemas/ModelService"
+          },
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`None` uses the service's preset base URL."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Default model, as the service names it (`anthropic/claude-sonnet-5.5`)."
+          },
+          "fallback_profile_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_default": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ConnectionTestResult": {
+        "type": "object",
+        "description": "A profile after a connection test, with the models the service listed.",
+        "required": [
+          "profile",
+          "models"
+        ],
+        "properties": {
+          "profile": {
+            "$ref": "#/components/schemas/ProviderProfile"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "ContinueTaskRequest": {
         "type": "object",
         "description": "Operator instructions that continue a task's agent thread (`POST /tasks/{id}/continue`).",
@@ -6334,6 +6687,15 @@
           }
         }
       },
+      "ModelService": {
+        "type": "string",
+        "description": "A hosted service that provides models over an OpenAI-compatible API.",
+        "enum": [
+          "openrouter",
+          "opencode_go",
+          "nvidia_build"
+        ]
+      },
       "ModuleStat": {
         "type": "object",
         "required": [
@@ -6596,6 +6958,16 @@
             "minimum": 0
           }
         }
+      },
+      "ProfileStatus": {
+        "type": "string",
+        "description": "What the last connection test found.",
+        "enum": [
+          "configured",
+          "verified",
+          "limited",
+          "error"
+        ]
       },
       "Project": {
         "type": "object",
@@ -6880,6 +7252,107 @@
           "codesandbox",
           "simulated"
         ]
+      },
+      "ProviderProfile": {
+        "type": "object",
+        "description": "Non-secret provider profile configuration",
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "model",
+          "command_override",
+          "approval_policy",
+          "sandbox_mode",
+          "credential_ref",
+          "is_default",
+          "service",
+          "base_url",
+          "status",
+          "status_detail",
+          "verified_at",
+          "fallback_profile_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/ProviderKind"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "command_override": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approval_policy": {
+            "type": "string"
+          },
+          "sandbox_mode": {
+            "type": "string"
+          },
+          "credential_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "service": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ModelService",
+                "description": "The model service this profile connects the agent to (connection profiles); `None` for the\nbuilt-in agent entries."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Overrides the service's preset base URL; validated against the service's allowed hosts."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProfileStatus",
+            "description": "Result of the last connection test."
+          },
+          "status_detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verified_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "fallback_profile_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A second profile to use when this one has no key or its last test failed."
+          }
+        }
       },
       "ProviderStatus": {
         "type": "object",
@@ -8825,6 +9298,10 @@
     {
       "name": "credentials",
       "description": "Credential vault (key names only)"
+    },
+    {
+      "name": "connections",
+      "description": "Connection profiles: the model service (OpenRouter, OpenCode Go, NVIDIA Build) an OpenCode run uses (local administration only)"
     },
     {
       "name": "diagnostics",

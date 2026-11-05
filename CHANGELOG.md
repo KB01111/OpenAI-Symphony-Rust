@@ -10,6 +10,13 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Added
 
+- **Connection profiles (backend).** A coding agent and the model service it talks to are now separate: a
+  profile names a service (OpenRouter, OpenCode Go or NVIDIA Build), an optional base URL (https on the
+  service's own host), a default model and an optional fallback profile. The API key stays in the credential
+  vault under `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY` or `NVIDIA_API_KEY` (added to the credential
+  allowlist). New local-only endpoints list, create, change and delete profiles, test a connection and list the
+  models of a service; the test, model discovery and an OpenCode run all use one resolved profile. A run through
+  a profile gives OpenCode the key and an inline provider config. Migration 0006 adds the profile columns.
 - **OpenCode version contract.** The OpenCode driver speaks the 1.x server API and was verified against
   1.19.4; it now declares `>=1.19.4, <2.0.0` (`opencode_version.rs`). A binary outside that range (for example
   OpenCode 2, which serves `POST /api/session` and wraps responses in `data`) is refused up front with

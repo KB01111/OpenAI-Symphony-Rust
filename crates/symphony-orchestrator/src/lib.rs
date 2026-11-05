@@ -590,8 +590,15 @@ pub struct SymphonyOrchestrator {
     workflow_github_api_url: Arc<std::sync::RwLock<Option<String>>>,
     /// The Knowledge Base, once the host enabled it (`enable_knowledge`).
     knowledge: Arc<std::sync::RwLock<Option<Arc<symphony_knowledge::service::KnowledgeService>>>>,
+    /// Asks a model service for its models (connection profiles); replaced in tests.
+    model_lister: Arc<std::sync::RwLock<Arc<dyn ModelLister>>>,
 }
 
+mod connections;
+pub use connections::{
+    ConnectionModels, ConnectionTestResult, HttpModelLister, ModelLister, RunConnection,
+};
+pub use symphony_agents::connection_probe::ProbeResult;
 mod knowledge;
 
 /// The GitHub API base URL a workflow names for a GitHub tracker (GitHub Enterprise Server):
@@ -791,6 +798,7 @@ impl SymphonyOrchestrator {
             github_api_url: None,
             workflow_github_api_url: Arc::new(std::sync::RwLock::new(workflow_api_url)),
             knowledge: Arc::new(std::sync::RwLock::new(None)),
+            model_lister: Arc::new(std::sync::RwLock::new(Arc::new(HttpModelLister))),
         })
     }
 
@@ -4207,7 +4215,34 @@ Please implement the requested changes cleanly in the current Git workspace, run
             event_tx: self.event_tx.clone(),
         });
 
-        let provider_env = self.provider_env_from_vault();
+        let mut provider_env = self.provider_env_from_vault();
+        // OpenCode through a connection profile: the same resolved profile the connection test used.
+        let connection = if task.provider == ProviderKind::OpenCode {
+            match self.resolve_run_connection(task.model.as_deref()).await {
+                Ok(connection) => connection,
+                Err(e) => {
+                    self.finish_failed_attempt(
+                        &mut task,
+                        &mut attempt_record,
+                        RunAttemptPhase::Failed,
+                        e.to_string(),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(connection) = &connection {
+            provider_env.extend(connection.env.clone());
+            info!(
+                task_id = %task.id,
+                profile = %connection.profile_name,
+                fell_back = connection.fell_back,
+                "OpenCode run through a connection profile"
+            );
+        }
         let is_cloud = task.provider == ProviderKind::CodeSandbox;
         // litellm-style ids: pick the family whose key is configured when no model was chosen.
         let cloud_default_model = is_cloud
@@ -4221,7 +4256,10 @@ Please implement the requested changes cleanly in the current Git workspace, run
                 }
             })
             .flatten();
-        let effective_model = task.model.clone().or(cloud_default_model);
+        let effective_model = match &connection {
+            Some(connection) => connection.model.clone(),
+            None => task.model.clone().or(cloud_default_model),
+        };
         // Before the branch is published or a sandbox started: a run that cannot work says so now.
         if is_cloud {
             if let Some(problem) = cloud_model_problem(effective_model.as_deref(), &provider_env) {
