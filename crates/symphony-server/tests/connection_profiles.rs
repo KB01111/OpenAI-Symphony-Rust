@@ -280,18 +280,43 @@ async fn the_endpoints_need_the_token() {
 }
 
 #[tokio::test]
-async fn settings_that_already_hold_a_service_key_in_the_environment_can_still_be_saved() {
+async fn a_service_key_already_in_settings_can_be_kept_but_none_can_be_added_or_changed() {
     // Before connection profiles that was the only way to give OpenCode such a key, and every
-    // settings save sends the whole object back.
-    let (app, _dir) = app().await;
+    // settings save sends the whole object back. New secrets still belong in the vault.
+    let dir = tempfile::tempdir().unwrap();
+    let orch = Arc::new(
+        SymphonyOrchestrator::new(
+            Storage::connect_in_memory().await.unwrap(),
+            None,
+            SecretStore::new(dir.path()).unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let mut legacy = orch.storage().get_settings().await.unwrap();
+    legacy
+        .extra_env_vars
+        .insert("OPENROUTER_API_KEY".into(), "from-before".into());
+    orch.storage().save_settings(&legacy).await.unwrap();
+    let config = ServerConfig {
+        default_workspace_root: Some(dir.path().join("workspaces")),
+        ..ServerConfig::local(0, Some(TOKEN.to_string()))
+    };
+    let app = build_router(orch, &config);
+
     let (_, current) = call(&app, Method::GET, "/settings", None).await;
-    let mut with_key = current.clone();
-    with_key["extra_env_vars"] = json!({ "OPENROUTER_API_KEY": "from-before" });
-    let (status, _) = call(&app, Method::PUT, "/settings", Some(with_key)).await;
+    // Resubmitting the stored value unchanged keeps working.
+    let (status, _) = call(&app, Method::PUT, "/settings", Some(current.clone())).await;
     assert_eq!(status, StatusCode::OK);
-    // The other allowlisted keys are still refused there.
-    let mut refused = current;
-    refused["extra_env_vars"] = json!({ "OPENAI_API_KEY": "x" });
-    let (status, _) = call(&app, Method::PUT, "/settings", Some(refused)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // A changed value, a new service key and any other allowlisted key are refused.
+    for env in [
+        json!({ "OPENROUTER_API_KEY": "changed" }),
+        json!({ "OPENROUTER_API_KEY": "from-before", "NVIDIA_API_KEY": "new" }),
+        json!({ "OPENAI_API_KEY": "x" }),
+    ] {
+        let mut body = current.clone();
+        body["extra_env_vars"] = env.clone();
+        let (status, _) = call(&app, Method::PUT, "/settings", Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{env}");
+    }
 }

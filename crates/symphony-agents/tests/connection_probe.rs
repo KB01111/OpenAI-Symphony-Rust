@@ -149,11 +149,36 @@ async fn a_service_that_lists_models_to_anyone_is_never_more_than_limited() {
 
 #[tokio::test]
 async fn an_oversized_model_list_is_abandoned_not_buffered() {
-    // A 9 MiB body (the limit is 8 MiB) must not be read in full or parsed.
-    let filler = "x".repeat(9 * 1024 * 1024);
-    let body = format!(r#"{{"data":[{{"id":"a/b"}}],"padding":"{filler}"}}"#);
-    let (url, _) = serve("200 OK", "", &body).await;
-    let result = probe_models_url(&url, "k").await;
+    // An endless body: if the probe buffered it, this test would never finish (or run out of
+    // memory). It must give up once the limit (8 MiB) is passed.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/models", listener.local_addr().unwrap());
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = sent.clone();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf).await;
+        let head = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n";
+        if stream.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+        let chunk = format!("10000\r\n{}\r\n", "x".repeat(0x10000));
+        loop {
+            if stream.write_all(chunk.as_bytes()).await.is_err() {
+                return;
+            }
+            counter.fetch_add(0x10000, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        probe_models_url(&url, "k"),
+    )
+    .await
+    .expect("the probe must stop reading at the limit");
+    // Stopped a little past the 8 MiB limit, not after reading everything the server could send.
+    assert!(sent.load(std::sync::atomic::Ordering::SeqCst) < 64 * 1024 * 1024);
     assert_eq!(result.status, ProfileStatus::Limited, "{:?}", result.detail);
     assert!(result.models.is_empty());
 }
