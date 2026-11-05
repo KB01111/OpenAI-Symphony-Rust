@@ -9,9 +9,10 @@ use std::str::FromStr;
 use std::time::Duration;
 use symphony_core::{
     redact_secrets, AgentEvent, AppSettings, ApprovalDecision, ApprovalRequest, ApprovalStatus,
-    CloudAgentKind, Issue, Project, ProviderKind, ProviderProfile, PullRequestReview, RunAttempt,
-    RunAttemptPhase, SymphonyError, SymphonyResult, Task, TaskStatus, ThreadUsageMark, TokenUsage,
-    ToolCallKind, ToolCallRecord, ToolCallStatus, ValidationResult,
+    CloudAgentKind, Issue, ProfileStatus, Project, ProviderKind, ProviderProfile,
+    PullRequestReview, RunAttempt, RunAttemptPhase, SymphonyError, SymphonyResult, Task,
+    TaskStatus, ThreadUsageMark, TokenUsage, ToolCallKind, ToolCallRecord, ToolCallStatus,
+    ValidationResult,
 };
 
 pub mod backup;
@@ -59,10 +60,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "cloud_agent",
         sql: include_str!("../migrations/0005_cloud_agent.sql"),
     },
+    Migration {
+        version: 6,
+        name: "connection_profiles",
+        sql: include_str!("../migrations/0006_connection_profiles.sql"),
+    },
 ];
 
 /// The schema version this build reads and writes.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticBundle {
@@ -1227,8 +1233,9 @@ impl Storage {
             r#"
             INSERT INTO provider_profiles (
                 id, name, provider, model, command_override,
-                approval_policy, sandbox_mode, credential_ref, is_default
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                approval_policy, sandbox_mode, credential_ref, is_default,
+                service, base_url, status, status_detail, verified_at, fallback_profile_id
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 provider = excluded.provider,
@@ -1237,7 +1244,13 @@ impl Storage {
                 approval_policy = excluded.approval_policy,
                 sandbox_mode = excluded.sandbox_mode,
                 credential_ref = excluded.credential_ref,
-                is_default = excluded.is_default
+                is_default = excluded.is_default,
+                service = excluded.service,
+                base_url = excluded.base_url,
+                status = excluded.status,
+                status_detail = excluded.status_detail,
+                verified_at = excluded.verified_at,
+                fallback_profile_id = excluded.fallback_profile_id
             "#,
         )
         .bind(&profile.id)
@@ -1249,11 +1262,43 @@ impl Storage {
         .bind(&profile.sandbox_mode)
         .bind(&profile.credential_ref)
         .bind(profile.is_default as i64)
+        .bind(profile.service.map(|s| s.as_str()))
+        .bind(&profile.base_url)
+        .bind(profile.status.as_str())
+        .bind(&profile.status_detail)
+        .bind(profile.verified_at.map(|t| t.to_rfc3339()))
+        .bind(&profile.fallback_profile_id)
         .execute(&self.pool)
         .await
         .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
 
         Ok(())
+    }
+
+    fn provider_profile_from_row(r: &sqlx::sqlite::SqliteRow) -> ProviderProfile {
+        let prov_str: String = r.get("provider");
+        let service: Option<String> = r.get("service");
+        let status: String = r.get("status");
+        let verified_at: Option<String> = r.get("verified_at");
+        ProviderProfile {
+            id: r.get("id"),
+            name: r.get("name"),
+            provider: ProviderKind::from_str(&prov_str).unwrap_or(ProviderKind::Codex),
+            model: r.get("model"),
+            command_override: r.get("command_override"),
+            approval_policy: r.get("approval_policy"),
+            sandbox_mode: r.get("sandbox_mode"),
+            credential_ref: r.get("credential_ref"),
+            is_default: r.get::<i64, _>("is_default") != 0,
+            service: service.and_then(|s| s.parse().ok()),
+            base_url: r.get("base_url"),
+            status: ProfileStatus::from_stored(&status),
+            status_detail: r.get("status_detail"),
+            verified_at: verified_at
+                .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
+                .map(|t| t.with_timezone(&Utc)),
+            fallback_profile_id: r.get("fallback_profile_id"),
+        }
     }
 
     pub async fn list_provider_profiles(&self) -> SymphonyResult<Vec<ProviderProfile>> {
@@ -1262,23 +1307,40 @@ impl Storage {
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(rows.iter().map(Self::provider_profile_from_row).collect())
+    }
 
-        let mut out = Vec::with_capacity(rows.len());
-        for r in rows {
-            let prov_str: String = r.get("provider");
-            out.push(ProviderProfile {
-                id: r.get("id"),
-                name: r.get("name"),
-                provider: ProviderKind::from_str(&prov_str).unwrap_or(ProviderKind::Codex),
-                model: r.get("model"),
-                command_override: r.get("command_override"),
-                approval_policy: r.get("approval_policy"),
-                sandbox_mode: r.get("sandbox_mode"),
-                credential_ref: r.get("credential_ref"),
-                is_default: r.get::<i64, _>("is_default") != 0,
-            });
-        }
-        Ok(out)
+    pub async fn get_provider_profile(&self, id: &str) -> SymphonyResult<Option<ProviderProfile>> {
+        let row = sqlx::query("SELECT * FROM provider_profiles WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(row.as_ref().map(Self::provider_profile_from_row))
+    }
+
+    /// Delete a profile and clear it as the fallback of any other. Returns whether it existed.
+    pub async fn delete_provider_profile(&self, id: &str) -> SymphonyResult<bool> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        sqlx::query("UPDATE provider_profiles SET fallback_profile_id = NULL WHERE fallback_profile_id = ?1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        let deleted = sqlx::query("DELETE FROM provider_profiles WHERE id = ?1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?
+            .rows_affected();
+        tx.commit()
+            .await
+            .map_err(|e| SymphonyError::StorageError(e.to_string()))?;
+        Ok(deleted > 0)
     }
 
     pub async fn get_settings(&self) -> SymphonyResult<AppSettings> {

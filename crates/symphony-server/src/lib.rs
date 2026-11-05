@@ -58,11 +58,11 @@ use symphony_core::{
         MIN_PR_REFRESH_INTERVAL_MINUTES,
     },
     error::{Result, SymphonyError},
-    ToolCallRecord,
+    ConnectionProfileInput, ProviderProfile, ToolCallRecord,
 };
 use symphony_orchestrator::{
-    IssueDetailResponse, ProjectUpdate, RefreshResponse, SymphonyOrchestrator, WorkflowDocument,
-    WorkflowValidation,
+    ConnectionModels, ConnectionTestResult, IssueDetailResponse, ProjectUpdate, RefreshResponse,
+    SymphonyOrchestrator, WorkflowDocument, WorkflowValidation,
 };
 
 /// API contract version reported by `GET /api/v1/runtime`. Bump on breaking changes.
@@ -80,7 +80,21 @@ pub const ALLOWED_CREDENTIAL_KEYS: &[&str] = &[
     // CodeSandbox API token for cloud agents. Only the CodeSandbox bridge receives it (never an
     // agent subprocess), so it is deliberately not in `PROVIDER_ENV_CREDENTIALS`.
     "CSB_API_KEY",
+    // Keys of the model services behind connection profiles (`ModelService::credential_key`).
+    // They are not in `PROVIDER_ENV_CREDENTIALS`: nothing is put into the runtime environment; a
+    // run hands the key to OpenCode only as the variable its profile names.
+    "OPENROUTER_API_KEY",
+    "OPENCODE_GO_API_KEY",
+    "NVIDIA_API_KEY",
 ];
+
+/// A model-service key. Settings saved before connection profiles existed may already carry one in
+/// `extra_env_vars` (the only way to give OpenCode such a key then). Such an entry is let through
+/// unchanged so that saving settings keeps working; a new or changed value is refused like any
+/// other secret (see `put_settings_handler`).
+fn is_service_key(key: &str) -> bool {
+    symphony_core::ModelService::credential_keys().contains(&key)
+}
 
 /// Provider API keys that are exported into the runtime environment so agent subprocesses can
 /// authenticate. Tracker tokens stay in the vault and are only used by host-side dynamic tools.
@@ -383,6 +397,7 @@ pub struct StreamControlEvent {
         (name = "settings", description = "Application settings"),
         (name = "providers", description = "Coding agent providers"),
         (name = "credentials", description = "Credential vault (key names only)"),
+        (name = "connections", description = "Connection profiles: the model service (OpenRouter, OpenCode Go, NVIDIA Build) an OpenCode run uses (local administration only)"),
         (name = "diagnostics", description = "Redacted diagnostics export"),
         (name = "backups", description = "SQLite-consistent local backups of the application data (local administration only)"),
         (name = "remote-access", description = "Remote companion listener and its access token (local administration only)"),
@@ -417,6 +432,7 @@ const OPTIONAL_FIELD_SCHEMAS: &[&str] = &[
     "ProjectUpdate",
     "StartKnowledgeIndexRequest",
     "StartKnowledgeAnalysisRequest",
+    "ConnectionProfileInput",
 ];
 
 /// Individual properties added after 2.0 that older clients may omit from request bodies
@@ -593,6 +609,16 @@ fn api_routes() -> (OpenApiRouter<ServerState>, OpenApiRouter<ServerState>) {
         .routes(routes!(list_providers_handler))
         .routes(routes!(list_credentials_handler, set_credential_handler))
         .routes(routes!(delete_credential_handler))
+        .routes(routes!(
+            list_connection_profiles_handler,
+            create_connection_profile_handler
+        ))
+        .routes(routes!(
+            update_connection_profile_handler,
+            delete_connection_profile_handler
+        ))
+        .routes(routes!(test_connection_profile_handler))
+        .routes(routes!(connection_profile_models_handler))
         .routes(routes!(export_diagnostics_handler))
         .routes(routes!(list_backups_handler, create_backup_handler))
         .routes(routes!(get_restore_status_handler, cancel_restore_handler))
@@ -1794,12 +1820,22 @@ async fn put_settings_handler(
     State(state): State<ServerState>,
     Json(mut settings): Json<AppSettings>,
 ) -> Response {
-    if let Err(msg) = validate_settings(&settings) {
-        return api_error(StatusCode::BAD_REQUEST, "invalid_settings", msg);
-    }
     // Every settings write goes through this handler; holding the lock from the read below to the
     // save keeps "keep the stored value" from restoring a value another request just replaced.
     let _write = SETTINGS_WRITE.lock().await;
+    // A service key that settings already hold, resubmitted unchanged, is not a new secret. Read under
+    // the lock, so a concurrent save cannot remove the key between this check and the write.
+    let stored_env = match state.orchestrator.storage().get_settings().await {
+        Ok(stored) => stored.extra_env_vars,
+        Err(e) => return error_response(e),
+    };
+    let mut checked = settings.clone();
+    checked
+        .extra_env_vars
+        .retain(|k, v| !(is_service_key(k) && stored_env.get(k) == Some(v)));
+    if let Err(msg) = validate_settings(&checked) {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_settings", msg);
+    }
     // A client that predates a field omits it: keep what is stored rather than resetting it
     // (for the retention period a reset to the default would start deleting history).
     if settings.event_retention_days.is_none()
@@ -1914,6 +1950,11 @@ async fn set_credential_handler(
                 std::env::set_var(&key, value);
             }
             state.orchestrator.invalidate_provider_cache().await;
+            if let Err(e) = state.orchestrator.connection_credential_changed(&key).await {
+                tracing::warn!(
+                    "could not reset connection profiles after a credential change: {e}"
+                );
+            }
             Json(CredentialSavedResponse { saved: true, key }).into_response()
         }
         Err(e) => error_response(e),
@@ -1945,10 +1986,116 @@ async fn delete_credential_handler(
                 std::env::remove_var(&key);
             }
             state.orchestrator.invalidate_provider_cache().await;
+            if let Err(e) = state.orchestrator.connection_credential_changed(&key).await {
+                tracing::warn!(
+                    "could not reset connection profiles after a credential change: {e}"
+                );
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => error_response(e),
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/connection-profiles",
+    operation_id = "listConnectionProfiles",
+    tag = "connections",
+    responses((status = 200, body = Vec<ProviderProfile>))
+)]
+async fn list_connection_profiles_handler(State(state): State<ServerState>) -> Response {
+    respond(state.orchestrator.connection_profiles().await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/connection-profiles",
+    operation_id = "createConnectionProfile",
+    tag = "connections",
+    request_body = ConnectionProfileInput,
+    responses((status = 200, body = ProviderProfile))
+)]
+async fn create_connection_profile_handler(
+    State(state): State<ServerState>,
+    Json(input): Json<ConnectionProfileInput>,
+) -> Response {
+    respond(
+        state
+            .orchestrator
+            .save_connection_profile(None, input)
+            .await,
+    )
+}
+
+#[utoipa::path(
+    put,
+    path = "/connection-profiles/{id}",
+    operation_id = "updateConnectionProfile",
+    tag = "connections",
+    params(("id" = String, Path, description = "Connection profile id")),
+    request_body = ConnectionProfileInput,
+    responses((status = 200, body = ProviderProfile))
+)]
+async fn update_connection_profile_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    Json(input): Json<ConnectionProfileInput>,
+) -> Response {
+    respond(
+        state
+            .orchestrator
+            .save_connection_profile(Some(id), input)
+            .await,
+    )
+}
+
+#[utoipa::path(
+    delete,
+    path = "/connection-profiles/{id}",
+    operation_id = "deleteConnectionProfile",
+    tag = "connections",
+    params(("id" = String, Path, description = "Connection profile id")),
+    responses((status = 204, description = "Deleted"))
+)]
+async fn delete_connection_profile_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.orchestrator.delete_connection_profile(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => error_response(e),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/connection-profiles/{id}/test",
+    operation_id = "testConnectionProfile",
+    tag = "connections",
+    params(("id" = String, Path, description = "Connection profile id")),
+    responses((status = 200, body = ConnectionTestResult))
+)]
+async fn test_connection_profile_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Response {
+    respond(state.orchestrator.test_connection_profile(&id).await)
+}
+
+#[utoipa::path(
+    get,
+    path = "/connection-profiles/{id}/models",
+    operation_id = "listConnectionProfileModels",
+    tag = "connections",
+    params(("id" = String, Path, description = "Connection profile id")),
+    responses((status = 200, body = ConnectionModels))
+)]
+async fn connection_profile_models_handler(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Response {
+    respond(state.orchestrator.connection_profile_models(&id).await)
 }
 
 #[utoipa::path(

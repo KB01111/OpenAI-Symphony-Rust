@@ -8,6 +8,28 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ## [Unreleased]
 
+### Added
+
+- **Connection profiles.** Settings → Model connections adds a model service from just its API key: the app
+  stores the key in the vault, saves the profile, tests the connection and lists the service's models, and the
+  model is picked on the profile's card. The status (not tested, verified, limited, error) is shown as text with
+  an icon, EN and SV.
+- **Connection profiles (backend).** A coding agent and the model service it talks to are now separate: a
+  profile names a service (OpenRouter, OpenCode Go or NVIDIA Build), an optional base URL (https on the
+  service's own host), a default model and an optional fallback profile. The API key stays in the credential
+  vault under `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY` or `NVIDIA_API_KEY` (added to the credential
+  allowlist). New local-only endpoints list, create, change and delete profiles, test a connection and list the
+  models of a service; the test, model discovery and an OpenCode run all use one resolved profile. The test only
+  reports `verified` when the service actually checked the key: OpenRouter's public model list is paired with its
+  key endpoint, OpenCode Go's list is key-protected, and NVIDIA Build (whose list is public) stays `limited`. A run through
+  a profile gives OpenCode the key and an inline provider config. Migration 0006 adds the profile columns.
+- **OpenCode version contract.** The OpenCode driver speaks the 1.x server API and was verified against
+  1.19.4; it now declares `>=1.19.4, <2.0.0` (`opencode_version.rs`). A binary outside that range (for example
+  OpenCode 2, which serves `POST /api/session` and wraps responses in `data`) is refused up front with
+  `opencode_version_unsupported` instead of failing inside a request, and provider detection reports the same
+  message. A binary that prints no recognisable version is not blocked. Tests cover session start, streaming,
+  approvals, cancel and resume against the 1.x contract.
+
 ### Fixed
 
 - **The release checks are green again.** The CodeSandbox detection test expects the current
@@ -25,12 +47,6 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ### Added
 
-- **OpenCode version contract.** The OpenCode driver speaks the 1.x server API and was verified against
-  1.19.4; it now declares `>=1.19.4, <2.0.0` (`opencode_version.rs`). A binary outside that range (for example
-  OpenCode 2, which serves `POST /api/session` and wraps responses in `data`) is refused up front with
-  `opencode_version_unsupported` instead of failing inside a request, and provider detection reports the same
-  message. A binary that prints no recognisable version is not blocked. Tests cover session start, streaming,
-  approvals, cancel and resume against the 1.x contract.
 - **Native notifications when the desktop is attached to `symphony-cli`.** Approval requests and failed runs
   raised a Windows notification only when the runtime was embedded in the app; a window attached to a runtime
   that runs on its own showed none. It now follows that runtime's event stream (only from the moment of

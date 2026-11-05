@@ -22,9 +22,11 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 
 pub mod codesandbox;
+pub mod connection_probe;
 pub mod detection;
 mod opencode_server;
 pub mod opencode_version;
+mod service_env;
 pub mod tool_events;
 pub use codesandbox::{
     find_runner_bundle, CloudLaunch, CodeSandboxSession, CSB_API_KEY, RUNNER_ENV,
@@ -209,6 +211,12 @@ pub fn detect_all_providers() -> Vec<ProviderProfile> {
             sandbox_mode: "workspace-write".into(),
             credential_ref: None,
             is_default: true,
+            service: None,
+            base_url: None,
+            status: Default::default(),
+            status_detail: None,
+            verified_at: None,
+            fallback_profile_id: None,
         },
         ProviderProfile {
             id: "claude-code-default".into(),
@@ -220,6 +228,12 @@ pub fn detect_all_providers() -> Vec<ProviderProfile> {
             sandbox_mode: "workspace-write".into(),
             credential_ref: None,
             is_default: false,
+            service: None,
+            base_url: None,
+            status: Default::default(),
+            status_detail: None,
+            verified_at: None,
+            fallback_profile_id: None,
         },
         ProviderProfile {
             id: "opencode-default".into(),
@@ -231,6 +245,12 @@ pub fn detect_all_providers() -> Vec<ProviderProfile> {
             sandbox_mode: "workspace-write".into(),
             credential_ref: None,
             is_default: false,
+            service: None,
+            base_url: None,
+            status: Default::default(),
+            status_detail: None,
+            verified_at: None,
+            fallback_profile_id: None,
         },
         ProviderProfile {
             id: "codesandbox-default".into(),
@@ -242,6 +262,12 @@ pub fn detect_all_providers() -> Vec<ProviderProfile> {
             sandbox_mode: "workspace-write".into(),
             credential_ref: Some(CSB_API_KEY.into()),
             is_default: false,
+            service: None,
+            base_url: None,
+            status: Default::default(),
+            status_detail: None,
+            verified_at: None,
+            fallback_profile_id: None,
         },
         ProviderProfile {
             id: "simulated-default".into(),
@@ -253,6 +279,12 @@ pub fn detect_all_providers() -> Vec<ProviderProfile> {
             sandbox_mode: "workspace-write".into(),
             credential_ref: None,
             is_default: false,
+            service: None,
+            base_url: None,
+            status: Default::default(),
+            status_detail: None,
+            verified_at: None,
+            fallback_profile_id: None,
         },
     ]
 }
@@ -1794,6 +1826,7 @@ impl AgentSession for OpenCodeSession {
         for key in SECRET_ENV_VARS_TO_STRIP {
             cmd.env_remove(key);
         }
+        service_env::scrub_unselected_service_keys(&mut cmd, &self.config.extra_env);
         for (k, v) in &self.config.extra_env {
             cmd.env(k, v);
         }
