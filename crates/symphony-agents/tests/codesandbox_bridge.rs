@@ -546,7 +546,7 @@ async fn detection_honours_the_runner_path_from_the_workflow() {
         !with_bridge
             .capabilities
             .status_message
-            .contains("Bridge not built"),
+            .contains("bridge missing"),
         "{}",
         with_bridge.capabilities.status_message
     );
@@ -565,11 +565,19 @@ async fn detection_honours_the_runner_path_from_the_workflow() {
         Some(&wrong),
     )
     .await;
-    assert!(!without.installed);
-    assert!(without
-        .capabilities
-        .status_message
-        .contains("Bridge not built"));
+    assert!(
+        !without.installed,
+        "a configured bridge path that is not a file must not be accepted: {}",
+        without.capabilities.status_message
+    );
+    assert!(
+        without
+            .capabilities
+            .status_message
+            .contains("bridge missing"),
+        "{}",
+        without.capabilities.status_message
+    );
 }
 
 #[tokio::test]
