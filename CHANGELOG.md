@@ -8,6 +8,17 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ## [Unreleased]
 
+### Fixed
+
+- **The release checks are green again.** The CodeSandbox detection test expects the current
+  `bridge missing` message, the Windows installer smoke test (`scripts/windows-installer-smoke.ps1`) is one
+  coherent install, upgrade and uninstall flow again (it also checks the packaged CodeSandbox bridge and its
+  private Node runtime), `openapi/symphony-api.json` carries the released version, and CI parses every
+  PowerShell script first (`scripts/check-powershell-syntax.ps1`), so a script that cannot be parsed fails in
+  seconds instead of after the installer build.
+
+## [2.0.1] - 2026-11-04
+
 ### Added
 
 - **Native notifications when the desktop is attached to `symphony-cli`.** Approval requests and failed runs
