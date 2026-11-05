@@ -88,9 +88,10 @@ pub const ALLOWED_CREDENTIAL_KEYS: &[&str] = &[
     "NVIDIA_API_KEY",
 ];
 
-/// A model-service key. Settings saved before connection profiles existed may carry one in
-/// `extra_env_vars` (the only way to give OpenCode such a key then), so unlike the other allowlisted
-/// keys it is still accepted there instead of failing every settings save.
+/// A model-service key. Settings saved before connection profiles existed may already carry one in
+/// `extra_env_vars` (the only way to give OpenCode such a key then). Such an entry is let through
+/// unchanged so that saving settings keeps working; a new or changed value is refused like any
+/// other secret (see `put_settings_handler`).
 fn is_service_key(key: &str) -> bool {
     symphony_core::ModelService::credential_keys().contains(&key)
 }
@@ -1793,10 +1794,11 @@ fn validate_settings(settings: &AppSettings) -> std::result::Result<(), String> 
     {
         return Err("resource thresholds must be between 10 and 100 percent".into());
     }
-    if settings.extra_env_vars.keys().any(|k| {
-        (ALLOWED_CREDENTIAL_KEYS.contains(&k.as_str()) && !is_service_key(k))
-            || k == REMOTE_TOKEN_KEY
-    }) {
+    if settings
+        .extra_env_vars
+        .keys()
+        .any(|k| ALLOWED_CREDENTIAL_KEYS.contains(&k.as_str()) || k == REMOTE_TOKEN_KEY)
+    {
         return Err("Secrets must be stored through the credential vault, not settings".into());
     }
     remote::validate_remote_settings(settings)?;
@@ -1818,7 +1820,16 @@ async fn put_settings_handler(
     State(state): State<ServerState>,
     Json(mut settings): Json<AppSettings>,
 ) -> Response {
-    if let Err(msg) = validate_settings(&settings) {
+    // A service key that settings already hold, resubmitted unchanged, is not a new secret.
+    let stored_env = match state.orchestrator.storage().get_settings().await {
+        Ok(stored) => stored.extra_env_vars,
+        Err(e) => return error_response(e),
+    };
+    let mut checked = settings.clone();
+    checked
+        .extra_env_vars
+        .retain(|k, v| !(is_service_key(k) && stored_env.get(k) == Some(v)));
+    if let Err(msg) = validate_settings(&checked) {
         return api_error(StatusCode::BAD_REQUEST, "invalid_settings", msg);
     }
     // Every settings write goes through this handler; holding the lock from the read below to the
