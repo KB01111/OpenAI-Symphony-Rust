@@ -141,6 +141,7 @@ loaded chunk; the CodeMirror editor is a separate lazy chunk loaded only by Work
 | Pull requests | Evidence-backed readiness (1–5), blockers, diff with review comments; "Record human approval" is a separate confirmed action and never merges. |
 | Workflow Studio | CodeMirror 6 (Markdown + YAML front matter), debounced runtime validation with located diagnostics, effective config, prompt preview, Ctrl+S, revert, external-change detection, unsaved-changes guard. |
 | Providers / Settings | Real detection (install, version, auth source) and vault-backed credentials; settings validated client-side as a mirror of the runtime. |
+| Settings → Model connections | `features/connections`: model services (OpenRouter, OpenCode Go, NVIDIA Build) OpenCode runs through. Add a service with its API key (stored in the vault), the runtime tests it and lists its models, the model is picked on the card. Server state only (`/connection-profiles`), status shown as icon plus text, base URL checked client-side as a mirror of the runtime. |
 | Onboarding | First-run dialog (welcome, detected agents, register repository, finish) persisted as `onboarding_completed`. |
 
 ## 6. Shell
