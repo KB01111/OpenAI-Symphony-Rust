@@ -93,6 +93,30 @@ impl ModelService {
         }
     }
 
+    /// Path appended to the base URL to reach the OpenAI-compatible API. OpenCode Go serves it
+    /// under `/v1` of its base URL.
+    pub fn api_suffix(self) -> &'static str {
+        match self {
+            Self::OpenCodeGo => "/v1",
+            Self::OpenRouter | Self::NvidiaBuild => "",
+        }
+    }
+
+    /// An endpoint that refuses a wrong key, when the model list does not. OpenRouter lists its
+    /// models to anyone, but answers `GET /key` only for a valid key.
+    pub fn key_check_path(self) -> Option<&'static str> {
+        match self {
+            Self::OpenRouter => Some("/key"),
+            Self::OpenCodeGo | Self::NvidiaBuild => None,
+        }
+    }
+
+    /// Whether the model list is served without checking the key. NVIDIA Build has no cheap call
+    /// that does check it, so a connection to it can be at most `limited` until it is used.
+    pub fn lists_models_without_key(self) -> bool {
+        matches!(self, Self::OpenRouter | Self::NvidiaBuild)
+    }
+
     /// Every vault key that belongs to a service.
     pub fn credential_keys() -> [&'static str; 3] {
         Self::ALL.map(Self::credential_key)
@@ -278,7 +302,10 @@ pub struct ConnectionProfileInput {
 pub struct ResolvedConnection {
     pub profile_id: String,
     pub service: ModelService,
+    /// The profile's base URL, without a trailing slash.
     pub base_url: String,
+    /// Whether the profile set its own base URL rather than using the service's preset.
+    pub custom_base_url: bool,
     /// Model id after the provider prefix, as the service names it.
     pub model_id: Option<String>,
 }
@@ -299,23 +326,37 @@ impl ResolvedConnection {
             .map(|m| format!("{}/{m}", self.service.opencode_provider_id()))
     }
 
+    /// Root of the service's OpenAI-compatible API.
+    pub fn api_base_url(&self) -> String {
+        let suffix = self.service.api_suffix();
+        if suffix.is_empty() || self.base_url.ends_with(suffix) {
+            self.base_url.clone()
+        } else {
+            format!("{}{suffix}", self.base_url)
+        }
+    }
+
     /// Where the service lists its models.
     pub fn models_url(&self) -> String {
-        format!("{}/models", self.base_url)
+        format!("{}/models", self.api_base_url())
+    }
+
+    /// A call that only a valid key passes, when the service has one.
+    pub fn key_check_url(&self) -> Option<String> {
+        self.service
+            .key_check_path()
+            .map(|path| format!("{}{path}", self.api_base_url()))
     }
 
     /// Inline config for `OPENCODE_CONFIG_CONTENT`. The key is a `{env:…}` reference, never a value.
+    /// A profile on the service's preset leaves the endpoint to OpenCode's own provider (which also
+    /// knows the headers the service wants); only a custom base URL is written out.
     pub fn opencode_config(&self) -> Value {
-        json!({
-            "provider": {
-                self.service.opencode_provider_id(): {
-                    "options": {
-                        "baseURL": self.base_url,
-                        "apiKey": format!("{{env:{}}}", self.key_env_name()),
-                    }
-                }
-            }
-        })
+        let mut options = json!({ "apiKey": format!("{{env:{}}}", self.key_env_name()) });
+        if self.custom_base_url {
+            options["baseURL"] = json!(self.api_base_url());
+        }
+        json!({ "provider": { self.service.opencode_provider_id(): { "options": options } } })
     }
 }
 
@@ -343,6 +384,11 @@ pub fn resolve_connection(
         profile_id: profile.id.clone(),
         service,
         base_url: effective_base_url(profile, service),
+        custom_base_url: profile
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|u| !u.is_empty()),
         model_id,
     })
 }
@@ -474,7 +520,13 @@ mod tests {
                 resolved.qualified_model().unwrap(),
                 format!("{provider}/anthropic/claude-sonnet-5.5")
             );
-            assert_eq!(resolved.models_url(), format!("{url}/models"));
+            let api = if service == ModelService::OpenCodeGo {
+                format!("{url}/v1")
+            } else {
+                url.to_string()
+            };
+            assert_eq!(resolved.api_base_url(), api);
+            assert_eq!(resolved.models_url(), format!("{api}/models"));
         }
         assert_eq!(ModelService::OpenCodeGo.key_env_name(), "OPENCODE_API_KEY");
         assert_eq!(
@@ -491,10 +543,44 @@ mod tests {
             config["provider"]["openrouter"]["options"]["apiKey"],
             "{env:OPENROUTER_API_KEY}"
         );
+        // On the preset, the endpoint is left to OpenCode's own provider.
+        assert!(config["provider"]["openrouter"]["options"]
+            .get("baseURL")
+            .is_none());
+        assert!(!resolved.custom_base_url);
+
+        // A custom base URL is written out, with the API path the service serves under.
+        let mut go = profile(ModelService::OpenCodeGo);
+        go.base_url = Some("https://opencode.ai/zen/go/".into());
+        let resolved = resolve_connection(&go, None).unwrap();
+        assert!(resolved.custom_base_url);
         assert_eq!(
-            config["provider"]["openrouter"]["options"]["baseURL"],
-            "https://openrouter.ai/api/v1"
+            resolved.opencode_config()["provider"]["opencode-go"]["options"]["baseURL"],
+            "https://opencode.ai/zen/go/v1"
         );
+        go.base_url = Some("https://opencode.ai/zen/go/v1".into());
+        assert_eq!(
+            resolve_connection(&go, None).unwrap().api_base_url(),
+            "https://opencode.ai/zen/go/v1"
+        );
+    }
+
+    #[test]
+    fn only_openrouter_has_a_key_check_and_nvidia_cannot_be_verified() {
+        let url = |s| {
+            resolve_connection(&profile(s), None)
+                .unwrap()
+                .key_check_url()
+        };
+        assert_eq!(
+            url(ModelService::OpenRouter).as_deref(),
+            Some("https://openrouter.ai/api/v1/key")
+        );
+        assert_eq!(url(ModelService::OpenCodeGo), None);
+        assert_eq!(url(ModelService::NvidiaBuild), None);
+        // OpenCode Go refuses a wrong key on its model list; the other two list models to anyone.
+        assert!(!ModelService::OpenCodeGo.lists_models_without_key());
+        assert!(ModelService::NvidiaBuild.lists_models_without_key());
     }
 
     #[test]

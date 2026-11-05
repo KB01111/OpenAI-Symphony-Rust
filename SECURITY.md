@@ -184,7 +184,9 @@ Implemented in `crates/symphony-workspaces/src/lib.rs`:
   the model service an OpenCode run uses. A profile holds no key: it refers to the service's vault key. The key
   is sent only to the profile's base URL, which must be `https` on the service's own host (no port,
   credentials, query or look-alike host), by a client that does not follow redirects; the connection test
-  returns a status line, never the response body or the key. A run hands OpenCode the key as one environment
+  returns a status line, never the response body or the key. OpenRouter and NVIDIA Build list their models to anyone,
+  so OpenRouter is checked with its key endpoint (`GET /key`), and NVIDIA Build, which has no such call, is reported as
+  `limited` (key not yet checked) rather than `verified`. A run hands OpenCode the key as one environment
   variable plus an inline config that refers to it as `{env:VAR}`, and nothing is put into the runtime's own
   environment. Changing or removing a service key clears the profiles' earlier test results.
 - **Workflow writes** go only to the active `WORKFLOW.md` (or the runtime's data directory); clients cannot

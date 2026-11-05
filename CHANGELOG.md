@@ -15,7 +15,9 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
   service's own host), a default model and an optional fallback profile. The API key stays in the credential
   vault under `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY` or `NVIDIA_API_KEY` (added to the credential
   allowlist). New local-only endpoints list, create, change and delete profiles, test a connection and list the
-  models of a service; the test, model discovery and an OpenCode run all use one resolved profile. A run through
+  models of a service; the test, model discovery and an OpenCode run all use one resolved profile. The test only
+  reports `verified` when the service actually checked the key: OpenRouter's public model list is paired with its
+  key endpoint, OpenCode Go's list is key-protected, and NVIDIA Build (whose list is public) stays `limited`. A run through
   a profile gives OpenCode the key and an inline provider config. Migration 0006 adds the profile columns.
 - **OpenCode version contract.** The OpenCode driver speaks the 1.x server API and was verified against
   1.19.4; it now declares `>=1.19.4, <2.0.0` (`opencode_version.rs`). A binary outside that range (for example

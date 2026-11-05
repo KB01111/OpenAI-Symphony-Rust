@@ -1,6 +1,6 @@
 //! The connection test against a stand-in model service on loopback.
 
-use symphony_agents::connection_probe::probe_models_url;
+use symphony_agents::connection_probe::{probe, probe_models_url};
 use symphony_core::ProfileStatus;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -96,4 +96,44 @@ async fn failures_and_redirects_are_errors() {
     // Nothing listens on this port.
     let unreachable = probe_models_url("http://127.0.0.1:1/models", "k").await;
     assert_eq!(unreachable.status, ProfileStatus::Error);
+}
+
+#[tokio::test]
+async fn a_service_with_a_key_check_is_verified_only_when_the_check_passes() {
+    // OpenRouter-like: the model list is public, `GET /key` is not.
+    let (check, _) = serve(
+        "401 Unauthorized",
+        "",
+        r#"{"error":{"message":"User not found."}}"#,
+    )
+    .await;
+    let (models, _) = serve("200 OK", "", r#"{"data":[{"id":"a/b"}]}"#).await;
+    let refused = probe(Some(&check), &models, true, "sk-wrong").await;
+    assert_eq!(refused.status, ProfileStatus::Error, "{refused:?}");
+    assert!(refused.models.is_empty());
+
+    let (check, _) = serve("200 OK", "", r#"{"data":{"label":"k"}}"#).await;
+    let (models, _) = serve("200 OK", "", r#"{"data":[{"id":"a/b"}]}"#).await;
+    let ok = probe(Some(&check), &models, false, "sk-right").await;
+    assert_eq!(ok.status, ProfileStatus::Verified, "{ok:?}");
+    assert_eq!(ok.models, ["a/b"]);
+}
+
+#[tokio::test]
+async fn a_service_that_lists_models_to_anyone_is_never_more_than_limited() {
+    // NVIDIA-like: no call checks the key, so a listed catalogue proves nothing about it.
+    let (models, _) = serve(
+        "200 OK",
+        "",
+        r#"{"data":[{"id":"meta/llama"},{"id":"nvidia/nemotron"}]}"#,
+    )
+    .await;
+    let result = probe(None, &models, true, "nvapi-anything").await;
+    assert_eq!(result.status, ProfileStatus::Limited, "{result:?}");
+    assert_eq!(result.models, ["meta/llama", "nvidia/nemotron"]);
+    assert!(result.detail.contains("2 models"), "{result:?}");
+    assert!(
+        result.detail.contains("checked when a task uses it"),
+        "{result:?}"
+    );
 }

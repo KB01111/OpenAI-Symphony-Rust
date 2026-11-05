@@ -371,12 +371,14 @@ mod tests {
         let run = orch.resolve_run_connection(None).await.unwrap().unwrap();
         let (tested_connection, tested_key) = lister.asked.lock().unwrap()[0].clone();
         assert_eq!(tested_key, KEY);
-        // The run is handed the config of exactly the connection that was tested.
+        // The run is handed the config of exactly the connection that was tested: the same service
+        // and key variable, and on the preset the endpoint stays with OpenCode's own provider.
+        assert_eq!(tested_connection.service, ModelService::OpenRouter);
+        assert_eq!(tested_connection.base_url, "https://openrouter.ai/api/v1");
         let config: Value = serde_json::from_str(&run.env["OPENCODE_CONFIG_CONTENT"]).unwrap();
-        assert_eq!(
-            config["provider"]["openrouter"]["options"]["baseURL"],
-            tested_connection.base_url
-        );
+        let options = &config["provider"]["openrouter"]["options"];
+        assert_eq!(options["apiKey"], "{env:OPENROUTER_API_KEY}");
+        assert!(options.get("baseURL").is_none());
         assert_eq!(run.env["OPENROUTER_API_KEY"], KEY);
         assert_eq!(
             run.model.as_deref(),
