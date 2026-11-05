@@ -19,10 +19,19 @@ async fn serve(
     );
     let task = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
+        // Read until the end of the request head: one read may return only part of it.
+        let mut head = Vec::new();
         let mut buf = vec![0u8; 8192];
-        let n = stream.read(&mut buf).await.unwrap();
-        stream.write_all(response.as_bytes()).await.unwrap();
-        String::from_utf8_lossy(&buf[..n]).to_string()
+        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = stream.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            head.extend_from_slice(&buf[..n]);
+        }
+        // The client may stop reading an oversized body early.
+        let _ = stream.write_all(response.as_bytes()).await;
+        String::from_utf8_lossy(&head).to_string()
     });
     (url, task)
 }
@@ -136,4 +145,15 @@ async fn a_service_that_lists_models_to_anyone_is_never_more_than_limited() {
         result.detail.contains("checked when a task uses it"),
         "{result:?}"
     );
+}
+
+#[tokio::test]
+async fn an_oversized_model_list_is_abandoned_not_buffered() {
+    // A 9 MiB body (the limit is 8 MiB) must not be read in full or parsed.
+    let filler = "x".repeat(9 * 1024 * 1024);
+    let body = format!(r#"{{"data":[{{"id":"a/b"}}],"padding":"{filler}"}}"#);
+    let (url, _) = serve("200 OK", "", &body).await;
+    let result = probe_models_url(&url, "k").await;
+    assert_eq!(result.status, ProfileStatus::Limited, "{:?}", result.detail);
+    assert!(result.models.is_empty());
 }

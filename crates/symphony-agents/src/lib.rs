@@ -1803,7 +1803,7 @@ impl AgentSession for OpenCodeSession {
             } else {
                 self.config.command.trim()
             };
-        opencode_version::ensure_supported(exe).await?;
+        opencode_version::ensure_supported(exe, &self.config.workspace_path).await?;
         if self.supervised() {
             let exe = exe.to_string();
             return self.run_server_turn(&exe, prompt, event_tx).await;

@@ -88,6 +88,13 @@ pub const ALLOWED_CREDENTIAL_KEYS: &[&str] = &[
     "NVIDIA_API_KEY",
 ];
 
+/// A model-service key. Settings saved before connection profiles existed may carry one in
+/// `extra_env_vars` (the only way to give OpenCode such a key then), so unlike the other allowlisted
+/// keys it is still accepted there instead of failing every settings save.
+fn is_service_key(key: &str) -> bool {
+    symphony_core::ModelService::credential_keys().contains(&key)
+}
+
 /// Provider API keys that are exported into the runtime environment so agent subprocesses can
 /// authenticate. Tracker tokens stay in the vault and are only used by host-side dynamic tools.
 const PROVIDER_ENV_CREDENTIALS: &[&str] = &["OPENAI_API_KEY", "ANTHROPIC_API_KEY"];
@@ -1786,11 +1793,10 @@ fn validate_settings(settings: &AppSettings) -> std::result::Result<(), String> 
     {
         return Err("resource thresholds must be between 10 and 100 percent".into());
     }
-    if settings
-        .extra_env_vars
-        .keys()
-        .any(|k| ALLOWED_CREDENTIAL_KEYS.contains(&k.as_str()) || k == REMOTE_TOKEN_KEY)
-    {
+    if settings.extra_env_vars.keys().any(|k| {
+        (ALLOWED_CREDENTIAL_KEYS.contains(&k.as_str()) && !is_service_key(k))
+            || k == REMOTE_TOKEN_KEY
+    }) {
         return Err("Secrets must be stored through the credential vault, not settings".into());
     }
     remote::validate_remote_settings(settings)?;

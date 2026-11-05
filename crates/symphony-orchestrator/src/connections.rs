@@ -85,6 +85,7 @@ impl SymphonyOrchestrator {
         id: Option<String>,
         input: ConnectionProfileInput,
     ) -> SymphonyResult<ProviderProfile> {
+        let _changes = self.connections_lock.lock().await;
         let existing = match &id {
             Some(id) => Some(
                 self.storage
@@ -150,6 +151,7 @@ impl SymphonyOrchestrator {
     }
 
     pub async fn delete_connection_profile(&self, id: &str) -> SymphonyResult<()> {
+        let _changes = self.connections_lock.lock().await;
         let existing = self.storage.get_provider_profile(id).await?;
         if !existing.is_some_and(|p| p.service.is_some()) {
             return Err(not_found(id));
@@ -183,19 +185,36 @@ impl SymphonyOrchestrator {
         };
         let mut result = self.model_lister().list(&connection, &key).await;
         // Whatever the service or an error path put in the text, the key never leaves here.
-        result.detail = redact_secrets(&result.detail, &[key]);
+        result.detail = redact_secrets(&result.detail, std::slice::from_ref(&key));
+        result.models.retain(|model| !model.contains(key.as_str()));
         Ok(result)
     }
 
     /// Test a profile's connection and store the outcome.
+    ///
+    /// The result is recorded only if the profile is still the one that was probed and its key was
+    /// not changed meanwhile; otherwise the current profile is returned with the models found.
     pub async fn test_connection_profile(&self, id: &str) -> SymphonyResult<ConnectionTestResult> {
+        use std::sync::atomic::Ordering;
+        let probed = self.service_profile(id).await?;
+        let epoch = self.credential_epoch.load(Ordering::SeqCst);
+        let result = self.probe_profile(&probed).await?;
+
+        let _changes = self.connections_lock.lock().await;
         let mut profile = self.service_profile(id).await?;
-        let result = self.probe_profile(&profile).await?;
-        profile.status = result.status;
-        profile.status_detail = Some(result.detail);
-        profile.verified_at = (result.status == ProfileStatus::Verified).then(Utc::now);
-        self.storage.upsert_provider_profile(&profile).await?;
-        self.invalidate_provider_cache().await;
+        let target = |p: &ProviderProfile| {
+            p.service
+                .map(|service| (service, symphony_core::effective_base_url(p, service)))
+        };
+        if target(&profile) == target(&probed)
+            && self.credential_epoch.load(Ordering::SeqCst) == epoch
+        {
+            profile.status = result.status;
+            profile.status_detail = Some(result.detail);
+            profile.verified_at = (result.status == ProfileStatus::Verified).then(Utc::now);
+            self.storage.upsert_provider_profile(&profile).await?;
+            self.invalidate_provider_cache().await;
+        }
         Ok(ConnectionTestResult {
             profile,
             models: result.models,
@@ -221,6 +240,9 @@ impl SymphonyOrchestrator {
         else {
             return Ok(());
         };
+        self.credential_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _changes = self.connections_lock.lock().await;
         for profile in self.connection_profiles().await? {
             if profile.service == Some(service) && profile.status != ProfileStatus::Configured {
                 self.storage
@@ -264,10 +286,18 @@ impl SymphonyOrchestrator {
         // A fallback runs on its own default model: the requested one names the other service.
         let connection =
             resolve_connection(profile, if fell_back { None } else { requested_model })?;
+        // Read again: the key may have been removed since the profile was selected.
         let key = self
             .secret_store
             .get_vault_secret(connection.credential_key())
-            .unwrap_or_default();
+            .filter(|k| !k.trim().is_empty())
+            .ok_or_else(|| {
+                SymphonyError::InvalidConfig(format!(
+                    "Connection profile \"{}\" has no API key: add {} in Settings → Connections.",
+                    profile.name,
+                    connection.credential_key()
+                ))
+            })?;
         let config = connection.opencode_config().to_string();
         Ok(Some(RunConnection {
             env: HashMap::from([
@@ -565,5 +595,105 @@ mod tests {
             orch.delete_connection_profile(&first.id).await,
             Err(SymphonyError::NotFound(_))
         ));
+    }
+
+    /// Waits for the test to say go, so a change can land while the probe is "on the network".
+    struct GatedLister {
+        started: tokio::sync::Notify,
+        go: tokio::sync::Notify,
+        models: Vec<String>,
+    }
+
+    #[async_trait]
+    impl ModelLister for GatedLister {
+        async fn list(&self, _: &ResolvedConnection, _: &str) -> ProbeResult {
+            self.started.notify_one();
+            self.go.notified().await;
+            ProbeResult {
+                status: ProfileStatus::Verified,
+                detail: "ok".into(),
+                models: self.models.clone(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_test_that_overlaps_a_key_change_or_a_delete_does_not_record_its_result() {
+        let (orch, _dir) = orchestrator().await;
+        let gate = Arc::new(GatedLister {
+            started: tokio::sync::Notify::new(),
+            go: tokio::sync::Notify::new(),
+            models: vec!["m/1".into(), format!("leaks/{KEY}")],
+        });
+        orch.set_model_lister(gate.clone());
+        let profile = orch
+            .save_connection_profile(None, input("Main", ModelService::OpenRouter))
+            .await
+            .unwrap();
+        orch.secret_store()
+            .set_secret("OPENROUTER_API_KEY", KEY)
+            .unwrap();
+
+        // The key is replaced while the old key is being tested: the stale result is not recorded.
+        let running = tokio::spawn({
+            let (orch, id) = (orch.clone(), profile.id.clone());
+            async move { orch.test_connection_profile(&id).await }
+        });
+        gate.started.notified().await;
+        orch.secret_store()
+            .set_secret("OPENROUTER_API_KEY", "sk-or-replaced-0123456789")
+            .unwrap();
+        orch.connection_credential_changed("OPENROUTER_API_KEY")
+            .await
+            .unwrap();
+        gate.go.notify_one();
+        let result = running.await.unwrap().unwrap();
+        assert_eq!(result.profile.status, ProfileStatus::Configured);
+        assert_eq!(
+            orch.connection_profiles().await.unwrap()[0].status,
+            ProfileStatus::Configured
+        );
+        // A service that echoes the key in a model id does not get it past the API.
+        assert_eq!(result.models, ["m/1"]);
+
+        // The profile is deleted while it is being tested: it does not come back.
+        let running = tokio::spawn({
+            let (orch, id) = (orch.clone(), profile.id.clone());
+            async move { orch.test_connection_profile(&id).await }
+        });
+        gate.started.notified().await;
+        orch.delete_connection_profile(&profile.id).await.unwrap();
+        gate.go.notify_one();
+        assert!(matches!(
+            running.await.unwrap(),
+            Err(SymphonyError::NotFound(_))
+        ));
+        assert!(orch.connection_profiles().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_saves_leave_exactly_one_default() {
+        let (orch, _dir) = orchestrator().await;
+        let saves = (0..8).map(|n| {
+            let orch = orch.clone();
+            async move {
+                orch.save_connection_profile(
+                    None,
+                    input(&format!("P{n}"), ModelService::OpenRouter),
+                )
+                .await
+            }
+        });
+        for saved in futures::future::join_all(saves).await {
+            saved.unwrap();
+        }
+        let defaults = orch
+            .connection_profiles()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.is_default)
+            .count();
+        assert_eq!(defaults, 1);
     }
 }
