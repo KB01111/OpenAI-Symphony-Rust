@@ -44,24 +44,44 @@ impl VersionSupport {
     }
 }
 
-/// The first `x.y.z` in `text`, tolerating `v`, `opencode 1.19.4`, `opencode/1.19.4` and a
-/// pre-release or build suffix (`1.20.0-beta.1`, `1.20.0+abc`).
-pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
-    text.split(|c: char| !(c.is_ascii_digit() || c == '.'))
-        .find_map(|token| {
-            let mut parts = token.trim_matches('.').split('.');
-            let major = parts.next()?.parse().ok()?;
+/// A version this large is a date or a build number (`2026.11.5`), not an OpenCode release.
+const MAX_PLAUSIBLE_MAJOR: u64 = 99;
+
+/// The first `x.y.z` in `text` and whether it carries a pre-release suffix, tolerating `v`,
+/// `opencode 1.19.4`, `opencode/1.19.4`, `1.20.0-beta.1` and `1.20.0+abc`.
+fn parse_full(text: &str) -> Option<((u64, u64, u64), bool)> {
+    text.split(|c: char| c.is_whitespace() || c == '/' || c == '(' || c == ')')
+        .find_map(|word| {
+            let word = word.trim_start_matches(['v', 'V']);
+            let end = word
+                .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+                .unwrap_or(word.len());
+            let (number, rest) = word.split_at(end);
+            let mut parts = number.trim_matches('.').split('.');
+            let major: u64 = parts.next()?.parse().ok()?;
             let minor = parts.next()?.parse().ok()?;
             let patch = parts.next()?.parse().ok()?;
-            Some((major, minor, patch))
+            if parts.next().is_some() || major > MAX_PLAUSIBLE_MAJOR {
+                return None;
+            }
+            Some(((major, minor, patch), rest.starts_with('-')))
         })
 }
 
+/// The first `x.y.z` in `text` (see [`parse_full`]); a date or build number is not a version.
+pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
+    parse_full(text).map(|(version, _)| version)
+}
+
 pub fn check(text: &str) -> VersionSupport {
-    match parse_version(text) {
+    match parse_full(text) {
         None => VersionSupport::Unparseable,
-        Some(v) if v < MIN_SUPPORTED => VersionSupport::TooOld,
-        Some(v) if v >= MAX_EXCLUSIVE => VersionSupport::TooNew,
+        // A pre-release of the floor (1.19.4-beta.1) is older than the floor itself.
+        Some((v, prerelease)) if v < MIN_SUPPORTED || (v == MIN_SUPPORTED && prerelease) => {
+            VersionSupport::TooOld
+        }
+        // 2.0.0-beta already serves the OpenCode 2 API.
+        Some((v, _)) if v >= MAX_EXCLUSIVE => VersionSupport::TooNew,
         Some(_) => VersionSupport::Supported,
     }
 }
@@ -83,11 +103,17 @@ pub fn unsupported_message(text: &str) -> Option<String> {
 
 /// Probe `exe --version` and refuse a known-incompatible release.
 ///
-/// `exe` is the configured command: a bare name is looked up on `PATH`, anything else is used as
-/// given. A probe that fails or prints nothing recognisable does not block the run.
-pub(crate) async fn ensure_supported(exe: &str) -> Result<()> {
+/// `exe` is the configured command, resolved the way the launch resolves it: a bare name on `PATH`,
+/// a relative path against the task `workspace` (the launch runs there), anything else as given. A
+/// probe that fails or prints nothing recognisable does not block the run.
+pub(crate) async fn ensure_supported(exe: &str, workspace: &Path) -> Result<()> {
     let path = if exe.contains(['/', '\\']) {
-        Some(Path::new(exe).to_path_buf())
+        let given = Path::new(exe);
+        Some(if given.is_absolute() {
+            given.to_path_buf()
+        } else {
+            workspace.join(given)
+        })
     } else {
         crate::detection::find_on_path(exe)
     };
@@ -96,10 +122,10 @@ pub(crate) async fn ensure_supported(exe: &str) -> Result<()> {
     };
     // A binary that passed once is not probed again until it changes on disk.
     let stamp = std::fs::metadata(&path)
-        .and_then(|m| m.modified())
+        .and_then(|m| m.modified().map(|modified| (m.len(), modified)))
         .ok()
-        .map(|modified| (path.clone(), modified));
-    static VERIFIED: OnceLock<Mutex<HashSet<(PathBuf, SystemTime)>>> = OnceLock::new();
+        .map(|(len, modified)| (path.clone(), len, modified));
+    static VERIFIED: OnceLock<Mutex<HashSet<(PathBuf, u64, SystemTime)>>> = OnceLock::new();
     let verified = VERIFIED.get_or_init(Default::default);
     if let Some(stamp) = &stamp {
         if verified.lock().is_ok_and(|set| set.contains(stamp)) {
@@ -140,6 +166,10 @@ mod tests {
             Some((1, 19, 4))
         );
         assert_eq!(parse_version("1.19"), None);
+        // A date or build number is not a release; neither is a lone `v`-less word.
+        assert_eq!(parse_version("2026.11.5"), None);
+        assert_eq!(parse_version("wrapper 2026.11.05 build"), None);
+        assert_eq!(parse_version("1.2.3.4"), None);
         assert_eq!(parse_version("dev"), None);
         assert_eq!(parse_version(""), None);
     }
@@ -157,6 +187,17 @@ mod tests {
         assert_eq!(check("opencode/2.0.1"), VersionSupport::TooNew);
         assert_eq!(check("3.1.0"), VersionSupport::TooNew);
         assert_eq!(check("something else"), VersionSupport::Unparseable);
+    }
+
+    #[test]
+    fn a_prerelease_is_older_than_its_release() {
+        assert_eq!(check("1.19.4-beta.1"), VersionSupport::TooOld);
+        assert_eq!(check("opencode 1.19.4-rc.2"), VersionSupport::TooOld);
+        assert_eq!(check("1.19.5-beta.1"), VersionSupport::Supported);
+        assert_eq!(check("1.20.0-beta"), VersionSupport::Supported);
+        // 2.0.0-beta already has the OpenCode 2 API.
+        assert_eq!(check("2.0.0-beta.1"), VersionSupport::TooNew);
+        assert_eq!(check("2026.11.5"), VersionSupport::Unparseable);
     }
 
     #[test]
