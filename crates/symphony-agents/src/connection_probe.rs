@@ -12,6 +12,8 @@ use symphony_core::{ProfileStatus, ResolvedConnection};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_MODELS: usize = 2_000;
+/// Largest model list read; the biggest public catalogue is a few hundred KB.
+const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// What a probe found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,6 +149,18 @@ fn redirected(code: u16) -> ProbeResult {
     )
 }
 
+/// The response as JSON, read in chunks and abandoned beyond [`MAX_BODY_BYTES`].
+async fn read_json(mut response: reqwest::Response) -> Option<Value> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if body.len() + chunk.len() > MAX_BODY_BYTES {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).ok()
+}
+
 async fn list_models(client: &reqwest::Client, url: &str, api_key: &str) -> ProbeResult {
     let response = match client
         .get(url)
@@ -188,9 +202,9 @@ async fn list_models(client: &reqwest::Client, url: &str, api_key: &str) -> Prob
             )
         }
     }
-    let body = match response.json::<Value>().await {
-        Ok(body) => body,
-        Err(_) => {
+    let body = match read_json(response).await {
+        Some(body) => body,
+        None => {
             return ProbeResult::new(
                 ProfileStatus::Limited,
                 "the service answered, but not with a model list",

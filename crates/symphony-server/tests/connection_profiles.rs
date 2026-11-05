@@ -278,3 +278,20 @@ async fn the_endpoints_need_the_token() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn settings_that_already_hold_a_service_key_in_the_environment_can_still_be_saved() {
+    // Before connection profiles that was the only way to give OpenCode such a key, and every
+    // settings save sends the whole object back.
+    let (app, _dir) = app().await;
+    let (_, current) = call(&app, Method::GET, "/settings", None).await;
+    let mut with_key = current.clone();
+    with_key["extra_env_vars"] = json!({ "OPENROUTER_API_KEY": "from-before" });
+    let (status, _) = call(&app, Method::PUT, "/settings", Some(with_key)).await;
+    assert_eq!(status, StatusCode::OK);
+    // The other allowlisted keys are still refused there.
+    let mut refused = current;
+    refused["extra_env_vars"] = json!({ "OPENAI_API_KEY": "x" });
+    let (status, _) = call(&app, Method::PUT, "/settings", Some(refused)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

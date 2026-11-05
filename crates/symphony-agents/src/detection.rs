@@ -232,15 +232,6 @@ pub fn detect_auth(
             )
         }
         ProviderKind::OpenCode => {
-            if let Some(key) = symphony_core::ModelService::credential_keys()
-                .into_iter()
-                .find(|key| vault_keys.iter().any(|k| k == key))
-            {
-                return (
-                    ProviderAuthState::Authenticated,
-                    Some(format!("{key} in Symphony credential vault")),
-                );
-            }
             let data_home = std::env::var_os("XDG_DATA_HOME")
                 .map(PathBuf::from)
                 .or_else(|| home.map(|h| h.join(".local").join("share")));
