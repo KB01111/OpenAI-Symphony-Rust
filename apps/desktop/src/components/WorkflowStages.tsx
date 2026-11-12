@@ -1,8 +1,11 @@
-import React from "react";
+import React, { useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { Check, ChevronRight, CircleCheckBig, Hourglass, Play, ShieldQuestion, type LucideIcon, GitPullRequest } from "lucide-react";
 import { formatMessage, type Task, type TaskStatus } from "@symphony/shared-types";
 import { cn } from "@symphony/ui";
+import { paths } from "../app/routes.js";
 import { useMessages } from "../lib/i18n.js";
+import { useUiStore } from "../store/uiStore.js";
 import { workbenchMessages } from "../layouts/messages.js";
 
 /**
@@ -19,7 +22,7 @@ type StepTone = "accent" | "warning" | "danger" | "success" | "neutral";
 interface Position {
   step: Step;
   /** Label of the current step when it is not the plain stage name (needs approval, failed…). */
-  label: "needsYou" | "failed" | "cancelled" | null;
+  label: "needsYou" | "blocked" | "failed" | "cancelled" | null;
   tone: StepTone;
   live: boolean;
 }
@@ -36,7 +39,7 @@ export function flowPosition(status: TaskStatus, needsApproval: boolean): Positi
         ? { step: "working", label: "needsYou", tone: "warning", live: true }
         : { step: "working", label: null, tone: "accent", live: true };
     case "blocked":
-      return { step: "working", label: "needsYou", tone: "warning", live: false };
+      return { step: "working", label: "blocked", tone: "warning", live: false };
     case "failed":
       return { step: "working", label: "failed", tone: "danger", live: false };
     case "cancelled":
@@ -97,7 +100,7 @@ export const StageStepper: React.FC<{ task: Pick<Task, "status">; needsApproval?
               className={cn(
                 "truncate text-xs",
                 current ? cn("font-medium", CURRENT_TEXT[position.tone]) : done ? "text-muted-foreground" : "text-subtle-foreground",
-                !current && "hidden @md:inline"
+                index !== currentIndex && "hidden @md:inline"
               )}
             >
               {label}
@@ -117,11 +120,54 @@ const STAGE_META: Record<FlowStage, { icon: LucideIcon; hint: "queuedHint" | "wo
   done: { icon: CircleCheckBig, hint: "doneHint", tone: "text-success", chip: "bg-success-subtle text-success" }
 };
 
+/** The task statuses behind a stage that lists tasks; Home and the sidebar both count and open these. */
+export const STAGE_STATUSES: Readonly<Record<"queued" | "done", ReadonlyArray<TaskStatus>>> = {
+  queued: ["backlog", "ready", "queued"],
+  done: ["completed"]
+};
+
+/**
+ * Opens the view where a workflow stage is handled. The stage count spans every project and ignores
+ * filters, so the destination clears the saved search, filters and project selection first.
+ */
+export function useOpenWorkflowStage(): (stage: FlowStage) => void {
+  const navigate = useNavigate();
+  const resetTaskFilters = useUiStore((s) => s.resetTaskFilters);
+  const setTaskFilters = useUiStore((s) => s.setTaskFilters);
+  const setActiveProject = useUiStore((s) => s.setActiveProject);
+  const setActivityTab = useUiStore((s) => s.setDrawerTab);
+  return useCallback(
+    (stage) => {
+      switch (stage) {
+        case "queued":
+        case "done":
+          resetTaskFilters();
+          setTaskFilters({ statuses: [...STAGE_STATUSES[stage]] });
+          setActiveProject(null);
+          navigate(paths.tasks());
+          break;
+        case "working":
+          navigate(paths.runs());
+          break;
+        case "needsYou":
+          setActivityTab("approvals");
+          navigate(paths.activity());
+          break;
+        case "review":
+          navigate(paths.reviews());
+          break;
+      }
+    },
+    [navigate, resetTaskFilters, setTaskFilters, setActiveProject, setActivityTab]
+  );
+}
+
 export const FLOW_STAGES: ReadonlyArray<FlowStage> = ["queued", "working", "needsYou", "review", "done"];
 
 /** The whole workflow with how much work sits in each stage; every stage opens where it is handled. */
 export const WorkflowPipeline: React.FC<{
-  counts: Record<FlowStage, number> | null;
+  /** `null` while a count is not known (not loaded or failed), which is not the same as zero. */
+  counts: Record<FlowStage, number | null> | null;
   onOpen: (stage: FlowStage) => void;
   className?: string;
 }> = ({ counts, onOpen, className }) => {

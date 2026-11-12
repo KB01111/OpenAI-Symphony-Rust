@@ -51,6 +51,14 @@ function useScrollStrip(active: string) {
   const ref = useRef<HTMLElement>(null);
   const [edges, setEdges] = useState({ start: false, end: false });
 
+  /** Brings the active pill to the middle of the strip (no-op while the nav is a side list). */
+  const centre = useCallback((behavior: ScrollBehavior) => {
+    const el = ref.current;
+    const button = el?.querySelector<HTMLElement>('[aria-current="location"]');
+    if (!el || !button || el.scrollWidth <= el.clientWidth) return;
+    el.scrollTo({ left: button.offsetLeft - (el.clientWidth - button.offsetWidth) / 2, behavior });
+  }, []);
+
   const measure = useCallback(() => {
     const el = ref.current;
     if (!el) return;
@@ -64,7 +72,11 @@ function useScrollStrip(active: string) {
     const el = ref.current;
     if (!el) return;
     measure();
-    const observer = new ResizeObserver(measure);
+    // A resize can turn the side list into a strip while a later section is active.
+    const observer = new ResizeObserver(() => {
+      measure();
+      centre("auto");
+    });
     observer.observe(el);
     const onWheel = (e: WheelEvent) => {
       // Only a vertical wheel over a strip that can scroll sideways is converted.
@@ -77,16 +89,13 @@ function useScrollStrip(active: string) {
       observer.disconnect();
       el.removeEventListener("wheel", onWheel);
     };
-  }, [measure]);
+  }, [measure, centre]);
 
-  useEffect(() => {
-    const el = ref.current;
-    const button = el?.querySelector<HTMLElement>('[aria-current="location"]');
-    if (!el || !button || el.scrollWidth <= el.clientWidth) return;
-    el.scrollTo({ left: button.offsetLeft - (el.clientWidth - button.offsetWidth) / 2, behavior: "smooth" });
-  }, [active]);
+  useEffect(() => centre("smooth"), [active, centre]);
 
-  const mask = `linear-gradient(to right, ${edges.start ? "transparent" : "#000"}, #000 ${FADE}px, #000 calc(100% - ${FADE}px), ${edges.end ? "transparent" : "#000"})`;
+  // Only the alpha of a mask counts; a design token keeps feature code free of literal colours.
+  const solid = "var(--foreground)";
+  const mask = `linear-gradient(to right, ${edges.start ? "transparent" : solid}, ${solid} ${FADE}px, ${solid} calc(100% - ${FADE}px), ${edges.end ? "transparent" : solid})`;
   return { ref, measure, mask };
 }
 

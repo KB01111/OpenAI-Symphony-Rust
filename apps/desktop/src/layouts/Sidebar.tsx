@@ -4,9 +4,10 @@ import { ChevronDown, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
 import { formatMessage } from "@symphony/shared-types";
 import { Button, Hint, cn } from "@symphony/ui";
 import { NAV_ITEMS, paths, type NavKey } from "../app/routes.js";
+import { STAGE_STATUSES, useOpenWorkflowStage, type FlowStage } from "../components/WorkflowStages.js";
 import { shellMessages } from "../app/messages.js";
 import { useMessages } from "../lib/i18n.js";
-import { useApprovals, useRuntimeState } from "../lib/queries.js";
+import { useApprovals, useRuntimeState, useTasks } from "../lib/queries.js";
 import { useUiStore } from "../store/uiStore.js";
 import { workbenchMessages } from "./messages.js";
 import { ThreadList } from "./ThreadList.js";
@@ -48,36 +49,19 @@ const PULSE_TONE: Record<PulseTone, string> = {
  */
 const WorkflowPulse: React.FC = () => {
   const w = useMessages(workbenchMessages);
-  const navigate = useNavigate();
+  const openStage = useOpenWorkflowStage();
   const state = useRuntimeState();
   const approvals = useApprovals(true);
-  const setTaskFilters = useUiStore((s) => s.setTaskFilters);
-  const setActivityTab = useUiStore((s) => s.setDrawerTab);
+  const tasks = useTasks(null);
   const counts = state.data?.counts;
+  // Queued counts the same statuses as the Home pipeline and the Tasks view it opens (backlog included).
+  const queued = tasks.data ? tasks.data.filter((t) => STAGE_STATUSES.queued.includes(t.status)).length : null;
 
-  const cells: { key: string; label: string; count: number | null; tone: PulseTone; open: () => void }[] = [
-    { key: "working", label: w.flow.working, count: counts?.running ?? null, tone: "accent", open: () => navigate(paths.runs()) },
-    {
-      key: "needsYou",
-      label: w.flow.needsYou,
-      count: approvals.data ? approvals.data.length : null,
-      tone: "warning",
-      open: () => {
-        setActivityTab("approvals");
-        navigate(paths.activity());
-      }
-    },
-    { key: "review", label: w.flow.review, count: counts?.human_review ?? null, tone: "info", open: () => navigate(paths.reviews()) },
-    {
-      key: "queued",
-      label: w.flow.queued,
-      count: counts?.queued ?? null,
-      tone: "neutral",
-      open: () => {
-        setTaskFilters({ statuses: ["queued", "ready"] });
-        navigate(paths.tasks());
-      }
-    }
+  const cells: { key: FlowStage; label: string; count: number | null; tone: PulseTone }[] = [
+    { key: "working", label: w.flow.working, count: counts?.running ?? null, tone: "accent" },
+    { key: "needsYou", label: w.flow.needsYou, count: approvals.data ? approvals.data.length : null, tone: "warning" },
+    { key: "review", label: w.flow.review, count: counts?.human_review ?? null, tone: "info" },
+    { key: "queued", label: w.flow.queued, count: queued, tone: "neutral" }
   ];
 
   return (
@@ -88,7 +72,7 @@ const WorkflowPulse: React.FC = () => {
           <button
             key={cell.key}
             type="button"
-            onClick={cell.open}
+            onClick={() => openStage(cell.key)}
             aria-label={formatMessage(w.flow.stage, { label: cell.label, count: cell.count ?? "–" })}
             className="flex min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 outline-none transition-colors hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/60"
           >
