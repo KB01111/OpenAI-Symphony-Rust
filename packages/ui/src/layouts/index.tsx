@@ -13,9 +13,9 @@ export const Panel: React.FC<{
 }> = ({ title, actions, children, className, bodyClassName, as = "section", ...rest }) => {
   const Comp = as;
   return (
-    <Comp className={cn("flex min-h-0 flex-col rounded-md border border-border bg-surface", className)} aria-label={rest["aria-label"]}>
+    <Comp className={cn("flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-card", className)} aria-label={rest["aria-label"]}>
       {title || actions ? (
-        <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
+        <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-4">
           {title ? <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">{title}</h2> : <span className="flex-1" />}
           {actions}
         </header>
@@ -31,18 +31,21 @@ export const PageHeader: React.FC<{
   description?: React.ReactNode;
   actions?: React.ReactNode;
   meta?: React.ReactNode;
+  /** A full-width row under the title, e.g. a progress indicator. */
+  footer?: React.ReactNode;
   className?: string;
-}> = ({ title, description, actions, meta, className }) => (
-  <header className={cn("flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-surface px-4 py-2.5", className)}>
+}> = ({ title, description, actions, meta, footer, className }) => (
+  <header className={cn("flex shrink-0 flex-wrap items-center gap-3 border-b border-border px-6 py-3.5", className)}>
     <div className="min-w-0 flex-1 basis-64">
       {/* The meta wraps under a long title instead of squeezing it. */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <h1 className="min-w-0 max-w-full truncate font-display text-base font-semibold text-foreground">{title}</h1>
+        <h1 className="min-w-0 max-w-full truncate font-display text-lg font-semibold tracking-tight text-foreground">{title}</h1>
         {meta}
       </div>
-      {description ? <p className="truncate text-xs text-muted-foreground">{description}</p> : null}
+      {description ? <p className="mt-0.5 truncate text-sm text-muted-foreground">{description}</p> : null}
     </div>
-    {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
+    {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+    {footer ? <div className="@container min-w-0 basis-full">{footer}</div> : null}
   </header>
 );
 

@@ -16,6 +16,7 @@ import {
   type AgentEventKind
 } from "@symphony/ui";
 import { useMessages, useT } from "../../lib/i18n.js";
+import { workbenchMessages } from "../../layouts/messages.js";
 import { useApprovals, useDecideApproval, useOlderTaskEvents, useTaskEventHistory } from "../../lib/queries.js";
 import { useEventStore } from "../../runtime/eventStore.js";
 import { useUiStore } from "../../store/uiStore.js";
@@ -55,7 +56,7 @@ const TaskApprovals: React.FC<{ taskId: string }> = ({ taskId }) => {
     // Pending approvals could not be loaded: say so instead of silently showing none.
     return (
       <ErrorState
-        className="m-2 shrink-0"
+        className="mx-6 my-2 shrink-0"
         intent="warning"
         title={m.timeline.approvalsFailed}
         message={approvals.error.message}
@@ -65,11 +66,32 @@ const TaskApprovals: React.FC<{ taskId: string }> = ({ taskId }) => {
   }
   if (list.length === 0) return null;
   return (
-    <section aria-label={m.timeline.approvals} className="max-h-[60%] shrink-0 space-y-2 overflow-auto border-b border-border p-2">
-      {list.map((a) => (
-        <AiApprovalBanner key={a.id} approval={a} pendingDecision={pending[a.id] ?? null} onDecide={onDecide} />
-      ))}
+    <section aria-label={m.timeline.approvals} className="max-h-[60%] shrink-0 overflow-auto px-6 py-2">
+      <div className="mx-auto max-w-3xl space-y-2">
+        {list.map((a) => (
+          <AiApprovalBanner key={a.id} approval={a} pendingDecision={pending[a.id] ?? null} onDecide={onDecide} />
+        ))}
+      </div>
     </section>
+  );
+};
+
+/** The runtime records a follow-up as a lifecycle event whose message carries the text that was sent. */
+const FOLLOW_UP_PREFIX = "Follow-up instructions: ";
+
+/** A follow-up that was sent: shown on the sender's side of the conversation, like the first prompt. */
+const UserMessage: React.FC<{ event: AgentEvent }> = ({ event }) => {
+  const w = useMessages(workbenchMessages).thread;
+  const time = useMemo(() => new Date(event.timestamp).toLocaleTimeString(), [event.timestamp]);
+  return (
+    <article aria-label={`${event.event_type} ${time}`} className="flex flex-col items-end py-2">
+      <p className="mb-1 pe-1 text-xs text-muted-foreground">
+        <span className="font-medium">{w.promptBy}</span> · <time dateTime={event.timestamp}>{time}</time>
+      </p>
+      <div className="max-w-[min(100%,40rem)] whitespace-pre-wrap break-words rounded-2xl rounded-se-md bg-surface-selected px-4 py-2.5 text-sm text-foreground">
+        {event.message.slice(FOLLOW_UP_PREFIX.length)}
+      </div>
+    </article>
   );
 };
 
@@ -121,7 +143,19 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
     setPausedAfter(null);
   }, []);
 
-  const renderItem = useCallback((e: AgentEvent) => <AiEventStreamCard event={e} mode={logMode} />, [logMode]);
+  const renderItem = useCallback(
+    (e: AgentEvent) => (
+      // One reading column, like a conversation, however wide the window is.
+      <div className="mx-auto max-w-3xl px-6">
+        {e.event_type === "task/follow_up" && e.message.startsWith(FOLLOW_UP_PREFIX) && logMode === "concise" ? (
+          <UserMessage event={e} />
+        ) : (
+          <AiEventStreamCard event={e} mode={logMode} />
+        )}
+      </div>
+    ),
+    [logMode]
+  );
   const getKey = useCallback((e: AgentEvent) => e.id, []);
 
   const chips = EVENT_KINDS.filter((k) => counts[k] > 0 || hidden.has(k));
@@ -130,7 +164,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border px-2 py-1.5">
+      <div className="shrink-0 px-6 pb-1 pt-3">
+      <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2">
         <LogModeSwitch value={logMode} onChange={setLogMode} />
         <span className="text-xs tabular-nums text-muted-foreground">{formatMessage(m.timeline.events, { count: all.length })}</span>
         <div role="group" aria-label={m.timeline.filters} className="ms-auto flex flex-wrap items-center gap-1">
@@ -139,7 +174,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
               key={kind}
               size="sm"
               variant={hidden.has(kind) ? "outline" : "secondary"}
-              className="h-6 rounded-full px-2"
+              className={hidden.has(kind) ? "h-6 rounded-full border-dashed px-2 text-subtle-foreground shadow-none" : "h-6 rounded-full px-2 shadow-none"}
               aria-pressed={!hidden.has(kind)}
               onClick={() => setHidden((h) => toggleKind(h, kind))}
             >
@@ -153,18 +188,26 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
           ) : null}
         </div>
       </div>
+      </div>
 
       <TaskApprovals taskId={task.id} />
 
       {active && task.current_phase ? (
-        <div role="status" className="flex shrink-0 items-center gap-2 border-b border-border bg-info-subtle px-3 py-1 text-xs text-info">
-          <StreamingText>{formatMessage(m.timeline.streaming, { phase: t.phase[task.current_phase] })}</StreamingText>
-          {operation ? <span className="min-w-0 flex-1 truncate text-muted-foreground">{operation}</span> : null}
+        <div className="shrink-0 px-6 py-1.5">
+          <div role="status" className="mx-auto flex max-w-3xl items-center gap-2 rounded-full bg-accent-subtle px-3.5 py-1.5 text-xs text-accent">
+            <span aria-hidden className="relative inline-flex size-2 shrink-0">
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-60" />
+              <span className="relative inline-flex size-2 rounded-full bg-accent" />
+            </span>
+            <StreamingText className="shrink-0 font-medium">{formatMessage(m.timeline.streaming, { phase: t.phase[task.current_phase] })}</StreamingText>
+            {operation ? <span className="min-w-0 flex-1 truncate text-muted-foreground">{operation}</span> : null}
+          </div>
         </div>
       ) : null}
 
       {older.hasMore && history.data ? (
-        <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1 text-xs text-muted-foreground">
+        <div className="shrink-0 px-6">
+        <div className="mx-auto flex max-w-3xl items-center gap-2 py-1 text-xs text-muted-foreground">
           <Button
             size="sm"
             variant="subtle"
@@ -180,17 +223,18 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
             </span>
           ) : null}
         </div>
+        </div>
       ) : null}
 
       <div className="relative min-h-0 flex-1">
         {history.isLoading && all.length === 0 ? (
-          <LoadingRows className="p-3" rows={6} label={t.common.loading} />
+          <LoadingRows className="mx-auto max-w-3xl px-6 py-3" rows={6} label={t.common.loading} />
         ) : history.isError && all.length === 0 ? (
-          <ErrorState className="m-3" title={t.errors.generic} message={history.error.message} onRetry={() => void history.refetch()} />
+          <ErrorState className="mx-6 my-3" title={t.errors.generic} message={history.error.message} onRetry={() => void history.refetch()} />
         ) : all.length === 0 ? (
-          <AiEmptyView className="m-3" title={m.timeline.empty} description={m.timeline.emptyDetail} />
+          <AiEmptyView className="mx-auto my-3 max-w-3xl border-0" title={m.timeline.empty} description={m.timeline.emptyDetail} />
         ) : visible.length === 0 ? (
-          <p className="p-3 text-sm text-muted-foreground">{m.timeline.filteredEmpty}</p>
+          <p className="mx-auto max-w-3xl px-6 py-3 text-sm text-muted-foreground">{m.timeline.filteredEmpty}</p>
         ) : (
           <VirtualList
             key={epoch}
@@ -200,14 +244,14 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({ task, operation })
             estimateSize={56}
             followTail
             onFollowChange={onFollowChange}
-            className="h-full px-1 py-1"
+            className="h-full py-1"
             ariaLabel={m.panels.timeline}
           />
         )}
         {!following && visible.length > 0 ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
             <Button
-              className="pointer-events-auto shadow-md"
+              className="pointer-events-auto rounded-full shadow-elevated"
               size="sm"
               variant="default"
              

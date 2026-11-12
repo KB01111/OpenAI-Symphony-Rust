@@ -22,6 +22,23 @@ export const workbenchMessages = defineMessages({
       addRepository: "Add repository…",
       allProjects: "All projects"
     },
+    flow: {
+      label: "Workflow",
+      queued: "Queued",
+      working: "Working",
+      needsYou: "Needs you",
+      review: "Review",
+      done: "Done",
+      failed: "Run failed",
+      cancelled: "Run cancelled",
+      queuedHint: "Waiting for an agent",
+      workingHint: "Agents are on it",
+      needsYouHint: "Approvals waiting for you",
+      reviewHint: "Results ready to review",
+      doneHint: "Finished work",
+      stage: "{label}: {count}",
+      progress: "Progress: {label}"
+    },
     home: {
       title: "What should Symphony work on?",
       subtitle: "Describe a task. Symphony prepares a workspace and an agent works on it.",
@@ -30,6 +47,12 @@ export const workbenchMessages = defineMessages({
       noProjectTitle: "Add a repository to begin",
       noProjectBody: "Symphony runs agents inside your Git repositories. Register one to create your first task.",
       addRepository: "Add repository",
+      attention: "Needs your attention",
+      attentionApproval: "Waiting for your approval",
+      attentionReview: "Ready for your review",
+      attentionFailed: "Failed: retry or send a follow-up",
+      allClear: "Nothing needs you right now.",
+      viewAll: "View all",
       statusRunning: "{count} running",
       statusApproval: "{count} waiting for approval",
       statusReview: "{count} ready for review"
@@ -127,6 +150,23 @@ export const workbenchMessages = defineMessages({
       addRepository: "Lägg till repository…",
       allProjects: "Alla projekt"
     },
+    flow: {
+      label: "Arbetsflöde",
+      queued: "I kö",
+      working: "Arbetar",
+      needsYou: "Väntar på dig",
+      review: "Granskning",
+      done: "Klart",
+      failed: "Körningen misslyckades",
+      cancelled: "Körningen avbröts",
+      queuedHint: "Väntar på en agent",
+      workingHint: "Agenter arbetar",
+      needsYouHint: "Godkännanden som väntar på dig",
+      reviewHint: "Resultat redo att granska",
+      doneHint: "Avslutat arbete",
+      stage: "{label}: {count}",
+      progress: "Förlopp: {label}"
+    },
     home: {
       title: "Vad ska Symphony arbeta med?",
       subtitle: "Beskriv en uppgift. Symphony förbereder en arbetsyta och en agent tar sig an den.",
@@ -135,6 +175,12 @@ export const workbenchMessages = defineMessages({
       noProjectTitle: "Lägg till ett repository för att börja",
       noProjectBody: "Symphony kör agenter i dina Git-repositories. Registrera ett för att skapa din första uppgift.",
       addRepository: "Lägg till repository",
+      attention: "Behöver din uppmärksamhet",
+      attentionApproval: "Väntar på ditt godkännande",
+      attentionReview: "Redo för din granskning",
+      attentionFailed: "Misslyckades: försök igen eller skicka en uppföljning",
+      allClear: "Inget behöver dig just nu.",
+      viewAll: "Visa alla",
       statusRunning: "{count} körs",
       statusApproval: "{count} väntar på godkännande",
       statusReview: "{count} redo för granskning"

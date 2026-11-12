@@ -25,7 +25,8 @@ import {
 import { paths } from "../../app/routes.js";
 import { useElementWidth } from "../../hooks/useElementWidth.js";
 import { useMessages, useT } from "../../lib/i18n.js";
-import { useCancelTask, useDispatchTask, useProjects, useProviders, useRetryTask, useRuntimeState, useTask } from "../../lib/queries.js";
+import { StageStepper } from "../../components/WorkflowStages.js";
+import { useApprovals, useCancelTask, useDispatchTask, useProjects, useProviders, useRetryTask, useRuntimeState, useTask } from "../../lib/queries.js";
 import { workbenchMessages } from "../../layouts/messages.js";
 import { useUiStore } from "../../store/uiStore.js";
 import { FollowUpComposer } from "./FollowUpComposer.js";
@@ -104,26 +105,29 @@ const PromptCard: React.FC<{ task: Task }> = ({ task }) => {
   const [expanded, setExpanded] = useState(false);
   const long = text.length > 280 || text.split("\n").length > 5;
   return (
-    <section aria-label={w.promptHeading} className="shrink-0 border-b border-border bg-surface-sunken px-4 py-3">
-      <div className="mx-auto max-w-3xl">
-        <p className="mb-1 text-xs font-medium text-muted-foreground">{w.promptBy}</p>
-        <div
-          tabIndex={expanded ? 0 : undefined}
-          className={
-            expanded
-              ? "max-h-[40vh] overflow-y-auto text-sm"
-              : long
-                ? "max-h-24 overflow-hidden text-sm [mask-image:linear-gradient(to_bottom,black_60%,transparent)]"
-                : "text-sm"
-          }
-        >
-          <Markdown breakNewLines>{text}</Markdown>
+    <section aria-label={w.promptHeading} className="shrink-0 px-6 pt-4">
+      <div className="mx-auto flex max-w-3xl flex-col items-end">
+        <p className="mb-1 pe-1 text-xs font-medium text-muted-foreground">{w.promptBy}</p>
+        {/* Your message, on your side of the conversation. */}
+        <div className="max-w-[min(100%,40rem)] rounded-2xl rounded-se-md bg-surface-selected px-4 py-2.5">
+          <div
+            tabIndex={expanded ? 0 : undefined}
+            className={
+              expanded
+                ? "max-h-[40vh] overflow-y-auto text-sm"
+                : long
+                  ? "max-h-24 overflow-hidden text-sm [mask-image:linear-gradient(to_bottom,black_60%,transparent)]"
+                  : "text-sm"
+            }
+          >
+            <Markdown breakNewLines>{text}</Markdown>
+          </div>
+          {long ? (
+            <Button variant="link" size="sm" className="mt-1 h-auto p-0 text-xs" aria-expanded={expanded} onClick={() => setExpanded((v) => !v)}>
+              {expanded ? m.changes.hideOutput : m.changes.showOutput}
+            </Button>
+          ) : null}
         </div>
-        {long ? (
-          <Button variant="link" size="sm" className="mt-1 h-auto p-0 text-xs" aria-expanded={expanded} onClick={() => setExpanded((v) => !v)}>
-            {expanded ? m.changes.hideOutput : m.changes.showOutput}
-          </Button>
-        ) : null}
       </div>
     </section>
   );
@@ -139,6 +143,8 @@ const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
   const projects = useProjects();
   const providers = useProviders();
   const state = useRuntimeState();
+  const approvals = useApprovals(true);
+  const needsApproval = (approvals.data ?? []).some((a) => a.task_id === task.id && a.status === "pending");
   const panelOpen = useUiStore((s) => s.threadPanelOpen);
   const setPanelOpen = useUiStore((s) => s.setThreadPanelOpen);
   // The panel is docked only when the thread keeps at least ~35rem beside it (26rem panel); the view's
@@ -192,6 +198,7 @@ const ThreadWorkspace: React.FC<{ task: Task }> = ({ task }) => {
               </span>
             </span>
           }
+          footer={<StageStepper task={task} needsApproval={needsApproval} />}
           actions={
             <>
               <ExecutionControls task={task} />

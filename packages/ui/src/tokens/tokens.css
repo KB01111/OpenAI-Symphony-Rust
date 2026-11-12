@@ -18,22 +18,24 @@
 
 :root,
 :root[data-theme="light"] {
-  --background: #f5f6f8;
-  --foreground: #16181d;
+  /* Warm paper neutrals with one iris accent. `--canvas` is the window chrome around the workspace. */
+  --canvas: #efede8;
+  --background: #faf9f7;
+  --foreground: #1c1b19;
   --surface: #ffffff;
   --surface-raised: #ffffff;
-  --surface-sunken: #eef0f3;
-  --surface-hover: #f0f2f5;
-  --surface-selected: #e7eefc;
-  --border: #e0e3e8;
-  --border-strong: #c9ced6;
-  --muted: #eef0f3;
-  --muted-foreground: #5a6170;
-  --subtle-foreground: #626977;
-  --accent: #1d58d8;
-  --accent-hover: #1a4cbd;
+  --surface-sunken: #f3f1ed;
+  --surface-hover: #f1efea;
+  --surface-selected: #eceafb;
+  --border: #e7e4de;
+  --border-strong: #d3cfc7;
+  --muted: #f1efea;
+  --muted-foreground: #5f5d58;
+  --subtle-foreground: #6a6862;
+  --accent: #5746d9;
+  --accent-hover: #4a3ac4;
   --accent-foreground: #ffffff;
-  --accent-subtle: rgb(37 99 235 / 0.1);
+  --accent-subtle: rgb(87 70 217 / 0.1);
   --destructive: #b3232b;
   --destructive-subtle: rgb(198 42 50 / 0.1);
   --warning: #8a5000;
@@ -42,32 +44,34 @@
   --success-subtle: rgb(24 121 78 / 0.12);
   --info: #0a5cb0;
   --info-subtle: rgb(11 105 199 / 0.1);
-  --ring: #2563eb;
-  --overlay: rgb(15 17 21 / 0.4);
-  --shadow-elevated: 0 8px 24px rgb(15 17 21 / 0.12), 0 1px 3px rgb(15 17 21 / 0.08);
-  --code-background: #f3f4f6;
+  --ring: #6a5be6;
+  --overlay: rgb(28 27 25 / 0.36);
+  --shadow-card: 0 1px 2px rgb(28 27 25 / 0.04), 0 1px 1px rgb(28 27 25 / 0.03);
+  --shadow-elevated: 0 16px 40px -8px rgb(28 27 25 / 0.16), 0 2px 6px rgb(28 27 25 / 0.06);
+  --code-background: #f5f3ef;
   --diff-add: rgb(24 121 78 / 0.12);
   --diff-remove: rgb(198 42 50 / 0.1);
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --background: #0f1012;
-  --foreground: #e5e7eb;
-  --surface: #151619;
-  --surface-raised: #1b1d21;
-  --surface-sunken: #0c0d0f;
-  --surface-hover: #22252a;
-  --surface-selected: #1b2740;
-  --border: #272a30;
-  --border-strong: #363a42;
-  --muted: #1e2024;
-  --muted-foreground: #9ca1ab;
-  --subtle-foreground: #8b919b;
-  --accent: #7aa5f4;
-  --accent-hover: #8fb4f6;
-  --accent-foreground: #0b1020;
-  --accent-subtle: rgb(91 141 239 / 0.16);
+  --canvas: #0d0d0c;
+  --background: #141413;
+  --foreground: #ecebe7;
+  --surface: #1a1a18;
+  --surface-raised: #20201e;
+  --surface-sunken: #111110;
+  --surface-hover: #262624;
+  --surface-selected: #26243f;
+  --border: #2a2a27;
+  --border-strong: #3a3a36;
+  --muted: #222220;
+  --muted-foreground: #a5a39b;
+  --subtle-foreground: #918f87;
+  --accent: #aaa3ff;
+  --accent-hover: #bcb6ff;
+  --accent-foreground: #15122e;
+  --accent-subtle: rgb(150 140 255 / 0.16);
   --destructive: #f47a80;
   --destructive-subtle: rgb(240 98 106 / 0.14);
   --warning: #e3a43c;
@@ -76,10 +80,11 @@
   --success-subtle: rgb(76 195 138 / 0.14);
   --info: #5fa8f5;
   --info-subtle: rgb(95 168 245 / 0.14);
-  --ring: #74a0f5;
-  --overlay: rgb(0 0 0 / 0.55);
-  --shadow-elevated: 0 12px 32px rgb(0 0 0 / 0.45), 0 1px 2px rgb(0 0 0 / 0.4);
-  --code-background: #111215;
+  --ring: #9d95ff;
+  --overlay: rgb(0 0 0 / 0.6);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-elevated: 0 16px 40px -8px rgb(0 0 0 / 0.6), 0 2px 6px rgb(0 0 0 / 0.4);
+  --code-background: #121211;
   --diff-add: rgb(76 195 138 / 0.13);
   --diff-remove: rgb(240 98 106 / 0.13);
   color-scheme: dark;
@@ -102,7 +107,7 @@
   --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", ui-monospace, monospace;
 
-  --radius: 8px;
+  --radius: 10px;
 
   /* Density: compact (default, IDE-like) */
   --density-row: 28px;
@@ -128,6 +133,7 @@
   --text-sm--line-height: 1.4;
   --text-xs: var(--density-font-xs);
   --text-xs--line-height: 1.35;
+  --color-canvas: var(--canvas);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-surface: var(--surface);
@@ -179,6 +185,7 @@
   --spacing-row: var(--density-row);
   --spacing-control: var(--density-control);
   --shadow-elevated: var(--shadow-elevated);
+  --shadow-card: var(--shadow-card);
 }
 
 @layer base {
@@ -186,7 +193,7 @@
      controls; density changes the body text size instead. */
   html,
   body {
-    background: var(--background);
+    background: var(--canvas);
     color: var(--foreground);
     font-family: var(--font-sans);
   }
@@ -215,6 +222,18 @@
 
   ::selection {
     background: var(--accent-subtle);
+  }
+
+  /* Quiet scrollbars that only show their thumb. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.011em;
   }
 }
 

@@ -16,7 +16,7 @@ export const StatusBar: React.FC = () => {
   const connection = useConnectionSummary();
   const s = state.data;
   return (
-    <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-border bg-surface px-2 text-xs text-muted-foreground" role="contentinfo">
+    <footer className="flex h-7 shrink-0 items-center gap-4 overflow-hidden whitespace-nowrap px-4 text-[11px] text-muted-foreground" role="contentinfo">
       <span className="inline-flex items-center gap-1.5" title={baseUrl ?? undefined}>
         <StatusDot tone={connection.tone} label={connection.label} />
         {m.status.runtime}: {connection.short}

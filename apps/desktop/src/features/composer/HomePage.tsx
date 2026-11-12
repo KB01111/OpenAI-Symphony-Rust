@@ -1,39 +1,107 @@
 import { useMemo } from "react";
-import { Link } from "react-router-dom";
-import { formatMessage } from "@symphony/shared-types";
-import { StatusDot, TimeAgo } from "@symphony/ui";
+import { Link, useNavigate } from "react-router-dom";
+import { ArrowRight, GitPullRequest, ShieldQuestion, XCircle, type LucideIcon } from "lucide-react";
+import { formatMessage, type Task } from "@symphony/shared-types";
+import { StatusDot, TimeAgo, cn } from "@symphony/ui";
 import { paths } from "../../app/routes.js";
+import { WorkflowPipeline, type FlowStage } from "../../components/WorkflowStages.js";
 import { useMessages, useT } from "../../lib/i18n.js";
 import { useApprovals, useProjects, useTasks } from "../../lib/queries.js";
 import { workbenchMessages } from "../../layouts/messages.js";
 import { statusTone } from "../../layouts/ThreadList.js";
+import { useUiStore } from "../../store/uiStore.js";
 import { TaskComposer } from "./TaskComposer.js";
 
-/** Home: the prompt composer, centred, with the most recent threads underneath. */
+type AttentionKind = "approval" | "review" | "failed";
+
+const ATTENTION: Record<AttentionKind, { icon: LucideIcon; chip: string }> = {
+  approval: { icon: ShieldQuestion, chip: "bg-warning-subtle text-warning" },
+  review: { icon: GitPullRequest, chip: "bg-info-subtle text-info" },
+  failed: { icon: XCircle, chip: "bg-destructive-subtle text-destructive" }
+};
+
+const MAX_ATTENTION = 5;
+
+/**
+ * Home: say what to work on, see where everything stands in the workflow, and pick up whatever is
+ * waiting for you.
+ */
 export default function HomePage() {
   const m = useMessages(workbenchMessages);
   const t = useT();
+  const navigate = useNavigate();
   const tasks = useTasks(null);
   const projects = useProjects();
   const approvals = useApprovals(true);
+  const setTaskFilters = useUiStore((s) => s.setTaskFilters);
+  const setActivityTab = useUiStore((s) => s.setDrawerTab);
 
-  const recent = useMemo(
-    () => [...(tasks.data ?? [])].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 6),
-    [tasks.data]
-  );
+  const all = useMemo(() => tasks.data ?? [], [tasks.data]);
+  const byRecency = useMemo(() => [...all].sort((a, b) => b.updated_at.localeCompare(a.updated_at)), [all]);
   const approvalIds = useMemo(() => new Set((approvals.data ?? []).map((a) => a.task_id)), [approvals.data]);
   const projectName = useMemo(() => new Map((projects.data ?? []).map((p) => [p.id, p.name] as const)), [projects.data]);
-  const all = tasks.data ?? [];
   const running = all.filter((x) => x.status === "running").length;
   const review = all.filter((x) => x.status === "human_review").length;
   const waiting = approvals.data?.length ?? 0;
 
+  const counts: Record<FlowStage, number> | null = tasks.data
+    ? {
+        queued: all.filter((x) => x.status === "queued" || x.status === "ready" || x.status === "backlog").length,
+        working: running,
+        needsYou: waiting,
+        review,
+        done: all.filter((x) => x.status === "completed").length
+      }
+    : null;
+
+  const attention = useMemo(() => {
+    const items: { task: Task; kind: AttentionKind }[] = [];
+    for (const task of byRecency) {
+      if (approvalIds.has(task.id)) items.push({ task, kind: "approval" });
+      else if (task.status === "human_review") items.push({ task, kind: "review" });
+      else if (task.status === "failed") items.push({ task, kind: "failed" });
+    }
+    const order: Record<AttentionKind, number> = { approval: 0, review: 1, failed: 2 };
+    return items.sort((a, b) => order[a.kind] - order[b.kind]);
+  }, [byRecency, approvalIds]);
+
+  const recent = byRecency.slice(0, 6);
+
+  const openStage = (stage: FlowStage) => {
+    switch (stage) {
+      case "queued":
+        setTaskFilters({ statuses: ["backlog", "ready", "queued"] });
+        navigate(paths.tasks());
+        break;
+      case "working":
+        navigate(paths.runs());
+        break;
+      case "needsYou":
+        setActivityTab("approvals");
+        navigate(paths.activity());
+        break;
+      case "review":
+        navigate(paths.reviews());
+        break;
+      case "done":
+        setTaskFilters({ statuses: ["completed"] });
+        navigate(paths.tasks());
+        break;
+    }
+  };
+
+  const attentionText: Record<AttentionKind, string> = {
+    approval: m.home.attentionApproval,
+    review: m.home.attentionReview,
+    failed: m.home.attentionFailed
+  };
+
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center gap-8 px-6 py-10">
-        <header className="space-y-1.5 text-center">
-          <h1 className="font-display text-3xl font-semibold tracking-tight text-foreground">{m.home.title}</h1>
-          <p className="text-sm text-muted-foreground">{m.home.subtitle}</p>
+      <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-9 px-6 pb-12 pt-[min(14vh,7rem)]">
+        <header className="space-y-2 text-center">
+          <h1 className="font-display text-[2rem] font-semibold leading-tight tracking-tight text-foreground">{m.home.title}</h1>
+          <p className="text-[15px] text-muted-foreground">{m.home.subtitle}</p>
           {running + waiting + review > 0 ? (
             <p className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-1 text-xs text-muted-foreground">
               {running > 0 ? <span>{formatMessage(m.home.statusRunning, { count: running })}</span> : null}
@@ -45,12 +113,54 @@ export default function HomePage() {
 
         <TaskComposer variant="hero" />
 
-        <section aria-label={m.home.recent} className="space-y-2">
-          <h2 className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{m.home.recent}</h2>
+        <section aria-label={m.flow.label} className="space-y-2.5">
+          <h2 className="px-1 text-[11px] font-semibold uppercase tracking-wider text-subtle-foreground">{m.flow.label}</h2>
+          <WorkflowPipeline counts={counts} onOpen={openStage} />
+        </section>
+
+        {attention.length > 0 ? (
+          <section aria-label={m.home.attention} className="space-y-2.5">
+            <h2 className="px-1 text-[11px] font-semibold uppercase tracking-wider text-subtle-foreground">{m.home.attention}</h2>
+            <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface shadow-card" role="list">
+              {attention.slice(0, MAX_ATTENTION).map(({ task, kind }) => {
+                const Icon = ATTENTION[kind].icon;
+                return (
+                  <li key={task.id}>
+                    <Link
+                      to={paths.run(task.id)}
+                      className="group flex min-w-0 items-center gap-3 px-3.5 py-3 outline-none transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover"
+                    >
+                      <span aria-hidden className={cn("grid size-8 shrink-0 place-items-center rounded-lg", ATTENTION[kind].chip)}>
+                        <Icon className="size-4" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-foreground">{task.issue.title}</span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {attentionText[kind]} · <span className="font-mono">{task.issue.identifier}</span>
+                        </span>
+                      </span>
+                      <ArrowRight aria-hidden className="size-4 shrink-0 text-subtle-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" />
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        ) : null}
+
+        <section aria-label={m.home.recent} className="space-y-2.5">
+          <div className="flex items-center gap-2 px-1">
+            <h2 className="flex-1 text-[11px] font-semibold uppercase tracking-wider text-subtle-foreground">{m.home.recent}</h2>
+            {all.length > recent.length ? (
+              <Link to={paths.tasks()} className="rounded text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
+                {m.home.viewAll}
+              </Link>
+            ) : null}
+          </div>
           {recent.length === 0 ? (
-            <p className="px-1 text-sm text-muted-foreground">{m.home.noRecent}</p>
+            <p className="rounded-2xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">{m.home.noRecent}</p>
           ) : (
-            <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface" role="list">
+            <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface shadow-card" role="list">
               {recent.map((task) => {
                 const needs = approvalIds.has(task.id);
                 const { tone, pulse } = statusTone(task.status, needs);
@@ -58,7 +168,7 @@ export default function HomePage() {
                   <li key={task.id}>
                     <Link
                       to={paths.run(task.id)}
-                      className="flex min-w-0 items-center gap-3 px-3 py-2.5 text-sm outline-none transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover"
+                      className="flex min-w-0 items-center gap-3 px-4 py-3 text-sm outline-none transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover"
                     >
                       <StatusDot tone={tone} pulse={pulse} label={needs ? m.sidebar.needsApproval : t.status[task.status]} />
                       <span className="min-w-0 flex-1 truncate text-foreground">{task.issue.title}</span>

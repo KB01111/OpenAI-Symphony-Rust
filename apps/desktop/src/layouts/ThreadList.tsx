@@ -43,14 +43,14 @@ const ThreadItem: React.FC<{ task: Task; needsApproval: boolean }> = ({ task, ne
         title={`${task.issue.identifier} · ${task.issue.title}`}
         className={({ isActive }) =>
           cn(
-            "group flex h-8 min-w-0 items-center gap-2 rounded-lg px-2 text-sm text-muted-foreground outline-none transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60",
-            isActive && "bg-surface-selected text-foreground"
+            "group flex h-8 min-w-0 items-center gap-2.5 rounded-lg ps-2.5 pe-2 text-sm text-muted-foreground outline-none transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60",
+            isActive && "bg-surface font-medium text-foreground shadow-card hover:bg-surface"
           )
         }
       >
         <StatusDot tone={tone} pulse={pulse} label={statusLabel} />
         <span className="min-w-0 flex-1 truncate">{task.issue.title}</span>
-        <TimeAgo iso={task.updated_at} className="shrink-0 text-[11px] tabular-nums text-subtle-foreground" />
+        <TimeAgo iso={task.updated_at} className="shrink-0 text-[11px] tabular-nums text-subtle-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 group-aria-[current=page]:opacity-100" />
       </NavLink>
     </li>
   );
@@ -86,7 +86,7 @@ const ProjectGroup: React.FC<{ projectId: string; project: Project | null; tasks
         <FolderGit2 className="size-3.5 shrink-0" aria-hidden />
         <span className="min-w-0 flex-1 truncate text-start">{name}</span>
         {collapsed && attention ? <span className="size-1.5 shrink-0 rounded-full bg-warning" aria-hidden /> : null}
-        <span className="shrink-0 tabular-nums text-subtle-foreground">{tasks.length}</span>
+        <span className="shrink-0 text-[11px] tabular-nums text-subtle-foreground">{tasks.length}</span>
       </button>
       {collapsed ? null : (
         <ul className="mt-0.5 flex flex-col gap-px" role="list">
@@ -152,8 +152,8 @@ export const ThreadList: React.FC = () => {
 
   const empty = (tasks.data ?? []).length === 0;
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-1.5">
-      <div className="px-2">
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      <div className="px-3">
         <Input
           type="search"
           icon={<Search />}
@@ -161,10 +161,10 @@ export const ThreadList: React.FC = () => {
           onChange={(e) => setQuery(e.target.value)}
           aria-label={m.sidebar.search}
           placeholder={m.sidebar.search}
-          className="rounded-lg border-transparent bg-surface-sunken shadow-none"
+          className="rounded-xl border-border bg-surface/60 hover:border-border-strong focus-visible:bg-surface"
         />
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" role="region" aria-label={m.sidebar.threads} tabIndex={-1}>
+      <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2" role="region" aria-label={m.sidebar.threads} tabIndex={-1}>
         {tasks.isLoading ? null : tasks.isError && !tasks.data ? (
           <div role="alert" className="space-y-2 px-2 py-3 text-xs text-muted-foreground">
             <p>{m.sidebar.loadFailed}</p>
@@ -177,7 +177,7 @@ export const ThreadList: React.FC = () => {
         ) : groups.length === 0 ? (
           <p className="px-2 py-3 text-xs text-muted-foreground">{m.sidebar.noMatches}</p>
         ) : (
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2.5">
             {approvals.isError && !approvals.data ? (
               <p role="status" className="px-2 text-xs text-warning">
                 {m.sidebar.approvalsUnavailable}

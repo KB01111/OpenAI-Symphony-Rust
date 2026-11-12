@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type React from "react";
 import { RotateCcw, Save } from "lucide-react";
 import { errorMessage } from "@symphony/api-client";
 import { formatMessage, type AppSettings, type Locale } from "@symphony/shared-types";
@@ -38,6 +39,56 @@ const SECTION_FIELDS: Partial<Record<SectionId, ReadonlyArray<SettingsField>>> =
   remote: ["remote_bind_address", "remote_port", "remote_allowed_origins"],
   backups: ["backup_interval_hours", "backup_keep"]
 };
+
+const FADE = 28;
+
+/**
+ * Section navigation: a side list when the page has room, otherwise a pill strip with no scrollbar.
+ * The strip fades out at the edge that has more to show, keeps the active pill centred and turns
+ * the mouse wheel into sideways scrolling.
+ */
+function useScrollStrip(active: string) {
+  const ref = useRef<HTMLElement>(null);
+  const [edges, setEdges] = useState({ start: false, end: false });
+
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    const left = Math.abs(el.scrollLeft);
+    const next = { start: max > 1 && left > 1, end: max > 1 && left < max - 1 };
+    setEdges((prev) => (prev.start === next.start && prev.end === next.end ? prev : next));
+  }, []);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    const onWheel = (e: WheelEvent) => {
+      // Only a vertical wheel over a strip that can scroll sideways is converted.
+      if (el.scrollWidth <= el.clientWidth || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      e.preventDefault();
+      el.scrollBy({ left: e.deltaY });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      observer.disconnect();
+      el.removeEventListener("wheel", onWheel);
+    };
+  }, [measure]);
+
+  useEffect(() => {
+    const el = ref.current;
+    const button = el?.querySelector<HTMLElement>('[aria-current="location"]');
+    if (!el || !button || el.scrollWidth <= el.clientWidth) return;
+    el.scrollTo({ left: button.offsetLeft - (el.clientWidth - button.offsetWidth) / 2, behavior: "smooth" });
+  }, [active]);
+
+  const mask = `linear-gradient(to right, ${edges.start ? "transparent" : "#000"}, #000 ${FADE}px, #000 calc(100% - ${FADE}px), ${edges.end ? "transparent" : "#000"})`;
+  return { ref, measure, mask };
+}
 
 /** Fields edited through the draft form (theme/locale persist immediately; others are not edited here). */
 type EditableSettings = Pick<
@@ -170,13 +221,14 @@ export default function SettingsPage() {
 
   // One section at a time keeps the page short; edits live in the shared draft, so switching loses nothing.
   const content = useRef<HTMLDivElement>(null);
+  const strip = useScrollStrip(active);
   const goTo = (id: SectionId) => {
     setActive(id);
     content.current?.scrollTo({ top: 0 });
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="@container flex min-h-0 flex-1 flex-col">
       <PageHeader
         title={m.title}
         description={m.description}
@@ -213,24 +265,27 @@ export default function SettingsPage() {
         }
       />
       {/* Container queries, not viewport breakpoints: the sidebar takes its share before this page is measured. */}
-      <div className="@container flex min-h-0 flex-1 flex-col @3xl:flex-row">
-        {/* A scrolling strip while the page is narrow, a side list once it has room. */}
+      <div className="flex min-h-0 flex-1 flex-col @3xl:flex-row">
+        {/* A pill strip while the page is narrow, a side list once it has room. */}
         <nav
+          ref={strip.ref}
+          onScroll={strip.measure}
           aria-label={m.sectionsNav}
-          className="shrink-0 overflow-x-auto border-b border-border bg-surface p-2 @3xl:w-52 @3xl:overflow-y-auto @3xl:overflow-x-hidden @3xl:border-b-0 @3xl:border-e"
+          style={{ "--strip-mask": strip.mask } as React.CSSProperties}
+          className="relative shrink-0 overflow-x-auto px-4 py-2.5 [-ms-overflow-style:none] [mask-image:var(--strip-mask)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden @3xl:w-56 @3xl:overflow-y-auto @3xl:overflow-x-hidden @3xl:border-e @3xl:border-border @3xl:px-3 @3xl:py-4 @3xl:[mask-image:none]"
         >
-          <ul className="flex gap-1 @3xl:block @3xl:space-y-0.5">
+          <ul className="flex gap-1.5 @3xl:block @3xl:space-y-0.5">
             {SECTION_IDS.map((id) => (
-              <li key={id}>
+              <li key={id} className="shrink-0">
                 <button
                   type="button"
                   onClick={() => goTo(id)}
                   aria-current={active === id ? "location" : undefined}
                   className={cn(
-                    "flex h-row shrink-0 items-center whitespace-nowrap rounded-md px-2 text-start text-sm transition-colors @3xl:h-auto @3xl:min-h-row @3xl:w-full @3xl:whitespace-normal @3xl:py-1.5",
+                    "flex h-8 shrink-0 items-center whitespace-nowrap rounded-full px-3.5 text-start text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/60 @3xl:h-auto @3xl:min-h-8 @3xl:w-full @3xl:whitespace-normal @3xl:rounded-lg @3xl:px-3 @3xl:py-1.5",
                     active === id
-                      ? "bg-surface-selected font-medium text-foreground"
-                      : "text-muted-foreground hover:bg-surface-hover hover:text-foreground"
+                      ? "bg-accent-subtle font-medium text-accent"
+                      : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
                   )}
                 >
                   {m.sections[id]}

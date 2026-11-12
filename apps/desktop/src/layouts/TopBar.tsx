@@ -44,22 +44,21 @@ export const TopBar: React.FC<{ children?: React.ReactNode }> = ({ children }) =
   const ThemeIcon = themeMode === "light" ? Sun : themeMode === "dark" ? Moon : SunMoon;
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-surface px-3">
-      <div className="flex min-w-0 flex-1 basis-0 items-center gap-2">
+    <header className="flex h-11 shrink-0 items-center gap-3 ps-1 pe-1">
+      <div className="flex min-w-0 flex-1 items-center gap-2.5">
         {children}
-        {here ? <span className="truncate text-sm font-medium text-foreground">{m.nav[here.key]}</span> : null}
+        {here ? <span className="hidden shrink-0 truncate text-sm font-medium text-muted-foreground lg:inline">{m.nav[here.key]}</span> : null}
+        <button
+          type="button"
+          onClick={() => openPalette("all")}
+          className="flex h-8 w-full min-w-0 max-w-md items-center gap-2 rounded-xl border border-border bg-surface/60 px-3 text-start text-sm text-muted-foreground outline-none transition-colors hover:border-border-strong hover:bg-surface hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+          aria-keyshortcuts="Control+K"
+        >
+          <Search className="size-3.5 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">{m.commandBar.search}</span>
+          <kbd className="shrink-0 rounded-md bg-muted px-1.5 py-px font-mono text-[10px] text-muted-foreground">{m.shortcuts.palette}</kbd>
+        </button>
       </div>
-
-      <button
-        type="button"
-        onClick={() => openPalette("all")}
-        className="flex h-8 min-w-0 flex-[2] basis-0 items-center gap-2 rounded-lg border border-border bg-surface-sunken px-2.5 text-start text-sm text-muted-foreground outline-none transition-colors hover:border-border-strong hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
-        aria-keyshortcuts="Control+K"
-      >
-        <Search className="size-3.5 shrink-0" aria-hidden />
-        <span className="min-w-0 flex-1 truncate">{m.commandBar.search}</span>
-        <kbd className="shrink-0 rounded border border-border px-1 font-mono text-[10px]">{m.shortcuts.palette}</kbd>
-      </button>
 
       <div className="flex shrink-0 items-center justify-end gap-0.5">
         {/* The footer always shows the connection; up here it only speaks up when something is wrong. */}
@@ -101,7 +100,7 @@ export const TopBar: React.FC<{ children?: React.ReactNode }> = ({ children }) =
               </Button>
             </PopoverTrigger>
           </Hint>
-          <PopoverContent align="end" className="max-h-[70vh] w-[28rem] overflow-auto p-0">
+          <PopoverContent align="end" className="max-h-[70vh] w-[28rem] overflow-auto rounded-xl p-0">
             <div className="h-[min(28rem,60vh)]">
               <ApprovalsTab />
             </div>
