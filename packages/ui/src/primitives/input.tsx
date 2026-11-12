@@ -2,7 +2,7 @@ import * as React from "react";
 import { cn } from "../lib/utils";
 
 export const controlClasses =
-  "w-full min-w-0 rounded-md border border-border-strong bg-surface px-2.5 text-sm text-foreground shadow-xs outline-none transition-colors placeholder:text-subtle-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/30";
+  "w-full min-w-0 rounded-lg border border-border-strong bg-surface px-2.5 text-sm text-foreground outline-none transition-[border-color,box-shadow] duration-150 hover:border-subtle-foreground/50 placeholder:text-subtle-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/30";
 
 /** Text input; `icon` renders a leading decoration inside the field (the `input` keeps the id/aria props). */
 export function Input({ className, type = "text", icon, ...props }: React.ComponentProps<"input"> & { icon?: React.ReactNode }) {

@@ -72,25 +72,37 @@ export const AiEventStreamCard = React.memo(function AiEventStreamCard({
   const technical = mode === "technical";
   const time = useMemo(() => new Date(event.timestamp).toLocaleTimeString(), [event.timestamp]);
 
+  // What the agent says reads as a chat message; everything it does is a quieter activity row.
+  const spoken = formatted.kind === "message";
+
   return (
     <article
       className={cn(
-        "group relative grid grid-cols-[20px_1fr] gap-x-2 rounded-md px-2 py-1.5 hover:bg-surface-hover",
-        formatted.kind === "error" && "bg-destructive-subtle",
-        formatted.kind === "approval" && formatted.tone === "warning" && "bg-warning-subtle",
+        "group relative grid grid-cols-[28px_minmax(0,1fr)] gap-x-3 rounded-xl px-2 transition-colors",
+        spoken ? "py-3" : "py-1.5 hover:bg-surface-hover",
+        formatted.kind === "error" && "bg-destructive-subtle hover:bg-destructive-subtle",
+        formatted.kind === "approval" && formatted.tone === "warning" && "bg-warning-subtle hover:bg-warning-subtle",
         className
       )}
       aria-label={`${event.event_type} ${time}`}
     >
-      <Icon className={cn("mt-0.5 size-4 shrink-0", TONE_CLASSES[formatted.tone])} aria-hidden />
-      <div className="min-w-0 space-y-1">
-        <header className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+      {spoken ? (
+        <span aria-hidden className="grid size-7 place-items-center rounded-full bg-accent-subtle text-accent">
+          <Icon className="size-4" />
+        </span>
+      ) : (
+        <span aria-hidden className="grid h-5 w-7 place-items-center">
+          <Icon className={cn("size-3.5 shrink-0", TONE_CLASSES[formatted.tone])} />
+        </span>
+      )}
+      <div className={cn("min-w-0", spoken ? "space-y-1.5" : "space-y-1")}>
+        <header className={cn("flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground", !spoken && !technical && !showIdentifier && "float-end ms-2 h-5")}>
           {showIdentifier && event.issue_identifier ? (
             <span className="font-mono font-medium text-foreground">{event.issue_identifier}</span>
           ) : null}
           {technical ? <span className="font-mono">{event.event_type}</span> : null}
           {technical && event.phase ? <PhaseBadge phase={event.phase} /> : null}
-          <time dateTime={event.timestamp} className="ms-auto tabular-nums">
+          <time dateTime={event.timestamp} className={cn("ms-auto tabular-nums", spoken ? "order-first ms-0" : "text-subtle-foreground")}>
             {time}
           </time>
           <span className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
@@ -99,13 +111,13 @@ export const AiEventStreamCard = React.memo(function AiEventStreamCard({
         </header>
 
         {formatted.kind === "message" ? (
-          <div className="text-sm leading-relaxed text-foreground">
+          <div className="text-[14px] leading-relaxed text-foreground">
             <Markdown breakNewLines>
               {formatted.text}
             </Markdown>
           </div>
         ) : (
-          <p className="break-words text-sm text-foreground">{formatted.text}</p>
+          <p className={cn("break-words text-sm leading-5", formatted.kind === "error" || formatted.kind === "approval" ? "text-foreground" : "text-muted-foreground")}>{formatted.text}</p>
         )}
 
         {formatted.command ? (

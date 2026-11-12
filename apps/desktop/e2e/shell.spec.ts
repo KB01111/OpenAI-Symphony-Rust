@@ -60,7 +60,7 @@ test("switches theme and persists it across reloads", async ({ page }) => {
   await page.getByRole("menuitemradio", { name: "Light" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   const background = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-  expect(background).toBe("rgb(245, 246, 248)");
+  expect(background).toBe("rgb(239, 237, 232)");
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });

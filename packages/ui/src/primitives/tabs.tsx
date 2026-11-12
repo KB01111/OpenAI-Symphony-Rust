@@ -10,7 +10,7 @@ export function TabsList({ className, ...props }: React.ComponentProps<typeof Ta
   return (
     <TabsPrimitive.List
       data-slot="tabs-list"
-      className={cn("flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border px-2 [scrollbar-width:none]", className)}
+      className={cn("flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-3 [scrollbar-width:none]", className)}
       {...props}
     />
   );
@@ -27,7 +27,7 @@ export function TabsTrigger({ className, onClick, ...props }: React.ComponentPro
         if (!event.defaultPrevented) event.currentTarget.focus();
       }}
       className={cn(
-        "relative inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap px-2.5 text-sm font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 disabled:opacity-50 data-[state=active]:text-foreground after:absolute after:inset-x-2 after:-bottom-px after:h-0.5 after:rounded-full data-[state=active]:after:bg-accent",
+        "relative inline-flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap px-2 text-sm font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 disabled:opacity-50 data-[state=active]:text-foreground after:absolute after:inset-x-1.5 after:-bottom-px after:h-0.5 after:rounded-full after:transition-colors data-[state=active]:after:bg-accent",
         className
       )}
       {...props}

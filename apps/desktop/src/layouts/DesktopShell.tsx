@@ -15,7 +15,8 @@ const AddRepositoryDialog = lazy(() => import("../features/projects/AddRepositor
 const OnboardingDialog = lazy(() => import("../features/onboarding/OnboardingDialog.js"));
 
 /**
- * Desktop shell: a thread-first sidebar, a slim top bar, the routed workspace and a status bar.
+ * Desktop shell: a thread-first sidebar and a slim top bar on the window canvas, the routed
+ * workspace as one rounded sheet, and a status line underneath.
  * There are no nested panel groups or fixed-width side panes at this level; views own their layout.
  */
 export const DesktopShell: React.FC = () => {
@@ -25,14 +26,17 @@ export const DesktopShell: React.FC = () => {
   const settings = useSettings();
 
   return (
-    <div className="grid h-full grid-cols-[auto_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-background text-foreground">
+    <div className="grid h-full grid-cols-[auto_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-canvas text-foreground">
       <Sidebar />
-      <div className="flex min-h-0 min-w-0 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-col pe-2">
         <TopBar />
-        <UpdateBanner />
-        <main id="main" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" tabIndex={-1}>
-          <Outlet />
-        </main>
+        {/* The workspace is one sheet of paper on the window canvas; every view lives inside it. */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-card">
+          <UpdateBanner />
+          <main id="main" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden outline-none" tabIndex={-1}>
+            <Outlet />
+          </main>
+        </div>
       </div>
       <div className="col-span-2 min-w-0">
         <StatusBar />

@@ -3,7 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { AlertCircleIcon, AlertTriangleIcon, CheckCircle2Icon, InfoIcon } from "lucide-react";
 import { cn } from "../lib/utils";
 
-const alertVariants = cva("flex items-start gap-2 rounded-lg border px-3 py-2 text-sm", {
+const alertVariants = cva("flex items-start gap-2 rounded-xl border px-3.5 py-2.5 text-sm", {
   variants: {
     intent: {
       info: "border-transparent bg-info-subtle text-foreground [&>svg]:text-info",

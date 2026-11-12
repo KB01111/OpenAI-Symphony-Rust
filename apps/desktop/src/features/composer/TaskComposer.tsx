@@ -52,7 +52,7 @@ const Chip = React.forwardRef<HTMLButtonElement, React.ComponentProps<"button"> 
       type="button"
       className={cn(
         "inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/60 [&_svg]:size-3.5 [&_svg]:shrink-0",
-        active ? "border-transparent bg-accent-subtle text-accent" : "border-border bg-transparent text-muted-foreground hover:bg-surface-hover hover:text-foreground",
+        active ? "border-transparent bg-accent-subtle text-accent" : "border-transparent bg-muted text-muted-foreground hover:bg-surface-hover hover:text-foreground",
         className
       )}
       {...props}
@@ -210,7 +210,7 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
       ) : null}
       <div
         className={cn(
-          "rounded-2xl border border-border-strong bg-surface shadow-sm transition-shadow focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30",
+          "rounded-3xl border border-border-strong bg-surface shadow-elevated transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/20",
           promptError && "border-destructive"
         )}
       >
@@ -229,11 +229,11 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
             }
           }}
           className={cn(
-            "resize-none rounded-2xl border-0 bg-transparent px-4 pb-1 pt-3.5 shadow-none ring-0 [field-sizing:content] focus-visible:ring-0",
-            hero ? "min-h-24 max-h-72 text-base" : "min-h-24 max-h-56 text-sm"
+            "resize-none rounded-3xl border-0 bg-transparent px-5 pb-1 pt-4 shadow-none ring-0 [field-sizing:content] hover:border-0 focus-visible:ring-0",
+            hero ? "min-h-28 max-h-72 text-base leading-relaxed" : "min-h-24 max-h-56 text-sm"
           )}
         />
-        <div className="flex flex-wrap items-center gap-1.5 px-3 pb-3 pt-1">
+        <div className="flex flex-wrap items-center gap-1.5 px-3.5 pb-3.5 pt-1.5">
           <Popover>
             <PopoverTrigger asChild>
               <Chip icon={<FolderGit2 />} aria-label={`${m.project}: ${project?.name ?? m.projectPlaceholder}`} active={Boolean(projectError)}>
@@ -283,7 +283,7 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
           ) : null}
           <Popover>
             <PopoverTrigger asChild>
-              <Chip icon={<SlidersHorizontal />} aria-label={`${m.provider} / ${m.model}`}>
+              <Chip icon={<SlidersHorizontal />} aria-label={`${m.provider} / ${m.model}`} className="max-w-52">
                 {t.provider[provider]}
                 {effectiveCloudAgent ? ` · ${t.cloudAgent[effectiveCloudAgent]}` : ""}
                 {effectiveModel ? ` · ${effectiveModel}` : ""}
@@ -376,7 +376,7 @@ export const TaskComposer: React.FC<TaskComposerProps> = ({ variant = "hero", on
           {promptError ?? projectError}
         </p>
       ) : (
-        <p className="px-2 text-xs text-subtle-foreground">{m.shortcut}</p>
+        <p className="px-3 text-center text-xs text-subtle-foreground">{m.shortcut}</p>
       )}
     </form>
   );

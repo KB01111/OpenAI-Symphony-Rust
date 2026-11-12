@@ -30,15 +30,15 @@ export const MetricTile: React.FC<MetricTileProps> = ({ label, value, hint, tone
     <Comp
       onClick={onClick}
       className={cn(
-        "flex min-w-0 flex-col gap-1 rounded-md border border-border bg-surface px-3 py-2.5 text-start",
-        onClick && "transition-colors hover:bg-surface-hover"
+        "flex min-w-0 flex-col gap-1 rounded-xl border border-border bg-surface px-4 py-3 text-start shadow-card outline-none",
+        onClick && "transition-[border-color,background-color] duration-150 hover:border-border-strong hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-ring/60"
       )}
     >
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
         {icon}
         {label}
       </span>
-      <span className={cn("font-display text-xl font-semibold tabular-nums", TONE_TEXT[tone])}>{value}</span>
+      <span className={cn("font-display text-2xl font-semibold tracking-tight tabular-nums", TONE_TEXT[tone])}>{value}</span>
       {hint ? <span className="truncate text-xs text-subtle-foreground">{hint}</span> : null}
     </Comp>
   );

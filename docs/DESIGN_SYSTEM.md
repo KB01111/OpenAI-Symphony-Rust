@@ -25,19 +25,21 @@ packages/ui/src/
 
 | Token | Purpose |
 | --- | --- |
-| `--background` | App canvas behind panels |
+| `--canvas` | Window chrome: the sidebar, top bar and status line sit on it |
+| `--background` | The workspace sheet behind panels |
 | `--foreground` | Primary text |
 | `--surface`, `--surface-raised`, `--surface-sunken` | Panels, popovers, inset wells |
 | `--surface-hover`, `--surface-selected` | Interactive states |
 | `--border`, `--border-strong` | Dividers and control outlines |
 | `--muted`, `--muted-foreground`, `--subtle-foreground` | Secondary surfaces and text |
-| `--accent`, `--accent-hover`, `--accent-foreground`, `--accent-subtle` | Restrained blue for active actions |
+| `--accent`, `--accent-hover`, `--accent-foreground`, `--accent-subtle` | Iris accent for active actions |
 | `--destructive`, `--warning`, `--success`, `--info` (+ `-subtle`) | Semantic status only |
 | `--ring` | Focus ring |
 | `--overlay` | Modal and sheet scrim |
 | `--code-background`, `--diff-add`, `--diff-remove` | Code and diff surfaces |
 | `--font-sans`, `--font-display`, `--font-mono` | Segoe UI Variable stack, Cascadia mono |
-| `--radius` | 8 px base radius |
+| `--radius` | 10 px base radius |
+| `--shadow-card`, `--shadow-elevated` | Resting cards and floating surfaces |
 | `--density-*` | Row/control height, gaps and base font size |
 
 Tailwind CSS v4 reads them through `@theme inline` (`bg-surface`, `text-muted-foreground`, `border-border`,
@@ -45,9 +47,11 @@ Tailwind CSS v4 reads them through `@theme inline` (`bg-surface`, `text-muted-fo
 colours are not allowed outside `tokens.css`. The shadcn semantic names (`--card`, `--popover`, `--primary`,
 `--input`, `--ring`) are aliases of the Symphony tokens.
 
-The palette is a graphite neutral scale with a single restrained blue accent. Semantic green, amber and red are
-used for status only. No gradients or glass effects are used; elevation is a subtle border plus
-`--shadow-elevated` on floating surfaces.
+The palette is a warm paper neutral scale with a single iris accent. Semantic green, amber and red are
+used for status only. No gradients or glass effects are used; elevation is a hairline border plus
+`--shadow-card` on resting cards and `--shadow-elevated` on floating surfaces. The shell is layered:
+the window is `--canvas`, the routed workspace is one rounded `--background` sheet on it, and panels
+inside a view are `--surface`.
 
 ## 2. `SymphonyDesignProvider`
 

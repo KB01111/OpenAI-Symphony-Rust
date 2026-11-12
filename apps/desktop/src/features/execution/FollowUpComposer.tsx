@@ -61,14 +61,14 @@ export const FollowUpComposer: React.FC<{ task: Task }> = ({ task }) => {
   return (
     <form
       aria-label={m.actions.continue}
-      className="shrink-0 border-t border-border bg-surface px-4 py-3"
+      className="shrink-0 px-6 pb-4 pt-2"
       onSubmit={(e) => {
         e.preventDefault();
         submit();
       }}
     >
       <div className={cn("mx-auto max-w-3xl", !enabled && "opacity-80")}>
-        <div className="rounded-2xl border border-border-strong bg-surface focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30">
+        <div className="rounded-3xl border border-border-strong bg-surface shadow-card transition-[border-color,box-shadow] duration-150 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/20">
           <Textarea
             value={text}
             disabled={!enabled}
@@ -82,7 +82,7 @@ export const FollowUpComposer: React.FC<{ task: Task }> = ({ task }) => {
                 submit();
               }
             }}
-            className="max-h-48 min-h-14 resize-none rounded-2xl border-0 bg-transparent px-4 pb-1 pt-3 shadow-none ring-0 [field-sizing:content] focus-visible:ring-0"
+            className="max-h-48 min-h-14 resize-none rounded-3xl border-0 bg-transparent px-4 pb-1 pt-3 shadow-none ring-0 hover:border-0 [field-sizing:content] focus-visible:ring-0"
           />
           <div className="flex items-center gap-2 px-3 pb-2.5">
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" role={tooLong || continueTask.isError ? "alert" : undefined}>
@@ -98,7 +98,7 @@ export const FollowUpComposer: React.FC<{ task: Task }> = ({ task }) => {
               <Button
                 type="submit"
                 variant="default"
-                size="icon-sm"
+                size="icon"
                 className="rounded-full"
                 disabled={!enabled || !trimmed || tooLong || continueTask.isPending}
                 aria-label={continueTask.isPending ? w.followUpSending : w.followUpSend}

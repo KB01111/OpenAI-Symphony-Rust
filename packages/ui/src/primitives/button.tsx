@@ -4,12 +4,12 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../lib/utils";
 
 export const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*=size-])]:size-4",
+  "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg text-sm font-medium transition-[background-color,color,border-color,box-shadow,transform] duration-150 outline-none active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*=size-])]:size-4",
   {
     variants: {
       variant: {
-        default: "bg-accent text-accent-foreground hover:bg-accent-hover",
-        secondary: "border border-border bg-surface text-foreground hover:bg-surface-hover",
+        default: "bg-accent text-accent-foreground shadow-card hover:bg-accent-hover",
+        secondary: "border border-border bg-surface text-foreground shadow-card hover:border-border-strong hover:bg-surface-hover",
         outline: "border border-border-strong bg-transparent text-foreground hover:bg-surface-hover",
         ghost: "text-foreground hover:bg-surface-hover",
         subtle: "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
