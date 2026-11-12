@@ -154,6 +154,8 @@ export function useOpenWorkflowStage(): (stage: FlowStage) => void {
           navigate(paths.activity());
           break;
         case "review":
+          // Pull requests are listed per selected project; the stage count spans all of them.
+          setActiveProject(null);
           navigate(paths.reviews());
           break;
       }
