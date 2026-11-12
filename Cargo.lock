@@ -4723,7 +4723,7 @@ dependencies = [
 
 [[package]]
 name = "symphony-agents"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4742,7 +4742,7 @@ dependencies = [
 
 [[package]]
 name = "symphony-cli"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4764,7 +4764,7 @@ dependencies = [
 
 [[package]]
 name = "symphony-core"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "chrono",
  "dirs",
@@ -4785,7 +4785,7 @@ dependencies = [
 
 [[package]]
 name = "symphony-desktop"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",
@@ -4812,7 +4812,7 @@ dependencies = [
 
 [[package]]
 name = "symphony-knowledge"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4834,7 +4834,7 @@ dependencies = [
 
 [[package]]
 name = "symphony-orchestrator"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4859,7 +4859,7 @@ dependencies = [
 
 [[package]]
 name = "symphony-platform"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -4883,7 +4883,7 @@ dependencies = [
 
 [[package]]
 name = "symphony-server"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "async-trait",
  "axum",
@@ -4916,7 +4916,7 @@ dependencies = [
 
 [[package]]
 name = "symphony-storage"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "chrono",
  "hex",
@@ -4933,7 +4933,7 @@ dependencies = [
 
 [[package]]
 name = "symphony-trackers"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4948,7 +4948,7 @@ dependencies = [
 
 [[package]]
 name = "symphony-workspaces"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "base64 0.23.1",
  "chrono",
