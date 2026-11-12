@@ -8,6 +8,18 @@ one. The HTTP API is versioned separately (`API_VERSION`, see `CONTRIBUTING.md`)
 
 ## [Unreleased]
 
+### Changed
+
+- **Redesigned desktop UI.** A warm light and dark theme with one iris accent, and a shell where the sidebar and top
+  bar sit on the window canvas and the open view is one rounded sheet. The workflow (Queued, Working, Needs you,
+  Review, Done) is now visible: live counts in the sidebar, a pipeline and a "Needs your attention" list on Home, and
+  the task's progress in every thread header. Agent threads read as a conversation, and the Settings sections become a
+  fading pill strip in narrow windows.
+
+## [2.0.6] - 2026-11-05
+
+Covers the releases 2.0.2 to 2.0.6, which had no changelog sections of their own.
+
 ### Added
 
 - **Connection profiles.** Settings → Model connections adds a model service from just its API key: the app
